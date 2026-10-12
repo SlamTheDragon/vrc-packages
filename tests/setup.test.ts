@@ -4,6 +4,21 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
+test("setup aliases form an acyclic chain with one sync and one help invocation", () => {
+  const { scripts } = JSON.parse(readFileSync(join(import.meta.dir, "../package.json"), "utf8"));
+  const expand = (name: string, ancestors: string[] = []): string[] => {
+    expect(ancestors).not.toContain(name);
+    expect(scripts[name]).toBeDefined();
+    return [name, ...[...scripts[name].matchAll(/bun run ([\w:-]+)/g)]
+      .flatMap(match => expand(match[1], [...ancestors, name]))];
+  };
+  for (const entry of ["init", "setup"]) {
+    const commands = expand(entry);
+    expect(commands.filter(name => name === "versions:sync:preview")).toHaveLength(1);
+    expect(commands.filter(name => name === "help")).toHaveLength(1);
+  }
+});
+
 test("setupProjects includes root and all product directories", () => {
   expect(setupProjects.root).toBe(".");
   expect(setupProjects.crawler).toBe("src-crawler");

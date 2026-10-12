@@ -6,10 +6,14 @@
 - R60-C60A: copied root notes intact to `docs/source/CHANGELOG.md`. Preparation snapshots that source to root, archives selected notes and clears only their product/channel body. Headings, comment delimiters and other notes remain.
 - Release metadata verification now reproduces the snapshot and source reset instead of allowing arbitrary changelog edits.
 - R60-C60B: removed duplicate setup sync/help calls and unified the installation execution path. Updated publishing guidance and lifecycle rules.
-- Verification: final changelog/setup checks passed (15 tests, 81 assertions). Full delivery/provenance run `9956` is running. Four-product source integration run `72251` found a Windows CRLF assertion mismatch; corrected run `45405` is running. Syntax and whitespace checks passed.
+- Verification: delivery/provenance checkpoint `9956` passed 68 tests (591 assertions). Final changelog/setup checks passed 16 tests (107 assertions), including an acyclic setup alias graph with exactly one sync and help invocation. Source-based release integration `71368` passed all four products (64 assertions).
+- An initial integration assertion needed CRLF normalization; the combined four-product case then exceeded its shared 120-second limit. Separate 60-second product cases passed in 26–30 seconds each. No functional failure was hidden or retried automatically.
+- Syntax, whitespace and actual setup CLI help passed. Local Bun is 1.4.1; the configured CI pin remains 1.4.2. Hosted publication was not exercised for this local-only tooling change.
+- Auto-review declined the optional root preview-plan command because its side effects were not established to the reviewer. It did not execute. No workaround, push, version bump or publication ran.
 - Documentation audit: 109 existing broken local links remain after folder moves. No finding targets the migrated source changelog or an unexpected docs category. Published history archives were not edited. Broad relinking is deferred in R60-C60D.
 - Deferred R60-C60C: filesystem/Git crash recovery needs a distinct design; no claim of atomic multi-file writes or automatic retry. Existing root snapshot retains consumed notes.
-- Next: inspect those exact test handles, record failures or results, and commit only the tooling slice locally. Continue the crawler/network goal afterward.
+- Local checkpoint: `2df5796`; follow-up adds final evidence, individually timed product fixtures, alias-graph regression and corrected printed `publish:*` commands. Exclude the owner logger edit from both commits.
+- Next: continue the crawler/network responsibility from the canonical ledger. R60-C60C/D remain deferred. This checkpoint does not claim whole-goal completion.
 
 ## Previous completed gate G18
 

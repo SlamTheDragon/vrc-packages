@@ -281,8 +281,8 @@ test("a previously prepared release cannot bypass predecessor publication proof 
   });
 }, 60_000);
 
-test("release preparation pushes one version branch, then owner-reviewed main finalization pushes only a tag", async () => {
-  for (const product of ["package", "crawler", "crawler-client", "worker"]) {
+for (const product of ["package", "crawler", "crawler-client", "worker"]) {
+  test(`release preparation pushes one version branch, then owner-reviewed main finalization pushes only a tag: ${product}`, async () => {
     await fixture(async (workspace, git) => {
       const identifier = { package: "vrcp-packages-api", crawler: "vrcp-crawler-node",
         "crawler-client": "vrcp-crawler-client", worker: "vrcp-worker" }[product];
@@ -313,8 +313,8 @@ test("release preparation pushes one version branch, then owner-reviewed main fi
       expect(await readFile(resolve(workspace, "config.versions.json"), "utf8")).toBe(versions);
       expect(git(workspace, "status", "--porcelain")).toBe("");
     });
-  }
-}, 120_000);
+  }, 60_000);
+}
 
 test("release finalizer rejects a renamed annotated object before publication", async () => {
   await fixture(async (workspace, git) => {

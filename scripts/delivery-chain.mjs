@@ -394,7 +394,7 @@ export async function startDelivery(channel, product, execute = false, workspace
     git(workspace, "tag", "-a", plan.tag, commit, "-m", `VRC Packages ${product} release ${plan.version}\n\nVRCP-Release-Direct: true\nVRCP-Release-Head: ${commit}\nVRCP-Release-Base: ${plan.head}\nVRCP-Previous-Version: ${plan.previous}`);
     const tagObject = git(workspace, "rev-parse", `refs/tags/${plan.tag}`);
     git(workspace, "push", "--atomic", "--no-follow-tags", "origin", "HEAD:refs/heads/main", `refs/tags/${plan.tag}`);
-    return { ...plan, commit, tagObject, status: "pushed", next: [`bun run delivery:status ${plan.tag}`, `bun run delivery:check ${plan.tag}`] };
+    return { ...plan, commit, tagObject, status: "pushed", next: [`bun run publish:status ${plan.tag}`, `bun run publish:check ${plan.tag}`] };
   }
   git(workspace, "tag", "-a", plan.tag, "-m", `VRC Packages ${product} ${channel} ${plan.version}\n\nVRCP-Previous-Version: ${plan.previous}`);
   return { ...retryDelivery(plan.tag, workspace, git), ...(pendingCheckpoint ? { pendingCheckpoint } : {}) };
@@ -433,7 +433,7 @@ export async function retryReleasePreparation(branch, workspace = root, git = ru
     status: remote ? "preparation-already-pushed-awaiting-review" : "preparation-pushed-awaiting-review",
     pullRequestURL: `https://github.com/${repository}/compare/main...${encodeURIComponent(branch)}?expand=1`,
     next: ["Create and manually review a version promotion PR into main. Do not merge an evergreen tracking PR.",
-      `bun run delivery:finalize ${match[1]} <merged-pr-number> <merged-main-commit> --execute`] };
+      `bun run publish:finalize ${match[1]} <merged-pr-number> <merged-main-commit> --execute`] };
 }
 
 function releaseTagProof(tag, workspace, git) {
@@ -479,7 +479,7 @@ export async function finalizeRelease(product, prNumber, commit, execute = false
   const remote = refs.find(line => line.endsWith(`\trefs/tags/${tag}`));
   if (remote && (!tagObject || remote !== `${tagObject}\trefs/tags/${tag}`)) throw new Error("Remote release tag differs; never replace it automatically");
   const result = { ...selected, repository, tag, commit, prNumber, head: proof.head, base: proof.base, changed: metadata.changed,
-    status: remote ? "already-pushed" : execute ? "pushed" : "finalization-plan-only", next: [`bun run delivery:status ${tag}`, `bun run delivery:check ${tag}`] };
+    status: remote ? "already-pushed" : execute ? "pushed" : "finalization-plan-only", next: [`bun run publish:status ${tag}`, `bun run publish:check ${tag}`] };
   if (!execute || remote) return { ...result, ...(tagObject ? { tagObject } : {}) };
   const previous = JSON.parse(git(workspace, "show", `${proof.base}:config.versions.json`))[`release-${product}`];
   await requirePublicationProof("release", product, previous, workspace, publicationProof);
@@ -530,7 +530,7 @@ export function retryDelivery(tag, workspace = root, git = runGit) {
     git(workspace, "push", "--atomic", "--no-follow-tags", "origin", `HEAD:refs/heads/${branch}`, `refs/tags/${tag}`);
   }
   return { ...selected, repository, status: remote ? "already-pushed" : "pushed",
-    next: [`bun run delivery:status ${tag}`, `bun run delivery:check ${tag}`] };
+    next: [`bun run publish:status ${tag}`, `bun run publish:check ${tag}`] };
 }
 
 export async function requirePublicationProof(channel, product, version, workspace = root, inspect = inspectDelivery) {
