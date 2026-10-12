@@ -100,6 +100,8 @@ sequenceDiagram
 - **Coordinator Redirects and Errors**: Calls use manual redirects and reject 3xx responses. Failed bodies are canceled without JSON parsing or body content in errors/logs.
 - **Coordinator Success Bodies**: The client parses successful JSON, then applies the response schema. No streaming byte ceiling exists for these bodies.
 - **Coordinator Retries**: Defaults are two retries and a 250 ms base delay, with a 2,000 ms delay cap. Options require nonnegative safe integers.
+- **Idle Claim Pacing**: Empty claims use exponential backoff with jitter. The delay never falls below the coordinator wait or local minimum.
+- **Idle Backoff Ceiling**: Jitter respects the local maximum. A longer coordinator wait overrides that maximum. Leasing a job resets the idle ladder.
 - **Request Timeouts**: Each heartbeat attempt uses 5 seconds. Each claim/result attempt uses 30 seconds. Shutdown does not cancel these coordinator calls.
 - **Access Outcomes**: The adapter reports rate limits, challenges and other failures to the coordinator. Coordinator origin pacing controls subsequent leases. No separate node circuit-breaker guarantee is established here.
 - **RFC 9309 Boundary**: The coordinator checks robots snapshots at claim, heartbeat and result submission. The node sends the configured crawler User-Agent. Production robots refresh remains unfinished.

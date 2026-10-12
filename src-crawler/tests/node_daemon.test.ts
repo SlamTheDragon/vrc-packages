@@ -437,7 +437,7 @@ describe("node-owned daemon lifecycle through serialized contracts", () => {
   });
 
   describe("idle backoff ladder and bounded jitter (R50-C31, R54-C39B)", () => {
-    test("calculateIdleDelay enforces bounded jitter range [1 - r, 1 + r]", () => {
+    test("calculateIdleDelay clamps jitter to the coordinator and local minimum wait", () => {
       const store = new LocalNodeStore(":memory:");
       try {
         const daemonMin = new CrawlerNodeDaemon(config, store, client(), {
@@ -465,7 +465,7 @@ describe("node-owned daemon lifecycle through serialized contracts", () => {
         });
 
         // First empty claim (consecutive = 0 or 1 -> base = 5000)
-        expect(daemonMin.calculateIdleDelay(5_000)).toBe(4_000); // 5000 * 0.8
+        expect(daemonMin.calculateIdleDelay(5_000)).toBe(5_000); // Never shorten the requested wait.
         expect(daemonMid.calculateIdleDelay(5_000)).toBe(5_000); // 5000 * 1.0
         expect(daemonMax.calculateIdleDelay(5_000)).toBe(6_000); // 5000 * 1.2
         expect(daemonNoJitter.calculateIdleDelay(5_000)).toBe(5_000);
@@ -564,6 +564,44 @@ describe("node-owned daemon lifecycle through serialized contracts", () => {
         await withWire(highDelayClaim, async () => { expect(await daemon.step()).toBe("empty"); });
         expect(daemon.emptyClaimCount).toBe(1);
         expect(daemon.currentIdleDelayMs).toBe(30_000);
+      } finally {
+        daemon.stop();
+        store.close();
+      }
+    });
+
+    test("wire retry floors above the local cap survive jitter and repeated empty claims", async () => {
+      for (const retryAfterMs of [90_000, 300_000]) {
+        for (const [jitterRatio, random] of [[0, 0], [0.2, 0], [0.2, 0.5], [0.2, 1]]) {
+          const store = new LocalNodeStore(":memory:");
+          const daemon = new CrawlerNodeDaemon(config, store, client(), {
+            jitterRatio, randomFn: () => random,
+          });
+          try {
+            for (let claim = 0; claim < 3; claim++) {
+              await withWire({ schemaVersion: 1, status: "empty", retryAfterMs }, async () => {
+                expect(await daemon.step()).toBe("empty");
+              });
+              expect(daemon.currentIdleDelayMs).toBe(retryAfterMs);
+            }
+          } finally {
+            daemon.stop();
+            store.close();
+          }
+        }
+      }
+    });
+
+    test("positive jitter cannot exceed the local backoff ceiling", async () => {
+      const store = new LocalNodeStore(":memory:");
+      const daemon = new CrawlerNodeDaemon(config, store, client(), {
+        idleBackoffMultiplier: 2, randomFn: () => 1,
+      });
+      try {
+        for (const expectedDelay of [6_000, 12_000, 24_000, 48_000, 60_000, 60_000]) {
+          await withWire(empty, async () => { expect(await daemon.step()).toBe("empty"); });
+          expect(daemon.currentIdleDelayMs).toBe(expectedDelay);
+        }
       } finally {
         daemon.stop();
         store.close();

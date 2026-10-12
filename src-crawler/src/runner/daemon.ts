@@ -77,8 +77,10 @@ export class CrawlerNodeDaemon {
     const randomFn = this.options.randomFn ?? Math.random;
 
     const base = Math.max(baseRetryAfterMs, minIdle);
+    // Coordinator waits are floors; the local backoff cap must not shorten them.
+    const ceiling = Math.max(base, maxIdle);
     const exponent = Math.max(0, this.consecutiveEmptyClaims - 1);
-    const unjittered = Math.min(maxIdle, Math.round(base * Math.pow(multiplier, exponent)));
+    const unjittered = Math.min(ceiling, Math.round(base * Math.pow(multiplier, exponent)));
 
     if (jitterRatio <= 0) {
       return unjittered;
@@ -87,7 +89,7 @@ export class CrawlerNodeDaemon {
     const rand = Math.max(0, Math.min(1, randomFn()));
     const jitterFactor = (1 - jitterRatio) + rand * (2 * jitterRatio);
     const jittered = Math.round(unjittered * jitterFactor);
-    return Math.max(0, jittered);
+    return Math.max(base, Math.min(ceiling, jittered));
   }
 
   public stop(status: "completed" | "failed" = "completed"): void {

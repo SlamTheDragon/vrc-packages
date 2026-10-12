@@ -8,7 +8,7 @@ Here are the latest changelogs of each package and applications. For a full hist
 ## What Changed
 
 <!-- MASTER_SUMMARY -->
-Consolidate D1 tables, bound SDK pagination and harden public catalog errors. Preview notes describe each changed product.
+Consolidate D1 tables, bound SDK pagination, harden public errors and honor coordinator idle waits. Preview notes describe each changed product.
 <!-- MASTER_SUMMARY -->
 
 ## Table of Contents
@@ -147,7 +147,7 @@ See full history at [docs/changelogs/vrcp-crawler-client/preview](https://github
 ## VRC Packages Crawler - `vrcp-crawler-node-preview`
 
 <!-- vrcp-crawler-node-preview-DESCRIPTION_SUMMARY -->
-empty
+Honor coordinator retry floors and bound idle jitter. Retain existing outbox and lease safeguards.
 <!-- vrcp-crawler-node-preview-DESCRIPTION_SUMMARY -->
 
 ### Added
@@ -159,10 +159,11 @@ empty
 - **Batched Claim Support**: Added optional `maxJobs` parameter to `CoordinatorClient.claim` to request multiple jobs.
 - **Durable Result Outbox**: Added SQLite WAL-backed `node_outbox` table in `LocalNodeStore` with automatic 24-hour TTL and 50MB disk quota pruning.
 - **Crash Recovery & Replay**: Added startup and reconnection outbox flush in `CrawlerNodeDaemon` to replay unacknowledged results without data loss across process crashes or network interruptions.
-- **Adaptive Idle Backoff Ladder**: Implemented dynamic backoff ladder scaling from 5s to 60s (`1.5x` multiplier) with configurable `±20%` bounded jitter, resetting immediately to base interval upon leasing a job.
+- **Adaptive Idle Backoff Ladder**: Added exponential idle backoff with jitter. Coordinator wait floors override the local cap; leased jobs reset the ladder.
 - **Envelope Wire Bounds**: Enforced 2MB streaming response limits in `CoordinatorClient` and strict length bounds on job URLs, origin URLs, ETags, and Last-Modified headers.
 
 ### Bugs Fixed
+- **Coordinator Retry Floors**: Prevented idle jitter and local backoff caps from shortening coordinator-requested waits. Capped positive jitter at the effective maximum.
 - **Fleet Claim Polling**: Fixed unbounded fleet claim polling by eliminating aggressive 1s spin loops on empty queues, mitigating Cloudflare request allowance exhaustion.
 
 ### Changes

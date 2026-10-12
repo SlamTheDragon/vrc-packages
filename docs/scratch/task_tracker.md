@@ -1,4 +1,4 @@
-# Active R49-C29 — distributed pagination conformance (2026-10-13)
+# Active R50-C31 — retry-floor conformance; R49 hosted native follow-up (2026-10-13)
 
 - Branch: `preview/crawler-network`. Prior ledger audit: `c11bd61`; public catalog error hardening: `76a1949`.
 - Owner explicitly allows batched pushes for preview publication and dependency synchronization. Unrelated commits stay local. No production publication or SDK v0.1.0 is authorized.
@@ -21,11 +21,11 @@
 - Main delivery sign-off stays accepted. Website/desktop responsibilities and release SDK remain unchanged.
 - Deferred risks remain in canonical/unmerged ledgers: fleet budgets/distributed throttling, source/publication rights, ownership/age evidence, API v0.1 owner review, changelog crash recovery, and 98 documentation-link findings. No source access grant or live crawl follows from this slice.
 
-## Next independent slice: R50-C31 retry-floor conformance
+## R50-C31 retry-floor conformance
 
 - Working theory confirmed by an isolated current-code probe: retryAfterMs 5000 becomes 4000 with minimum jitter; server maximum 300000 becomes 48000. Both violate the coordinator wait floor.
 - Change only idle delay calculation and its wire-backed regressions. Clamp jitter between max(server retry, local minimum) and max(that floor, local maximum). Preserve exponential backoff and reset-on-lease. Heartbeat cadence, leases, retention and remote rate-limit design stay unchanged.
-- Capability checkpoint passed: crawler typecheck, 160 tests / 1265 assertions / 24 files, development binary compilation and its --version execution (2026.10.9-pre). Source notes/specification updated. Preview publication remains pending; account-wide budget and real fleet measurements stay open. No SDK/network contract change is needed.
+- Capability checkpoint passed: crawler typecheck, 160 tests / 1265 assertions / 24 files, development binary compilation and its --version execution (2026.10.9-pre). Source notes/specification updated. Next: root-managed crawler preview allocation, hosted builds/publication and original-artifact readback. Account-wide budget and real fleet measurements stay open. No SDK/network contract change is needed.
 
 ## Requested delivery review: queued maintenance, not a replacement goal
 
