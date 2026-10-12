@@ -39,7 +39,7 @@ function json(body: unknown, status = 200): Response {
     status,
     headers: {
       "content-type": "application/json; charset=utf-8",
-      "cache-control": "public, max-age=60",
+      "cache-control": status < 400 ? "public, max-age=60" : "no-store",
       "access-control-allow-origin": "*"
     }
   });
@@ -103,10 +103,10 @@ export async function handlePublicCatalogRequest(
       schemaVersion: CATALOG_PROTOCOL_VERSION,
       ...deltaPage
     })), rateResult);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "Public catalog query failed";
-    workerLogger.error("Public catalog request failed", error, { path: url.pathname });
-    return failure(500, "internal_error", message);
+  } catch {
+    // Storage and schema failures can contain private rows or credentials.
+    workerLogger.error("Public catalog request failed", undefined, { path: url.pathname });
+    return failure(500, "internal_error", "Public catalog query failed");
   }
 }
 

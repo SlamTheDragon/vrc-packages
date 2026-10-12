@@ -239,6 +239,8 @@ Consolidated D1 tables for audit logs, app ownership, robots refresh leases, and
 
 ### Bugs Fixed
 - **Excessive Claim Polling**: Mitigated rapid-fire claim requests from idle crawler nodes exhausting coordinator daily request allowances.
+- **Public Error Disclosure**: Catalog and delta failures return a fixed error without storage exception details in responses or failure logs.
+- **Error Cache Isolation**: Public catalog error responses use `no-store`; successful pages retain their existing cache policy.
 
 ### Changes
 - **Inlined App Ownership**: Inlined `owner_user_id` foreign key directly into `registered_apps`, eliminating the redundant junction table.

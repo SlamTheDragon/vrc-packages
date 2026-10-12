@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { LocalCoordinatorStore } from "./support/local_sqlite.js";
 import { handlePublicCatalogRequest } from "../src/api/public_handler.ts";
 import {
@@ -11,6 +11,7 @@ import {
 } from "vrc-packages-api";
 import { PROTOCOL_VERSION } from "vrc-packages-network/node";
 import { seedApprovedFixtureJob } from "./helpers/source_access_fixture.js";
+import { InMemoryRateLimiter } from "../src/api/rate_limiter.ts";
 
 function publicGet(path: string): Request {
   return new Request(`http://localhost${path}`, {
@@ -54,6 +55,43 @@ function seedVpmAndCatalogItem(
 }
 
 describe("Public Consumer Catalog Protocol (/v1/app/index & /v1/app/index/delta)", () => {
+  test("storage failures disclose no exception details and cannot be cached", async () => {
+    const privateDetail = "private-storage-detail-not-for-http-or-logs";
+    const captured: unknown[][] = [];
+    const log = spyOn(console, "error").mockImplementation((...args) => { captured.push(args); });
+    const store = new LocalCoordinatorStore();
+    const limiter = new InMemoryRateLimiter();
+    try {
+      for (const cause of [new Error(privateDetail), privateDetail, { privateDetail }]) {
+        store.listCanonicalPackagesPage = () => { throw cause; };
+        store.listCatalogDeltasPage = () => { throw cause; };
+        for (const path of ["/v1/app/index", "/v1/app/index/delta"]) {
+          const response = await handlePublicCatalogRequest(publicGet(path), store, limiter);
+          expect(response.status).toBe(500);
+          expect(response.headers.get("cache-control")).toBe("no-store");
+          expect(response.headers.get("access-control-allow-origin")).toBe("*");
+          expect(await response.json()).toEqual({ schemaVersion: 1, code: "internal_error", error: "Public catalog query failed" });
+        }
+      }
+      expect(captured).toHaveLength(6);
+      expect(JSON.stringify(captured)).not.toContain(privateDetail);
+      expect(JSON.stringify(captured)).toContain("Public catalog request failed");
+    } finally { log.mockRestore(); store.close(); }
+  });
+
+  test("invalid queries and unsupported methods cannot cache an error response", async () => {
+    const store = new LocalCoordinatorStore();
+    try {
+      for (const path of ["/v1/app/index?limit=0", "/v1/app/index/delta?cursor=invalid!"]) {
+        const response = await handlePublicCatalogRequest(publicGet(path), store, new InMemoryRateLimiter());
+        expect(response.status).toBe(400);
+        expect(response.headers.get("cache-control")).toBe("no-store");
+      }
+      const response = await handlePublicCatalogRequest(new Request("https://coordinator.invalid/v1/app/index", { method: "POST" }), store);
+      expect(response.status).toBe(404);
+      expect(response.headers.get("cache-control")).toBe("no-store");
+    } finally { store.close(); }
+  });
   test("SDK public index sends limit 100 and cursor unchanged through the real handler", async () => {
     const store = new LocalCoordinatorStore();
     const cursor = encodeCatalogCursor({ createdAt: "2026-10-03T00:00:00.000Z", canonicalId: "page-boundary" });
