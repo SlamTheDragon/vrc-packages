@@ -1,37 +1,35 @@
-# Active R50-C31 — retry-floor conformance; R49 hosted native follow-up (2026-10-13)
+# Active R50-C31: crawler retry-floor conformance (2026-10-13)
 
-- Branch: `preview/crawler-network`. Prior ledger audit: `c11bd61`; public catalog error hardening: `76a1949`.
-- Owner explicitly allows batched pushes for preview publication and dependency synchronization. Unrelated commits stay local. No production publication or SDK v0.1.0 is authorized.
-- Theory confirmed: duplicated encoders treated Unicode as Latin-1; 256-character tokens could not carry accepted 500-character IDs. Search/moderator/operator contracts also diverged.
-- SDK producer implemented: shared UTF-8 codec, stable ASCII bytes, explicit `u1_` Unicode marker, strict canonical decoding, 8192-character token bound, 128-character affected ISO timestamps, 500-character moderator canonical IDs.
-- Negative checks cover oversized payloads, invalid UTF-8, unknown versions, padding, duplicate JSON keys, member order, extra fields, ambiguous old Latin-1 and invalid route payloads. Old non-ASCII tokens require pagination restart.
-- SDK checkpoint: `bun run test` and `bun run typecheck` passed. Final suite: 74 tests, 1072 assertions, eight files.
-- Packed distribution check passed offline: isolated Node and no-type-stripping Node, type consumer, Wrangler bundle, native workerd. 35 files; zero external runtime fetches. Long Unicode IDs cross HTTP serialization.
-- Checkpoint failures were compiler import/fixture mistakes, then stale taxonomy-export and synthetic search-token assertions. Corrected fixtures match current delivered rating and cursor contracts; assertions were not removed.
-- SDK preview `2026.10.11-pre` was allocated, committed and tagged by the root executor (`c583f69`, `vrcp-api/v2026.10.11-pre`). Run: https://github.com/SlamTheDragon/vrc-packages/actions/runs/38302925036 . Build passed; publication readback initially exceeded its bounded convergence window.
-- Recovery complete: npm's exact version and `latest` resolve to `2026.10.11-pre`; registry bytes match original CI artifact `11771242834`, SHA-256 `bc0fbcd3693ae1e7a2a01c506be0d00842b99cd7fa187766cfcfb34020496f78`. Root `recovery:rerun 38302925036` ran failed jobs only. Root `publish:check vrcp-api/v2026.10.11-pre` passed five Release assets and receipts. No second publication, tag move or version bump was requested.
-- Network `2026.10.8` was allocated by root tooling at `9edcfda`; run https://github.com/SlamTheDragon/vrc-packages/actions/runs/38304946219 passed. Root `publish:check` verified four Release assets. Its exact peer is `0.0.8 || 2026.10.11-pre`; both identical-byte packed checks passed npm/Bun installation, Node/Bun execution, types, Wrangler and native workerd (23 files, zero external runtime fetches).
-- Root `prepare:dev preview worker` and `prepare:dev preview crawler` installed SDK 2026.10.11-pre and hosted network 2026.10.8. No sibling source or node_modules edits substitute for distribution. The network verifier requires its Node/npm host; product commands still use Bun.
-- Worker checkpoint passed: source/test typechecks, full product suite, preview dry-run bundle and native D1 runtime. New fixtures cover schema/codec identity, 500-character Unicode and JSON-escaped IDs through public catalog, delta, search, operator and moderator routes, and malformed/oversized cursors. Native D1 verified four actual HTTP pages with zero external fetches; existing profile/robots/lease/replay/revocation tests remain green.
-- Crawler compatibility checkpoint passed: typecheck and 158 tests / 1088 assertions / 24 files with the installed distributed pair. No crawler source changed. Worker capability is committed at `c7254b5`; root metadata at `23a2014` delivered Worker preview `2026.10.11-pre`, run https://github.com/SlamTheDragon/vrc-packages/actions/runs/38305836807 . Root `publish:check` verified the original bundle/config receipt. No production mutation occurred.
-- Hosted conformance gap confirmed: build job `114999544581` passed 272 units / 2781 assertions / 23 files, but native smoke failed with ENOENT before the preview bundle existed. Preview continue-on-error masked this failure in the final green run. Local native pagination proof remains valid; hosted native proof is missing.
-- Bounded repair theory: build the selected Worker target before its native smoke test and pass the same channel into the test. Add an ordering/channel regression to existing root workflow tests. Preserve optional preview checks and protected release behavior. This root delivery exception is authorized by the owner's pipeline-review request. No published tag will move and no frozen run will be rerun for a code fix.
-- Repair checkpoint: local preview dry-run build followed by native smoke passed, including four Unicode HTTP pages, atomicity, lease races, replay and revocation; zero external fetches. Full root suite finished with 243 passed / one stale setup assertion failed / 2968 assertions / 19 files. Its Worker-order regression passed. After aligning the stale assertion with approved setup deduplication, both affected root suites passed 58 tests / 1126 assertions. No second full-root run or hosted native pass is implied.
-- Owner committed the preserved src-package/README.md edit at `d99b8f1`. Pagination remains documented in docs/source/SPECIFICATION_CRAWLER_NETWORK.md; no SDK republish follows from that independent edit.
-- Main delivery sign-off stays accepted. Website/desktop responsibilities and release SDK remain unchanged.
-- Deferred risks remain in canonical/unmerged ledgers: fleet budgets/distributed throttling, source/publication rights, ownership/age evidence, API v0.1 owner review, changelog crash recovery, and 98 documentation-link findings. No source access grant or live crawl follows from this slice.
+## Authority and scope
 
-## R50-C31 retry-floor conformance
+- Branch: preview/crawler-network. Routine checkpoints remain local. Owner permits preview publication and batched publication/dependency synchronization. No production publication or SDK v0.1.0.
+- Owner README change is preserved in d99b8f1. No sibling source imports, node_modules edits, source grants or live crawls accompany this work.
 
-- Working theory confirmed by an isolated current-code probe: retryAfterMs 5000 becomes 4000 with minimum jitter; server maximum 300000 becomes 48000. Both violate the coordinator wait floor.
-- Change only idle delay calculation and its wire-backed regressions. Clamp jitter between max(server retry, local minimum) and max(that floor, local maximum). Preserve exponential backoff and reset-on-lease. Heartbeat cadence, leases, retention and remote rate-limit design stay unchanged.
-- Capability checkpoint passed: crawler typecheck, 160 tests / 1265 assertions / 24 files, development binary compilation and its --version execution (2026.10.9-pre). Source notes/specification updated. Next: root-managed crawler preview allocation, hosted builds/publication and original-artifact readback. Account-wide budget and real fleet measurements stay open. No SDK/network contract change is needed.
+## Working theory and implementation
 
-## Requested delivery review: queued maintenance, not a replacement goal
+- Confirmed before change: minimum jitter reduced retryAfterMs 5000 to 4000; the local cap reduced server maximum 300000 to 48000.
+- Commit 8a05b19 clamps idle delay between max(server wait, local minimum) and max(that floor, local maximum). Exponential backoff and reset-on-lease remain. Heartbeat cadence, leases and retention are unchanged.
+- Crawler checkpoint passed: typecheck; 160 tests / 1265 assertions / 24 files; development binary compilation and --version (then 2026.10.9-pre). Wire-backed cases cover repeated long waits, no jitter, both jitter bounds, cap saturation and lease reset.
+- Source specification and pending crawler notes were updated. Root preparation consumed only the crawler preview section and generated its snapshot/archive.
 
-- Working theory: duplicated bootstrap, CLI drift and ambiguous failure states create friction; some separate jobs enforce essential credential boundaries.
-- Inventory: 14 workflows, 1313 lines. Five product workflows; reusable asset attachment; App allocator; reconciliation; announcements; two cache workflows; governance checks; candidate cleanup; manual D1 initializer. No proven dead workflow or deletion target.
-- Checkpoints to retain: root plan, predecessor proof before allocation, generated version/changelog commit, immutable tag, CI provenance, distributed dependency checks, product verification, protected publication, receipts/registry readback, attachments and terminal announcements. Worker remains preview deployment/build-only release, without Release assets; website stays disabled.
-- Confirmed follow-ups: fast-forward-ahead preview blocked contrary to owner intent; App diagnostic lacks JSON flag; CLI JSON option parsing diverges; unsafe tag deletion; tolerated preview checks and premature completion notification; repeated setup/build/polling. Four compact DELIVERY-* rows hold exact paths and exit criteria.
-- Owner permits express merges to main when required. No merge is required for this audit-only checkpoint. Routine checkpoints remain local; publication synchronization retains its separate authority.
-- Verification: source/caller tracing, original SDK registry/CI byte comparison, successful same-version hosted recovery and root artifact readback. No root tooling changed, so root tests were not run. Other eight delivery paths were not re-executed by this audit.
+## Current preview publication
+
+- Root executor verified the original 2026.10.9-pre predecessor before allocation. Metadata commit: 66777f5888cda81bd7be2498ba01a99e6cb9cc46; tag: vrcp-crawler/v2026.10.10-pre; tag object: 03f910caaef6213da1ccd785ed8cb74cc93693e7.
+- Exact run: https://github.com/SlamTheDragon/vrc-packages/actions/runs/38308127484 . Latest observation: queued. No image, Release or artifact verification is claimed for this new version.
+- Next: inspect that same run through build, publication, asset attachment and announcement. Then run root publish:check for this tag and inspect degraded preview checks separately. Do not allocate another patch, move a tag or rerun a frozen workflow to test code fixes.
+
+## R49-C29 pagination checkpoint and remaining CI gap
+
+- SDK 2026.10.11-pre: run 38302925036. Original registry/CI bytes and five Release assets verified. Initial npm readback convergence failure recovered at the same version, without republishing.
+- Network 2026.10.8: run 38304946219. Four Release assets verified; identical-byte Node/Bun/types/Wrangler/workerd checks passed against release SDK 0.0.8 and preview SDK 2026.10.11-pre.
+- Worker 2026.10.11-pre: run 38305836807. Original bundle/config receipt verified. Types and 272 units passed; local native D1 proved four Unicode HTTP pages plus rollback, replay, races and revocation with zero external fetches.
+- Hosted native smoke failed with ENOENT because CI tested before building. Optional preview checks concealed it in the green delivery. Hosted native proof stays open.
+- Repair e83f6c6 builds first and forwards the selected channel into runtime smoke. Local preview build/native smoke passed. Full root suite: 243 passed, one stale setup assertion failed, 2968 assertions / 19 files. After correcting that assertion to approved single sync/help behavior, both affected suites passed 58 tests / 1126 assertions. No second full-root run is claimed.
+- The repaired workflow was synchronized during authorized crawler publication. Verify its hosted native result on the next changed Worker delivery; no ceremonial Worker bump or frozen-run retry.
+
+## Deferred work, not completion claims
+
+- R50-C31 still needs measured fleet requests, D1 rows/index writes, CPU and retained bytes. Correct pacing bounds do not prove free-tier sufficiency.
+- Four DELIVERY-* maintenance rows retain workflow cost, CLI, recovery safety and proof-reporting findings. Owner confirms ahead branches should publish previews; fix the planner, not the guide. Behind/diverged branches stay blocked.
+- The human preview plan hid its ahead-branch blocker behind a completed label; --json exposed it. Include truthful human plan status in DELIVERY-CLI-CONTRACT.
+- Main delivery sign-off remains accepted. Real fleet ingestion, distributed abuse limits, source/publication rights, ownership/age evidence, API v0.1 review, interrupted preparation and documentation relinking remain open. Website/desktop and release SDK are unchanged.
