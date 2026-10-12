@@ -436,6 +436,35 @@ describe("node-owned daemon lifecycle through serialized contracts", () => {
     }
   });
 
+  test("late batch receipt-write failure cannot reopen sent or terminal entries", async () => {
+    const store = new LocalNodeStore(":memory:");
+    const daemon = new CrawlerNodeDaemon(config, store, client());
+    try {
+      const tasks = ["accepted", "terminal", "write-failure"].map(suffix => store.recordClaimedJob(
+        daemon.currentRunId, { ...job, jobId: `mixed-${suffix}`, leaseId: crypto.randomUUID() }));
+      const entries = tasks.map(task => store.stageOutboxOutcome(task, { kind: "unchanged" }, crypto.randomUUID()));
+      const delivered = store.markOutboxDelivered.bind(store);
+      store.markOutboxDelivered = (id, receipt, metrics) => {
+        if (id === entries[2]) throw new Error("Local receipt write failed");
+        delivered(id, receipt, metrics);
+      };
+      await withWire(empty, async () => { expect(await daemon.flushOutbox()).toBe(1); }, async payload =>
+        payload.jobId === "mixed-terminal"
+          ? Response.json({ error: "Lease expired" }, { status: 403 })
+          : Response.json(ResultResponseSchema.parse({ schemaVersion: 1, status: "accepted",
+            jobId: payload.jobId, duplicate: false, sourceVersionCreated: false })));
+      expect(store.getOutboxEntry(entries[0]!)).toMatchObject({ status: "sent", retryCount: 0, lastError: null,
+        receipt: { jobId: "mixed-accepted", duplicate: false } });
+      expect(store.getTask(tasks[0]!)?.errorMessage).toBeNull();
+      expect(store.getOutboxEntry(entries[1]!)).toMatchObject({ status: "dead", retryCount: 0, lastError: "Lease expired" });
+      expect(store.getTask(tasks[1]!)?.errorMessage).toBe("Lease expired");
+      expect(store.getOutboxEntry(entries[2]!)).toMatchObject({ status: "pending", retryCount: 1,
+        lastError: "Local receipt write failed" });
+      expect(store.getPendingOutboxCount()).toBe(1);
+      expect(store.getRun(daemon.currentRunId)).toMatchObject({ tasksCompleted: 1, tasksFailed: 1 });
+    } finally { daemon.stop(); store.close(); }
+  });
+
   describe("idle backoff ladder and bounded jitter (R50-C31, R54-C39B)", () => {
     test("calculateIdleDelay clamps jitter to the coordinator and local minimum wait", () => {
       const store = new LocalNodeStore(":memory:");

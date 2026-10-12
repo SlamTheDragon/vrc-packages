@@ -14,6 +14,78 @@ function removeFixtureDirectory(directory: string): void {
 }
 
 describe("LocalNodeStore database behavior", () => {
+  test("settled outbox entries ignore late failures and preserve the first accepted receipt", () => {
+    const store = new LocalNodeStore();
+    try {
+      const runId = store.startRun("settled-node");
+      const base: CrawlJob = { jobId: "settled-job", leaseId: crypto.randomUUID(), platform: "vpm",
+        purpose: "metadata", url: "https://example.org/index.json", origin: "https://example.org",
+        leaseExpiresAt: "2099-01-01T00:00:00.000Z", retainClasses: ["normalized_facts"], etag: null, lastModified: null };
+      for (const state of ["sent", "dead"] as const) {
+        const job = { ...base, jobId: `${base.jobId}-${state}` };
+        const taskId = store.recordClaimedJob(runId, job);
+        const outboxId = store.stageOutboxOutcome(taskId, { kind: "unchanged" }, crypto.randomUUID());
+        const receipt: ResultResponse = { schemaVersion: 1, status: "accepted", jobId: job.jobId,
+          duplicate: false, sourceVersionCreated: false };
+        if (state === "sent") store.markOutboxDelivered(outboxId, receipt, { durationMs: 7 });
+        else store.markOutboxTerminal(outboxId, "Lease expired");
+        const before = { entry: store.getOutboxEntry(outboxId), task: store.getTask(taskId), run: store.getRun(runId) };
+        store.markOutboxFailed(outboxId, "Late batch bookkeeping error", 0);
+        store.markOutboxTerminal(outboxId, "Late terminal error");
+        if (state === "sent") store.markOutboxDelivered(outboxId, { ...receipt, duplicate: true }, { durationMs: 999 });
+        expect({ entry: store.getOutboxEntry(outboxId), task: store.getTask(taskId), run: store.getRun(runId) }).toEqual(before);
+        expect(store.getPendingOutboxCount()).toBe(0);
+      }
+      expect(store.getRun(runId)).toMatchObject({ tasksCompleted: 1, tasksFailed: 1 });
+    } finally { store.close(); }
+  });
+
+  test.each(["staging", "receipt"])("real SQLITE_FULL rolls back %s and permits recovery after capacity returns", phase => {
+    const directory = fixtureDirectory(), dbPath = join(directory, "full.db");
+    let store = new LocalNodeStore(dbPath);
+    try {
+      // Test-only connection access: no production page cap or host-disk filling.
+      const db = (store as unknown as { db: Database }).db;
+      const runId = store.startRun("full-node");
+      const job: CrawlJob = { jobId: "full-job", leaseId: crypto.randomUUID(), platform: "vpm",
+        purpose: "metadata", url: "https://example.org/index.json", origin: "https://example.org",
+        leaseExpiresAt: "2099-01-01T00:00:00.000Z", retainClasses: ["normalized_facts"], etag: null, lastModified: null };
+      const taskId = store.recordClaimedJob(runId, job);
+      store.recordTaskProgress(taskId, "fetching");
+      const key = crypto.randomUUID();
+      let outboxId = phase === "receipt" ? store.stageOutboxOutcome(taskId, { kind: "unchanged" }, key) : null;
+      db.run("CREATE TABLE full_pressure (bytes BLOB)");
+      db.run(phase === "staging"
+        ? "CREATE TRIGGER full_write BEFORE INSERT ON node_outbox BEGIN INSERT INTO full_pressure VALUES (zeroblob(131072)); END"
+        : "CREATE TRIGGER full_write BEFORE UPDATE OF tasks_completed ON node_runs BEGIN INSERT INTO full_pressure VALUES (zeroblob(131072)); END");
+      const originalMax = (db.query("PRAGMA max_page_count").get() as { max_page_count: number }).max_page_count;
+      const pages = (db.query("PRAGMA page_count").get() as { page_count: number }).page_count;
+      expect((db.query(`PRAGMA max_page_count = ${pages}`).get() as { max_page_count: number }).max_page_count).toBe(pages);
+      const receipt: ResultResponse = { schemaVersion: 1, status: "accepted", jobId: job.jobId,
+        duplicate: true, sourceVersionCreated: false };
+      const before = { task: store.getTask(taskId), run: store.getRun(runId), entry: store.getOutboxEntryByTaskId(taskId) };
+      const write = () => phase === "staging"
+        ? outboxId = store.stageOutboxOutcome(taskId, { kind: "unchanged" }, key)
+        : store.markOutboxDelivered(outboxId!, receipt);
+      let failure: unknown;
+      try { write(); } catch (error) { failure = error; }
+      expect(failure).toMatchObject({ code: "SQLITE_FULL" });
+      expect(db.inTransaction).toBe(false);
+      expect({ task: store.getTask(taskId), run: store.getRun(runId), entry: store.getOutboxEntryByTaskId(taskId) }).toEqual(before);
+      expect((db.query("SELECT COUNT(*) AS count FROM full_pressure").get() as { count: number }).count).toBe(0);
+      db.run(`PRAGMA max_page_count = ${originalMax}`);
+      db.run("DROP TRIGGER full_write");
+      write();
+      expect(store.getOutboxEntry(outboxId!)?.status).toBe(phase === "staging" ? "pending" : "sent");
+      expect(store.getRun(runId)?.tasksCompleted).toBe(phase === "staging" ? 0 : 1);
+      expect(db.query("PRAGMA integrity_check").get()).toEqual({ integrity_check: "ok" });
+      store.close();
+      store = new LocalNodeStore(dbPath);
+      expect(store.getOutboxEntry(outboxId!)?.idempotencyKey).toBe(key);
+      expect(store.getOutboxEntry(outboxId!)?.status).toBe(phase === "staging" ? "pending" : "sent");
+    } finally { store.close(); removeFixtureDirectory(directory); }
+  });
+
   test("terminal writes roll back with counters and accepted recovery counts once after restart", () => {
     const directory = fixtureDirectory();
     const dbPath = join(directory, "node.db");

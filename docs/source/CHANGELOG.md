@@ -8,7 +8,7 @@ Here are the latest changelogs of each package and applications. For a full hist
 ## What Changed
 
 <!-- MASTER_SUMMARY -->
-Separate timestamp evidence, bound SDK pagination and harden catalog delivery. Preview notes describe each changed product.
+Separate timestamp evidence, preserve settled outbox results and harden catalog delivery. Preview notes describe each changed product.
 <!-- MASTER_SUMMARY -->
 
 ## Table of Contents
@@ -147,11 +147,13 @@ See full history at [docs/changelogs/vrcp-crawler-client/preview](https://github
 ## VRC Packages Crawler - `vrcp-crawler-node-preview`
 
 <!-- vrcp-crawler-node-preview-DESCRIPTION_SUMMARY -->
-Keep storefront creation and publication dates out of modification evidence.
+Preserve settled outbox results and keep creation dates separate from modification evidence.
 <!-- vrcp-crawler-node-preview-DESCRIPTION_SUMMARY -->
 ### Added
+- **Recovery Checks**: Exercise abrupt process termination over loopback HTTP and actual SQLite-full rollback without filling host disks.
 ### Bugs Fixed
 - **Timestamp Provenance**: Removed the storefront creation-date fallback from modification evidence. Valid modification metadata remains available.
+- **Outbox Settlement**: Ignore late failures for sent or terminal entries. Repeated acknowledgments preserve the first receipt and completion metrics.
 ### Changes
 See full history at [docs/changelogs/vrcp-crawler-node/preview](https://github.com/SlamTheDragon/vrc-packages/tree/main/docs/changelogs/vrcp-crawler-node/preview)
 

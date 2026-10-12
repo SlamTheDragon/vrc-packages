@@ -4,7 +4,7 @@
 > **Target Subsystem:** Headless Crawler Node Daemon (`src-crawler`) and Desktop GUI Crawler Client (`src-crawler-client`)  
 > **Source Directory:** `src-crawler/src/` (entry `main.ts`, functional subfolders) and `src-crawler-client/`
 
-This reference describes inspected code. Recent shutdown and transport changes have fixtures, but runtime verification remains deferred. They do not establish release readiness.
+This reference describes inspected code and scoped local runtime checks. Separate Worker/fleet, platform and GUI integration remain open; local checks do not establish release readiness.
 
 ---
 
@@ -13,16 +13,18 @@ This reference describes inspected code. Recent shutdown and transport changes h
 This specification distinguishes between two operational deployment models:
 
 ### 1.1 Crawler Node (`src-crawler`)
-- **Role:** Compiled binary for a headless VPS such as Linux to run (and Windows daemon CLI `dist/local-node/vrcp-crawler-node.exe`).
+- **Role:** Compiled binary for a headless VPS such as Linux to run (and Windows development binary `dist/dev/vrcp-crawler-node.exe`).
 - **Core Behaviors:**
   - Authenticated polling of the coordinator for job leasing via `/v1/node/jobs/claim`.
   - Accepts jobs leased by the coordinator matching its capability profile.
   - Crawls assigned jobs under strict origin pacing, pinned DNS, and robots adherence.
   - Sends execution results to coordinator: success (normalized facts), rate limit (429 backoff), or failure (diagnostics).
-  - **Recovery Boundary:** The daemon retries coordinator failures and stops unauthorized fetches. Task logs exist, but a durable result outbox does not. Restart-safe submission remains incomplete.
+  - **Recovery Boundary:** The daemon stages results and idempotency keys in SQLite before submission. Startup replays pending results without refetching sources.
+  - **Outbox Bounds:** Default pending quota is 1,000 items. Quota exhaustion pauses claims. Default retention is 24 hours; expiry discards replay eligibility.
+  - **Settled Results:** Late failure bookkeeping cannot reopen sent or terminal entries. Repeated accepted receipts preserve the first receipt and counters.
   - **Structured Logging**: Execution logs and local task records exist. Complete activity coverage remains unverified.
   - `node.config.json` contains the node ID and selected capabilities. The coordinator issues the secret token. Supply it separately through `NODE_TOKEN`.
-  - Emits local telemetry to `node.db` (`node_runs`, `node_tasks`).
+  - Emits local telemetry and durable submissions to `node.db` (`node_runs`, `node_tasks`, `node_outbox`).
 
 ### 1.2 Crawler Client (`src-crawler-client`)
 - **Current implementation:** Tauri with a SvelteKit static frontend. The Rust shell exposes a starter `greet` command and the opener plugin.
@@ -32,7 +34,7 @@ This specification distinguishes between two operational deployment models:
 ### 1.3 Node log files
 
 - Logger construction computes paths but creates no files, timers or exit hooks. The first log write starts those resources.
-- An unused logger leaves existing logs unchanged when it rotates or closes. Help and version commands create no node state.
+- An unused logger leaves existing logs unchanged when it rotates or closes. The `--version` command creates no node state.
 - Active logs use `LoggerOptions.logsDir`, then `CRAWLER_LOGS_DIR`, then the runtime default. Explicit relative overrides still use the launch directory.
 - Source runs default to `src-crawler/logs`, independent of the launch directory.
 - Installed binaries default to `vrcp-crawler/logs` beneath Windows `LOCALAPPDATA`, macOS `~/Library/Logs`, or Linux `XDG_STATE_HOME`.
@@ -70,9 +72,10 @@ sequenceDiagram
     end
     Node->>Coord: Final active-lease heartbeat
     Coord-->>Node: { status: "alive", serverTime }
+    Node->>Node: Commit outcome and idempotency key to node_outbox
     Node->>Coord: POST /v1/node/jobs/result (jobId, leaseId, idempotencyKey, outcome)
     Coord-->>Node: { status: "accepted", jobId, duplicate, sourceVersionCreated }
-    Node->>Node: Record Task to node.db
+    Node->>Node: Atomically settle outbox, task and run counters
 ```
 
 1. **Lease Claiming (`POST /v1/node/jobs/claim`)**:
@@ -88,7 +91,9 @@ sequenceDiagram
 4. **Result Submission (`POST /v1/node/jobs/result`)**:
    - The node submits structured observation facts, discovered leads, or access failure diagnostics.
    - The client validates the receipt schema and requires its jobId to match the submitted job. Retries preserve the serialized request.
-   - This check does not add a durable outbox. Restart recovery, terminal rejection handling and bounded result retention remain open.
+   - SQLite commits the outcome and idempotency key before HTTP submission. Failed receipt persistence leaves the result eligible for unchanged-key replay.
+   - Startup sends pending results through `/v1/node/jobs/results`. Terminal rejection marks the entry dead; transient failures schedule bounded backoff.
+   - Expiry and quota limits still apply. Restart does not grant a new source lease or bypass coordinator authority checks.
 
 ---
 
@@ -118,4 +123,13 @@ SIGINT, SIGTERM and the stdin commands stop/exit/shutdown request daemon cancell
 
 Stop cancels source fetches and prevents execution after a pending claim or idle heartbeat returns. An in-flight result submission can still commit. The CLI waits for the daemon loop before closing SQLite and logs. Fatal one-shot errors retain failed status and exit code 1.
 
-Task transitions and run counters share local SQLite transactions. Receipt validation checks the schema and job identity. This bookkeeping does not persist the result payload or idempotency key. Abrupt process death and lost acknowledgments still lack a durable outbox.
+Task transitions and run counters share local SQLite transactions. Receipt validation checks the schema and job identity. The outbox persists payloads and idempotency keys before submission; receipt settlement shares the task/counter transaction.
+
+The 2026-10-13 crawler gate passed 171 tests (1,441 assertions), typechecking, development compilation and credential-free version execution.
+
+- Three child-process cases kill the daemon during a pending HTTP acknowledgment, then replay through actual loopback HTTP with published schemas.
+- Cases cover unaccepted results, acceptance before a lost acknowledgment, and terminal lease rejection. Replay preserves the key and does not refetch sources.
+- Test-only SQLite page limits cause real `SQLITE_FULL` during staging and receipt settlement. Both roll back and recover after capacity returns.
+- Mixed-batch failure checks keep earlier sent and terminal entries settled. Existing quota, expiry and authority tests also pass.
+- These checks use a schema-valid fixture coordinator, not Worker/D1. Source responses are injected; no external sources are fetched.
+- Host power loss, OS permission/I/O failures, Linux/container interruption and separately running Worker/fleet ingestion remain unverified.

@@ -353,6 +353,7 @@ export class LocalNodeStore {
       if (receipt.jobId !== outbox.job_id) {
         throw new Error("Result receipt does not match outbox job");
       }
+      if (outbox.status === "sent") return;
       this.db.prepare(`
         UPDATE node_outbox
         SET status = 'sent', receipt_json = ?, last_error = NULL
@@ -366,6 +367,10 @@ export class LocalNodeStore {
 
   public markOutboxFailed(outboxId: string, errorMessage: string, retryDelayMs: number = 5_000): void {
     this.db.transaction(() => {
+      const outbox = this.db.prepare(`
+        SELECT task_id FROM node_outbox WHERE outbox_id = ? AND status IN ('pending', 'submitting')
+      `).get(outboxId) as { task_id: string } | null;
+      if (!outbox) return;
       const nextRetryAt = new Date(this.now() + Math.max(0, retryDelayMs)).toISOString();
       this.db.prepare(`
         UPDATE node_outbox
@@ -373,25 +378,24 @@ export class LocalNodeStore {
         WHERE outbox_id = ?
       `).run(nextRetryAt, errorMessage, outboxId);
 
-      const outbox = this.db.prepare("SELECT task_id FROM node_outbox WHERE outbox_id = ?").get(outboxId) as { task_id: string } | null;
-      if (outbox) {
-        this.db.prepare("UPDATE node_tasks SET error_message = ? WHERE task_id = ?").run(errorMessage, outbox.task_id);
-      }
+      this.db.prepare("UPDATE node_tasks SET error_message = ? WHERE task_id = ? AND status != 'completed'")
+        .run(errorMessage, outbox.task_id);
     }).immediate();
   }
 
   public markOutboxTerminal(outboxId: string, terminalReason: string): void {
     this.db.transaction(() => {
+      const outbox = this.db.prepare(`
+        SELECT task_id FROM node_outbox WHERE outbox_id = ? AND status IN ('pending', 'submitting')
+      `).get(outboxId) as { task_id: string } | null;
+      if (!outbox) return;
       this.db.prepare(`
         UPDATE node_outbox
         SET status = 'dead', last_error = ?
         WHERE outbox_id = ?
       `).run(terminalReason, outboxId);
 
-      const outbox = this.db.prepare("SELECT task_id FROM node_outbox WHERE outbox_id = ?").get(outboxId) as { task_id: string } | null;
-      if (outbox) {
-        this.recordTaskFailure(outbox.task_id, terminalReason);
-      }
+      this.recordTaskFailure(outbox.task_id, terminalReason);
     }).immediate();
   }
 
