@@ -2,7 +2,38 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, normalize } from "node:path";
-import { extractProductChangelog, stripMarkdownComments } from "../scripts/changelog.mjs";
+import { extractProductChangelog, findProductChangelogSection, stripMarkdownComments } from "../scripts/changelog.mjs";
+
+test("duplicate sections fail closed instead of consuming an ambiguous target", () => {
+  expect(() => findProductChangelogSection("## vrcp-worker-preview\n- first\n## vrcp-worker-preview\n- second\n", "preview", "worker"))
+    .toThrow("Duplicate product/channel");
+});
+
+test("publication snapshots source, consumes only selected notes and preserves its skeleton", () => {
+  const dir = mkdtempSync(join(tmpdir(), "vrcp-changelog-test-"));
+  try {
+    mkdirSync(join(dir, "docs/source"), { recursive: true });
+    const source = "# Preview\n## `vrcp-crawler-node-preview`\n<!-- summary -->\nPending summary\n<!-- summary -->\n### Added\n- New node behavior\n### Bugs Fixed\n- Fixed retry\n### Changes\n- Changed interval\nSee full history at [history](../changelogs/node)\n## `vrcp-worker-preview`\n### Added\n- Keep worker notes\n# Release\n## `vrcp-crawler-node`\n- Keep release notes\n";
+    writeFileSync(join(dir, "docs/source/CHANGELOG.md"), source);
+    writeFileSync(join(dir, "CHANGELOG.md"), "old snapshot");
+    extractProductChangelog("preview", "crawler", "2026.10.1-pre", dir, true);
+    expect(readFileSync(join(dir, "CHANGELOG.md"), "utf8")).toBe("old snapshot");
+    const result = extractProductChangelog("preview", "crawler", "2026.10.1-pre", dir)!;
+    expect(result.changed).toHaveLength(3);
+    expect(readFileSync(join(dir, "CHANGELOG.md"), "utf8")).toBe(source);
+    const remaining = readFileSync(join(dir, "docs/source/CHANGELOG.md"), "utf8");
+    expect(remaining).not.toContain("Pending summary");
+    expect(remaining).not.toContain("New node behavior");
+    expect(remaining).toContain("### Added\n### Bugs Fixed\n### Changes");
+    expect(remaining).toContain("<!-- summary -->\n<!-- summary -->");
+    expect(remaining.slice(remaining.indexOf("## `vrcp-worker-preview`"))).toBe(source.slice(source.indexOf("## `vrcp-worker-preview`")));
+    expect(() => extractProductChangelog("preview", "crawler", "2026.10.1-pre", dir)).toThrow("Existing version changelog differs");
+    expect(readFileSync(join(dir, "CHANGELOG.md"), "utf8")).toBe(source);
+    expect(() => extractProductChangelog("preview", "package", "2026.10.1-pre", dir)).toThrow("Missing selected");
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
 
 test("extractProductChangelog copies product notes to dedicated markdown without modifying root CHANGELOG", () => {
   const dir = mkdtempSync(join(tmpdir(), "vrcp-changelog-test-"));

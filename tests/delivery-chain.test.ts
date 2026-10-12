@@ -284,7 +284,17 @@ test("a previously prepared release cannot bypass predecessor publication proof 
 test("release preparation pushes one version branch, then owner-reviewed main finalization pushes only a tag", async () => {
   for (const product of ["package", "crawler", "crawler-client", "worker"]) {
     await fixture(async (workspace, git) => {
+      const identifier = { package: "vrcp-packages-api", crawler: "vrcp-crawler-node",
+        "crawler-client": "vrcp-crawler-client", worker: "vrcp-worker" }[product];
+      await mkdir(resolve(workspace, "docs/source"), { recursive: true });
+      const notes = `# Release\n## ${identifier}\n### Added\n- Publication snapshot integration\n### Bugs Fixed\n### Changes\n`;
+      await writeFile(resolve(workspace, "docs/source/CHANGELOG.md"), notes);
+      git(workspace, "add", "--", "docs/source/CHANGELOG.md");
+      git(workspace, "commit", "-m", "Synthetic source changelog baseline");
+      git(workspace, "push", "origin", "main");
       const reviewed = await reviewedFixture(workspace, git, product);
+      expect((await readFile(resolve(workspace, "CHANGELOG.md"), "utf8")).replace(/\r\n/g, "\n")).toBe(notes);
+      expect(await readFile(resolve(workspace, "docs/source/CHANGELOG.md"), "utf8")).not.toContain("Publication snapshot integration");
       const before = git(workspace, "rev-parse", "HEAD");
       const versions = await readFile(resolve(workspace, "config.versions.json"), "utf8");
       const commands: string[][] = [];
@@ -1215,7 +1225,7 @@ test("promptInteractiveDelivery aborts if changelog summary is not written", asy
   const answers: Record<string, string> = {
     "Select product": "package",
     "Select deployment channel": "preview",
-    "written in CHANGELOG.md": "n"
+    "written in docs/source/CHANGELOG.md": "n"
   };
   const askFn = async (query: string) => {
     for (const [key, val] of Object.entries(answers)) {
@@ -1224,7 +1234,7 @@ test("promptInteractiveDelivery aborts if changelog summary is not written", asy
     return "y";
   };
   await expect(promptInteractiveDelivery({ askFn, git: mockCleanGit, onProgress: () => {} }))
-    .rejects.toThrow("Delivery aborted: Please write a summary for the release in CHANGELOG.md before proceeding.");
+    .rejects.toThrow("Delivery aborted: Please write a summary for the release in docs/source/CHANGELOG.md before proceeding.");
 });
 
 test("promptInteractiveDelivery aborts if no changes are confirmed in preparedness self-check", async () => {
@@ -1236,7 +1246,7 @@ test("promptInteractiveDelivery aborts if no changes are confirmed in preparedne
   const answers: Record<string, string> = {
     "Select product": "package",
     "Select deployment channel": "preview",
-    "written in CHANGELOG.md": "y",
+    "written in docs/source/CHANGELOG.md": "y",
     "new features": "n",
     "bug fixes": "n",
     "other changes": "n"
@@ -1285,7 +1295,7 @@ test("promptInteractiveDelivery accepts case-insensitive initial arguments", asy
   };
   const askFn = async (_q: string) => "n"; // abort on changelog summary
   await expect(promptInteractiveDelivery({ firstArg: "Crawler", secondArg: "Preview", askFn, git: mockCleanGit, onProgress: () => {} }))
-    .rejects.toThrow("Delivery aborted: Please write a summary for the release in CHANGELOG.md before proceeding.");
+    .rejects.toThrow("Delivery aborted: Please write a summary for the release in docs/source/CHANGELOG.md before proceeding.");
 });
 
 test("askBinary formats prompt with (Y/n) or (y/N) and respects defaults and explicit input", async () => {

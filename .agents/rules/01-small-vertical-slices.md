@@ -54,6 +54,8 @@ Every task must strictly adhere to the following sequence of rules:
    - A slice commit alone does not authorize a tag, publication or deployment. Preserve protected-main and product release approvals.
 
 6. **Practice publishing at capability milestones (R57-C57B)**:
+   - Record pending notes in `docs/source/CHANGELOG.md`. Publication preparation snapshots them to root and consumes only the selected source product/channel. Preserve its skeleton and other pending notes.
+   - Session-specific local-only instructions override gate pushes. Defer questions in the unmerged ledger when owner review pauses are waived.
    - After the gate checks pass, select only the products whose delivered behavior or contracts changed.
    - Use each selected product's root publishing chain (`publish:preview`, `publish:release`). It allocates the next configured patch, synchronizes metadata, commits, tags and pushes.
    - Check dependency producers first. An SDK peer change needs a checked network archive before dependent crawler or Worker publishing.

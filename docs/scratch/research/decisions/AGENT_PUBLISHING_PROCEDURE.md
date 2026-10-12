@@ -7,12 +7,13 @@ This file defines agent publishing rules and branch invariants.
 
 ## 1. Core Lifecycle Rules
 
-1. Slices mean local commit. Completed gates mean push.
+1. Slices mean local commit. Completed gates mean push unless the owner requires local-only commits.
    Do not push individual incomplete slices.
    Commit each slice locally as a checkpoint.
    Push to the remote tracking branch only when the capability gate passes all checks.
 
 2. Start every publication from root `package.json` scripts.
+   Write pending notes in `docs/source/CHANGELOG.md`. Preparation copies the complete file to root `CHANGELOG.md`, then clears only the selected product/channel notes in the source. Preserve its skeleton. Do not clear the root snapshot manually.
    Do not edit version configuration JSON files by hand.
    Publish only products whose delivered behavior changed.
 

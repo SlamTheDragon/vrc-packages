@@ -3,6 +3,18 @@
 This guide describes how to build, test, and publish products across the monorepo.
 It covers automated commands, recovery pathways, and manual web procedures.
 
+## Changelog procedure
+
+- Write pending notes in `docs/source/CHANGELOG.md`, under the target product and channel.
+- Preserve channel, product, Added, Bugs Fixed and Changes headings.
+- Planning does not copy or clear notes.
+- Publication preparation copies the complete source to root `CHANGELOG.md`, replacing its previous snapshot.
+- Tooling archives the selected notes and clears only that product/channel in the source.
+- The publication metadata commit includes the snapshot, source reset and archive.
+- Other channels and products retain their notes. Root is a snapshot, not the editing entry point.
+- If remote delivery fails, recover the same committed version. Do not clear notes manually or allocate another version.
+- Existing version archives with different contents block preparation before version allocation.
+
 ---
 
 ## 1. Repository Branch Layout

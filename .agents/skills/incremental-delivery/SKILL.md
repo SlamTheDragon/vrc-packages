@@ -19,7 +19,7 @@ Execute this procedure on every development iteration to enforce the slice and g
 ## Step 3: Sequential Gated Dissection & Unmerged Implementation Plan
 1. Dissect the prompt into bounded, modular context chunks.
 2. Map all related code symbols, including orthogonal dependencies (cross-module services) and hierarchical dependencies (inheritance, parent callers, data schemas).
-3. Enforce the **2–3 Files Bounding Constraint**: each slice must touch only 2–3 files at a time. Exceeding 2–3 files signals bloat and triggers compaction into smaller slices.
+3. Keep the three canonical scratch files lean. The 2–3-file limit applies to scratch, not source, tests or a complete capability boundary.
 4. Output the gated plan under an **"Unmerged Implementation Plan"** header in this exact table format:
    **Task Slices**:
    ```markdown
@@ -37,7 +37,7 @@ Execute this procedure on every development iteration to enforce the slice and g
 5. Maintain a **Minimal Scratch Footprint**: keep only 2–3 files in `docs/scratch/` (e.g., `UNMERGED_IMPLEMENTATION_PLAN.md`, `IMPLEMENTATION_PLAN.md`, and `task_tracker.md`), merging historical items and conformance evidence into the true canonical ledger and pruning legacy docs.
 
 ## Step 4: Gating Pause & Merge
-1. Pause execution to allow the user to review the table and populate the `author comments` column.
+1. Follow the owner's review policy. When pauses are waived, defer questions in the unmerged ledger and continue independent work.
 2. Once the author accepts by filling out comments, merge approved items into the master canonical implementation plan ledger (`docs/scratch/IMPLEMENTATION_PLAN.md`).
 
 ## Step 5: Slice Extraction & Task Tracker Execution
@@ -47,6 +47,8 @@ Execute this procedure on every development iteration to enforce the slice and g
    - Execute the slice (strictly bounded to 2–3 files in scratch).
    - Commit each implemented slice locally as a checkpoint.
    - Push to the remote branch only after all capability gate tests pass.
+   - A local-only session overrides gate pushes. Do not push without its separate publication authority.
+4. Write pending release notes in `docs/source/CHANGELOG.md`. Publication tooling snapshots the whole file to root, then clears only the selected product/channel notes while preserving headings and comments. Never clear the root snapshot manually.
 
 ## Step 6: Reconciliation & Iteration Loop
 1. Verify the slice results against test baselines.

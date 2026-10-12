@@ -373,12 +373,13 @@ export async function startDelivery(channel, product, execute = false, workspace
       git(workspace, "symbolic-ref", "--short", "HEAD") !== plan.branch) {
     throw new Error("Repository changed after planning");
   }
+  extractProductChangelog(channel, product, plan.version, workspace, true);
   if (channel === "release" && !force) git(workspace, "checkout", "-b", plan.releaseBranch);
   const result = await bumpVersion(channel, product, increment, workspace, now);
   if (result.version !== plan.version) throw new Error("Config changed after planning. Inspect it before retrying.");
   const metadata = await versionFiles("sync", channel, product, workspace);
   const changelogResult = extractProductChangelog(channel, product, plan.version, workspace);
-  const changelogPaths = changelogResult?.file ? [relative(workspace, changelogResult.file).replace(/\\/g, "/")] : [];
+  const changelogPaths = (changelogResult?.changed ?? []).map(file => relative(workspace, file).replace(/\\/g, "/"));
   const paths = [plan.configPath, ...metadata.changed, ...changelogPaths];
   git(workspace, "add", "--", ...paths);
   const commitMessages = [`${channel === "release" ? "Prepare" : "Deliver"} ${product} ${channel} ${plan.version}`];
@@ -1215,12 +1216,12 @@ export async function promptInteractiveDelivery(options = {}) {
     if (isInteractiveTTY) {
       p.note("Changelog Preparedness Self-Check", "Preparedness");
       const summaryWritten = await p.confirm({
-        message: `Is the section summary for ${product} written in CHANGELOG.md?`,
+        message: `Is the section summary for ${product} written in docs/source/CHANGELOG.md?`,
         initialValue: true
       });
       if (p.isCancel(summaryWritten) || !summaryWritten) {
         p.cancel("Delivery aborted: Please write a summary in CHANGELOG.md.");
-        throw new Error("Delivery aborted: Please write a summary for the release in CHANGELOG.md before proceeding.");
+        throw new Error("Delivery aborted: Please write a summary for the release in docs/source/CHANGELOG.md before proceeding.");
       }
 
       const writtenChanges = await p.confirm({
@@ -1231,9 +1232,9 @@ export async function promptInteractiveDelivery(options = {}) {
 
     } else {
       onProgress(`${style.dim}─── ${style.reset}${style.cyan}❯ Changelog Preparedness Self-Check${style.reset} ${style.dim}───────────────────────────${style.reset}`);
-      const summaryWritten = await askBinary(ask, `Is the section summary for ${product} written in CHANGELOG.md?`, true);
+      const summaryWritten = await askBinary(ask, `Is the section summary for ${product} written in docs/source/CHANGELOG.md?`, true);
       if (!summaryWritten) {
-        throw new Error("Delivery aborted: Please write a summary for the release in CHANGELOG.md before proceeding.");
+        throw new Error("Delivery aborted: Please write a summary for the release in docs/source/CHANGELOG.md before proceeding.");
       }
 
       const hasFeatures = await askBinary(ask, "Were there new features added?", false);

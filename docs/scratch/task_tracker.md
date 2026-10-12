@@ -1,4 +1,17 @@
-# Completed Milestone Gate G18 — D1 Schema Consolidation, Entity Unification & Table Optimization
+# Active tooling gate R60 — source changelog and simpler setup (2026-10-13)
+
+- Branch: `preview/crawler-network`. Owner confirms main sign-off passed. Do not reopen the old delivery sign-off.
+- This iteration permits root tooling and agent-rule edits. Commits remain local; no push or publication has run.
+- Preserve the owner's pending `src-worker/src/worker_logger.ts` edit; exclude it from tooling commits.
+- R60-C60A: copied root notes intact to `docs/source/CHANGELOG.md`. Preparation snapshots that source to root, archives selected notes and clears only their product/channel body. Headings, comment delimiters and other notes remain.
+- Release metadata verification now reproduces the snapshot and source reset instead of allowing arbitrary changelog edits.
+- R60-C60B: removed duplicate setup sync/help calls and unified the installation execution path. Updated publishing guidance and lifecycle rules.
+- Verification: final changelog/setup checks passed (15 tests, 81 assertions). Full delivery/provenance run `9956` is running. Four-product source integration run `72251` found a Windows CRLF assertion mismatch; corrected run `45405` is running. Syntax and whitespace checks passed.
+- Documentation audit: 109 existing broken local links remain after folder moves. No finding targets the migrated source changelog or an unexpected docs category. Published history archives were not edited. Broad relinking is deferred in R60-C60D.
+- Deferred R60-C60C: filesystem/Git crash recovery needs a distinct design; no claim of atomic multi-file writes or automatic retry. Existing root snapshot retains consumed notes.
+- Next: inspect those exact test handles, record failures or results, and commit only the tooling slice locally. Continue the crawler/network goal afterward.
+
+## Previous completed gate G18
 
 ## Milestone Gate Status & Bounded Vertical Slices
 

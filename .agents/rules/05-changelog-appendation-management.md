@@ -1,17 +1,18 @@
 ---
 trigger: always_on
-description: "Rules for appending changelog entries and maintaining root CHANGELOG.md structure."
+description: "Maintain source changelog notes and generated root publication snapshots."
 ---
 
 # 05 — Changelog appendation and channel management
 
 1. **Target file isolation**:
-   - Edit only the root `CHANGELOG.md` file when you record project changes.
+   - Edit only `docs/source/CHANGELOG.md` when you record project changes.
+   - Root `CHANGELOG.md` is the last publication snapshot. Do not edit or clear it manually.
    - Do not inspect or modify files in `docs/changelogs/` or project subfolders. These paths are protected and automated by repository tooling.
-   - Stop further file searches immediately after you locate the target section in `CHANGELOG.md`.
+   - Stop changelog searches after you locate the target source section. This does not restrict implementation audits.
 
 2. **Locked structure preservation**:
-   - Obey the root changelog locked header comment.
+   - Obey the source changelog locked header comment.
    - Do not modify top-level titles, Table of Contents entries, anchor targets, or navigation links.
    - Deliver changes as bullet points under category sub-headers.
    - Write compact summaries that stay strictly inside the designated summary comment blocks.
@@ -27,7 +28,7 @@ description: "Rules for appending changelog entries and maintaining root CHANGEL
 
 4. **Standard category headings**:
    - Sort change notes into standard subsections: `### Added`, `### Bugs Fixed`, and `### Changes`.
-   - Add only the subsections that contain actual changes for the current cycle.
+   - Preserve existing category headings even when their notes are empty.
    - Use bullet points with bold feature prefixes for every entry.
 
 5. **Summary comment blocks**:
@@ -43,4 +44,8 @@ description: "Rules for appending changelog entries and maintaining root CHANGEL
 
 7. **Preview publication routine**:
    - If changes require schema or dependency synchronization, execute preview publication and synchronization procedures.
-   - When preview publication finishes and verification passes, clear stale contents in the root `CHANGELOG.md`.
+   - Publication tooling copies the complete source to root before it consumes the selected product/channel notes.
+   - Preserve channel, product and category headings, comment delimiters and history links in the source.
+   - Other products and channels keep their notes. Never clear the complete source or root snapshot.
+   - Commit the source reset, root snapshot and version archive with the publication metadata.
+   - Failed remote publication retains its committed snapshot. Recover that version; do not consume notes again.

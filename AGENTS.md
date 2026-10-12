@@ -20,6 +20,8 @@ This is the current entry point for agents working in this repository. `DELEGATE
 
 ## Publishing discipline
 
+- Write pending changelog notes in `docs/source/CHANGELOG.md`. Root `CHANGELOG.md` is generated at publication preparation. Tooling clears only the selected source product/channel and preserves its skeleton. Do not clear the root snapshot after publication.
+
 - Slices mean local commit. Completed gates mean push. Commit each slice locally as a checkpoint. Push to the remote tracking branch only when the capability gate passes all checks.
 - Repository branches: `main` (production), `preview/crawler-network` (`src-worker`, `src-crawler`, `src-worker/packages/network`), `preview/desktop-client` (`src-crawler-client`), `preview/web` (`src-web`, `src-web-search`), `preview/workers-api` (`src-package`), `release/patch/*` (short-lived patch branches), `release/candidate/*` (short-lived candidate PRs on main, can be overridden with `--force`).
 - Preview publishing stays on its current ahead branch, including main; any branch ahead of origin can publish a preview without a PR.

@@ -4,8 +4,8 @@ import { spawnSync } from "node:child_process";
 
 const root = resolve(import.meta.dir, "../..");
 const ignored = new Set([".git", "node_modules", "dist", "bin", ".bun-cache"]);
-const docCategories = new Set(["scratch", "decisions", "research", "source", "changelogs"]);
-const rootMarkdown = new Set(["AGENTS.md", "DELEGATES.md", "TODO.md", "LEGAL.md", "README.md", "LICENSE.md", "CONTRIBUTING.md"]);
+const docCategories = new Set(["scratch", "decisions", "research", "source", "changelogs", "applications"]);
+const rootMarkdown = new Set(["AGENTS.md", "DELEGATES.md", "TODO.md", "LEGAL.md", "README.md", "LICENSE.md", "CONTRIBUTING.md", "CHANGELOG.md"]);
 // Owner-approved editor metadata is exempt only while Git ignores this exact path.
 const editorMetadata = join(root, "docs", ".obsidian");
 const ignoredEditorMetadata = spawnSync("git", ["check-ignore", "--quiet", "--", "docs/.obsidian"], { cwd: root }).status === 0;
