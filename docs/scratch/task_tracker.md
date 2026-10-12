@@ -1,4 +1,4 @@
-# Active R13-C7: timestamp provenance; R50 preview recovery deferred (2026-10-13)
+# Checked ahead preview planning; R50 recovery and broader CLI work open (2026-10-13)
 
 ## Authority and scope
 
@@ -7,10 +7,13 @@
 
 ## Working theory and implementation
 
+- Planner correction: accept previews when the fetched live origin head is an ancestor of local HEAD. Behind, diverged, missing and unfetched origin histories reject before pending writes. Existing synchronized-start behavior and strict release equality remain. Pending push failure retains its checkpoint without a version/tag write; an explicit same-branch root retry rechecks ancestry and predecessor proof, then pushes normally. No automatic CI rerun or tag replacement.
+- Root evidence: syntax and whitespace checks passed. Full root run: 252 passed / one outdated manual-push expectation failed / 3046 assertions / 19 files. After correcting that expectation and retry guidance, the complete affected ancestry/proof/freshness group passed 14 tests / 128 assertions. No second full-root run is claimed. Real-Git fixtures prove ahead main/feature branches with clean or dirty inputs, unchanged release restrictions, pre-write predecessor denial and atomic non-force delivery. Actual branch dry-run now accepts ahead history; no manual synchronization push was needed.
 - Current timestamp slice theory: storefront creation fallback is mislabeled as originUpdatedAt; canonical upserts invent observed confidence and can downgrade existing publication evidence during metadata-only updates. Restrict modification extraction to modification fields and default absent publication evidence to null. Preserve explicit dates, current wire fields and search ordering.
 - Checkpoint passed: crawler typecheck, 164 tests / 1273 assertions / 24 files, development binary build and --version 2026.10.10-pre. Worker source/test types, 274 tests / 2793 assertions / 23 files, preview bundle and isolated native D1 passed. Native checks covered unknown/preserved timestamp evidence, Unicode HTTP pagination, atomic rollback/replay, lease races and revocation with zero external fetches. Root tooling is unchanged, so root tests were not run.
 - Boundary review: HTML creation/publication fields stay out of modification evidence, including malformed modification fallback. Direct D1 upserts preserve confirmed/inferred evidence during metadata updates; their current callers are tests, not a production HTTP mutation. Existing ingestion/projection regressions passed. Wire enums, sorting, fetch authorization and leases are unchanged. Separate upstream creation/release evidence needs an owner-approved provenance contract.
-- Next: checkpoint locally, then publish only the changed Worker preview through root tooling to exercise repaired hosted native smoke. Crawler remains blocked at its exact failed preview version; do not advance it. Ahead-branch publication is accepted owner intent, not a documentation defect; its planner mismatch remains DELIVERY-CLI-CONTRACT.
+- Publication boundary: caller audit confirms the corrected Worker upsert has no current production caller, so it does not justify a ceremonial Worker bump. Retain pending notes for the next real Worker behavior delivery, which must exercise repaired hosted native smoke. Crawler remains blocked at its exact failed preview version; do not advance it. Timestamp checkpoint: 5f8ff8b. Routine checkpoints stay local, with no tag/version change or synchronization push in this continuation.
+- Next: broader DELIVERY-CLI-CONTRACT human status/JSON/App diagnostics remain queued. Continue independent source work; defer crawler recovery authority and the upstream creation/release evidence contract to their existing ledger items. Ahead-branch preview intent is retained, not rewritten in the guide.
 
 - Confirmed before change: minimum jitter reduced retryAfterMs 5000 to 4000; the local cap reduced server maximum 300000 to 48000.
 - Commit 8a05b19 clamps idle delay between max(server wait, local minimum) and max(that floor, local maximum). Exponential backoff and reset-on-lease remain. Heartbeat cadence, leases and retention are unchanged.

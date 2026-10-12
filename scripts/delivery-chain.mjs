@@ -241,7 +241,13 @@ export async function planDelivery(channel, product, workspace = root, now = new
   const refs = git(workspace, "ls-remote", "origin", `refs/heads/${branch}`, "refs/heads/main",
     ...(releaseBranch ? [`refs/heads/${releaseBranch}`] : []), `refs/tags/${productTagPrefixes[product]}/v*`).split("\n");
   const head = git(workspace, "rev-parse", "HEAD");
-  if (!refs.includes(`${head}\trefs/heads/${branch}`)) blockers.push("Origin branch differs from HEAD or does not exist");
+  const remoteHead = refs.find(line => line.endsWith(`\trefs/heads/${branch}`))?.split("\t")[0];
+  let originCompatible = remoteHead === head;
+  if (!originCompatible && channel === "preview" && /^[a-f0-9]{40}$/.test(remoteHead ?? "")) {
+    try { originCompatible = git(workspace, "merge-base", remoteHead, head) === remoteHead; }
+    catch { /* Unknown ancestry must fail closed; fetch the remote branch before retrying. */ }
+  }
+  if (!originCompatible) blockers.push("Origin branch differs from HEAD or does not exist; preview requires a fetched ancestor of HEAD");
   if (refs.some(line => line.endsWith(`\trefs/tags/${tag}`))) blockers.push("Remote tag already exists");
   if (releaseBranch && refs.some(line => line.endsWith(`\trefs/heads/${releaseBranch}`))) {
     blockers.push("Remote release preparation branch exists; review or recover it instead of allocating again");
@@ -311,7 +317,7 @@ function checkpointPendingPreview(plan, workspace, git) {
   }
   try { git(workspace, "push", "--no-follow-tags", "origin", `HEAD:refs/heads/${plan.branch}`); }
   catch {
-    throw new Error(`Pending preview checkpoint ${commit} is retained on ${JSON.stringify(plan.branch)}. Recover on that same branch with git push --no-follow-tags origin ${JSON.stringify(`HEAD:refs/heads/${plan.branch}`)} before rerunning preview delivery. No version bump ran.`);
+    throw new Error(`Pending preview checkpoint ${commit} is retained on ${JSON.stringify(plan.branch)}. Inspect it, then retry bun run publish:preview ${plan.product} --execute on that same branch. The executor rechecks origin ancestry and predecessor proof before writes. No version bump ran.`);
   }
   return { branch: plan.branch, commit, paths, status: "pushed" };
 }
