@@ -65,6 +65,16 @@ Public read for catalog index and delta streaming; `Authorization: Bearer <APP_T
 - `POST /v1/app/index/search`: Bounded search. The request accepts `queryOrigin: "user_authored" | "app_automated"`, but current storage does not use or record it.
 - `POST /v1/app/report`: Records demand, issue reports and pending removal requests. A removal receipt is not verified ownership or approved delisting.
 
+### 2.5 Pagination Contract
+
+- Catalog, delta, search, operator and moderator routes use the distributed SDK cursor schemas and codecs.
+- Copy each opaque cursor unchanged into its matching route. Cursors do not grant access or replace authentication.
+- Canonical IDs retain their 500-character limit. Cursor tokens permit up to 8192 base64url characters; affected ISO timestamps permit 128 characters.
+- ASCII JSON keeps its existing encoding. Non-ASCII JSON carries a `u1_` UTF-8 marker, avoiding ambiguous legacy Latin-1 decoding.
+- Invalid UTF-8, noncanonical JSON, padding, oversized tokens and incorrect route payloads are rejected. Restart pagination for rejected legacy non-ASCII tokens.
+- Catalog/search/moderator pages descend by timestamp and identifier; delta pages ascend by update timestamp and identifier.
+- Worker and crawler consume the preview SDK and one distributed network archive. Desktop/web keep their separate release SDK channel.
+
 ---
 
 ## 3. Core Safety and Governance Invariants

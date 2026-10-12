@@ -15,7 +15,8 @@ import {
 	HeartbeatResponseSchema,
 	ResultResponseSchema
 } from 'vrc-packages-network/node';
-import { NodeCredentialResponseSchema, PublicCatalogListResponseSchema } from 'vrc-packages-api';
+import { NodeCredentialResponseSchema, PublicCatalogListResponseSchema, CatalogDeltaResponseSchema,
+  decodeCatalogCursor, decodeCatalogDeltaCursor } from 'vrc-packages-api';
 import { SourceAccessProfileListResponseSchema } from '../src/domain/access/source_access_profile.ts';
 import { EnqueueJobResponseSchema, RevokeNodeResponseSchema, AutoQueueRuleResponseSchema,
   AutoQueueRuleListResponseSchema } from 'vrc-packages-api';
@@ -314,6 +315,47 @@ try {
 		return body;
 	};
   await post('/v1/operator/init', { schemaVersion: 1, autoSeed: true }, operatorToken);
+  // Seed isolated D1 rows, but exercise pagination only through the real Worker HTTP boundary.
+  const paginationDB = await runtime.getD1Database('VRCP_D1');
+  const paginationIds = ['界'.repeat(499) + 'a', '界'.repeat(499) + 'b'];
+  const paginationTime = '2099-01-01T00:00:00.000Z';
+  for (const id of paginationIds) {
+    await paginationDB.prepare(`INSERT INTO canonical_packages
+      (canonical_id, umbrella, category, lifecycle, display_name, created_at, updated_at)
+      VALUES (?, 'tools', 'tool', 'active', 'Native pagination fixture', ?, ?)`)
+      .bind(id, paginationTime, paginationTime).run();
+  }
+  try {
+    for (const [path, schema, decode, expected] of [
+      ['/v1/app/index', PublicCatalogListResponseSchema, decodeCatalogCursor, [...paginationIds].reverse()],
+      ['/v1/app/index/delta', CatalogDeltaResponseSchema, decodeCatalogDeltaCursor, paginationIds]
+    ]) {
+      let cursor = null;
+      const seen = [];
+      for (const id of expected) {
+        const url = new URL(path, 'https://offline.test');
+        url.searchParams.set('limit', '1');
+        if (cursor) url.searchParams.set('cursor', cursor);
+        const response = await runtime.dispatchFetch(url.href);
+        assert.equal(response.status, 200);
+        const page = schema.parse(await response.json());
+        const rows = page.packages ?? page.deltas;
+        assert.deepEqual(rows.map(row => row.canonicalId), [id]);
+        seen.push(rows[0].canonicalId);
+        cursor = page.nextCursor;
+        if (seen.length === 1) {
+          assert.ok(cursor.length > 256 && cursor.length <= 8192);
+          assert.equal(decode(cursor).canonicalId, id);
+        } else assert.equal(cursor, null);
+      }
+      assert.deepEqual(seen, expected);
+    }
+    console.log(JSON.stringify({ check: 'native_HTTP_unicode_keyset_pagination', pages: 4, passed: true }));
+  } finally {
+    for (const id of paginationIds) {
+      await paginationDB.prepare('DELETE FROM canonical_packages WHERE canonical_id=?').bind(id).run();
+    }
+  }
   const anonymousRegistration = await runtime.dispatchFetch('https://offline.test/v1/app/register', {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ schemaVersion: 1, appName: 'Anonymous native app' })

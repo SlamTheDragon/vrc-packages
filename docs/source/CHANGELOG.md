@@ -197,7 +197,7 @@ See full history at [docs/changelogs/vrcp-web/preview](https://github.com/SlamTh
 ## VRC Packages Worker - `vrcp-worker-preview`
 
 <!-- vrcp-worker-preview-DESCRIPTION_SUMMARY -->
-Consolidated D1 tables for audit logs, app ownership, robots refresh leases, and catalog tickets under Milestone Gate G18 with full backward compatibility.
+Consolidate D1 storage, reuse published SDK pagination contracts and bound public catalog error disclosure.
 <!-- vrcp-worker-preview-DESCRIPTION_SUMMARY -->
 
 ### Added
@@ -240,6 +240,7 @@ Consolidated D1 tables for audit logs, app ownership, robots refresh leases, and
 - **Excessive Claim Polling**: Mitigated rapid-fire claim requests from idle crawler nodes exhausting coordinator daily request allowances.
 - **Public Error Disclosure**: Catalog and delta failures return a fixed error without storage exception details in responses or failure logs.
 - **Error Cache Isolation**: Public catalog error responses use `no-store`; successful pages retain their existing cache policy.
+- **Pagination Wire Bounds**: Preserve 500-character Unicode and JSON-escaped IDs across catalog, delta, search, operator and moderator pages.
 
 ### Changes
 - **Inlined App Ownership**: Inlined `owner_user_id` foreign key directly into `registered_apps`, eliminating the redundant junction table.
@@ -249,6 +250,8 @@ Consolidated D1 tables for audit logs, app ownership, robots refresh leases, and
 - **Fleet Clock Alignment**: Aligned node active health cutoff in coordinator demand scoring from 15 minutes to 5 minutes to match lease duration.
 - **Unverified Search Clamping**: Safely clamped explicit rating queries from unverified applications to return general-rated items instead of empty sets.
 - **Empty Claim Retry Interval**: Aligned default coordinator empty queue `retryAfterMs` from 1,000ms to 5,000ms in D1 coordinator storage (`src-worker/src/storage/d1/coordinator.ts`) and local SQLite simulation.
+- **Shared Pagination Contracts**: Reuse published SDK operator/profile schemas and codecs instead of maintaining Worker copies.
+- **Native Pagination Checks**: Exercise long-ID keyset continuation through real Worker HTTP and isolated native D1.
 
 See full history at [docs/changelogs/vrcp-worker/preview](https://github.com/SlamTheDragon/vrc-packages/tree/main/docs/changelogs/vrcp-worker/preview)
 
