@@ -8,7 +8,7 @@ Here are the latest changelogs of each package and applications. For a full hist
 ## What Changed
 
 <!-- MASTER_SUMMARY -->
-Consolidate D1 tables, bound SDK pagination and harden public catalog errors. Preview notes describe each changed product.
+Consolidate D1 tables, bound SDK pagination, harden public errors and honor coordinator idle waits. Preview notes describe each changed product.
 <!-- MASTER_SUMMARY -->
 
 ## Table of Contents
@@ -147,7 +147,7 @@ See full history at [docs/changelogs/vrcp-crawler-client/preview](https://github
 ## VRC Packages Crawler - `vrcp-crawler-node-preview`
 
 <!-- vrcp-crawler-node-preview-DESCRIPTION_SUMMARY -->
-empty
+Honor coordinator retry floors and bound idle jitter. Retain existing outbox and lease safeguards.
 <!-- vrcp-crawler-node-preview-DESCRIPTION_SUMMARY -->
 
 ### Added
@@ -159,10 +159,11 @@ empty
 - **Batched Claim Support**: Added optional `maxJobs` parameter to `CoordinatorClient.claim` to request multiple jobs.
 - **Durable Result Outbox**: Added SQLite WAL-backed `node_outbox` table in `LocalNodeStore` with automatic 24-hour TTL and 50MB disk quota pruning.
 - **Crash Recovery & Replay**: Added startup and reconnection outbox flush in `CrawlerNodeDaemon` to replay unacknowledged results without data loss across process crashes or network interruptions.
-- **Adaptive Idle Backoff Ladder**: Implemented dynamic backoff ladder scaling from 5s to 60s (`1.5x` multiplier) with configurable `±20%` bounded jitter, resetting immediately to base interval upon leasing a job.
+- **Adaptive Idle Backoff Ladder**: Added exponential idle backoff with jitter. Coordinator wait floors override the local cap; leased jobs reset the ladder.
 - **Envelope Wire Bounds**: Enforced 2MB streaming response limits in `CoordinatorClient` and strict length bounds on job URLs, origin URLs, ETags, and Last-Modified headers.
 
 ### Bugs Fixed
+- **Coordinator Retry Floors**: Prevented idle jitter and local backoff caps from shortening coordinator-requested waits. Capped positive jitter at the effective maximum.
 - **Fleet Claim Polling**: Fixed unbounded fleet claim polling by eliminating aggressive 1s spin loops on empty queues, mitigating Cloudflare request allowance exhaustion.
 
 ### Changes
@@ -197,62 +198,10 @@ See full history at [docs/changelogs/vrcp-web/preview](https://github.com/SlamTh
 ## VRC Packages Worker - `vrcp-worker-preview`
 
 <!-- vrcp-worker-preview-DESCRIPTION_SUMMARY -->
-Consolidate D1 storage, reuse published SDK pagination contracts and bound public catalog error disclosure.
 <!-- vrcp-worker-preview-DESCRIPTION_SUMMARY -->
-
 ### Added
-- **Operator Audit Log Consolidation**: Added `operator_audit_log` table consolidating action history across nodes, leads, jobs, rules, and profiles.
-- **Unified Dispute Ticket Storage**: Added `catalog_tickets` table consolidating creator opt-outs, delegated claims, and catalog reports into a unified schema.
-- **Backward-Compatible Schema Views**: Added read-compatible database views for consolidated action tables, app ownership, and dispute tickets.
-- **Inbound 429 Rate Limiter**: Added sliding-window rate limiter with RFC-compliant `Retry-After` headers and standard error envelopes.
-- **Strict Public and Node Throttling**: Limited public catalog queries to 60 req/min and crawler node claims/heartbeats to 20-30 req/min.
-- **Quota Protection Middleware**: Reinforced downstream app, user, moderator, and operator endpoints to preserve Cloudflare free allowances.
-- **Age-Gated Search Rejection**: Rejected explicit age-restricted queries from unverified applications with 403 Forbidden.
-- **App Activity Tracking**: Tracked application request count and last active timestamp on all downstream API invocations.
-- **Intensive-Use Candidate Flagging**: Flagged applications with 50 or more requests automatically as review pending candidates.
-- **Operator Candidate Review**: Added `POST /v1/operator/apps/:appId/candidate-review` to update status and delegation permissions.
-- **Moderator Candidate Endpoints**: Added `GET /v1/moderator/apps` and `POST /v1/moderator/apps/:appId/candidate-review` for age-verified staff.
-- **Candidate Status Filtering**: Added `candidateStatus` query parameter to application listing endpoints.
-- **Moderator Rating Endpoints**: Added `GET /v1/moderator/ratings` and `POST /v1/moderator/ratings/:canonicalId` for content rating oversight.
-- **Moderator Access Gate**: Enforced verified age and moderator authority checks on all `/v1/moderator/*` routes.
-- **Storage Rating Adjustment**: Implemented `listModeratorRatingsPage` and `adjustPackageRating` on coordinator storage engines.
-- **Moderator Flag Storage**: Added `is_moderator` flag to `registered_users` schema for staff authorization.
-- **Delegation Authority Check**: Enforced `claims:delegate` permission check on `/v1/app/claims/intake` to reject un-reviewed applications with 403 Forbidden.
-- **Operator Application Endpoints**: Added `GET /v1/operator/apps` and `POST /v1/operator/apps/:appId/delegation` for application inspection and delegation control.
-- **Storage Delegation Management**: Implemented `listOperatorAppsPage` and `setAppDelegation` on coordinator storage engines.
-- **Content Rating Storage**: Added `content_rating` column to `canonical_packages` with default `general`.
-- **User Age Verification Storage**: Added `age_verified` integer flag to `registered_users` schema.
-- **Fail-Closed Public Index**: Filtered public catalog and delta feeds to serve only `general` rated packages.
-- **Age-Gated Package Search**: Restricted age-rated catalog search results to applications owned by verified users.
-- **Delegated Creator Claim Intake**: Added `/v1/app/claims/intake` with atomic replay protection on application ID and nonce.
-- **Operator Claim Review Endpoints**: Added `/v1/operator/claims` and `/v1/operator/claims/{id}/verify` for listing and reviewing stored claims.
-- **Cryptographic Delegation Benchmark**: Measured Web Crypto verification budgets under the 10 ms CPU limit for HMAC and ECDSA.
-- **Query Log Redaction**: Redacted full request URLs in error logs to prevent query parameter leaks.
-- **Fail-Fast Bearer Authentication**: Validated node authorization headers before body streaming and schema parsing to prevent resource exhaustion.
-- **Expired Lease Classification**: Tagged late result submissions with the terminal rejection code `lease_expired`.
-- **Post-Expiry Replay Idempotency**: Returned accepted duplicate receipts when clients replay previously accepted jobs after lease expiry.
-- **Batched Claim Route**: Added multi-job claims up to 10 items with per-origin reservations to prevent single-origin contention.
-- **Batched Result Endpoint**: Implemented `/v1/node/jobs/results` with per-item idempotency and atomic transactional commits.
-- **Partial Failure Isolation**: Added per-item accepted and rejected receipts with terminal error classification.
-- **Fleet Pacing Support**: Aligned coordinator response contracts to coordinate minimum polling retry intervals across distributed crawler nodes.
-
 ### Bugs Fixed
-- **Excessive Claim Polling**: Mitigated rapid-fire claim requests from idle crawler nodes exhausting coordinator daily request allowances.
-- **Public Error Disclosure**: Catalog and delta failures return a fixed error without storage exception details in responses or failure logs.
-- **Error Cache Isolation**: Public catalog error responses use `no-store`; successful pages retain their existing cache policy.
-- **Pagination Wire Bounds**: Preserve 500-character Unicode and JSON-escaped IDs across catalog, delta, search, operator and moderator pages.
-
 ### Changes
-- **Inlined App Ownership**: Inlined `owner_user_id` foreign key directly into `registered_apps`, eliminating the redundant junction table.
-- **Inlined Robots Refresh Leases**: Merged refresh lease columns directly into `origin_robots`, eliminating the separate lease companion table.
-- **D1 Schema Consolidation**: Streamlined D1 table count and query roundtrips across administrative audit, application ownership, and dispute review pathways.
-- **D1 Batch Query Resolution**: Batched catalog identity links and package fronts lookups into bulk queries with parameterized IN clauses, reducing roundtrips from 101 to 3 queries per page.
-- **Fleet Clock Alignment**: Aligned node active health cutoff in coordinator demand scoring from 15 minutes to 5 minutes to match lease duration.
-- **Unverified Search Clamping**: Safely clamped explicit rating queries from unverified applications to return general-rated items instead of empty sets.
-- **Empty Claim Retry Interval**: Aligned default coordinator empty queue `retryAfterMs` from 1,000ms to 5,000ms in D1 coordinator storage (`src-worker/src/storage/d1/coordinator.ts`) and local SQLite simulation.
-- **Shared Pagination Contracts**: Reuse published SDK operator/profile schemas and codecs instead of maintaining Worker copies.
-- **Native Pagination Checks**: Exercise long-ID keyset continuation through real Worker HTTP and isolated native D1.
-
 See full history at [docs/changelogs/vrcp-worker/preview](https://github.com/SlamTheDragon/vrc-packages/tree/main/docs/changelogs/vrcp-worker/preview)
 
 ---
