@@ -1,56 +1,16 @@
-# Active tooling gate R60 — source changelog and simpler setup (2026-10-13)
+# Status audit and continuation — 2026-10-13
 
-- Branch: `preview/crawler-network`. Owner confirms main sign-off passed. Do not reopen the old delivery sign-off.
-- This iteration permits root tooling and agent-rule edits. Commits remain local; no push or publication has run.
-- Preserve the owner's pending `src-worker/src/worker_logger.ts` edit; exclude it from tooling commits.
-- R60-C60A: copied root notes intact to `docs/source/CHANGELOG.md`. Preparation snapshots that source to root, archives selected notes and clears only their product/channel body. Headings, comment delimiters and other notes remain.
-- Release metadata verification now reproduces the snapshot and source reset instead of allowing arbitrary changelog edits.
-- R60-C60B: removed duplicate setup sync/help calls and unified the installation execution path. Updated publishing guidance and lifecycle rules.
-- Verification: delivery/provenance checkpoint `9956` passed 68 tests (591 assertions). Final changelog/setup checks passed 16 tests (107 assertions), including an acyclic setup alias graph with exactly one sync and help invocation. Source-based release integration `71368` passed all four products (64 assertions).
-- An initial integration assertion needed CRLF normalization; the combined four-product case then exceeded its shared 120-second limit. Separate 60-second product cases passed in 26–30 seconds each. No functional failure was hidden or retried automatically.
-- Syntax, whitespace and actual setup CLI help passed. Local Bun is 1.4.1; the configured CI pin remains 1.4.2. Hosted publication was not exercised for this local-only tooling change.
-- Auto-review declined the optional root preview-plan command because its side effects were not established to the reviewer. It did not execute. No workaround, push, version bump or publication ran.
-- Documentation audit: 109 existing broken local links remain after folder moves. No finding targets the migrated source changelog or an unexpected docs category. Published history archives were not edited. Broad relinking is deferred in R60-C60D.
-- Deferred R60-C60C: filesystem/Git crash recovery needs a distinct design; no claim of atomic multi-file writes or automatic retry. Existing root snapshot retains consumed notes.
-- Local checkpoint: `2df5796`; follow-up adds final evidence, individually timed product fixtures, alias-graph regression and corrected printed `publish:*` commands. Exclude the owner logger edit from both commits.
-- Next: continue the crawler/network responsibility from the canonical ledger. R60-C60C/D remain deferred. This checkpoint does not claim whole-goal completion.
-
-## Previous completed gate G18
-
-## Milestone Gate Status & Bounded Vertical Slices
-
-- Branch: `preview/crawler-network`
-- Active Gate: G18 (D1 Schema Consolidation, Entity Unification & Table Optimization)
-- Gate Status: **Verified & Committed Locally**
-- Completed Slices in Gate G18:
-  - `R59-C59A`: Consolidated 5 redundant action tables into `operator_audit_log`, verified & committed locally (`34e43dd`).
-  - `R59-C59B`: Inlined `owner_user_id` into `registered_apps`, eliminated `user_app_ownership` table, verified & committed locally (`7181166`).
-  - `R59-C59C`: Merged `refresh_lease_id` and `refresh_lease_expires_at` into `origin_robots`, eliminated separate lease table, verified & committed locally (`13f925b`).
-  - `R59-C59D`: Consolidated `creator_opt_outs`, `delegated_creator_claims`, and `catalog_reports` into `catalog_tickets`, preserving backward-compatible read views, verified & committed locally (`372978f`).
-- Verification Evidence:
-  - `src-worker`: `bun test ./test` (267/267 pass, 22 files), `bun run test:runtime` (0 exit code, miniflare workerd D1 smoke passed), `bun run check` (typegen + tsc clean), `bun run build:preview` (clean preview build).
-  - `src-crawler`: `bun test` (158/158 pass, 24 files).
-  - `src-package`: `bun test` (61/61 pass, 7 files).
-- Owner Instruction (2026-10-08): Never run root level tests (`bun test ./tests`) unless root level tooling (`scripts/`, `tests/`, `package.json`, root configs) is modified. Product-scoped work runs only its own domain test/typecheck suite.
-- Session Constraint: Commits remain local for this session; preview deployment authority granted for workers when live data testing is required.
-
-## Target Architecture & Safety Invariants
-
-1. **Schema Refactoring**:
-   - `catalog_tickets`: table consolidating ticket_id, ticket_type ('opt_out','delegated_claim','removal_report'), app_id, target_url, canonical_id, requester_type, requester_id, creator_id, reason, proof_kind, proof_value, contact_email, challenge_token, expires_at, nonce, signature, payload_json, review_status, review_notes, recorded_at.
-   - Indexes:
-     - `idx_catalog_tickets_nonce`: UNIQUE on (app_id, nonce) WHERE nonce IS NOT NULL
-     - `idx_catalog_tickets_review`: on (ticket_type, review_status, recorded_at, ticket_id)
-     - `idx_catalog_tickets_canonical`: on (canonical_id)
-     - `idx_catalog_tickets_target_url`: on (target_url)
-   - Compatibility Views:
-     - `creator_opt_outs`: SELECT from `catalog_tickets` WHERE `ticket_type = 'opt_out'`
-     - `delegated_creator_claims`: SELECT from `catalog_tickets` WHERE `ticket_type = 'delegated_claim'`
-     - `catalog_reports`: SELECT from `catalog_tickets` WHERE `ticket_type = 'removal_report'`
-
-2. **Coordinator Operations**:
-   - Update `recordCreatorOptOut`, `listCreatorOptOuts`, `verifyTakedown`, `submitDelegatedClaim`, `listDelegatedClaims`, `verifyDelegatedClaim`, and `recordRemovalReport` in `coordinator.ts` and `local_sqlite.ts`.
-   - Preserve existing method contracts and wire endpoints completely.
-
-3. **Storage Parity**:
-   - Maintained identically across D1 coordinator engine (`src-worker/src/storage/d1/utils.ts`, `coordinator.ts`) and local SQLite simulation (`src-worker/test/support/local_sqlite.ts`).
+- Branch: `preview/crawler-network`. Main delivery sign-off remains owner-accepted. This session commits locally only: no push, tag, version bump, publication or deployment.
+- Audit reviewed both task inventories and gate tables. Reconciled 49 retired, duplicate, moved or merged entries; canonical task rows now 62, unmerged rows 21. Completed acknowledged tasks are represented by existing capability milestones; unresolved owner comments remain.
+- Removed duplicate canonical IDs R55-NAMING, R54-C38A1 and R56-C56C1. Renamed the unrelated inbound limiter item to R54-C39C-RATE-LIMIT; R54-C39C remains batch leasing.
+- Moved completed G18 schema consolidation and locally checked R60 tooling into the canonical ledger. Combined duplicate G16/G17 summaries. Kept crypto protocol selection deferred rather than presenting it as the mandatory next slice.
+- Corrected stale no-remote-Worker, pending-delivery-sign-off, two-network-channel/registry-choice, memory-only outbox, one-second idle polling and no-rating-schema claims.
+- Current verification: Worker 269/269 (2658 assertions, 22 files); crawler 158/158 (1088 assertions, 24 files); SDK 61/61 (725 assertions, 7 files). Worker type generation and source/test TypeScript checks passed. No root tests ran for this documentation/product checkpoint.
+- These checks prove fixture behavior, not live source access, legal compliance, external age verification, a distributed rate limit or free-tier sufficiency. Prior runtime/build/delivery evidence remains dated history, not a new execution.
+- Confirmed open: R49-C29 cursor size/Unicode encoding mismatch; R50-C31 active heartbeat/account workload measurements; isolate-local inbound counters; publication rights and legal/source clearance; owner/user identity and node ownership; dynamic classification/tag design; real multi-driver/multi-process fleet conformance; desktop/web integration; SDK v0.1 owner route review.
+- Remaining open rows retain their owner decisions and historical evidence. Do not treat older “fixed locally” or test counts as current production proof.
+- Documentation checker reports 98 broken local links after the ledger-link repairs. Published changelog archive bytes remain untouched. R60-C60D owns the broad relink; R60-C60C owns crash recovery for multi-file changelog/Git transitions.
+- R60 local tooling evidence: commits `2df5796` and `e47a4b6`; delivery/provenance 68 tests, final changelog/setup 16 tests, four source-based release integration cases all passed. No hosted publication was repeated.
+- Owner logger FIXME is preserved in owner commit `4f1cc9f`; the old pending-owner-edit tracker note is retired.
+- Internal-goal continuation: public catalog error disclosure/cache hardening now passes the Worker suite and typechecks. It returns fixed internal errors, omits underlying exceptions from failure logs and makes error responses non-cacheable. Keep this product slice separate from the ledger audit commit.
+- Next bounded capability: reconcile R49-C29 across the distributed SDK and Worker cursor contracts, or take the next independently safe source/runtime slice. Do not silently narrow valid IDs, select a crypto protocol, authorize hosts, or close unresolved legal/owner gates.
