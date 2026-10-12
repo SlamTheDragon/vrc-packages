@@ -174,22 +174,10 @@ See full history at [docs/changelogs/vrcp-crawler-node/preview](https://github.c
 ## VRC Packages API - `vrcp-packages-api-preview`
 
 <!-- vrcp-packages-api-preview-DESCRIPTION_SUMMARY -->
-Unify bounded pagination encoding across SDK routes. Preserve ASCII cursors and support full-length Unicode package identifiers.
 <!-- vrcp-packages-api-preview-DESCRIPTION_SUMMARY -->
-
 ### Added
-
 ### Bugs Fixed
-
-- **Pagination:** Support 500-character identifiers without the former 256-character cursor limit.
-- **Encoding:** Use strict UTF-8 for Unicode cursors and reject ambiguous Latin-1 tokens.
-- **Validation:** Check continuation tokens in requests and responses across catalog, search, operator and moderator routes.
-
 ### Changes
-
-- **Bounds:** Limit cursor tokens to 8192 characters and affected ISO timestamp fields to 128 characters.
-- **Compatibility:** Preserve ASCII cursor bytes. Restart pagination when an older non-ASCII token is rejected.
-
 See full history at [docs/changelogs/vrcp-packages-api/preview](https://github.com/SlamTheDragon/vrc-packages/tree/main/docs/changelogs/vrcp-packages-api/preview)
 
 ---

@@ -3,12 +3,12 @@
 
 # Changelog
 
-Here are the latest changelogs of each package and applications. For a full history, please visit [docs/changelogs](docs/changelogs)
+Here are the latest changelogs of each package and applications. For a full history, please visit [docs/changelogs](https://github.com/SlamTheDragon/vrc-packages/tree/main/docs/changelogs)
 
 ## What Changed
 
 <!-- MASTER_SUMMARY -->
-Consolidated D1 schema tables across audit logs, app ownership, robots refresh leases, and catalog tickets under Milestone Gate G18 while preserving wire compatibility.
+Consolidate D1 tables, bound SDK pagination and harden public catalog errors. Preview notes describe each changed product.
 <!-- MASTER_SUMMARY -->
 
 ## Table of Contents
@@ -84,7 +84,7 @@ none
 
 - none currently
 
-See full history at [docs/changelogs/vrcp-crawler-client/release](docs/changelogs/vrcp-crawler-client/release)
+See full history at [docs/changelogs/vrcp-crawler-client/release](https://github.com/SlamTheDragon/vrc-packages/tree/main/docs/changelogs/vrcp-crawler-client/release)
 
 ## VRC Packages Crawler - `vrcp-crawler-node`
 
@@ -94,7 +94,7 @@ none
 
 - none currently
 
-See full history at [docs/changelogs/vrcp-crawler-node/release](docs/changelogs/vrcp-crawler-node/release)
+See full history at [docs/changelogs/vrcp-crawler-node/release](https://github.com/SlamTheDragon/vrc-packages/tree/main/docs/changelogs/vrcp-crawler-node/release)
 
 ## VRC Packages API - `vrcp-packages-api`
 
@@ -104,7 +104,7 @@ none
 
 - none currently
 
-See full history at [docs/changelogs/vrcp-packages-api/release](docs/changelogs/vrcp-packages-api/release)
+See full history at [docs/changelogs/vrcp-packages-api/release](https://github.com/SlamTheDragon/vrc-packages/tree/main/docs/changelogs/vrcp-packages-api/release)
 
 ---
 
@@ -118,7 +118,7 @@ none
 
 - none currently
 
-See full history at [docs/changelogs/vrcp-web/release](docs/changelogs/vrcp-web/release)
+See full history at [docs/changelogs/vrcp-web/release](https://github.com/SlamTheDragon/vrc-packages/tree/main/docs/changelogs/vrcp-web/release)
 
 ## VRC Packages Worker - `vrcp-worker`
 
@@ -128,7 +128,7 @@ none
 
 - none currently
 
-See full history at [docs/changelogs/vrcp-worker/release](docs/changelogs/vrcp-worker/release)
+See full history at [docs/changelogs/vrcp-worker/release](https://github.com/SlamTheDragon/vrc-packages/tree/main/docs/changelogs/vrcp-worker/release)
 
 ---
 
@@ -142,7 +142,7 @@ none
 
 - none currently
 
-See full history at [docs/changelogs/vrcp-crawler-client/preview](docs/changelogs/vrcp-crawler-client/preview)
+See full history at [docs/changelogs/vrcp-crawler-client/preview](https://github.com/SlamTheDragon/vrc-packages/tree/main/docs/changelogs/vrcp-crawler-client/preview)
 
 ## VRC Packages Crawler - `vrcp-crawler-node-preview`
 
@@ -169,17 +169,28 @@ empty
 - **Headless `.env` Execution**: Removed interactive CLI tooling (`init`, `help`, `printSetupGuide()`) and `node.config.json` setup wizard; daemon now starts directly from environment variables / `.env` (`NODE_ID`, `NODE_TOKEN`, and optional `COORDINATOR_URL`, `NODE_CAPABILITIES`, `NODE_DB_PATH`).
 - **Fail-Fast Configuration Validation**: Updated runtime configuration error reporting to fail fast with concise guidance pointing to `.env` variables instead of CLI setup commands. Preserved `--version` and `--once` execution modes.
 
-See full history at [docs/changelogs/vrcp-crawler-node/preview](docs/changelogs/vrcp-crawler-node/preview)
+See full history at [docs/changelogs/vrcp-crawler-node/preview](https://github.com/SlamTheDragon/vrc-packages/tree/main/docs/changelogs/vrcp-crawler-node/preview)
 
 ## VRC Packages API - `vrcp-packages-api-preview`
 
 <!-- vrcp-packages-api-preview-DESCRIPTION_SUMMARY -->
-none
+Unify bounded pagination encoding across SDK routes. Preserve ASCII cursors and support full-length Unicode package identifiers.
 <!-- vrcp-packages-api-preview-DESCRIPTION_SUMMARY -->
 
-- none currently
+### Added
 
-See full history at [docs/changelogs/vrcp-packages-api/preview](docs/changelogs/vrcp-packages-api/preview)
+### Bugs Fixed
+
+- **Pagination:** Support 500-character identifiers without the former 256-character cursor limit.
+- **Encoding:** Use strict UTF-8 for Unicode cursors and reject ambiguous Latin-1 tokens.
+- **Validation:** Check continuation tokens in requests and responses across catalog, search, operator and moderator routes.
+
+### Changes
+
+- **Bounds:** Limit cursor tokens to 8192 characters and affected ISO timestamp fields to 128 characters.
+- **Compatibility:** Preserve ASCII cursor bytes. Restart pagination when an older non-ASCII token is rejected.
+
+See full history at [docs/changelogs/vrcp-packages-api/preview](https://github.com/SlamTheDragon/vrc-packages/tree/main/docs/changelogs/vrcp-packages-api/preview)
 
 ---
 
@@ -193,7 +204,7 @@ none
 
 - none currently
 
-See full history at [docs/changelogs/vrcp-web/preview](docs/changelogs/vrcp-web/preview)
+See full history at [docs/changelogs/vrcp-web/preview](https://github.com/SlamTheDragon/vrc-packages/tree/main/docs/changelogs/vrcp-web/preview)
 
 ## VRC Packages Worker - `vrcp-worker-preview`
 
@@ -239,6 +250,8 @@ Consolidated D1 tables for audit logs, app ownership, robots refresh leases, and
 
 ### Bugs Fixed
 - **Excessive Claim Polling**: Mitigated rapid-fire claim requests from idle crawler nodes exhausting coordinator daily request allowances.
+- **Public Error Disclosure**: Catalog and delta failures return a fixed error without storage exception details in responses or failure logs.
+- **Error Cache Isolation**: Public catalog error responses use `no-store`; successful pages retain their existing cache policy.
 
 ### Changes
 - **Inlined App Ownership**: Inlined `owner_user_id` foreign key directly into `registered_apps`, eliminating the redundant junction table.
@@ -249,7 +262,7 @@ Consolidated D1 tables for audit logs, app ownership, robots refresh leases, and
 - **Unverified Search Clamping**: Safely clamped explicit rating queries from unverified applications to return general-rated items instead of empty sets.
 - **Empty Claim Retry Interval**: Aligned default coordinator empty queue `retryAfterMs` from 1,000ms to 5,000ms in D1 coordinator storage (`src-worker/src/storage/d1/coordinator.ts`) and local SQLite simulation.
 
-See full history at [docs/changelogs/vrcp-worker/preview](docs/changelogs/vrcp-worker/preview)
+See full history at [docs/changelogs/vrcp-worker/preview](https://github.com/SlamTheDragon/vrc-packages/tree/main/docs/changelogs/vrcp-worker/preview)
 
 ---
 
@@ -266,4 +279,4 @@ Node protocol contracts adding batched job claims and batched result submission 
 - **Batched Result Schemas**: Added `BatchResultRequestSchema`, `BatchResultResponseSchema`, and `BatchResultReceiptSchema`.
 - **Batch Size Limits**: Pinned `MAX_CLAIM_JOBS` and `MAX_BATCH_RESULTS` constants to 10 items.
 
-See full history at [docs/changelogs/vrcp-packages-network/](docs/changelogs/vrcp-packages-network/)
+See full history at [docs/changelogs/vrcp-packages-network/](https://github.com/SlamTheDragon/vrc-packages/tree/main/docs/changelogs/vrcp-packages-network/)
