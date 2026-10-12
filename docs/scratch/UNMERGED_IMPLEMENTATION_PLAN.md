@@ -8,6 +8,8 @@ See changelog skill for archiving verified and author-commented rows
 
 ## Task Slices
 
+R13-C7 follow-up question: the observation wire carries only originUpdatedAt. Define separate upstream creation/release dates, source authority, precision and conflict resolution before adding new fields. This slice removes false substitutions; it does not claim complete timestamp evidence ingestion or change public sorting/enums.
+
 R49-C29 publication boundary: owner explicitly permits batched pushes for preview dependency publication and synchronization. Publish and verify the SDK before Worker adoption. Other checkpoints stay local; no sibling-source imports or node_modules edits may substitute for distribution.
 
 Delivery audit authority, 2026-10-13: owner permits express merges to main when necessary for this session's delivery work. This does not waive publication approvals, immutable identities or SDK v0.1 review. Ahead-branch preview publishing is intended behavior; correct the planner, not the guide's intent. Keep behind/diverged branches blocked. Queue the maintenance below after the active dependency slice.

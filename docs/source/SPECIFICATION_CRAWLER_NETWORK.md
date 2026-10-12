@@ -75,6 +75,13 @@ Public read for catalog index and delta streaming; `Authorization: Bearer <APP_T
 - Catalog/search/moderator pages descend by timestamp and identifier; delta pages ascend by update timestamp and identifier.
 - Worker and crawler consume the preview SDK and one distributed network archive. Desktop/web keep their separate release SDK channel.
 
+### 2.6 Timestamp Evidence Boundary
+
+- Observation `originUpdatedAt` records upstream modification only. Creation and publication fields must not populate it.
+- Missing canonical publication evidence remains null. Metadata-only updates preserve existing publication dates and confidence.
+- Catalog creation/update timestamps describe coordinator records, not upstream publication. Search can use catalog creation as a sorting fallback without claiming publication confidence.
+- The current observation wire has no separate upstream creation or release-publication fields. That provenance contract remains pending; no timestamp enum changes occur here.
+
 ---
 
 ## 3. Core Safety and Governance Invariants

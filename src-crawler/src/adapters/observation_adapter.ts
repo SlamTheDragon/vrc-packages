@@ -369,7 +369,7 @@ export function parseObservation(job: CrawlJob, body: string, contentType: strin
     sourceItemKey, title: title.slice(0, 500),
     author: author.slice(0, 300), summary: summary.slice(0, 1024),
     outboundLinks: httpsLinks([jsonLd?.url, job.url, ...descLinks]),
-    originUpdatedAt: normalizedDate(jsonLd?.dateModified || metadata("article:modified_time") || $(".item-created-date").first().text()),
+    originUpdatedAt: normalizedDate(jsonLd?.dateModified) || normalizedDate(metadata("article:modified_time")),
     ...(platformTags !== undefined ? { platformTags } : {})
   };
 }

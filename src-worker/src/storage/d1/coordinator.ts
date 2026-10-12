@@ -1838,7 +1838,7 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
     const updatedAt = pkg.updatedAt ?? now;
     const vpmId = pkg.vpmId ?? null;
     const publishedAt = pkg.publishedAt ?? null;
-    const timestampConfidence = pkg.timestampConfidence ?? (publishedAt ? "confirmed" : "observed");
+    const timestampConfidence = pkg.timestampConfidence ?? (publishedAt ? "confirmed" : null);
     const contentRating = pkg.contentRating ?? "general";
     await this.db.prepare(`
       INSERT INTO canonical_packages (canonical_id, umbrella, category, lifecycle, display_name, vpm_id, created_at, updated_at, published_at, timestamp_confidence, content_rating)

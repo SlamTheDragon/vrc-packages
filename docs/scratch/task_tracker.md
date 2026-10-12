@@ -1,4 +1,4 @@
-# Active R50-C31: crawler retry-floor conformance (2026-10-13)
+# Active R13-C7: timestamp provenance; R50 preview recovery deferred (2026-10-13)
 
 ## Authority and scope
 
@@ -6,6 +6,11 @@
 - Owner README change is preserved in d99b8f1. No sibling source imports, node_modules edits, source grants or live crawls accompany this work.
 
 ## Working theory and implementation
+
+- Current timestamp slice theory: storefront creation fallback is mislabeled as originUpdatedAt; canonical upserts invent observed confidence and can downgrade existing publication evidence during metadata-only updates. Restrict modification extraction to modification fields and default absent publication evidence to null. Preserve explicit dates, current wire fields and search ordering.
+- Checkpoint passed: crawler typecheck, 164 tests / 1273 assertions / 24 files, development binary build and --version 2026.10.10-pre. Worker source/test types, 274 tests / 2793 assertions / 23 files, preview bundle and isolated native D1 passed. Native checks covered unknown/preserved timestamp evidence, Unicode HTTP pagination, atomic rollback/replay, lease races and revocation with zero external fetches. Root tooling is unchanged, so root tests were not run.
+- Boundary review: HTML creation/publication fields stay out of modification evidence, including malformed modification fallback. Direct D1 upserts preserve confirmed/inferred evidence during metadata updates; their current callers are tests, not a production HTTP mutation. Existing ingestion/projection regressions passed. Wire enums, sorting, fetch authorization and leases are unchanged. Separate upstream creation/release evidence needs an owner-approved provenance contract.
+- Next: checkpoint locally, then publish only the changed Worker preview through root tooling to exercise repaired hosted native smoke. Crawler remains blocked at its exact failed preview version; do not advance it. Ahead-branch publication is accepted owner intent, not a documentation defect; its planner mismatch remains DELIVERY-CLI-CONTRACT.
 
 - Confirmed before change: minimum jitter reduced retryAfterMs 5000 to 4000; the local cap reduced server maximum 300000 to 48000.
 - Commit 8a05b19 clamps idle delay between max(server wait, local minimum) and max(that floor, local maximum). Exponential backoff and reset-on-lease remain. Heartbeat cadence, leases and retention are unchanged.

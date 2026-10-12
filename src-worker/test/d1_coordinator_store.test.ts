@@ -1159,6 +1159,28 @@ describe("Cloudflare D1 Coordinator Store & Edge Worker Adapter", () => {
     expect(remainingFronts).toHaveLength(0);
   });
 
+  it.each(["confirmed", "inferred"] as const)("metadata-only upserts preserve %s publication evidence", async (confidence) => {
+    const sqlite = new Database(":memory:");
+    let clock = Date.now();
+    const store = new Coordinator(createMockD1Database(sqlite), () => clock);
+    try {
+      await store.initSchema(false);
+      const base = { canonicalId: "timestamp-upsert", umbrella: "tools" as const, category: "tool",
+        lifecycle: "active" as const, displayName: "Original metadata" };
+      const publishedAt = "2021-01-02T03:04:05.000Z";
+      const original = await store.upsertCanonicalPackage({ ...base, publishedAt, timestampConfidence: confidence });
+      clock += 1000;
+      const updated = await store.upsertCanonicalPackage({ ...base, displayName: "Updated metadata" });
+      expect(updated.publishedAt).toBe(publishedAt);
+      expect(updated.timestampConfidence).toBe(confidence);
+      expect(updated.createdAt).toBe(original.createdAt);
+      expect(updated.updatedAt).toBe(new Date(clock).toISOString());
+      const page = await store.listCanonicalPackagesPage(100, null);
+      expect(page.packages[0]?.publishedAt).toBe(publishedAt);
+      expect(page.packages[0]?.timestampConfidence).toBe(confidence);
+    } finally { sqlite.close(); }
+  });
+
   it.each([
     { originUpdatedAt: null, publishedAt: null },
     { originUpdatedAt: "2024-01-02T03:04:05.000Z", publishedAt: null },
@@ -1578,7 +1600,7 @@ describe("Cloudflare D1 Coordinator Store & Edge Worker Adapter", () => {
       createdAt: "2026-10-01T08:00:00.000Z"
     });
 
-    // Package C (observed fallback without publisher timestamp)
+    // Package C (catalog creation fallback without publisher evidence)
     const observedTime = "2023-03-20T00:00:00.000Z";
     await store.upsertCanonicalPackage({
       canonicalId: "com.example.observed-tool",
@@ -1596,7 +1618,7 @@ describe("Cloudflare D1 Coordinator Store & Edge Worker Adapter", () => {
 
     const pkgC = await store.getCanonicalPackage("com.example.observed-tool");
     expect(pkgC?.publishedAt).toBeNull();
-    expect(pkgC?.timestampConfidence).toBe("observed");
+    expect(pkgC?.timestampConfidence).toBeNull();
 
     // Perform bulk tag search with tags: ["avatar_tool"] without keyword query
     const tagSearch = await store.searchCatalogPackages({
@@ -1613,7 +1635,7 @@ describe("Cloudflare D1 Coordinator Store & Edge Worker Adapter", () => {
     expect(tagSearch.items[0].timestampConfidence).toBe("confirmed");
 
     expect(tagSearch.items[1].canonicalId).toBe("com.example.observed-tool");
-    expect(tagSearch.items[1].timestampConfidence).toBe("observed");
+    expect(tagSearch.items[1].timestampConfidence).toBeNull();
 
     expect(tagSearch.items[2].canonicalId).toBe("com.example.older-tool");
     expect(tagSearch.items[2].publishedAt).toBe(olderTime);

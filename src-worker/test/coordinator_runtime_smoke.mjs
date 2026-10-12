@@ -33,6 +33,21 @@ export async function refreshFixture(env) {
   const origin = 'https://native-robots.example';
   let clock = Date.now();
   const store = new Coordinator(env.VRCP_D1, () => clock);
+  const timestampBase = { umbrella: 'tools', category: 'tool', lifecycle: 'active', displayName: 'Timestamp fixture' };
+  const timestampIds = ['native-timestamp-unknown', 'native-timestamp-confirmed'];
+  try {
+    const unknown = await store.upsertCanonicalPackage({ ...timestampBase, canonicalId: timestampIds[0] });
+    check(unknown.publishedAt === null && unknown.timestampConfidence === null, 'Unknown publication gained confidence');
+    const publishedAt = '2021-01-02T03:04:05.000Z';
+    await store.upsertCanonicalPackage({ ...timestampBase, canonicalId: timestampIds[1], publishedAt, timestampConfidence: 'confirmed' });
+    const updated = await store.upsertCanonicalPackage({ ...timestampBase, canonicalId: timestampIds[1], displayName: 'Updated metadata' });
+    check(updated.publishedAt === publishedAt && updated.timestampConfidence === 'confirmed', 'Metadata update downgraded publication evidence');
+    const page = await store.listCanonicalPackagesPage(100, null);
+    const projected = page.packages.find(item => item.canonicalId === timestampIds[0]);
+    check(projected?.publishedAt === null && projected?.timestampConfidence === null, 'Projection invented publication confidence');
+  } finally {
+    await env.VRCP_D1.prepare('DELETE FROM canonical_packages WHERE canonical_id IN (?,?)').bind(...timestampIds).run();
+  }
   await operatorAtomicityFixture(env, store, clock);
   const owner = await store.issueUserToken('native-app-owner');
   const owned = await store.registerApp({ schemaVersion: 1, appName: 'Native owned app' }, owner.userId);
@@ -130,7 +145,7 @@ export async function refreshFixture(env) {
   await store.recordRobotsSnapshot(botOrigin, 200, 'User-agent: VRCPDiscoveryBot\nAllow: /\nUser-agent: VRCDiscoveryBot\nAllow: /');
   check((await store.claim(botRequest, botPrincipal)).status === 'leased', 'Replaced snapshot retained stale matchers');
   return { status: 'passed', refreshRace: true, staleCompletion: true, profileRevocation: true,
-    pacingRollback: true, completionRollback: true, botRestrictions: true };
+    pacingRollback: true, completionRollback: true, botRestrictions: true, timestampProvenance: true };
 }
 async function operatorAtomicityFixture(env, store, clock) {
   const db = env.VRCP_D1, existingNode = 'native-audit-rotation', freshNode = 'native-audit-new';
@@ -440,6 +455,8 @@ try {
 	assert.equal(SourceAccessProfileListResponseSchema.parse(await profileList.json()).profiles.length, 0);
   const refreshCheck = await post('/__refresh', {}, operatorToken);
   assert.equal(refreshCheck.status, 'passed');
+  assert.equal(refreshCheck.timestampProvenance, true);
+  console.log(JSON.stringify({ check: 'native_D1_timestamp_provenance', passed: true }));
   console.log(JSON.stringify({ check: 'native_D1_refresh_ownership', ...refreshCheck }));
   const discoveryCheck = await post('/__discovery', {}, operatorToken);
   console.log(JSON.stringify({ check: 'native_D1_discovery_atomicity', ...discoveryCheck, externalFetches }));
