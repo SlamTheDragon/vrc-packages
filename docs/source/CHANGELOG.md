@@ -259,12 +259,16 @@ See full history at [docs/changelogs/vrcp-worker/preview](https://github.com/Sla
 ## VRC Packages Network `vrcp-packages-network`
 
 <!-- vrcp-packages-network-DESCRIPTION_SUMMARY -->
-Node protocol contracts adding batched job claims and batched result submission schemas with receipts.
+Keep one network archive compatible with release SDK 0.0.8 and preview SDK 2026.10.11-pre.
 <!-- vrcp-packages-network-DESCRIPTION_SUMMARY -->
 
 ### Added
 - **Batched Claim Schema**: Added `maxJobs` parameter to `ClaimRequestSchema` and `jobs` array to `ClaimResponseSchema`.
 - **Batched Result Schemas**: Added `BatchResultRequestSchema`, `BatchResultResponseSchema`, and `BatchResultReceiptSchema`.
 - **Batch Size Limits**: Pinned `MAX_CLAIM_JOBS` and `MAX_BATCH_RESULTS` constants to 10 items.
+
+### Changes
+- **SDK Peer Contract**: Accept the published UTF-8 pagination SDK preview while retaining release SDK compatibility.
+- **Distribution Checks**: Verify identical network bytes with both SDK channels in isolated Node, Bun and workerd consumers.
 
 See full history at [docs/changelogs/vrcp-packages-network/](https://github.com/SlamTheDragon/vrc-packages/tree/main/docs/changelogs/vrcp-packages-network/)
