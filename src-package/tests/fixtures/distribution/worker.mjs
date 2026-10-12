@@ -7,7 +7,9 @@ import { formatAppToken, isAppToken } from 'vrc-packages-api/auth';
 export default {
   async fetch() {
     try {
-    const cursor = encodeCatalogCursor({ createdAt: '2026-10-01T12:00:00.000Z', canonicalId: 'packed-item' });
+    const canonicalId = '界'.repeat(500);
+    const cursor = encodeCatalogCursor({ createdAt: '2026-10-01T12:00:00.000Z', canonicalId });
+    if (cursor.length <= 256) throw new Error('Packed Worker did not exercise the long UTF-8 cursor');
     const client = new VRCPackageClient({ baseUrl: 'https://example.test', fetch: async (input, init) => {
       const request = new Request(input, init);
       const url = new URL(request.url);

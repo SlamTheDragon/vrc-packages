@@ -1,51 +1,45 @@
 import { z } from "zod";
+import { CursorTokenSchema, CursorTimestampSchema, encodeCursor, decodeCursor } from "../encoding/cursor.ts";
 import { ContentRatingSchema, type ContentRating } from "../taxonomy/taxonomy.ts";
 
 export const MODERATOR_PROTOCOL_VERSION = 1 as const;
 
 export const ModeratorRatingRecordSchema = z.strictObject({
-  canonicalId: z.string().min(1).max(100),
+  canonicalId: z.string().min(1).max(500),
   displayName: z.string(),
   currentRating: ContentRatingSchema,
   umbrella: z.enum(["assets", "tools", "avatars"]),
   category: z.string(),
   reportCount: z.number().int().min(0),
-  updatedAt: z.string().datetime()
+  updatedAt: CursorTimestampSchema
 });
 export type ModeratorRatingRecord = z.infer<typeof ModeratorRatingRecordSchema>;
 
 export const ModeratorRatingCursorSchema = z.strictObject({
-  updatedAt: z.string().datetime(),
-  canonicalId: z.string().min(1).max(100)
+  updatedAt: CursorTimestampSchema,
+  canonicalId: z.string().min(1).max(500)
 });
 export type ModeratorRatingCursor = z.infer<typeof ModeratorRatingCursorSchema>;
 
 export function encodeModeratorRatingCursor(cursor: ModeratorRatingCursor): string {
-  return btoa(JSON.stringify(ModeratorRatingCursorSchema.parse(cursor)))
-    .replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
+  return encodeCursor(ModeratorRatingCursorSchema.parse(cursor));
 }
 
 export function decodeModeratorRatingCursor(value: string): ModeratorRatingCursor | null {
-  if (!/^[A-Za-z0-9_-]{1,256}$/.test(value)) return null;
-  try {
-    const cursor = ModeratorRatingCursorSchema.parse(JSON.parse(atob(value.replaceAll("-", "+").replaceAll("_", "/"))));
-    return encodeModeratorRatingCursor(cursor) === value ? cursor : null;
-  } catch {
-    return null;
-  }
+  return decodeCursor(value, ModeratorRatingCursorSchema);
 }
 
 export const ModeratorRatingListQuerySchema = z.strictObject({
   rating: ContentRatingSchema.optional(),
   limit: z.coerce.number().int().min(1).max(100).default(100),
-  cursor: z.string().min(1).max(256).optional()
+  cursor: CursorTokenSchema.optional()
 }).refine(query => query.cursor === undefined || decodeModeratorRatingCursor(query.cursor) !== null, "Invalid moderator cursor");
 export type ModeratorRatingListQuery = z.infer<typeof ModeratorRatingListQuerySchema>;
 
 export const ModeratorRatingListResponseSchema = z.strictObject({
   schemaVersion: z.literal(MODERATOR_PROTOCOL_VERSION),
   ratings: z.array(ModeratorRatingRecordSchema),
-  nextCursor: z.string().min(1).max(256).regex(/^[A-Za-z0-9_-]+$/).nullable()
+  nextCursor: CursorTokenSchema.refine(value => decodeModeratorRatingCursor(value) !== null, "Invalid moderator cursor").nullable()
 });
 export type ModeratorRatingListResponse = z.infer<typeof ModeratorRatingListResponseSchema>;
 
@@ -58,11 +52,11 @@ export type SetRatingAdjustmentRequest = z.infer<typeof SetRatingAdjustmentReque
 
 export const SetRatingAdjustmentResponseSchema = z.strictObject({
   schemaVersion: z.literal(MODERATOR_PROTOCOL_VERSION),
-  canonicalId: z.string().min(1).max(100),
+  canonicalId: z.string().min(1).max(500),
   previousRating: ContentRatingSchema,
   newRating: ContentRatingSchema,
   adjustedBy: z.string(),
-  updatedAt: z.string().datetime()
+  updatedAt: CursorTimestampSchema
 });
 export type SetRatingAdjustmentResponse = z.infer<typeof SetRatingAdjustmentResponseSchema>;
 
@@ -85,17 +79,17 @@ export const ModeratorAppRecordSchema = z.strictObject({
   permissions: z.array(z.string()),
   delegationAllowed: z.boolean(),
   requestCount: z.number().int().min(0).default(0),
-  lastActiveAt: z.string().datetime().nullable().optional(),
+  lastActiveAt: CursorTimestampSchema.nullable().optional(),
   candidateStatus: CandidateStatusSchema.default("none"),
   candidateFlags: z.array(z.string()).default([]),
-  createdAt: z.string().datetime(),
-  revokedAt: z.string().datetime().nullable()
+  createdAt: CursorTimestampSchema,
+  revokedAt: CursorTimestampSchema.nullable()
 });
 export type ModeratorAppRecord = z.infer<typeof ModeratorAppRecordSchema>;
 
 export const ModeratorAppListQuerySchema = z.strictObject({
   limit: z.coerce.number().int().min(1).max(100).default(100),
-  cursor: z.string().min(1).max(256).optional(),
+  cursor: CursorTokenSchema.optional(),
   candidateStatus: CandidateStatusSchema.optional()
 }).refine(query => query.cursor === undefined || decodeOperatorAppCursor(query.cursor) !== null, "Invalid app cursor");
 export type ModeratorAppListQuery = z.infer<typeof ModeratorAppListQuerySchema>;
@@ -103,7 +97,7 @@ export type ModeratorAppListQuery = z.infer<typeof ModeratorAppListQuerySchema>;
 export const ModeratorAppListResponseSchema = z.strictObject({
   schemaVersion: z.literal(MODERATOR_PROTOCOL_VERSION),
   apps: z.array(ModeratorAppRecordSchema),
-  nextCursor: z.string().min(1).max(256).regex(/^[A-Za-z0-9_-]+$/).nullable()
+  nextCursor: CursorTokenSchema.refine(value => decodeOperatorAppCursor(value) !== null, "Invalid app cursor").nullable()
 });
 export type ModeratorAppListResponse = z.infer<typeof ModeratorAppListResponseSchema>;
 
@@ -122,7 +116,6 @@ export const ModeratorReviewAppCandidateResponseSchema = z.strictObject({
   candidateFlags: z.array(z.string()),
   delegationAllowed: z.boolean(),
   permissions: z.array(z.string()),
-  reviewedAt: z.string().datetime()
+  reviewedAt: CursorTimestampSchema
 });
 export type ModeratorReviewAppCandidateResponse = z.infer<typeof ModeratorReviewAppCandidateResponseSchema>;
-

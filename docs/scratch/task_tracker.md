@@ -1,16 +1,14 @@
-# Status audit and continuation — 2026-10-13
+# Active R49-C29 — distributed pagination conformance (2026-10-13)
 
-- Branch: `preview/crawler-network`. Main delivery sign-off remains owner-accepted. This session commits locally only: no push, tag, version bump, publication or deployment.
-- Audit reviewed both task inventories and gate tables. Reconciled 49 retired, duplicate, moved or merged entries; canonical task rows now 62, unmerged rows 21. Completed acknowledged tasks are represented by existing capability milestones; unresolved owner comments remain.
-- Removed duplicate canonical IDs R55-NAMING, R54-C38A1 and R56-C56C1. Renamed the unrelated inbound limiter item to R54-C39C-RATE-LIMIT; R54-C39C remains batch leasing.
-- Moved completed G18 schema consolidation and locally checked R60 tooling into the canonical ledger. Combined duplicate G16/G17 summaries. Kept crypto protocol selection deferred rather than presenting it as the mandatory next slice.
-- Corrected stale no-remote-Worker, pending-delivery-sign-off, two-network-channel/registry-choice, memory-only outbox, one-second idle polling and no-rating-schema claims.
-- Current verification: Worker 269/269 (2658 assertions, 22 files); crawler 158/158 (1088 assertions, 24 files); SDK 61/61 (725 assertions, 7 files). Worker type generation and source/test TypeScript checks passed. No root tests ran for this documentation/product checkpoint.
-- These checks prove fixture behavior, not live source access, legal compliance, external age verification, a distributed rate limit or free-tier sufficiency. Prior runtime/build/delivery evidence remains dated history, not a new execution.
-- Confirmed open: R49-C29 cursor size/Unicode encoding mismatch; R50-C31 active heartbeat/account workload measurements; isolate-local inbound counters; publication rights and legal/source clearance; owner/user identity and node ownership; dynamic classification/tag design; real multi-driver/multi-process fleet conformance; desktop/web integration; SDK v0.1 owner route review.
-- Remaining open rows retain their owner decisions and historical evidence. Do not treat older “fixed locally” or test counts as current production proof.
-- Documentation checker reports 98 broken local links after the ledger-link repairs. Published changelog archive bytes remain untouched. R60-C60D owns the broad relink; R60-C60C owns crash recovery for multi-file changelog/Git transitions.
-- R60 local tooling evidence: commits `2df5796` and `e47a4b6`; delivery/provenance 68 tests, final changelog/setup 16 tests, four source-based release integration cases all passed. No hosted publication was repeated.
-- Owner logger FIXME is preserved in owner commit `4f1cc9f`; the old pending-owner-edit tracker note is retired.
-- Internal-goal continuation: public catalog error disclosure/cache hardening now passes the Worker suite and typechecks. It returns fixed internal errors, omits underlying exceptions from failure logs and makes error responses non-cacheable. Keep this product slice separate from the ledger audit commit.
-- Next bounded capability: reconcile R49-C29 across the distributed SDK and Worker cursor contracts, or take the next independently safe source/runtime slice. Do not silently narrow valid IDs, select a crypto protocol, authorize hosts, or close unresolved legal/owner gates.
+- Branch: `preview/crawler-network`. Prior ledger audit: `c11bd61`; public catalog error hardening: `76a1949`.
+- Owner explicitly allows batched pushes for preview publication and dependency synchronization. Unrelated commits stay local. No production publication or SDK v0.1.0 is authorized.
+- Theory confirmed: duplicated encoders treated Unicode as Latin-1; 256-character tokens could not carry accepted 500-character IDs. Search/moderator/operator contracts also diverged.
+- SDK producer implemented: shared UTF-8 codec, stable ASCII bytes, explicit `u1_` Unicode marker, strict canonical decoding, 8192-character token bound, 128-character affected ISO timestamps, 500-character moderator canonical IDs.
+- Negative checks cover oversized payloads, invalid UTF-8, unknown versions, padding, duplicate JSON keys, member order, extra fields, ambiguous old Latin-1 and invalid route payloads. Old non-ASCII tokens require pagination restart.
+- SDK checkpoint: `bun run test` and `bun run typecheck` passed. Final suite: 74 tests, 1072 assertions, eight files.
+- Packed distribution check passed offline: isolated Node and no-type-stripping Node, type consumer, Wrangler bundle, native workerd. 35 files; zero external runtime fetches. Long Unicode IDs cross HTTP serialization.
+- Checkpoint failures were compiler import/fixture mistakes, then stale taxonomy-export and synthetic search-token assertions. Corrected fixtures match current delivered rating and cursor contracts; assertions were not removed.
+- Remaining chain: publish preview SDK through root executor; verify registry/CI bytes; publish network archive because its exact SDK peer bound changes; adopt distributed dependencies in Worker/crawler; remove Worker cursor copies; run Worker protocol/type/runtime checks and verify pagination behavior.
+- Network currently accepts SDK `0.0.8 || 2026.10.10-pre`. Root synchronization owns generated manifest/config changes; never edit version JSON directly.
+- Main delivery sign-off stays accepted. Website/desktop responsibilities and release SDK remain unchanged.
+- Deferred risks remain in canonical/unmerged ledgers: fleet budgets/distributed throttling, source/publication rights, ownership/age evidence, API v0.1 owner review, changelog crash recovery, and 98 documentation-link findings. No source access grant or live crawl follows from this slice.

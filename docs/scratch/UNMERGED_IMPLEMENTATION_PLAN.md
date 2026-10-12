@@ -8,6 +8,8 @@ See changelog skill for archiving verified and author-commented rows
 
 ## Task Slices
 
+R49-C29 publication boundary: owner explicitly permits batched pushes for preview dependency publication and synchronization. Publish and verify the SDK before Worker adoption. Other checkpoints stay local; no sibling-source imports or node_modules edits may substitute for distribution.
+
 | status | ID | problem | related-code(s) | reason | solution | author comments |
 | --- | --- | --- | --- | --- | --- | --- |
 | deferred; critical design follow-up | R60-C60C | Multi-file publication preparation can stop between filesystem writes or Git commit | scripts/delivery-chain.mjs, scripts/changelog.mjs | Root snapshot preserves consumed notes, but the filesystem and Git are not one atomic transaction | Design restart detection from the committed version and archive before adding automatic recovery. Keep failures explicit; never bump again or silently rewrite an existing version archive. No new automatic retry policy selected. |  |

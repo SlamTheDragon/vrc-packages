@@ -76,3 +76,14 @@ Review [LEGAL.md](../LEGAL.md) for full operational covenants, governing law, an
 ## License
 
 This package is licensed under the **Apache License v2.0**
+
+## Pagination contracts
+
+Catalog, delta, search, operator and moderator pagination use bounded opaque cursors.
+Copy the returned token unchanged into the matching route. A token is not an authorization credential.
+Canonical package identifiers retain their 500-character bound. Cursor tokens permit up to 8192 base64url characters.
+Affected ISO timestamp fields permit up to 128 characters, bounding the encoded keyset size.
+ASCII JSON cursors keep their existing bytes. Unicode JSON uses a `u1_` UTF-8 marker.
+Decoders reject malformed UTF-8, noncanonical JSON, oversized tokens and ambiguous unmarked Latin-1 payloads.
+Restart pagination if an older non-ASCII token is rejected.
+Deploy matching preview SDK and coordinator contracts together; release consumers retain their separate release channel.

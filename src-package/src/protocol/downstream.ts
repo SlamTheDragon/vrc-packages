@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { CursorTokenSchema, CursorTimestampSchema } from "../encoding/cursor.ts";
+import { decodeCatalogCursor } from "../types/package.ts";
 import { PlatformSchema, type Platform } from "../types/platform.ts";
 import { CatalogPackageSchema, type CatalogPackage } from "../types/package.ts";
 import { ContentRatingSchema, type ContentRating } from "../taxonomy/taxonomy.ts";
@@ -48,7 +50,7 @@ export const DownstreamFeedbackResponseSchema = z.strictObject({
   schemaVersion: z.literal(DOWNSTREAM_PROTOCOL_VERSION),
   status: z.literal("accepted"),
   signalId: z.string().uuid(),
-  recordedAt: z.string().datetime()
+  recordedAt: CursorTimestampSchema
 });
 export type DownstreamFeedbackResponse = z.infer<typeof DownstreamFeedbackResponseSchema>;
 
@@ -65,14 +67,14 @@ export const CatalogSearchRequestSchema = z.strictObject({
   rating: ContentRatingSchema.optional(),
   tags: z.array(z.string().trim().max(50)).max(20).optional(),
   limit: z.number().int().min(1).max(50).default(50).optional(),
-  cursor: z.string().max(256).nullable().optional()
+  cursor: CursorTokenSchema.refine(value => decodeCatalogCursor(value) !== null, "Invalid search cursor").nullable().optional()
 });
 export type CatalogSearchRequest = z.infer<typeof CatalogSearchRequestSchema>;
 
 export const CatalogSearchResponseSchema = z.strictObject({
   schemaVersion: z.literal(DOWNSTREAM_PROTOCOL_VERSION),
   items: z.array(CatalogPackageSchema),
-  nextCursor: z.string().nullable().optional(),
+  nextCursor: CursorTokenSchema.refine(value => decodeCatalogCursor(value) !== null, "Invalid search cursor").nullable().optional(),
   totalEstimated: z.number().int().min(0).optional(),
   count: z.number().int().min(0).optional(),
   queryOrigin: QueryOriginSchema.optional()
@@ -117,7 +119,7 @@ export const ReportSubmissionResponseSchema = z.strictObject({
   schemaVersion: z.literal(DOWNSTREAM_PROTOCOL_VERSION),
   status: z.literal("accepted"),
   reportId: z.string().uuid(),
-  recordedAt: z.string().datetime()
+  recordedAt: CursorTimestampSchema
 });
 export type ReportSubmissionResponse = z.infer<typeof ReportSubmissionResponseSchema>;
 
@@ -150,7 +152,7 @@ export const CreatorClaimIntakeResponseSchema = z.strictObject({
   status: z.literal("accepted"),
   claimId: z.string().uuid(),
   reviewStatus: z.literal("pending"),
-  recordedAt: z.string().datetime()
+  recordedAt: CursorTimestampSchema
 });
 export type CreatorClaimIntakeResponse = z.infer<typeof CreatorClaimIntakeResponseSchema>;
 

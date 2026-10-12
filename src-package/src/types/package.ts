@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { CursorTimestampSchema, encodeCursor, decodeCursor } from "../encoding/cursor.ts";
 import { PlatformSchema, type Platform } from "./platform.ts";
 import { ContentRatingSchema, type ContentRating } from "../taxonomy/taxonomy.ts";
 
@@ -14,7 +15,7 @@ export const CatalogIdentityLinkSchema = z.strictObject({
     "simhash_match"
   ]),
   confidence: z.number().min(0).max(1),
-  createdAt: z.string().datetime()
+  createdAt: CursorTimestampSchema
 });
 export type CatalogIdentityLink = z.infer<typeof CatalogIdentityLinkSchema>;
 
@@ -42,9 +43,9 @@ export const CatalogPackageSchema = z.strictObject({
   lifecycle: z.enum(["active", "deprecated", "quarantined", "delisted"]),
   displayName: z.string().min(1).max(500),
   vpmId: z.string().min(1).max(200).nullable(),
-  createdAt: z.string().datetime(),
-  updatedAt: z.string().datetime(),
-  publishedAt: z.string().datetime().nullable().optional(),
+  createdAt: CursorTimestampSchema,
+  updatedAt: CursorTimestampSchema,
+  publishedAt: CursorTimestampSchema.nullable().optional(),
   timestampConfidence: TimestampConfidenceSchema.nullable().optional(),
   contentRating: ContentRatingSchema.default("general"),
   acceptedLinks: z.array(CatalogIdentityLinkSchema),
@@ -53,26 +54,15 @@ export const CatalogPackageSchema = z.strictObject({
 export type CatalogPackage = z.infer<typeof CatalogPackageSchema>;
 
 export const CatalogCursorSchema = z.strictObject({
-  createdAt: z.string().datetime(),
+  createdAt: CursorTimestampSchema,
   canonicalId: z.string().min(1).max(500)
 });
 export type CatalogCursor = z.infer<typeof CatalogCursorSchema>;
 
 export function encodeCatalogCursor(cursor: CatalogCursor): string {
-  return btoa(JSON.stringify(CatalogCursorSchema.parse(cursor)))
-    .replaceAll("+", "-")
-    .replaceAll("/", "_")
-    .replace(/=+$/, "");
+  return encodeCursor(CatalogCursorSchema.parse(cursor));
 }
 
 export function decodeCatalogCursor(value: string): CatalogCursor | null {
-  if (!/^[A-Za-z0-9_-]{1,256}$/.test(value)) return null;
-  try {
-    const cursor = CatalogCursorSchema.parse(
-      JSON.parse(atob(value.replaceAll("-", "+").replaceAll("_", "/")))
-    );
-    return encodeCatalogCursor(cursor) === value ? cursor : null;
-  } catch {
-    return null;
-  }
+  return decodeCursor(value, CatalogCursorSchema);
 }

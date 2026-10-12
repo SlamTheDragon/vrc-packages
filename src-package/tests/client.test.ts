@@ -130,13 +130,13 @@ describe("VRCPackageClient SDK", () => {
       query: "kikyo dress",
       queryOrigin: "user_authored",
       limit: 10,
-      cursor: "opaque-search-cursor"
+      cursor: encodeCatalogCursor({ createdAt: "2026-10-01T12:00:00.000Z", canonicalId: "search-item" })
     });
 
     expect((capturedHeaders as Record<string, string>)["Authorization"]).toBe(`Bearer ${dummyAppToken}`);
     expect(capturedBody.queryOrigin).toBe("user_authored");
     expect(capturedBody.query).toBe("kikyo dress");
-    expect(capturedBody.cursor).toBe("opaque-search-cursor");
+    expect(capturedBody.cursor).toBe(encodeCatalogCursor({ createdAt: "2026-10-01T12:00:00.000Z", canonicalId: "search-item" }));
     expect(capturedBody.limit).toBe(10);
     expect(res.schemaVersion).toBe(1);
   });
@@ -166,7 +166,7 @@ describe("VRCPackageClient SDK", () => {
             updatedAt: "2026-10-01T12:00:00.000Z"
           }
         ],
-        nextCursor: "cursor-next"
+        nextCursor: cursor
       }), { status: 200, headers: { "Content-Type": "application/json" } });
     };
 

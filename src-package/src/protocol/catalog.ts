@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { CursorTokenSchema, CursorTimestampSchema, encodeCursor, decodeCursor } from "../encoding/cursor.ts";
 import {
   CatalogPackageSchema,
   CatalogCursorSchema,
@@ -10,7 +11,7 @@ import {
 
 export const CATALOG_PROTOCOL_VERSION = 1 as const;
 
-const PublicCatalogCursorTokenSchema = z.string().min(1).max(256).regex(/^[A-Za-z0-9_-]+$/)
+const PublicCatalogCursorTokenSchema = CursorTokenSchema
   .refine((value) => decodeCatalogCursor(value) !== null, "Invalid catalog cursor");
 
 export const PublicCatalogListQuerySchema = z.strictObject({
@@ -32,47 +33,36 @@ export type CatalogDeltaAction = z.infer<typeof CatalogDeltaActionSchema>;
 export const CatalogDeltaSchema = z.strictObject({
   action: CatalogDeltaActionSchema,
   canonicalId: z.string().min(1).max(500),
-  updatedAt: z.string().datetime(),
+  updatedAt: CursorTimestampSchema,
   package: CatalogPackageSchema.optional()
 });
 export type CatalogDelta = z.infer<typeof CatalogDeltaSchema>;
 
 export const CatalogDeltaCursorSchema = z.strictObject({
-  updatedAt: z.string().datetime(),
+  updatedAt: CursorTimestampSchema,
   canonicalId: z.string().min(1).max(500)
 });
 export type CatalogDeltaCursor = z.infer<typeof CatalogDeltaCursorSchema>;
 
 export function encodeCatalogDeltaCursor(cursor: CatalogDeltaCursor): string {
-  return btoa(JSON.stringify(CatalogDeltaCursorSchema.parse(cursor)))
-    .replaceAll("+", "-")
-    .replaceAll("/", "_")
-    .replace(/=+$/, "");
+  return encodeCursor(CatalogDeltaCursorSchema.parse(cursor));
 }
 
 export function decodeCatalogDeltaCursor(value: string): CatalogDeltaCursor | null {
-  if (!/^[A-Za-z0-9_-]{1,256}$/.test(value)) return null;
-  try {
-    const cursor = CatalogDeltaCursorSchema.parse(
-      JSON.parse(atob(value.replaceAll("-", "+").replaceAll("_", "/")))
-    );
-    return encodeCatalogDeltaCursor(cursor) === value ? cursor : null;
-  } catch {
-    return null;
-  }
+  return decodeCursor(value, CatalogDeltaCursorSchema);
 }
 
 export const CatalogDeltaResponseSchema = z.strictObject({
   schemaVersion: z.literal(CATALOG_PROTOCOL_VERSION),
   epoch: z.string().min(1).max(100),
   deltas: z.array(CatalogDeltaSchema),
-  nextCursor: z.string().min(1).max(256).regex(/^[A-Za-z0-9_-]+$/).nullable()
+  nextCursor: CursorTokenSchema.refine(value => decodeCatalogDeltaCursor(value) !== null, "Invalid delta cursor").nullable()
 });
 export type CatalogDeltaResponse = z.infer<typeof CatalogDeltaResponseSchema>;
 
 export const CatalogDeltaQuerySchema = z.strictObject({
   limit: z.number().int().min(1).max(100).default(50),
-  cursor: z.string().min(1).max(256).regex(/^[A-Za-z0-9_-]+$/)
+  cursor: CursorTokenSchema
     .refine(value => decodeCatalogDeltaCursor(value) !== null, "Invalid delta cursor").optional()
 });
 export type CatalogDeltaQuery = z.input<typeof CatalogDeltaQuerySchema>;

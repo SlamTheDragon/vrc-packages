@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { CursorTokenSchema, CursorTimestampSchema, encodeCursor, decodeCursor } from "../encoding/cursor.ts";
 import { PlatformSchema, type Platform } from "../types/platform.ts";
 import { CatalogPackageSchema, decodeCatalogCursor, type CatalogPackage } from "../types/package.ts";
 
@@ -64,27 +65,18 @@ export type LeadRow = z.infer<typeof LeadRowSchema>;
 
 export const LeadCursorSchema = z.strictObject({
   status: LeadStatusSchema,
-  firstSeenAt: z.iso.datetime(),
+  firstSeenAt: CursorTimestampSchema,
   leadKey: z.string().regex(/^[a-f0-9]{64}$/)
 });
 export type LeadCursor = z.infer<typeof LeadCursorSchema>;
 
 export function encodeLeadCursor(cursor: LeadCursor): string {
-  return btoa(JSON.stringify(LeadCursorSchema.parse(cursor)))
-    .replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
+  return encodeCursor(LeadCursorSchema.parse(cursor));
 }
 
 export function decodeLeadCursor(value: string, status?: LeadStatus): LeadCursor | null {
-  if (!/^[A-Za-z0-9_-]{1,256}$/.test(value)) return null;
-  try {
-    const cursor = LeadCursorSchema.parse(JSON.parse(atob(value.replaceAll("-", "+").replaceAll("_", "/"))));
-    if (cursor.status && status && cursor.status !== status) {
-      return null;
-    }
-    return encodeLeadCursor(cursor) === value ? cursor : null;
-  } catch {
-    return null;
-  }
+  const cursor = decodeCursor(value, LeadCursorSchema);
+  return cursor && (status === undefined || cursor.status === status) ? cursor : null;
 }
 
 export const ApproveLeadSchema = z.strictObject({
@@ -103,7 +95,7 @@ export type RejectLead = z.infer<typeof RejectLeadSchema>;
 export const LeadListResponseSchema = z.strictObject({
   schemaVersion: z.literal(OPERATOR_PROTOCOL_VERSION),
   leads: z.array(LeadRowSchema),
-  nextCursor: z.string().min(1).max(256).regex(/^[A-Za-z0-9_-]+$/).nullable()
+  nextCursor: CursorTokenSchema.refine(value => decodeLeadCursor(value) !== null, "Invalid Lead cursor").nullable()
 });
 export type LeadListResponse = z.infer<typeof LeadListResponseSchema>;
 
@@ -163,7 +155,7 @@ export const CreateSourceAccessProfileSchema = z.strictObject({
   method: z.literal("GET"),
   purpose: SourcePurposeSchema,
   minDelayMs: z.number().int().min(1000).max(86_400_000),
-  expiresAt: z.iso.datetime(),
+  expiresAt: CursorTimestampSchema,
   reviewReference: z.string().trim().min(8).max(500),
   reason: z.string().trim().min(3).max(300),
   retainClasses: z.array(EvidenceClassSchema).max(4),
@@ -190,8 +182,8 @@ export type CreateSourceAccessProfile = z.infer<typeof CreateSourceAccessProfile
 
 export const SourceAccessProfileSchema = CreateSourceAccessProfileSchema.safeExtend({
   profileId: z.string().uuid(),
-  createdAt: z.string().datetime(),
-  disabledAt: z.string().datetime().nullable()
+  createdAt: CursorTimestampSchema,
+  disabledAt: CursorTimestampSchema.nullable()
 });
 export type SourceAccessProfile = z.infer<typeof SourceAccessProfileSchema>;
 
@@ -202,24 +194,17 @@ export const DisableSourceAccessProfileSchema = z.strictObject({
 export type DisableSourceAccessProfile = z.infer<typeof DisableSourceAccessProfileSchema>;
 
 export const ProfileCursorSchema = z.strictObject({
-  createdAt: z.string().datetime(),
+  createdAt: CursorTimestampSchema,
   profileId: z.string().uuid()
 });
 export type ProfileCursor = z.infer<typeof ProfileCursorSchema>;
 
 export function encodeProfileCursor(cursor: ProfileCursor): string {
-  return btoa(JSON.stringify(ProfileCursorSchema.parse(cursor)))
-    .replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
+  return encodeCursor(ProfileCursorSchema.parse(cursor));
 }
 
 export function decodeProfileCursor(value: string): ProfileCursor | null {
-  if (!/^[A-Za-z0-9_-]{1,256}$/.test(value)) return null;
-  try {
-    const cursor = ProfileCursorSchema.parse(JSON.parse(atob(value.replaceAll("-", "+").replaceAll("_", "/"))));
-    return encodeProfileCursor(cursor) === value ? cursor : null;
-  } catch {
-    return null;
-  }
+  return decodeCursor(value, ProfileCursorSchema);
 }
 
 export const SourceAccessProfileResponseSchema = z.strictObject({
@@ -231,7 +216,7 @@ export type SourceAccessProfileResponse = z.infer<typeof SourceAccessProfileResp
 export const SourceAccessProfileListResponseSchema = z.strictObject({
   schemaVersion: z.literal(OPERATOR_PROTOCOL_VERSION),
   profiles: z.array(SourceAccessProfileSchema),
-  nextCursor: z.string().min(1).max(256).regex(/^[A-Za-z0-9_-]+$/).nullable()
+  nextCursor: CursorTokenSchema.refine(value => decodeProfileCursor(value) !== null, "Invalid SourceAccessProfile cursor").nullable()
 });
 export type SourceAccessProfileListResponse = z.infer<typeof SourceAccessProfileListResponseSchema>;
 
@@ -252,11 +237,11 @@ export const AutoQueueRuleSchema = z.strictObject({
   origin: RuleOriginSchema,
   pathScope: RulePathScopeSchema,
   minDelayMs: z.number().int().min(1000).max(86_400_000),
-  expiresAt: z.iso.datetime(),
+  expiresAt: CursorTimestampSchema,
   reviewReference: z.string(),
   reason: z.string(),
-  createdAt: z.iso.datetime(),
-  disabledAt: z.iso.datetime().nullable()
+  createdAt: CursorTimestampSchema,
+  disabledAt: CursorTimestampSchema.nullable()
 });
 export type AutoQueueRule = z.infer<typeof AutoQueueRuleSchema>;
 
@@ -266,7 +251,7 @@ export const CreateAutoQueueRuleSchema = z.strictObject({
   origin: RuleOriginSchema,
   pathScope: RulePathScopeSchema,
   minDelayMs: z.number().int().min(1000).max(86_400_000),
-  expiresAt: z.iso.datetime(),
+  expiresAt: CursorTimestampSchema,
   reviewReference: z.string().trim().min(8).max(500),
   reason: z.string().trim().min(3).max(300)
 });
@@ -279,30 +264,23 @@ export const DisableAutoQueueRuleSchema = z.strictObject({
 export type DisableAutoQueueRule = z.infer<typeof DisableAutoQueueRuleSchema>;
 
 export const RuleCursorSchema = z.strictObject({
-  createdAt: z.iso.datetime(),
+  createdAt: CursorTimestampSchema,
   ruleId: z.string().uuid()
 });
 export type RuleCursor = z.infer<typeof RuleCursorSchema>;
 
 export function encodeRuleCursor(cursor: RuleCursor): string {
-  return btoa(JSON.stringify(RuleCursorSchema.parse(cursor)))
-    .replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
+  return encodeCursor(RuleCursorSchema.parse(cursor));
 }
 
 export function decodeRuleCursor(value: string): RuleCursor | null {
-  if (!/^[A-Za-z0-9_-]{1,256}$/.test(value)) return null;
-  try {
-    const cursor = RuleCursorSchema.parse(JSON.parse(atob(value.replaceAll("-", "+").replaceAll("_", "/"))));
-    return encodeRuleCursor(cursor) === value ? cursor : null;
-  } catch {
-    return null;
-  }
+  return decodeCursor(value, RuleCursorSchema);
 }
 
 export const AutoQueueRuleListResponseSchema = z.strictObject({
   schemaVersion: z.literal(OPERATOR_PROTOCOL_VERSION),
   rules: z.array(AutoQueueRuleSchema),
-  nextCursor: z.string().min(1).max(256).regex(/^[A-Za-z0-9_-]+$/).nullable()
+  nextCursor: CursorTokenSchema.refine(value => decodeRuleCursor(value) !== null, "Invalid AutoQueueRule cursor").nullable()
 });
 export type AutoQueueRuleListResponse = z.infer<typeof AutoQueueRuleListResponseSchema>;
 
@@ -349,7 +327,7 @@ export type RevokeNodeResponse = z.infer<typeof RevokeNodeResponseSchema>;
 export const CatalogListResponseSchema = z.strictObject({
   schemaVersion: z.literal(OPERATOR_PROTOCOL_VERSION),
   packages: z.array(CatalogPackageSchema),
-  nextCursor: z.string().min(1).max(256).regex(/^[A-Za-z0-9_-]+$/).nullable()
+  nextCursor: CursorTokenSchema.refine(value => decodeCatalogCursor(value) !== null, "Invalid Catalog cursor").nullable()
 });
 export type CatalogListResponse = z.infer<typeof CatalogListResponseSchema>;
 
@@ -369,35 +347,28 @@ export const TakedownRecordSchema = z.strictObject({
   contactEmail: z.string().nullable(),
   reviewStatus: z.enum(["pending", "accepted", "rejected"]),
   reviewNotes: z.string().nullable().optional(),
-  recordedAt: z.string().datetime()
+  recordedAt: CursorTimestampSchema
 });
 export type TakedownRecord = z.infer<typeof TakedownRecordSchema>;
 
 export const TakedownCursorSchema = z.strictObject({
-  recordedAt: z.string().datetime(),
+  recordedAt: CursorTimestampSchema,
   takedownId: z.string().uuid()
 });
 export type TakedownCursor = z.infer<typeof TakedownCursorSchema>;
 
 export function encodeTakedownCursor(cursor: TakedownCursor): string {
-  return btoa(JSON.stringify(TakedownCursorSchema.parse(cursor)))
-    .replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
+  return encodeCursor(TakedownCursorSchema.parse(cursor));
 }
 
 export function decodeTakedownCursor(value: string): TakedownCursor | null {
-  if (!/^[A-Za-z0-9_-]{1,256}$/.test(value)) return null;
-  try {
-    const cursor = TakedownCursorSchema.parse(JSON.parse(atob(value.replaceAll("-", "+").replaceAll("_", "/"))));
-    return encodeTakedownCursor(cursor) === value ? cursor : null;
-  } catch {
-    return null;
-  }
+  return decodeCursor(value, TakedownCursorSchema);
 }
 
 export const TakedownListResponseSchema = z.strictObject({
   schemaVersion: z.literal(OPERATOR_PROTOCOL_VERSION),
   records: z.array(TakedownRecordSchema),
-  nextCursor: z.string().min(1).max(256).regex(/^[A-Za-z0-9_-]+$/).nullable()
+  nextCursor: CursorTokenSchema.refine(value => decodeTakedownCursor(value) !== null, "Invalid Takedown cursor").nullable()
 });
 export type TakedownListResponse = z.infer<typeof TakedownListResponseSchema>;
 
@@ -412,13 +383,13 @@ export const VerifyTakedownResponseSchema = z.strictObject({
   schemaVersion: z.literal(OPERATOR_PROTOCOL_VERSION),
   takedownId: z.string().uuid(),
   status: z.enum(["accepted", "rejected"]),
-  updatedAt: z.string().datetime()
+  updatedAt: CursorTimestampSchema
 });
 export type VerifyTakedownResponse = z.infer<typeof VerifyTakedownResponseSchema>;
 
 const OperatorPageQuerySchema = z.strictObject({
   limit: z.number().int().min(1).max(100).default(100),
-  cursor: z.string().min(1).max(256).regex(/^[A-Za-z0-9_-]+$/).optional()
+  cursor: CursorTokenSchema.optional()
 });
 export const OperatorLeadListQuerySchema = OperatorPageQuerySchema.extend({
   status: LeadStatusSchema.default("pending_review")
@@ -451,35 +422,28 @@ export const DelegatedClaimRecordSchema = z.strictObject({
   contactEmail: z.string().nullable().optional(),
   reviewStatus: z.enum(["pending", "accepted", "rejected"]),
   reviewNotes: z.string().nullable().optional(),
-  recordedAt: z.string().datetime()
+  recordedAt: CursorTimestampSchema
 });
 export type DelegatedClaimRecord = z.infer<typeof DelegatedClaimRecordSchema>;
 
 export const DelegatedClaimCursorSchema = z.strictObject({
-  recordedAt: z.string().datetime(),
+  recordedAt: CursorTimestampSchema,
   claimId: z.string().uuid()
 });
 export type DelegatedClaimCursor = z.infer<typeof DelegatedClaimCursorSchema>;
 
 export function encodeDelegatedClaimCursor(cursor: DelegatedClaimCursor): string {
-  return btoa(JSON.stringify(DelegatedClaimCursorSchema.parse(cursor)))
-    .replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
+  return encodeCursor(DelegatedClaimCursorSchema.parse(cursor));
 }
 
 export function decodeDelegatedClaimCursor(value: string): DelegatedClaimCursor | null {
-  if (!/^[A-Za-z0-9_-]{1,256}$/.test(value)) return null;
-  try {
-    const cursor = DelegatedClaimCursorSchema.parse(JSON.parse(atob(value.replaceAll("-", "+").replaceAll("_", "/"))));
-    return encodeDelegatedClaimCursor(cursor) === value ? cursor : null;
-  } catch {
-    return null;
-  }
+  return decodeCursor(value, DelegatedClaimCursorSchema);
 }
 
 export const DelegatedClaimListResponseSchema = z.strictObject({
   schemaVersion: z.literal(OPERATOR_PROTOCOL_VERSION),
   records: z.array(DelegatedClaimRecordSchema),
-  nextCursor: z.string().min(1).max(256).regex(/^[A-Za-z0-9_-]+$/).nullable()
+  nextCursor: CursorTokenSchema.refine(value => decodeDelegatedClaimCursor(value) !== null, "Invalid DelegatedClaim cursor").nullable()
 });
 export type DelegatedClaimListResponse = z.infer<typeof DelegatedClaimListResponseSchema>;
 
@@ -494,7 +458,7 @@ export const VerifyDelegatedClaimResponseSchema = z.strictObject({
   schemaVersion: z.literal(OPERATOR_PROTOCOL_VERSION),
   claimId: z.string().uuid(),
   status: z.enum(["accepted", "rejected"]),
-  updatedAt: z.string().datetime()
+  updatedAt: CursorTimestampSchema
 });
 export type VerifyDelegatedClaimResponse = z.infer<typeof VerifyDelegatedClaimResponseSchema>;
 
@@ -516,33 +480,26 @@ export const OperatorAppRecordSchema = z.strictObject({
   permissions: z.array(z.string()),
   delegationAllowed: z.boolean(),
   requestCount: z.number().int().min(0).default(0),
-  lastActiveAt: z.string().datetime().nullable().optional(),
+  lastActiveAt: CursorTimestampSchema.nullable().optional(),
   candidateStatus: CandidateStatusSchema.default("none"),
   candidateFlags: z.array(z.string()).default([]),
-  createdAt: z.string().datetime(),
-  revokedAt: z.string().datetime().nullable()
+  createdAt: CursorTimestampSchema,
+  revokedAt: CursorTimestampSchema.nullable()
 });
 export type OperatorAppRecord = z.infer<typeof OperatorAppRecordSchema>;
 
 export const OperatorAppCursorSchema = z.strictObject({
-  createdAt: z.string().datetime(),
+  createdAt: CursorTimestampSchema,
   appId: z.string().uuid()
 });
 export type OperatorAppCursor = z.infer<typeof OperatorAppCursorSchema>;
 
 export function encodeOperatorAppCursor(cursor: OperatorAppCursor): string {
-  return btoa(JSON.stringify(OperatorAppCursorSchema.parse(cursor)))
-    .replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
+  return encodeCursor(OperatorAppCursorSchema.parse(cursor));
 }
 
 export function decodeOperatorAppCursor(value: string): OperatorAppCursor | null {
-  if (!/^[A-Za-z0-9_-]{1,256}$/.test(value)) return null;
-  try {
-    const cursor = OperatorAppCursorSchema.parse(JSON.parse(atob(value.replaceAll("-", "+").replaceAll("_", "/"))));
-    return encodeOperatorAppCursor(cursor) === value ? cursor : null;
-  } catch {
-    return null;
-  }
+  return decodeCursor(value, OperatorAppCursorSchema);
 }
 
 export const OperatorAppListQuerySchema = OperatorPageQuerySchema.extend({
@@ -556,7 +513,7 @@ export type OperatorAppListQuery = z.infer<typeof OperatorAppListQuerySchema>;
 export const OperatorAppListResponseSchema = z.strictObject({
   schemaVersion: z.literal(OPERATOR_PROTOCOL_VERSION),
   apps: z.array(OperatorAppRecordSchema),
-  nextCursor: z.string().min(1).max(256).regex(/^[A-Za-z0-9_-]+$/).nullable()
+  nextCursor: CursorTokenSchema.refine(value => decodeOperatorAppCursor(value) !== null, "Invalid OperatorApp cursor").nullable()
 });
 export type OperatorAppListResponse = z.infer<typeof OperatorAppListResponseSchema>;
 
@@ -572,7 +529,7 @@ export const SetAppDelegationResponseSchema = z.strictObject({
   appId: z.string().uuid(),
   delegationAllowed: z.boolean(),
   permissions: z.array(z.string()),
-  updatedAt: z.string().datetime()
+  updatedAt: CursorTimestampSchema
 });
 export type SetAppDelegationResponse = z.infer<typeof SetAppDelegationResponseSchema>;
 
@@ -591,7 +548,7 @@ export const ReviewAppCandidateResponseSchema = z.strictObject({
   candidateFlags: z.array(z.string()),
   delegationAllowed: z.boolean(),
   permissions: z.array(z.string()),
-  reviewedAt: z.string().datetime()
+  reviewedAt: CursorTimestampSchema
 });
 export type ReviewAppCandidateResponse = z.infer<typeof ReviewAppCandidateResponseSchema>;
 
