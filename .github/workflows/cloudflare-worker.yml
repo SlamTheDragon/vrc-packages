@@ -46,15 +46,17 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Typecheck Worker
         run: bun run --cwd src-worker check
-      - name: Test Worker
-        continue-on-error: ${{ steps.route.outputs.channel == 'preview' }}
-        run: |
-          bun run --cwd src-worker test
-          bun run --cwd src-worker test:runtime
       - name: Build Worker target
         run: node scripts/delivery.mjs build '${{ steps.route.outputs.channel }}' worker --ci
         env:
           VRCP_WORKER_BUILD_CHANNEL: ${{ steps.route.outputs.channel }}
+      - name: Test Worker
+        continue-on-error: ${{ steps.route.outputs.channel == 'preview' }}
+        env:
+          VRCP_WORKER_BUILD_CHANNEL: ${{ steps.route.outputs.channel }}
+        run: |
+          bun run --cwd src-worker test
+          bun run --cwd src-worker test:runtime
       - uses: actions/upload-artifact@v4
         with:
           name: worker-${{ steps.route.outputs.channel }}-bundle
