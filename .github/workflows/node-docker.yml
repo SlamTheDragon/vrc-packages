@@ -63,9 +63,11 @@ jobs:
         continue-on-error: ${{ needs.route.outputs.channel == 'preview' }}
         run: bun run --cwd src-crawler test
       - name: Build and verify crawler node
+        env:
+          VRCP_EXPECTED_VERSION: ${{ needs.route.outputs.version }}
         run: |
           node scripts/delivery.mjs build '${{ needs.route.outputs.channel }}' crawler --ci
-          src-crawler/dist/dev/vrcp-crawler-node-linux --help
+          test "$(src-crawler/dist/dev/vrcp-crawler-node-linux --version)" = "$VRCP_EXPECTED_VERSION"
       - run: node scripts/release-assets.mjs stamp '${{ needs.route.outputs.channel }}' crawler src-crawler/dist/dev linux
       - uses: actions/upload-artifact@v4
         with:
@@ -120,10 +122,19 @@ jobs:
           docker volume create "$volume"
           trap 'docker rm -f "$container" >/dev/null 2>&1 || true; docker volume rm "$volume" >/dev/null' EXIT
           test "$(docker run --rm --network none "$image" --version)" = "$VRCP_EXPECTED_VERSION"
-          docker run --rm --network none "$image" --help
-          docker run --rm --network none --volume "$volume:/app/data" "$image" init ci-runtime-check
-          docker run --rm --network none --volume "$volume:/app/data" --entrypoint sh "$image" -c 'test "$(id -u)" -ne 0 && test -s node.config.json && printf ci-persistence > persistence-check'
-          docker run --rm --network none --volume "$volume:/app/data" --entrypoint sh "$image" -c 'test "$(cat persistence-check)" = ci-persistence && test -s node.config.json'
+          for attempt in 1 2; do
+            set +e
+            timeout 20s docker run --rm --network none --volume "$volume:/app/data" \
+              --env NODE_ID=ci-runtime-check --env NODE_TOKEN=ci-offline-fixture \
+              --env COORDINATOR_URL=http://127.0.0.1:1 "$image" --once
+            status=$?
+            set -e
+            test "$status" -eq 1
+            docker run --rm --network none --volume "$volume:/app/data" --entrypoint sh "$image" \
+              -c 'test "$(id -u)" -ne 0 && test -s node.db && test "$(head -c 15 node.db)" = "SQLite format 3"'
+          done
+          docker run --rm --network none --volume "$volume:/app/data" --entrypoint sh "$image" -c 'printf ci-persistence > persistence-check'
+          docker run --rm --network none --volume "$volume:/app/data" --entrypoint sh "$image" -c 'test "$(cat persistence-check)" = ci-persistence && test -s node.db'
           set +e
           timeout 20s docker run --name "$container" --rm --network none --volume "$volume:/app/data" "$image"
           status=$?

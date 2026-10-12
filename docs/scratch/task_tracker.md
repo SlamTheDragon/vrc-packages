@@ -15,8 +15,9 @@
 ## Current preview publication
 
 - Root executor verified the original 2026.10.9-pre predecessor before allocation. Metadata commit: 66777f5888cda81bd7be2498ba01a99e6cb9cc46; tag: vrcp-crawler/v2026.10.10-pre; tag object: 03f910caaef6213da1ccd785ed8cb74cc93693e7.
-- Exact run: https://github.com/SlamTheDragon/vrc-packages/actions/runs/38308127484 . Latest observation: queued. No image, Release or artifact verification is claimed for this new version.
-- Next: inspect that same run through build, publication, asset attachment and announcement. Then run root publish:check for this tag and inspect degraded preview checks separately. Do not allocate another patch, move a tag or rerun a frozen workflow to test code fixes.
+- Exact run: https://github.com/SlamTheDragon/vrc-packages/actions/runs/38308127484 . Terminal failure: Linux job 115007199609 compiled successfully, then retired --help smoke launched without NODE_TOKEN. Windows job 115007199796 succeeded. Container/Release were skipped. No image or Release publication is claimed.
+- Local CI alignment removes obsolete --help/init checks and uses version validation plus network-disabled one-shot startup and SQLite persistence. Both affected root suites passed 59 tests / 1138 assertions; both changed shell bodies passed Bash syntax validation. Two actual development-binary one-shot runs preserved one then two failed run records in the same isolated SQLite database; missing-token rejection passed. Docker is unavailable locally, so container execution stays unverified.
+- Critical owner decision is deferred in R50-C31-RECOVERY: existing recovery rejects crawler previews and this mixed job shape. Keep the exact tag/version fixed. No tag deletion, rerun, recovery dispatch or subsequent bump occurred. Continue independent work without claiming this publication complete.
 
 ## R49-C29 pagination checkpoint and remaining CI gap
 

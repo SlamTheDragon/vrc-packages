@@ -1021,6 +1021,25 @@ test("Worker artifact paths follow runtime channel independently of GitHub appro
   expect(workflow.jobs.deploy.environment).toBe('${{ needs.build.outputs.environment }}');
 });
 
+test("crawler Linux and container checks use the headless entry point, not retired setup commands", () => {
+  const workflow: any = Bun.YAML.parse(readFileSync(new URL("../.github/workflows/node-docker.yml", import.meta.url), "utf8"));
+  const steps = workflow.jobs["build-linux"].steps;
+  const standalone = steps.find((step: any) => step.name === "Build and verify crawler node");
+  expect(standalone.env.VRCP_EXPECTED_VERSION).toBe('${{ needs.route.outputs.version }}');
+  expect(standalone.run).toContain('--version)" = "$VRCP_EXPECTED_VERSION"');
+  const runtime = steps.find((step: any) => step.name === "Check Linux runtime, restart persistence and missing-token failure without network access").run;
+  expect(standalone.run + runtime).not.toContain("--help");
+  expect(runtime).not.toContain("init ci-runtime-check");
+  expect(runtime).not.toContain("node.config.json");
+  expect(runtime).toContain("--env NODE_ID=ci-runtime-check --env NODE_TOKEN=ci-offline-fixture");
+  expect(runtime).toContain('--env COORDINATOR_URL=http://127.0.0.1:1 "$image" --once');
+  expect(runtime).toContain("for attempt in 1 2");
+  expect(runtime).toContain('test "$status" -eq 1');
+  expect(runtime).toContain("SQLite format 3");
+  expect(runtime).toContain("test -s node.db");
+  expect(runtime).toContain("--network none");
+});
+
 test("Worker runtime checks follow the built target and use its channel", () => {
   const workflow: any = Bun.YAML.parse(readFileSync(new URL("../.github/workflows/cloudflare-worker.yml", import.meta.url), "utf8"));
   const steps = workflow.jobs.build.steps;
