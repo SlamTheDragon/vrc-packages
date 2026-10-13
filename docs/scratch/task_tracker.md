@@ -1,4 +1,4 @@
-# Active R13-C9: catalog delta failure-boundary audit (2026-10-13)
+# Active R13-C9: malformed metadata and false-link boundaries (2026-10-13)
 
 ## Authority and scope
 
@@ -6,6 +6,18 @@
 - Owner README change is preserved in d99b8f1. No sibling source imports, node_modules edits, source grants or live crawls accompany this work.
 
 ## Working theory and implementation
+
+- Metadata theory confirmed: production ingestion trusted storefront sourceItemKey/storefrontUrl and treated any observation with a price as a storefront. The Worker now enforces the shipped parser's exact assigned host/path identity, verifies optional URLs using existing tracking cleanup, derives fronts from job.url, rejects storefront fields on other platforms and rejects empty catalog names. No wire/dependency or source-access change. Prior records are not migrated.
+- Metadata gate checked: 290 Worker tests / 3256 assertions / 23 files (12.61s), standard source/Vitest types, preview bundle and native workerd/D1 HTTP checks pass. Seven storefronts cover malformed DTOs, cross-item IDs, foreign/credentialed/fragment/functional-query front URLs, no durable writes on rejection, corrected lease use and exact replay. Native public HTTP preserves the assigned front URL. Release-evidence batch conflicts no longer become terminal lease expiry through substring matching. External fetches: zero. No root tests ran.
+- Verification limits: the first native run reached valid corrected submission/replay but failed fixture teardown on dependent foreign keys. Explicit front/link teardown fixed it; the final full native run passed. Extra whole-file Bun test typechecking fails in existing mock D1/Env and fetch.preconnect sections outside the new fixtures; R13-C9-TEST-TYPES records that coverage gap. Do not claim all unit fixtures are statically checked.
+- False-link counterexample reproduced through the real Worker ingestion/public HTTP handlers over isolated Bun SQLite D1: an unidirectional, case-distinct URL reference linked an unrelated storefront to an accepted package. Both responses were 200; the new link stayed provisional; accepted storefront links were zero; public fronts still included it. This is not native D1 proof. R13-C9-IDENTITY defers cross-source authority and existing-data/withdrawal decisions with Q-PUBLICATION. No protective merge policy or deletion is invented.
+- Next: isolate generic URL equivalence from cross-source authority, then continue independent failure cases or a genuine Worker preview delivery. Use root tooling and predecessor proof for any publication. Current metadata/epoch changes remain local; no version, tag, push, deployment or live crawl occurred.
+
+| Claim | Code evidence | Exercised evidence | Gap and next check |
+| --- | --- | --- | --- |
+| Storefront metadata stays on its assigned item | coordinator.ts:527,535,539,543 | d1_coordinator_store.test.ts:119,172,199; native_D1_HTTP_metadata_binding | Previously accepted rows and truthfulness remain outside this validation. |
+| Metadata conflict does not expire a lease | coordinator.ts:1039 | Seven-platform batch receipts plus native corrected submission/replay | Preserve actual 403 expiry and revocation tests; do not infer automatic payload repair. |
+| Public fronts require accepted identity | coordinator.ts:708,717 and buildCatalogPackagesBatch contradict this claim | Isolated real ingestion/public handlers expose a provisional unrelated front | R13-C9-IDENTITY: URL equivalence and ownership/publication authority need separate resolution. |
 
 - Delta theory confirmed: production D1 pages current general-rated rows using (updated_at, canonical_id), not a mutation journal. Three stable same-time pages, including identifier-only delists, pass native HTTP checks. Native counterexamples: same-time updates behind the consumed cursor are absent; hard deletion and rating withdrawal produce no tombstone or epoch change. Mutations used isolated in-Worker D1 fixtures, not moderator authentication. Hard-delete helper has no production API caller; rating adjustment does. R13-C9-DELTA defers revision/withdrawal/resync policy with Q-PUBLICATION.
 - Epoch correction: fresh databases no longer share epoch-d1-default. Full UUID first/reset values, rereading the INSERT OR IGNORE winner, stored-value preservation and storage-refusal recovery pass. Existing deployed epochs are not automatically invalidated. No wire, cursor, lease or access-policy change.

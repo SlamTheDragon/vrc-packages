@@ -8,7 +8,7 @@ Here are the latest changelogs of each package and applications. For a full hist
 ## What Changed
 
 <!-- MASTER_SUMMARY -->
-Separate timestamp evidence, preserve settled outbox results and use unique catalog epochs. Preview notes describe each changed product.
+Preserve timestamp evidence and settled outbox results. Use unique catalog epochs and bind storefront submissions to assigned source URLs.
 <!-- MASTER_SUMMARY -->
 
 ## Table of Contents
@@ -183,12 +183,14 @@ See full history at [docs/changelogs/vrcp-web/preview](https://github.com/SlamTh
 ## VRC Packages Worker - `vrcp-worker-preview`
 
 <!-- vrcp-worker-preview-DESCRIPTION_SUMMARY -->
-Use unique catalog epochs and preserve publication evidence during metadata updates.
+Use unique catalog epochs, preserve publication evidence and reject substituted storefront identities before ingestion.
 <!-- vrcp-worker-preview-DESCRIPTION_SUMMARY -->
 ### Added
 ### Bugs Fixed
 - **Publication Confidence**: Stopped metadata-only canonical upserts from inventing observed confidence or downgrading confirmed publication evidence.
 - **Catalog Epochs**: Give fresh databases unique epochs. Concurrent initialization returns the stored winner and preserves existing epochs.
+- **Source Binding**: Reject substituted storefront IDs and URLs, empty catalog names and storefront fields from other source platforms.
+- **Batch Conflicts**: Keep release-evidence conflicts distinct from terminal lease expiry. Rejected metadata preserves its live job for correction.
 ### Changes
 See full history at [docs/changelogs/vrcp-worker/preview](https://github.com/SlamTheDragon/vrc-packages/tree/main/docs/changelogs/vrcp-worker/preview)
 

@@ -523,6 +523,25 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
     if (observations.some(observation => !observationMatchesPlatform(job.platform, observation))) {
       throw new CoordinatorConflict("Release evidence does not match the leased platform");
     }
+    if (observations.some(observation => !cleanTitle(observation.title))) {
+      throw new CoordinatorConflict("Observation requires a nonempty catalog title");
+    }
+    const isStorefront = STOREFRONT_PLATFORMS.has(job.platform);
+    if (isStorefront) {
+      // Match the shipped parser: hints and outbound links cannot replace the assigned item.
+      const target = new URL(job.url);
+      const sourceItemKey = `${target.host}${target.pathname}`;
+      if (observations.some(observation => observation.sourceItemKey !== sourceItemKey)) {
+        throw new CoordinatorConflict("Storefront identity does not match the assigned source");
+      }
+      if (observations.some(observation => observation.storefrontUrl !== undefined &&
+        cleanTrackingParams(observation.storefrontUrl) !== cleanTrackingParams(target.href))) {
+        throw new CoordinatorConflict("Storefront URL does not match the assigned source");
+      }
+    } else if (observations.some(observation => observation.price !== undefined ||
+      observation.currency !== undefined || observation.availability !== undefined || observation.storefrontUrl !== undefined)) {
+      throw new CoordinatorConflict("Storefront fields require a storefront source");
+    }
     if ((observations.length > 0 || outcome.kind === "discovery" || outcome.kind === "partial_batch") &&
       !sourceProfile.retainClasses.includes("normalized_facts")) {
       throw new CoordinatorConflict("Source profile does not permit retaining normalized evidence", 403);
@@ -692,7 +711,6 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
         linkedCanonicalIds.add(canonical_id);
       }
 
-      const isStorefront = STOREFRONT_PLATFORMS.has(job.platform) || observation.price !== undefined;
       if (isStorefront) {
         // Outbound match 1: observation outbound links matching source items or leads linked to a canonical package
         for (const outbound of observation.outboundLinks) {
@@ -811,8 +829,7 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
             );
           }
 
-          const rawStorefrontUrl = (observation as any).storefrontUrl || job.url;
-          const storefrontUrl = cleanTrackingParams(rawStorefrontUrl);
+          const storefrontUrl = cleanTrackingParams(job.url);
           const frontId = crypto.randomUUID();
           const price = observation.price ?? null;
           const currency = observation.currency ?? null;
@@ -1018,9 +1035,9 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
         });
       } catch (error) {
         if (error instanceof CoordinatorConflict) {
-          const isLeaseExpired = error.message.includes("lease") || error.message.includes("live lease");
-          const isTerminal = error.status === 403 || error.status === 404 ||
-            isLeaseExpired || error.message.includes("not found");
+          // A release-evidence conflict is not lease expiry. Do not classify by substrings.
+          const isLeaseExpired = error.status === 403 && error.message === "Node does not hold a live lease for this job";
+          const isTerminal = error.status === 403 || error.status === 404;
           const code = isLeaseExpired ? "lease_expired" : error.status === 403 ? "forbidden" : error.status === 404 ? "not_found" : "conflict";
           receipts.push({
             status: "rejected",

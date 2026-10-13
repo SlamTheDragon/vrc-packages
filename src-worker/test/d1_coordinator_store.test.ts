@@ -8,12 +8,13 @@ import {
   type D1ExecResult
 } from "../src/storage/d1/definitions.ts";
 import workerEntry, { type Env } from "../src/worker_entry.ts";
-import { PlatformSchema } from "vrc-packages-network/node";
+import { PlatformSchema, type Platform, ResultResponseSchema, BatchResultResponseSchema } from "vrc-packages-network/node";
 import { DEFAULT_SEED_JOBS } from "../src/storage/default_seeds.ts";
 import { decodeCatalogCursor } from "vrc-packages-api";
 import { VRCPackageClient } from "vrc-packages-api";
 import { handlePublicCatalogRequest } from "../src/api/public_handler.ts";
 import { InMemoryRateLimiter } from "../src/api/rate_limiter.ts";
+import { handleNodeRequest } from "../src/api/handler.ts";
 
 export function createMockD1Database(db = new Database(":memory:")): D1Database {
   db.run("PRAGMA foreign_keys = ON;");
@@ -75,6 +76,142 @@ export function createMockD1Database(db = new Database(":memory:")): D1Database 
 }
 
 describe("Cloudflare D1 Coordinator Store & Edge Worker Adapter", () => {
+  async function metadataFixture(platform: Platform, target: string) {
+    const sqlite = new Database(":memory:");
+    const store = new Coordinator(createMockD1Database(sqlite));
+    await store.initSchema(false);
+    const url = new URL(target);
+    await store.createSourceAccessProfile({ schemaVersion: 1, platform, origin: url.origin,
+      pathScope: url.pathname, method: "GET", purpose: "metadata", minDelayMs: 1000,
+      expiresAt: new Date(Date.now() + 3600000).toISOString(), reviewReference: "OFFLINE-METADATA-BOUNDARY",
+      reason: "Hermetic metadata trust boundary", retainClasses: ["normalized_facts"],
+      publishClasses: ["normalized_facts"] }, "fixture-operator");
+    await store.recordRobotsSnapshot(url.origin, 404);
+    await store.seedJob(target, platform, 1000, undefined, "metadata");
+    const nodeId = `metadata-${platform}`;
+    const token = await store.createNodeCredential(nodeId, [platform]);
+    const principal = (await store.authenticate(nodeId, token))!;
+    const claim = await store.claim({ schemaVersion: 1, nodeId, capabilities: [platform] }, principal);
+    if (claim.status !== "leased") throw new Error("Expected metadata fixture lease");
+    const limiter = new InMemoryRateLimiter();
+    const post = (body: unknown, path = "/v1/node/jobs/result") => handleNodeRequest(new Request(`https://offline.invalid${path}`, {
+      method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+      body: JSON.stringify(body)
+    }), store, limiter);
+    const observation = { sourceItemKey: `${url.host}${url.pathname}`, title: "Metadata fixture", author: "Fixture creator",
+      summary: "", outboundLinks: [] as string[], originUpdatedAt: null };
+    const result = { schemaVersion: 1, nodeId, jobId: claim.job.jobId, leaseId: claim.job.leaseId,
+      idempotencyKey: "metadata-boundary-result", outcome: { kind: "changed", observation } };
+    const snapshot = () => Object.fromEntries(["source_items", "source_versions", "source_events", "job_results",
+      "canonical_packages", "identity_links", "package_fronts", "source_leads", "avatar_compatibilities",
+      "desktop_tool_evidence", "crawl_jobs", "origin_leases"].map(table => [table, sqlite.query(`SELECT * FROM ${table}`).all()]));
+    return { sqlite, store, post, result, observation, snapshot };
+  }
+
+  it.each([
+    ["booth", "https://booth.pm/ja/items/12345"],
+    ["gumroad", "https://creator.gumroad.com/l/tool"],
+    ["jinxxy", "https://jinxxy.com/creator/tool"],
+    ["itch", "https://creator.itch.io/tool"],
+    ["shopify", "https://merchant.example/products/tool"],
+    ["sellfy", "https://sellfy.com/p/tool/"],
+    ["custom_domain", "https://creator.example/products/tool"]
+  ] as const)("binds %s metadata to its assigned item before durable writes", async (platform, target) => {
+    const fixture = await metadataFixture(platform, target);
+    try {
+      const victimId = "com.fixture.unrelated";
+      await fixture.store.upsertCanonicalPackage({ canonicalId: victimId, umbrella: "tools", category: "tool",
+        lifecycle: "active", displayName: "Unrelated original" });
+      const before = fixture.snapshot();
+      const targetUrl = new URL(target);
+      const invalid = [
+        { sourceItemKey: victimId },
+        { sourceItemKey: `${targetUrl.host}/another-product` },
+        { title: " \t\n " },
+        ...["https://unrelated.example/product", `${target}another-product`, `${target}?edition=other`,
+          `${target}#unverified`, `https://user:password@${targetUrl.host}${targetUrl.pathname}`,
+          `https://${targetUrl.hostname}:444${targetUrl.pathname}`].map(storefrontUrl => ({ storefrontUrl }))
+      ];
+      for (const patch of invalid) {
+        const response = await fixture.post({ ...fixture.result,
+          outcome: { kind: "changed", observation: { ...fixture.observation, ...patch } } });
+        expect(response.status).toBe(409);
+        expect(await response.json()).toMatchObject({ schemaVersion: 1, code: "conflict" });
+        expect(fixture.snapshot()).toEqual(before);
+      }
+      // Batch transport must report a correctable metadata conflict, not consume the lease.
+      const badItem = { ...fixture.result, outcome: { kind: "changed", observation: {
+        ...fixture.observation, storefrontUrl: "https://unrelated.example/product" } } };
+      const batch = await fixture.post({ schemaVersion: 1, nodeId: fixture.result.nodeId,
+        results: [{ jobId: badItem.jobId, leaseId: badItem.leaseId, idempotencyKey: badItem.idempotencyKey,
+          outcome: badItem.outcome }, { jobId: badItem.jobId, leaseId: badItem.leaseId,
+          idempotencyKey: "metadata-forged-release", outcome: { kind: "changed", observation: {
+            ...fixture.observation, release: { version: "1.0.0", dependencyRanges: {} } } } }] }, "/v1/node/jobs/results");
+      expect(batch.status).toBe(200);
+      const receipts = BatchResultResponseSchema.parse(await batch.json()).receipts;
+      expect(receipts).toHaveLength(2);
+      for (const receipt of receipts) expect(receipt).toMatchObject({
+        status: "rejected", terminal: false, code: "conflict" });
+      expect(fixture.snapshot()).toEqual(before);
+      const valid = { ...fixture.result, outcome: { kind: "changed", observation: { ...fixture.observation,
+        storefrontUrl: `${target}?utm_source=fixture`, price: 0, currency: "USD", availability: "available" } } };
+      const accepted = await fixture.post(valid);
+      expect(accepted.status).toBe(200);
+      expect(ResultResponseSchema.parse(await accepted.json())).toMatchObject({ status: "accepted", duplicate: false });
+      const fronts = await fixture.store.getPackageFrontsForCanonical(fixture.observation.sourceItemKey);
+      expect(fronts).toHaveLength(1);
+      expect(fronts[0]?.storefrontUrl).toBe(target);
+      expect((await fixture.store.getCanonicalPackage(victimId))?.displayName).toBe("Unrelated original");
+      const settled = fixture.snapshot();
+      const replay = await fixture.post(valid);
+      expect(ResultResponseSchema.parse(await replay.json()).duplicate).toBe(true);
+      expect(fixture.snapshot()).toEqual(settled);
+    } finally { fixture.sqlite.close(); }
+  });
+
+  it("rejects malformed HTTP metadata without poisoning a live job or its public projection", async () => {
+    const fixture = await metadataFixture("booth", "https://booth.pm/ja/items/55555");
+    try {
+      const before = fixture.snapshot();
+      for (const patch of [{ title: "x".repeat(501) }, { summary: "x".repeat(1025) },
+        { platformTags: ["x".repeat(101)] }, { outboundLinks: ["javascript:alert(1)"] },
+        { outboundLinks: ["http://unrelated.example/product"] }, { price: "free" },
+        { originUpdatedAt: "not-a-date" }, { unrecognized: true }]) {
+        const response = await fixture.post({ ...fixture.result,
+          outcome: { kind: "changed", observation: { ...fixture.observation, ...patch } } });
+        expect(response.status).toBe(400);
+        expect(await response.json()).toMatchObject({ schemaVersion: 1, code: "invalid_payload" });
+        expect(fixture.snapshot()).toEqual(before);
+      }
+      const corrected = await fixture.post(fixture.result);
+      expect(corrected.status).toBe(200);
+      expect(ResultResponseSchema.parse(await corrected.json()).status).toBe("accepted");
+      const page = await fixture.store.listCanonicalPackagesPage(100, null);
+      expect(page.packages[0]?.canonicalId).toBe(fixture.observation.sourceItemKey);
+      expect(page.packages[0]?.fronts[0]?.storefrontUrl).toBe("https://booth.pm/ja/items/55555");
+    } finally { fixture.sqlite.close(); }
+  });
+
+  it.each([
+    ["vpm", "https://packages.example/index.json"],
+    ["github", "https://api.github.com/repos/fixture/tool"],
+    ["curated", "https://directory.example/catalog"]
+  ] as const)("does not let %s metadata manufacture storefront authority", async (platform, target) => {
+    const fixture = await metadataFixture(platform, target);
+    try {
+      const before = fixture.snapshot();
+      for (const patch of [{ price: 0 }, { currency: "USD" }, { availability: "available" },
+        { storefrontUrl: "https://unrelated.example/product" }]) {
+        const response = await fixture.post({ ...fixture.result,
+          outcome: { kind: "changed", observation: { ...fixture.observation, ...patch } } });
+        expect(response.status).toBe(409);
+        expect(fixture.snapshot()).toEqual(before);
+      }
+      expect((await fixture.post(fixture.result)).status).toBe(200);
+      expect(fixture.sqlite.query("SELECT * FROM package_fronts").all()).toEqual([]);
+    } finally { fixture.sqlite.close(); }
+  });
+
   it("preserves earlier bot refusals and replaces both matchers with the snapshot", async () => {
     const fixture = await claimRaceFixture(["https://race.example/index.json"]);
     try {

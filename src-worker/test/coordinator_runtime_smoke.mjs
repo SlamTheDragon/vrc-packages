@@ -28,6 +28,7 @@ const storageModule = execFileSync('bun', [
 ], { cwd: fileURLToPath(new URL('..', import.meta.url)), encoding: 'utf8', maxBuffer: 8 * 1024 * 1024, timeout: 30_000 });
 const refreshFixtureModule = String.raw`
 import { Coordinator } from './storage.mjs';
+import worker from './coordinator.mjs';
 function check(value, message) { if (!value) throw new Error(message); }
 export async function refreshFixture(env) {
   const origin = 'https://native-robots.example';
@@ -60,6 +61,7 @@ export async function refreshFixture(env) {
     await env.VRCP_D1.prepare('DELETE FROM canonical_packages WHERE canonical_id IN (?,?)').bind(...timestampIds).run();
   }
   await operatorAtomicityFixture(env, store, clock);
+  await metadataBindingFixture(env, store, clock);
   const owner = await store.issueUserToken('native-app-owner');
   const owned = await store.registerApp({ schemaVersion: 1, appName: 'Native owned app' }, owner.userId);
   const ownedRow = await env.VRCP_D1.prepare('SELECT user_id FROM user_app_ownership WHERE app_id=?').bind(owned.appId).first();
@@ -156,7 +158,79 @@ export async function refreshFixture(env) {
   await store.recordRobotsSnapshot(botOrigin, 200, 'User-agent: VRCPDiscoveryBot\nAllow: /\nUser-agent: VRCDiscoveryBot\nAllow: /');
   check((await store.claim(botRequest, botPrincipal)).status === 'leased', 'Replaced snapshot retained stale matchers');
   return { status: 'passed', refreshRace: true, staleCompletion: true, profileRevocation: true,
-    pacingRollback: true, completionRollback: true, botRestrictions: true, timestampProvenance: true, catalogEpoch: true };
+    pacingRollback: true, completionRollback: true, botRestrictions: true, timestampProvenance: true,
+    catalogEpoch: true, metadataBinding: true };
+}
+async function metadataBindingFixture(env, store, clock) {
+  const target = 'https://booth.pm/ja/items/98765', nodeId = 'native-metadata-node';
+  await store.createSourceAccessProfile({ schemaVersion: 1, platform: 'booth', origin: 'https://booth.pm',
+    pathScope: '/ja/items/98765', method: 'GET', purpose: 'metadata', minDelayMs: 1000,
+    expiresAt: new Date(clock + 3600000).toISOString(), reviewReference: 'OFFLINE-METADATA-FIXTURE',
+    reason: 'Hermetic metadata source binding', retainClasses: ['normalized_facts'], publishClasses: []
+  }, 'offline-fixture');
+  await store.recordRobotsSnapshot('https://booth.pm', 404);
+  await store.seedJob(target, 'booth', 1000, undefined, 'metadata');
+  const token = await store.createNodeCredential(nodeId, ['booth']);
+  const principal = await store.authenticate(nodeId, token);
+  const claim = await store.claim({ schemaVersion: 1, nodeId, capabilities: ['booth'] }, principal);
+  check(claim.status === 'leased', 'Metadata fixture has no lease');
+  const observation = { sourceItemKey: 'booth.pm/ja/items/98765', title: 'Native metadata fixture',
+    author: 'Offline publisher', summary: '', outboundLinks: [], originUpdatedAt: null };
+  const result = { schemaVersion: 1, nodeId, jobId: claim.job.jobId, leaseId: claim.job.leaseId,
+    idempotencyKey: 'native-metadata-result', outcome: { kind: 'changed', observation } };
+  const post = async (body, path = '/v1/node/jobs/result') => {
+    const response = await worker.fetch(new Request('https://offline.invalid' + path, {
+      method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer ' + token },
+      body: JSON.stringify(body)
+    }), env);
+    return { status: response.status, body: await response.json() };
+  };
+  const snapshot = async () => {
+    const tables = ['source_items', 'source_versions', 'source_events', 'job_results', 'canonical_packages',
+      'identity_links', 'package_fronts', 'source_leads', 'crawl_jobs', 'origin_leases'];
+    const rows = await Promise.all(tables.map(table => env.VRCP_D1.prepare('SELECT * FROM ' + table).all()));
+    return JSON.stringify(rows.map(row => row.results));
+  };
+  const before = await snapshot();
+  for (const [status, patch] of [
+    [400, { title: 'x'.repeat(501) }], [400, { platformTags: ['x'.repeat(101)] }],
+    [400, { outboundLinks: ['javascript:alert(1)'] }], [400, { unexpected: true }],
+    [409, { title: '   ' }], [409, { sourceItemKey: 'com.unrelated.native' }],
+    [409, { storefrontUrl: 'https://booth.pm/ja/items/11111' }],
+    [409, { storefrontUrl: 'https://unrelated.example/product' }],
+    [409, { storefrontUrl: target + '?edition=other' }]
+  ]) {
+    const rejected = await post({ ...result, outcome: { kind: 'changed', observation: { ...observation, ...patch } } });
+    check(rejected.status === status, 'Malformed metadata did not fail at the expected boundary');
+    check(await snapshot() === before, 'Rejected metadata changed durable D1 state');
+  }
+  const batch = await post({ schemaVersion: 1, nodeId, results: [{ jobId: result.jobId, leaseId: result.leaseId,
+    idempotencyKey: 'native-metadata-release-conflict', outcome: { kind: 'changed', observation: {
+      ...observation, release: { version: '1.0.0', dependencyRanges: {} } } } }] }, '/v1/node/jobs/results');
+  check(batch.status === 200 && batch.body.receipts[0].status === 'rejected' &&
+    batch.body.receipts[0].code === 'conflict' && batch.body.receipts[0].terminal === false,
+    'Release-evidence conflict was incorrectly classified as terminal lease expiry');
+  check(await snapshot() === before, 'Batch rejection changed durable D1 state');
+  const valid = { ...result, outcome: { kind: 'changed', observation: {
+    ...observation, storefrontUrl: target + '?utm_source=fixture' } } };
+  const accepted = await post(valid);
+  check(accepted.status === 200 && accepted.body.status === 'accepted' && !accepted.body.duplicate,
+    'Corrected metadata did not retain the original lease');
+  const fronts = await store.getPackageFrontsForCanonical(observation.sourceItemKey);
+  check(fronts.length === 1 && fronts[0].storefrontUrl === target, 'Front did not use assigned source URL');
+  const publicResponse = await worker.fetch(new Request('https://offline.invalid/v1/app/index'), env);
+  const catalog = await publicResponse.json();
+  check(publicResponse.status === 200 && catalog.packages.find(item => item.canonicalId === observation.sourceItemKey)
+    ?.fronts[0]?.storefrontUrl === target, 'Public HTTP projection did not preserve assigned source URL');
+  const settled = await snapshot();
+  const replay = await post(valid);
+  check(replay.status === 200 && replay.body.duplicate && await snapshot() === settled,
+    'Metadata replay changed durable state');
+  await env.VRCP_D1.batch([
+    env.VRCP_D1.prepare('DELETE FROM package_fronts WHERE canonical_id=?').bind(observation.sourceItemKey),
+    env.VRCP_D1.prepare('DELETE FROM identity_links WHERE canonical_id=?').bind(observation.sourceItemKey),
+    env.VRCP_D1.prepare('DELETE FROM canonical_packages WHERE canonical_id=?').bind(observation.sourceItemKey)
+  ]);
 }
 async function operatorAtomicityFixture(env, store, clock) {
   const db = env.VRCP_D1, existingNode = 'native-audit-rotation', freshNode = 'native-audit-new';
@@ -468,6 +542,9 @@ try {
   assert.equal(refreshCheck.status, 'passed');
   assert.equal(refreshCheck.timestampProvenance, true);
   assert.equal(refreshCheck.catalogEpoch, true);
+  assert.equal(refreshCheck.metadataBinding, true);
+  console.log(JSON.stringify({ check: 'native_D1_HTTP_metadata_binding', malformedRejected: true,
+    rejectedWritesAbsent: true, correctedLeaseAccepted: true, replayPreserved: true }));
   console.log(JSON.stringify({ check: 'native_D1_catalog_epoch_concurrency', readers: 8, resetPersisted: true, passed: true }));
   console.log(JSON.stringify({ check: 'native_D1_timestamp_provenance', passed: true }));
   console.log(JSON.stringify({ check: 'native_D1_refresh_ownership', ...refreshCheck }));

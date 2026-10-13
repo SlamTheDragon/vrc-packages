@@ -31,7 +31,7 @@ The coordinator currently supports these responsibilities:
 
 ## 2. Protocol Boundaries and Endpoints
 
-The route draft is [`API_ROUTES.md`](API_ROUTES.md). Internal node schemas live in the [network package](../../src-worker/packages/network/README.md). Worker and node consumers import its declared package exports. The consumer SDK contains operator/user/app contracts, not node job methods. Current exact artifact dependencies are not published. Clean installation and mixed-fixture separation remain open at G13. Handlers define executable routes. [`DATABASE_SCHEMAS.md`](DATABASE_SCHEMAS.md) describes storage.
+The route draft is [`API_ROUTES.md`](API_ROUTES.md). Internal node schemas live in the [network package](../../src-worker/packages/network/README.md). Worker and node consumers import its declared package exports from a distributed network archive. The consumer SDK contains operator/user/app contracts, not node job methods. The tracker records checked artifact identities separately from runtime conformance. Handlers define executable routes. [`DATABASE_SCHEMAS.md`](DATABASE_SCHEMAS.md) describes storage.
 
 ### 2.1 Crawler Node Protocol (`/v1/node/*`)
 Requires `Authorization: Bearer <NODE_TOKEN>` (`vrcp_<64-hex><4-hex>`). The 4-hex suffix encodes the node's assigned capability bitmask.
@@ -39,7 +39,7 @@ Requires `Authorization: Bearer <NODE_TOKEN>` (`vrcp_<64-hex><4-hex>`). The 4-he
 - `POST /v1/node/heartbeat`: Checks active lease authority and records node liveness. It does not extend the lease deadline.
 - `POST /v1/node/jobs/result`: Submits observation facts, discovered leads, or access failure diagnostics. Transitions job state and updates canonical catalog tables.
 
-Discovery lead rows, source events, the receipt and job/lease updates commit in one D1 batch. Failed lead writes preserve the lease and origin reservation. Native D1 tests cover failures on the first and second lead, exact retry, and duplicate replay. Automatic lead promotion follows the commit. It does not yet have durable retry guarantees. Node restart cannot yet replay a result without a persisted payload/key outbox.
+Discovery lead rows, source events, the receipt and job/lease updates commit in one D1 batch. Failed lead writes preserve the lease and origin reservation. Native D1 tests cover failures on the first and second lead, exact retry, and duplicate replay. Automatic lead promotion follows the commit. It does not yet have durable retry guarantees. The node stages result payloads and idempotency keys in its durable SQLite outbox before submission. Restart and lost-receipt replay have scoped process tests, not full-fleet proof.
 
 ### 2.2 Operator Control Protocol (`/v1/operator/*`)
 Requires the `OPERATOR_TOKEN` bearer secret. Operators receive newly issued node tokens once, but credential listings do not expose stored plaintext.
@@ -90,6 +90,18 @@ Current delta limits:
 - Missing canonical publication evidence remains null. Metadata-only updates preserve existing publication dates and confidence.
 - Catalog creation/update timestamps describe coordinator records, not upstream publication. Search can use catalog creation as a sorting fallback without claiming publication confidence.
 - The current observation wire has no separate upstream creation or release-publication fields. That provenance contract remains pending; no timestamp enum changes occur here.
+
+### 2.7 Observation Identity Boundary
+
+- HTTP handlers enforce the distributed observation schema before ingestion. Whitespace-only catalog titles also fail semantic validation.
+- Each storefront observation uses the assigned URL's exact host and path as its `sourceItemKey`, matching the shipped node parser.
+- An optional `storefrontUrl` must match the assigned URL after existing tracking cleanup. Functional queries, credentials and fragments cannot substitute another target.
+- Public fronts use the coordinator's assigned URL, not the node's optional URL. GitHub, VPM and curated leases cannot supply storefront fields.
+- Rejected observations create no evidence, receipt or projection writes and preserve the current lease. A corrected submission can use it before expiry.
+- Batch metadata conflicts remain nonterminal conflicts. They are not lease expiry merely because the error mentions release evidence.
+- These checks do not prove truthful fetching, product ownership or cross-source identity. Previously ingested rows are not migrated or removed.
+- Cross-source association remains unsafe: outbound matching can create provisional fronts that public responses expose without an accepted storefront link.
+- Generic association matching also folds URL path case. R13-C9-IDENTITY retains these counterexamples and the authority decision before claiming false-link protection.
 
 ---
 
