@@ -62,6 +62,7 @@ export async function refreshFixture(env) {
   }
   await operatorAtomicityFixture(env, store, clock);
   await metadataBindingFixture(env, store, clock);
+  const urlAssociations = await urlAssociationFixture(env, store, clock);
   const owner = await store.issueUserToken('native-app-owner');
   const owned = await store.registerApp({ schemaVersion: 1, appName: 'Native owned app' }, owner.userId);
   const ownedRow = await env.VRCP_D1.prepare('SELECT user_id FROM user_app_ownership WHERE app_id=?').bind(owned.appId).first();
@@ -159,7 +160,69 @@ export async function refreshFixture(env) {
   check((await store.claim(botRequest, botPrincipal)).status === 'leased', 'Replaced snapshot retained stale matchers');
   return { status: 'passed', refreshRace: true, staleCompletion: true, profileRevocation: true,
     pacingRollback: true, completionRollback: true, botRestrictions: true, timestampProvenance: true,
-    catalogEpoch: true, metadataBinding: true };
+    catalogEpoch: true, metadataBinding: true, urlAssociations };
+}
+async function urlAssociationFixture(env, store, clock) {
+  const sourceUrl = 'https://native-publisher.example/Tools/Widget?Edition=Gold';
+  const canonicalId = 'com.native.url-association';
+  const grant = async (platform, target) => {
+    const url = new URL(target);
+    await store.createSourceAccessProfile({ schemaVersion: 1, platform, origin: url.origin,
+      pathScope: url.pathname, ...(url.search ? { exactQuery: url.search.slice(1) } : {}),
+      method: 'GET', purpose: 'metadata', minDelayMs: 1000,
+      expiresAt: new Date(clock + 3600000).toISOString(), reviewReference: 'OFFLINE-URL-ASSOCIATION',
+      reason: 'Hermetic URL comparison fixture', retainClasses: ['normalized_facts'], publishClasses: []
+    }, 'offline-fixture');
+    await store.recordRobotsSnapshot(url.origin, 404);
+    await store.seedJob(url.href, platform, 1000, undefined, 'metadata');
+  };
+  const submit = async (nodeId, token, claim, observation, key) => {
+    check(claim.status === 'leased', 'URL association fixture has no lease');
+    const response = await worker.fetch(new Request('https://offline.invalid/v1/node/jobs/result', {
+      method: 'POST', headers: { authorization: 'Bearer ' + token, 'content-type': 'application/json' },
+      body: JSON.stringify({ schemaVersion: 1, nodeId, jobId: claim.job.jobId, leaseId: claim.job.leaseId,
+        idempotencyKey: key, outcome: { kind: 'changed', observation } })
+    }), env);
+    const receipt = await response.json();
+    check(response.status === 200 && receipt.status === 'accepted', 'URL fixture submission failed');
+  };
+  await grant('vpm', sourceUrl);
+  const vpmNode = 'native-url-vpm', vpmToken = await store.createNodeCredential(vpmNode, ['vpm']);
+  const vpmPrincipal = await store.authenticate(vpmNode, vpmToken);
+  const vpmClaim = await store.claim({ schemaVersion: 1, nodeId: vpmNode, capabilities: ['vpm'] }, vpmPrincipal);
+  await submit(vpmNode, vpmToken, vpmClaim, { sourceItemKey: canonicalId, title: 'Native URL fixture',
+    author: 'Offline publisher', summary: '', originUpdatedAt: null,
+    outboundLinks: ['https://NATIVE-PUBLISHER.EXAMPLE:443/Tools/Widget?Edition=Gold', sourceUrl]
+  }, 'native-url-vpm-result');
+  const leadCount = await env.VRCP_D1.prepare('SELECT COUNT(*) AS count FROM source_leads WHERE discovered_from_job_id=?')
+    .bind(vpmClaim.job.jobId).first();
+  check(leadCount.count === 1, 'Serialized lead aliases did not deduplicate');
+  const nodeId = 'native-url-store', token = await store.createNodeCredential(nodeId, ['custom_domain']);
+  const principal = await store.authenticate(nodeId, token);
+  const cases = [
+    [sourceUrl, true], ['https://NATIVE-PUBLISHER.EXAMPLE:443/Tools/Widget?Edition=Gold', true],
+    ['https://native-publisher.example/tools/widget?Edition=Gold', false],
+    ['https://native-publisher.example/Tools/Widget?Edition=gold', false],
+    ['https://native-publisher.example/Tools/Widget/?Edition=Gold', false], [sourceUrl + '/', false]
+  ];
+  for (let index = 0; index < cases.length; index++) {
+    const [outbound, matches] = cases[index], target = 'https://native-url-' + index + '.example/products/tool';
+    await grant('custom_domain', target);
+    const claim = await store.claim({ schemaVersion: 1, nodeId, capabilities: ['custom_domain'] }, principal);
+    check(claim.status === 'leased' && claim.job.url === target, 'Wrong URL fixture job assigned');
+    await submit(nodeId, token, claim, { sourceItemKey: new URL(target).host + '/products/tool',
+      title: 'Native storefront fixture', author: 'Offline publisher', summary: '', originUpdatedAt: null,
+      outboundLinks: [outbound] }, 'native-url-store-' + index);
+    const front = await env.VRCP_D1.prepare('SELECT canonical_id FROM package_fronts WHERE storefront_url=?').bind(target).first();
+    check(front?.canonical_id === (matches ? canonicalId : new URL(target).host + '/products/tool'),
+      'Generic URL comparison conflated distinct resources or lost an exact match');
+  }
+  const publicResponse = await worker.fetch(new Request('https://offline.invalid/v1/app/index'), env);
+  check(publicResponse.status === 200, 'URL comparison public read failed');
+  const catalog = await publicResponse.json(), projected = catalog.packages.find(item => item.canonicalId === canonicalId);
+  // Report this separately: correct URL matching does not authorize provisional publication.
+  return { cases: cases.length, aliasLeadCount: leadCount.count,
+    provisionalFrontStillPublic: Boolean(projected?.fronts.some(front => front.storefrontUrl === 'https://native-url-0.example/products/tool')) };
 }
 async function metadataBindingFixture(env, store, clock) {
   const target = 'https://booth.pm/ja/items/98765', nodeId = 'native-metadata-node';
@@ -543,6 +606,10 @@ try {
   assert.equal(refreshCheck.timestampProvenance, true);
   assert.equal(refreshCheck.catalogEpoch, true);
   assert.equal(refreshCheck.metadataBinding, true);
+  assert.equal(refreshCheck.urlAssociations.cases, 6);
+  assert.equal(refreshCheck.urlAssociations.aliasLeadCount, 1);
+  console.log(JSON.stringify({ check: 'native_D1_HTTP_URL_associations', ...refreshCheck.urlAssociations,
+    ownershipPolicyResolved: false }));
   console.log(JSON.stringify({ check: 'native_D1_HTTP_metadata_binding', malformedRejected: true,
     rejectedWritesAbsent: true, correctedLeaseAccepted: true, replayPreserved: true }));
   console.log(JSON.stringify({ check: 'native_D1_catalog_epoch_concurrency', readers: 8, resetPersisted: true, passed: true }));

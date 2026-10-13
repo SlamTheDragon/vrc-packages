@@ -10,7 +10,7 @@ import {
 import workerEntry, { type Env } from "../src/worker_entry.ts";
 import { PlatformSchema, type Platform, ResultResponseSchema, BatchResultResponseSchema } from "vrc-packages-network/node";
 import { DEFAULT_SEED_JOBS } from "../src/storage/default_seeds.ts";
-import { decodeCatalogCursor } from "vrc-packages-api";
+import { decodeCatalogCursor, PublicCatalogListResponseSchema } from "vrc-packages-api";
 import { VRCPackageClient } from "vrc-packages-api";
 import { handlePublicCatalogRequest } from "../src/api/public_handler.ts";
 import { InMemoryRateLimiter } from "../src/api/rate_limiter.ts";
@@ -76,18 +76,19 @@ export function createMockD1Database(db = new Database(":memory:")): D1Database 
 }
 
 describe("Cloudflare D1 Coordinator Store & Edge Worker Adapter", () => {
-  async function metadataFixture(platform: Platform, target: string) {
+  async function metadataFixture(platform: Platform, target: string, purpose: "metadata" | "discovery" = "metadata") {
     const sqlite = new Database(":memory:");
     const store = new Coordinator(createMockD1Database(sqlite));
     await store.initSchema(false);
     const url = new URL(target);
     await store.createSourceAccessProfile({ schemaVersion: 1, platform, origin: url.origin,
-      pathScope: url.pathname, method: "GET", purpose: "metadata", minDelayMs: 1000,
+      pathScope: url.pathname, method: "GET", purpose, minDelayMs: 1000,
+      ...(url.search ? { exactQuery: url.search.slice(1) } : {}),
       expiresAt: new Date(Date.now() + 3600000).toISOString(), reviewReference: "OFFLINE-METADATA-BOUNDARY",
       reason: "Hermetic metadata trust boundary", retainClasses: ["normalized_facts"],
       publishClasses: ["normalized_facts"] }, "fixture-operator");
     await store.recordRobotsSnapshot(url.origin, 404);
-    await store.seedJob(target, platform, 1000, undefined, "metadata");
+    await store.seedJob(target, platform, 1000, undefined, purpose);
     const nodeId = `metadata-${platform}`;
     const token = await store.createNodeCredential(nodeId, [platform]);
     const principal = (await store.authenticate(nodeId, token))!;
@@ -107,6 +108,120 @@ describe("Cloudflare D1 Coordinator Store & Edge Worker Adapter", () => {
       "desktop_tool_evidence", "crawl_jobs", "origin_leases"].map(table => [table, sqlite.query(`SELECT * FROM ${table}`).all()]));
     return { sqlite, store, post, result, observation, snapshot };
   }
+
+  async function associationEvidence(store: Coordinator, sourceUrl: string, outboundLinks: string[],
+    platform: "vpm" | "github" = "vpm") {
+    const target = new URL(sourceUrl), nodeId = `association-evidence-${platform}`, canonicalId = "com.fixture.association";
+    const delay = platform === "github" ? 60000 : 1000;
+    await store.createSourceAccessProfile({ schemaVersion: 1, platform, origin: target.origin,
+      pathScope: target.pathname, method: "GET", purpose: "metadata", minDelayMs: delay,
+      ...(target.search ? { exactQuery: target.search.slice(1) } : {}),
+      expiresAt: new Date(Date.now() + 3600000).toISOString(), reviewReference: "OFFLINE-URL-EQUIVALENCE",
+      reason: "Hermetic accepted source fixture", retainClasses: ["normalized_facts"], publishClasses: [] }, "fixture-operator");
+    await store.recordRobotsSnapshot(target.origin, 404);
+    await store.seedJob(target.href, platform, delay, undefined, "metadata");
+    const token = await store.createNodeCredential(nodeId, [platform]);
+    const principal = (await store.authenticate(nodeId, token))!;
+    const claim = await store.claim({ schemaVersion: 1, nodeId, capabilities: [platform] }, principal);
+    if (claim.status !== "leased") throw new Error("Expected association evidence lease");
+    expect((await store.submit({ schemaVersion: 1, nodeId, jobId: claim.job.jobId, leaseId: claim.job.leaseId,
+      idempotencyKey: "association-evidence-result", outcome: { kind: "changed", observation: {
+        sourceItemKey: platform === "vpm" ? canonicalId : "github:999", title: "Accepted source fixture", author: "Fixture creator", summary: "",
+        outboundLinks, originUpdatedAt: null } } }, principal)).status).toBe("accepted");
+    return canonicalId;
+  }
+
+  it.each(["source_item", "outbound_lead", "job_lead"] as const)(
+    "preserves generic URL components during %s association", async (route) => {
+    const variants: [string, (base: string) => string, boolean][] = [
+      ["exact", base => base, true],
+      ["host case and default port", base => { const url = new URL(base);
+        return `https://${url.hostname.toUpperCase()}:443${url.pathname}${url.search}`; }, true],
+      ["path case", base => { const url = new URL(base); url.pathname = url.pathname.toUpperCase(); return url.href; }, false],
+      ["query key case", base => base.replace("Edition=", "edition="), false],
+      ["query value case", base => base.replace("Gold", "gold"), false],
+      ["path slash", base => { const url = new URL(base); url.pathname += "/"; return url.href; }, false],
+      ["query value slash", base => base + "/", false],
+      ["absent query", base => { const url = new URL(base); url.search = ""; return url.href; }, false],
+      ["fragment", base => base + "#details", false]
+    ];
+    for (const [label, variant, matches] of variants) {
+      const jobUrl = "https://booth.pm/ja/items/66666?Edition=Gold";
+      const fixture = await metadataFixture("booth", jobUrl);
+      try {
+        const reference = route === "job_lead" ? jobUrl : "https://publisher.example/Tools/Widget?Edition=Gold";
+        const candidate = variant(reference);
+        const canonicalId = await associationEvidence(fixture.store,
+          route === "source_item" ? reference : "https://vpm-evidence.example/index.json",
+          route === "outbound_lead" ? [reference] : route === "job_lead" ? [candidate] : []);
+        const result = { ...fixture.result, outcome: { kind: "changed", observation: { ...fixture.observation,
+          outboundLinks: route === "job_lead" ? [] : [candidate] } } };
+        const response = await fixture.post(result);
+        expect(response.status, label).toBe(200);
+        const publicResponse = await handlePublicCatalogRequest(new Request("https://offline.invalid/v1/app/index"),
+          fixture.store, new InMemoryRateLimiter());
+        const packages = PublicCatalogListResponseSchema.parse(await publicResponse.json()).packages;
+        expect(packages.find(item => item.canonicalId === canonicalId)?.fronts.length, label).toBe(matches ? 1 : 0);
+        expect(Boolean(await fixture.store.getCanonicalPackage(fixture.observation.sourceItemKey)), label).toBe(!matches);
+        if (!matches) expect(packages.find(item => item.canonicalId === fixture.observation.sourceItemKey)
+          ?.fronts[0]?.storefrontUrl, label).toBe(jobUrl);
+        const settled = fixture.snapshot();
+        expect(ResultResponseSchema.parse(await (await fixture.post(result)).json()).duplicate).toBe(true);
+        expect(fixture.snapshot()).toEqual(settled);
+      } finally { fixture.sqlite.close(); }
+    }
+  });
+
+  it("serializes VPM lead identities without changing retained outbound evidence", async () => {
+    const fixture = await metadataFixture("booth", "https://booth.pm/ja/items/66667");
+    try {
+      const sourceUrl = "https://vpm-evidence.example/index.json";
+      const links = ["https://PUBLISHER.EXAMPLE:443/Tools/Widget", "https://publisher.example/Tools/Widget",
+        "https://publisher.example/tools/widget"];
+      await associationEvidence(fixture.store, sourceUrl, links);
+      const leads = await fixture.store.listLeadsPage("pending_review", 10, null);
+      expect(leads.leads.map(lead => lead.target_url).sort()).toEqual([
+        "https://publisher.example/Tools/Widget", "https://publisher.example/tools/widget"]);
+      const retained = fixture.sqlite.query("SELECT payload_json FROM source_versions WHERE source_key=?")
+        .get(`vpm:${sourceUrl}:com.fixture.association`) as { payload_json: string };
+      expect(JSON.parse(retained.payload_json).outboundLinks).toEqual(links);
+    } finally { fixture.sqlite.close(); }
+  });
+
+  it("retains explicit GitHub owner/repository case matching without folding generic source URLs", async () => {
+    const fixture = await metadataFixture("booth", "https://booth.pm/ja/items/66668");
+    try {
+      const canonicalId = await associationEvidence(fixture.store, "https://vpm-evidence.example/index.json",
+        ["https://github.com/Fixture/Tool"]);
+      await associationEvidence(fixture.store, "https://api.github.com/repos/Fixture/Tool",
+        ["https://github.com/Fixture/Tool"], "github");
+      const result = { ...fixture.result, outcome: { kind: "changed", observation: { ...fixture.observation,
+        outboundLinks: ["https://github.com/FIXTURE/TOOL"] } } };
+      expect((await fixture.post(result)).status).toBe(200);
+      expect(await fixture.store.getPackageFrontsForCanonical(canonicalId)).toHaveLength(1);
+      expect(fixture.sqlite.query("SELECT review_state FROM identity_links WHERE canonical_id=? AND source_key LIKE 'github:%'")
+        .get(canonicalId)).toEqual({ review_state: "provisional" });
+    } finally { fixture.sqlite.close(); }
+  });
+
+  it("serializes discovery lead identities and preserves case-distinct targets on exact replay", async () => {
+    const fixture = await metadataFixture("curated", "https://directory.example/catalog", "discovery");
+    try {
+      const result = { ...fixture.result, outcome: { kind: "discovery", leads: [
+        { kind: "publisher_site", url: "https://PUBLISHER.EXAMPLE:443/Tools/Widget" },
+        { kind: "publisher_site", url: "https://publisher.example/Tools/Widget" },
+        { kind: "publisher_site", url: "https://publisher.example/tools/widget" }
+      ] } };
+      expect((await fixture.post(result)).status).toBe(200);
+      const leads = await fixture.store.listLeadsPage("pending_review", 10, null);
+      expect(leads.leads.map(lead => lead.target_url).sort()).toEqual([
+        "https://publisher.example/Tools/Widget", "https://publisher.example/tools/widget"]);
+      expect(fixture.sqlite.query("SELECT * FROM source_versions").all()).toEqual([]);
+      const settled = fixture.snapshot();
+      expect(ResultResponseSchema.parse(await (await fixture.post(result)).json()).duplicate).toBe(true);
+      expect(fixture.snapshot()).toEqual(settled);
+    } finally { fixture.sqlite.close(); }
+  });
 
   it.each([
     ["booth", "https://booth.pm/ja/items/12345"],

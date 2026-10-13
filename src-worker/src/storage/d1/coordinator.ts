@@ -644,9 +644,10 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
         );
 
         for (const outbound of observation.outboundLinks) {
-          const leadKind = classifyOutboundLeadKind(outbound);
+          const targetUrl = new URL(outbound).href;
+          const leadKind = classifyOutboundLeadKind(targetUrl);
           if (leadKind) {
-            const identity = [job.url, vpmId, leadKind, outbound, vpmId];
+            const identity = [job.url, vpmId, leadKind, targetUrl, vpmId];
             const leadKey = await sha256Hex(JSON.stringify(identity));
             batchStmts.push(
               this.db.prepare(`INSERT INTO source_leads
@@ -659,7 +660,7 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
                   last_seen_node_id=excluded.last_seen_node_id,last_seen_lease_id=excluded.last_seen_lease_id,
                   last_seen_profile_id=excluded.last_seen_profile_id`)
                 .bind(leadKey, job.url, job.job_id, vpmId,
-                  leadKind, outbound, vpmId,
+                  leadKind, targetUrl, vpmId,
                   now, now, principal.nodeId, request.leaseId, sourceProfile.profileId,
                   principal.nodeId, request.leaseId, sourceProfile.profileId)
             );
@@ -714,12 +715,13 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
       if (isStorefront) {
         // Outbound match 1: observation outbound links matching source items or leads linked to a canonical package
         for (const outbound of observation.outboundLinks) {
-          const normalizedOutbound = outbound.toLowerCase().replace(/\/+$/, "");
+          // URL serialization normalizes the host, not case-sensitive path/query data.
+          const normalizedOutbound = new URL(outbound).href;
           const matchesRes = await this.db.prepare(`
             SELECT DISTINCT il.canonical_id
             FROM identity_links il
             JOIN source_items si ON si.source_key = il.source_key
-            WHERE LOWER(RTRIM(si.source_url, '/')) = ?
+            WHERE si.source_url = ?
               AND il.review_state IN ('accepted', 'provisional')
           `).bind(normalizedOutbound).all<{ canonical_id: string; }>();
           for (const { canonical_id } of matchesRes.results || []) {
@@ -733,7 +735,7 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
               SELECT DISTINCT il.canonical_id
               FROM identity_links il
               JOIN source_items si ON si.source_key = il.source_key
-              WHERE LOWER(RTRIM(si.source_url, '/')) = ?
+              WHERE si.platform = 'github' AND LOWER(RTRIM(si.source_url, '/')) = ?
                 AND il.review_state IN ('accepted', 'provisional')
             `).bind(apiGhUrl).all<{ canonical_id: string; }>();
             for (const { canonical_id } of ghMatchesRes.results || []) {
@@ -752,7 +754,7 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
               ))
               OR (sl.claimed_package_id IS NOT NULL AND il.canonical_id = sl.claimed_package_id)
             )
-            WHERE LOWER(RTRIM(sl.target_url, '/')) = ?
+            WHERE sl.target_url = ?
               AND il.review_state IN ('accepted', 'provisional')
           `).bind(normalizedOutbound).all<{ canonical_id: string; }>();
           for (const { canonical_id } of leadMatchesRes.results || []) {
@@ -761,7 +763,7 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
         }
 
         // Outbound match 2: source leads where target_url matches this job URL (e.g. storefront discovered from VPM)
-        const normalizedJobUrl = job.url.toLowerCase().replace(/\/+$/, "");
+        const normalizedJobUrl = job.url;
         const jobLeadMatchesRes = await this.db.prepare(`
           SELECT DISTINCT il.canonical_id
           FROM source_leads sl
@@ -773,7 +775,7 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
             ))
             OR (sl.claimed_package_id IS NOT NULL AND il.canonical_id = sl.claimed_package_id)
           )
-          WHERE LOWER(RTRIM(sl.target_url, '/')) = ?
+          WHERE sl.target_url = ?
             AND il.review_state IN ('accepted', 'provisional')
         `).bind(normalizedJobUrl).all<{ canonical_id: string; }>();
         for (const { canonical_id } of jobLeadMatchesRes.results || []) {
@@ -937,7 +939,8 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
       );
     }
 
-    const discoveryLeads = outcome.kind === "discovery" ? await Promise.all(outcome.leads.map(async lead => {
+    const discoveryLeads = outcome.kind === "discovery" ? await Promise.all(outcome.leads.map(async reportedLead => {
+      const lead = { ...reportedLead, url: new URL(reportedLead.url).href };
       const identity = lead.discoveredFromItemKey ?
         [job.url, lead.discoveredFromItemKey, lead.kind, lead.url, lead.claimedPackageId || null] :
         [job.url, lead.kind, lead.url, lead.claimedPackageId || null];

@@ -101,7 +101,14 @@ Current delta limits:
 - Batch metadata conflicts remain nonterminal conflicts. They are not lease expiry merely because the error mentions release evidence.
 - These checks do not prove truthful fetching, product ownership or cross-source identity. Previously ingested rows are not migrated or removed.
 - Cross-source association remains unsafe: outbound matching can create provisional fronts that public responses expose without an accepted storefront link.
-- Generic association matching also folds URL path case. R13-C9-IDENTITY retains these counterexamples and the authority decision before claiming false-link protection.
+- Generic associations compare serialized URLs exactly. Path/query case, trailing slashes, query presence and fragments remain distinct.
+- Serialization normalizes host case and default HTTPS ports. This is conservative comparison, not complete resource equivalence or ownership proof.
+- GitHub repository matching retains its explicit case-insensitive rule, scoped to GitHub sources. Generic source URLs do not inherit that rule.
+- New VPM and discovery leads use serialized targets in their stored URLs and identity keys. Retained observation links stay unchanged.
+- Existing lead aliases and contaminated associations are not migrated. R13-C9-IDENTITY retains authority, remediation and withdrawal decisions.
+
+Generic case handling follows [RFC 3986 section 6.2.2.1](https://www.rfc-editor.org/rfc/rfc3986.html#section-6.2.2.1).
+GitHub separately documents case-insensitive repository owner/name parameters in [its repository API](https://docs.github.com/en/rest/repos/repos#get-a-repository).
 
 ---
 

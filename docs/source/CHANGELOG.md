@@ -8,7 +8,7 @@ Here are the latest changelogs of each package and applications. For a full hist
 ## What Changed
 
 <!-- MASTER_SUMMARY -->
-Preserve timestamp evidence and settled outbox results. Use unique catalog epochs and bind storefront submissions to assigned source URLs.
+Preserve evidence, settled outbox results and URL resource distinctions. Use unique catalog epochs and bind storefront submissions to assigned source URLs.
 <!-- MASTER_SUMMARY -->
 
 ## Table of Contents
@@ -183,7 +183,7 @@ See full history at [docs/changelogs/vrcp-web/preview](https://github.com/SlamTh
 ## VRC Packages Worker - `vrcp-worker-preview`
 
 <!-- vrcp-worker-preview-DESCRIPTION_SUMMARY -->
-Use unique catalog epochs, preserve publication evidence and reject substituted storefront identities before ingestion.
+Use unique catalog epochs, preserve evidence and URL distinctions, and reject substituted storefront identities before ingestion.
 <!-- vrcp-worker-preview-DESCRIPTION_SUMMARY -->
 ### Added
 ### Bugs Fixed
@@ -191,6 +191,8 @@ Use unique catalog epochs, preserve publication evidence and reject substituted 
 - **Catalog Epochs**: Give fresh databases unique epochs. Concurrent initialization returns the stored winner and preserves existing epochs.
 - **Source Binding**: Reject substituted storefront IDs and URLs, empty catalog names and storefront fields from other source platforms.
 - **Batch Conflicts**: Keep release-evidence conflicts distinct from terminal lease expiry. Rejected metadata preserves its live job for correction.
+- **URL Associations**: Preserve generic path/query case and trailing slashes. Keep case-insensitive repository matching scoped to GitHub sources.
+- **Lead Identities**: Deduplicate serialized host/default-port aliases for new leads without changing retained observation links.
 ### Changes
 See full history at [docs/changelogs/vrcp-worker/preview](https://github.com/SlamTheDragon/vrc-packages/tree/main/docs/changelogs/vrcp-worker/preview)
 
