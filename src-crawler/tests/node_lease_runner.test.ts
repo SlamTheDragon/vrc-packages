@@ -40,6 +40,23 @@ describe("node lease runner", () => {
     } finally { globalThis.fetch = originalFetch; }
   });
 
+  test("the fixed lease deadline aborts hung source work and an already expired lease never fetches", async () => {
+    let submissions = 0;
+    let aborted = false;
+    const client = { heartbeat: async () => {}, submit: async () => { submissions++; throw new Error("unexpected"); } };
+    const soon = CrawlJobSchema.parse({ ...fixtureJob, leaseExpiresAt: new Date(Date.now() + 80).toISOString() });
+    await expect(runLeasedJob(soon, client, (_input, init) => new Promise<Response>((_resolve, reject) =>
+      init?.signal?.addEventListener("abort", () => { aborted = true; reject(new Error("aborted")); }, { once: true })),
+      1_000)).rejects.toThrow("expired during execution");
+    expect(aborted).toBe(true);
+    let fetches = 0;
+    const past = CrawlJobSchema.parse({ ...fixtureJob, leaseExpiresAt: new Date(Date.now() - 1000).toISOString() });
+    await expect(runLeasedJob(past, client, async () => { fetches++; return new Response("x"); }, 10))
+      .rejects.toThrow("expired during execution");
+    expect(fetches).toBe(0);
+    expect(submissions).toBe(0);
+  });
+
   test("a BOOTH browse lease submits discovery leads through the wire contract", async () => {
     const job = CrawlJobSchema.parse({ ...fixtureJob, platform: "booth", purpose: "discovery",
       url: "https://booth.pm/ja/browse/3D%E3%83%84%E3%83%BC%E3%83%AB%E3%83%BB%E3%82%B7%E3%82%B9%E3%83%86%E3%83%A0?page=1",

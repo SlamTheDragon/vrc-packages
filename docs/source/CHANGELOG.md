@@ -154,6 +154,7 @@ Preserve settled outbox results and keep creation dates separate from modificati
 ### Bugs Fixed
 - **Timestamp Provenance**: Removed the storefront creation-date fallback from modification evidence. Valid modification metadata remains available.
 - **Outbox Settlement**: Ignore late failures for sent or terminal entries. Repeated acknowledgments preserve the first receipt and completion metrics.
+- **Lease Deadline**: Abort source work when the lease expires, even if a heartbeat is pending. An expired lease starts no fetch.
 ### Changes
 See full history at [docs/changelogs/vrcp-crawler-node/preview](https://github.com/SlamTheDragon/vrc-packages/tree/main/docs/changelogs/vrcp-crawler-node/preview)
 

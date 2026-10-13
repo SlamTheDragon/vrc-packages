@@ -52,11 +52,18 @@ export async function runLeasedJob(
       .finally(() => { pulsePromise = null; });
   };
   const timer = setInterval(pulse, heartbeatIntervalMs);
+  // Fixed lease deadline: a pending heartbeat must not keep source work alive past expiry.
+  const expiresAtMs = new Date(job.leaseExpiresAt).getTime();
+  const leaseExpired = () => new Error(`Lease ${job.leaseId} for job ${job.jobId} expired during execution (expired at ${job.leaseExpiresAt})`);
+  const remainingMs = expiresAtMs - Date.now();
+  if (!Number.isFinite(remainingMs) || remainingMs <= 0) { clearInterval(timer); authority.abort(); throw leaseExpired(); }
+  const deadline = setTimeout(() => { authorityError ??= leaseExpired(); authority.abort(); }, Math.min(remainingMs, 2_147_483_647)); // setTimeout overflows above 2^31-1 ms and would fire at once
   try {
     const outcome = minimizeOutcome(job, await fetchJobOutcome(job, fetcher, signal));
     clearInterval(timer);
     if (pulsePromise) await pulsePromise;
     if (authorityError) throw authorityError;
+    if (Date.now() >= expiresAtMs) throw leaseExpired();
     signal.throwIfAborted();
     // A final lease check closes the race between the last periodic pulse and submission.
     await client.heartbeat("fetching", job.jobId, job.leaseId);
@@ -77,6 +84,7 @@ export async function runLeasedJob(
   } catch (error) {
     throw authorityError || (stopSignal?.aborted ? stopSignal.reason : error);
   } finally {
+    clearTimeout(deadline);
     clearInterval(timer);
     authority.abort();
     if (pulsePromise) await pulsePromise;

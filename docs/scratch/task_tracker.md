@@ -1,4 +1,11 @@
-# Paused R13-C9: node lease deadline during slow authority checks (2026-10-13)
+# R13-C9-LEASE-DEADLINE checkpoint (2026-10-14, local commit, no push)
+
+- Implemented in `src-crawler/src/runner/lease_runner.ts`: a `setTimeout` deadline from `leaseExpiresAt` aborts the source signal; an already expired lease throws before any source fetch; a final expiry check precedes outbox staging. Timeout is clamped to 2^31-1 ms (first attempt with a 2099 lease fired at once and failed 3 tests).
+- Verified: crawler `bun test` 172 pass/0 fail/1446 assertions (new deadline test), `bunx tsc --noEmit` clean, `build:dev` compiles. Root tests not run (root tooling unchanged). No wire, Worker or SDK change; no publication.
+- Uncertainty: deadline uses the local clock, no server-time skew or round-trip bound (proposal only). Submission after expiry is still rejected by the Worker. Daemon-level restart/persistence of this path is not re-probed.
+- Changelog note added under crawler-node preview Bugs Fixed. Next: independent R13-C9 failure cases (IDENTITY/DELTA remain deferred owner decisions).
+
+# Previous: R13-C9: node lease deadline (2026-10-13)
 
 ## Current runtime theory and plan
 
