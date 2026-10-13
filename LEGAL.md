@@ -128,7 +128,7 @@ The Project indexes public metadata using standard web discovery practices:
 - **(f) VRCArena:** The Project avoids HTML DOM scraping against VRCArena servers to minimize infrastructure burden. It uses bilateral API federation or curated static dataset dumps.
 
 5.3. **Platform Matrix.**  
-Detailed platform access terms, robot directives, and risk classifications appear in [PLATFORM-MATRIX.md](docs/research/markets/PLATFORM-MATRIX.md).
+Detailed platform access terms, robot directives, and risk classifications appear in [PLATFORM-MATRIX.md](./docs/scratch/research/markets/PLATFORM-MATRIX.md).
 
 5.4. **Disclaimer of Corporate Affiliation.**  
 The Project has no corporate or contractual relationship with any indexed platform. References to platforms serve compatibility and attribution purposes only.

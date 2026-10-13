@@ -107,9 +107,9 @@ The compose file includes Watchtower with the host Docker socket. It is not a ve
 
 ## 4. API and Deployment References
 
-Use [API_ROUTES.md](docs/source/API_ROUTES.md) with the current handlers and SDK schemas. Planned routes are not runnable endpoints. `/v1/user/delist`, user collection POSTs and `/v1/app/index/random` are absent. Node result submission uses `/v1/node/jobs/result`.
+Use [API_ROUTES.md](./docs/applications/VRCP API/API_ROUTES.md) with the current handlers and SDK schemas. Planned routes are not runnable endpoints. `/v1/user/delist`, user collection POSTs and `/v1/app/index/random` are absent. Node result submission uses `/v1/node/jobs/result`.
 
-Use [the Cloudflare setup checklist](docs/research/CRAWLER_DEPENDENCY_RESEARCH.md#cloudflare-panel-setup-checklist) for the owner-completed folder split. The latest supplied build log confirms the API package `src-worker` ran remotely. `src-web` is the separate static site, not the API build root.
+Use [the Cloudflare setup checklist](./docs/scratch/research/CRAWLER_DEPENDENCY_RESEARCH.md#cloudflare-panel-setup-checklist) for the owner-completed folder split. The latest supplied build log confirms the API package `src-worker` ran remotely. `src-web` is the separate static site, not the API build root.
 
 LEGAL.md states draft covenants, not measured implementation. Terms headers are not uniformly emitted by every handler. No remote build, deployment, source permission or legal compliance is inferred from this runbook.
 

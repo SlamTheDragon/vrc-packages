@@ -1,3 +1,10 @@
+# Ledger triage checkpoint (2026-10-14, local commits, no push)
+
+- Diagnosis: 20 author-commented rows were never consumed. Dispositions are recorded in IMPLEMENTATION_PLAN (Owner comment dispositions). Rows R58-ROOT-LOGS, R58-WORKFLOW-CLEANUP and R57-RETENTION removed as owner-marked outdated; all other comments cleared and statuses refreshed.
+- Link repair: checker 98 broken -> 20, all in immutable docs/changelogs archives (73 live links fixed by unique basename; CONTRIBUTING typo). Verified with .agents/scripts/check_doc_links.ts.
+- DELIVERY-RECOVERY-GUARDS partial: revertDeliveryTag now checks credential and deletes remote before local, so failure keeps local refs; createPatchBranch retains tags by default. tests/delivery-recovery.test.ts 23 pass/201 assertions. NOT done: release/npm/GHCR publication-proof preconditions and read-only diagnosis text. Other root suites not run (a combined tests/delivery run hung with no output and was killed; unverified).
+- Queued without owner need: R56-C56D LEGAL draft, DELIVERY-LIVE-VERIFY, Q-WORKER-PREVIEW doc gate, moderator-route design.
+
 # R13-C9-LEASE-DEADLINE checkpoint (2026-10-14, local commit, no push)
 
 - Implemented in `src-crawler/src/runner/lease_runner.ts`: a `setTimeout` deadline from `leaseExpiresAt` aborts the source signal; an already expired lease throws before any source fetch; a final expiry check precedes outbox staging. Timeout is clamped to 2^31-1 ms (first attempt with a 2099 lease fired at once and failed 3 tests).
