@@ -1,6 +1,6 @@
 # Agent Publishing Procedure
 
-Human steps are in [PUBLISHING.md](PUBLISHING.md).
+Human steps are in [PUBLISHING.md](../../../source/PUBLISHING.md).
 This file defines agent publishing rules and branch invariants.
 
 ---

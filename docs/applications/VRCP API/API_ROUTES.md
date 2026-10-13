@@ -5,7 +5,7 @@
 > **Target Subsystems:** `src-worker` (API Worker coordinator) · `src-crawler` (node) · `src-package` (`vrc-packages-api` SDK)
 > **Status Legend:** ✅ Implemented · 🔲 Planned · ⚠️ In Transition · ⏸️ On Hold / Redefining
 
-Implemented means a handler exists. It does not mean that the feature or release gate passed. The [complete route review](../research/audits/API_CONTRACT_REVIEW.md) lists storage, SDK and authorization gaps for owner review.
+Implemented means a handler exists. It does not mean that the feature or release gate passed. The [complete route review](../../scratch/research/audits/API_CONTRACT_REVIEW.md) lists storage, SDK and authorization gaps for owner review.
 
 ---
 

@@ -31,7 +31,7 @@ The coordinator currently supports these responsibilities:
 
 ## 2. Protocol Boundaries and Endpoints
 
-The route draft is [`API_ROUTES.md`](API_ROUTES.md). Internal node schemas live in the [network package](../../src-worker/packages/network/README.md). Worker and node consumers import its declared package exports from a distributed network archive. The consumer SDK contains operator/user/app contracts, not node job methods. The tracker records checked artifact identities separately from runtime conformance. Handlers define executable routes. [`DATABASE_SCHEMAS.md`](DATABASE_SCHEMAS.md) describes storage.
+The route draft is [`API_ROUTES.md`](../applications/VRCP API/API_ROUTES.md). Internal node schemas live in the [network package](../../src-worker/packages/network/README.md). Worker and node consumers import its declared package exports from a distributed network archive. The consumer SDK contains operator/user/app contracts, not node job methods. The tracker records checked artifact identities separately from runtime conformance. Handlers define executable routes. [`DATABASE_SCHEMAS.md`](DATABASE_SCHEMAS.md) describes storage.
 
 ### 2.1 Crawler Node Protocol (`/v1/node/*`)
 Requires `Authorization: Bearer <NODE_TOKEN>` (`vrcp_<64-hex><4-hex>`). The 4-hex suffix encodes the node's assigned capability bitmask.

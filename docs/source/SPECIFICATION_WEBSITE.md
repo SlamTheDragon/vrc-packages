@@ -24,4 +24,4 @@ The owner intends the website to consume the SDK over HTTP. Independent npm dist
 
 Do not embed `OPERATOR_TOKEN` in static assets. Browser authentication, authenticated CORS/preflight and any trusted credential relay require a separate reviewed design. A user token authenticates a user, not ownership of every catalog item.
 
-Use [API_ROUTES.md](API_ROUTES.md) for current route status. Future portal requirements and unresolved decisions belong in [the implementation ledger](../scratch/IMPLEMENTATION_PLAN.md), not capability claims here.
+Use [API_ROUTES.md](../applications/VRCP API/API_ROUTES.md) for current route status. Future portal requirements and unresolved decisions belong in [the implementation ledger](../scratch/IMPLEMENTATION_PLAN.md), not capability claims here.

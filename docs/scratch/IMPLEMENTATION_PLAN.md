@@ -111,3 +111,20 @@ See changelog skill for archiving verified and author-commented rows
 | G14 | Version-driven product releases | Owner closed main delivery sign-off. Keep the historical nine-path proof, manual release gates, website disabled, Worker without GitHub Release assets, and single-stream network package. R60 tooling changes have local evidence only; no new hosted proof was run this session. |  |
 | G15 | SDK v0.1.0 release approval | Each SDK identity passed 54 units, types and a 31-file Node/native Worker artifact. Public release 0.0.0 and preview 2026.10.0-pre match checked CI bytes. This does not settle full route functionality. Release v0.1 remains held for the complete owner route review. |  |
 | G18 | D1 Schema Consolidation, Entity Unification & Table Optimization | Verified (R59-C59A through R59-C59D): Consolidated 5 redundant action tables into operator_audit_log, inlined app ownership directly into registered_apps, merged robots refresh leases into origin_robots, and unified dispute/claim/report tables into catalog_tickets with backward-compatible read views. Passed 267 worker tests, 158 crawler tests, 61 package tests, typechecks, and workerd runtime D1 smoke test. |  |
+
+## Owner comment dispositions - 2026-10-14
+
+Consumed from the unmerged ledger. Each item is accepted direction, not implemented behavior, unless stated.
+
+- **Q-PUBLICATION (delegated to best practice)**: Profile expiry or revocation ends fetching only. Publication is a separate, revocable state per item and per field. Withdrawal must reach downstream copies through a revisioned tombstone/visibility journal in the delta feed (change-feed standard), not silent row removal. Provisional cross-source fronts stay internal until explicit review. Field-level attribution records the observation and profile that supplied each canonical field. Implementation is queued as R13-C9-DELTA/IDENTITY slices. The owner may revise this default.
+- **Q-USER-AUTH-REGISTRATION**: Firebase Auth links GitHub, Gumroad, Ko-fi and Jinxxy providers. Age status comes from the unofficial VRChat /api/1/auth/user fields (geVerificationStatus, geVerified) and maps to egistered_users.age_verified. Full endpoint stays deferred.
+- **R56-C56C**: Registered, age-verified volunteer staff review items marked restricted for false positives through a proposed /v1/moderator/ route. Explicit-content false negatives use a new sub-category of the existing report route.
+- **R56-C56D**: No counsel is available. Draft the needed LEGAL changes and mark them as draft. Make no compliance claim.
+- **R54-C38R/A/B**: Decouple cryptographic delegation from this ledger. Build connection flow diagrams and security-need outlines first. Only trusted, reviewed applications may receive removal delegation, and operators see application and registrant data before token permission. Shared-secret design stays an unaccepted assumption.
+- **R54-C39A/B**: Measure after preview deployment. Wrangler and D1 configuration access is granted. Budget target: ten crawler nodes and 1,000 concurrent downstream users with continuous polling must stay within monthly account allowances.
+- **Q-API-REVIEW**: Publish SDK from v0.0.1. Do not publish v0.1.0 as the start. Final /v1/ schemas are still open.
+- **R57-DEPLOYMENT-LINKS**: Docs home is https://docs.vrcpackages.com/ for docs/applications. Stay deferred until post product v1 deployments.
+- **Q-WORKER-PREVIEW**: Route to a documentation gate that outlines needs, appropriate options and paths.
+- **R58-CONFIG-TAMPER**: Queue a live-testing gate that supplies verification statuses and criteria.
+- **R58-ROOT-LOGS, R58-WORKFLOW-CLEANUP, R57-RETENTION**: Owner marked outdated. Rows removed. Delivery evidence stays in the tracker. Remote deletion and retention changes remain unauthorized.
+- **R58-DOC-LINKS, R60-C60D**: Scan done 2026-10-14. 98 broken links fell to 20, all inside immutable docs/changelogs/ archives that use root-relative links. 73 live links repaired by unique basename.

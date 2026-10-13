@@ -1,6 +1,6 @@
 # Crawler infrastructure resource library
 
-Reviewed 2026-10-03 against HEAD `3b9d203`. External guidance is not proof that this repository implements it. See the [capability audit](PROTOTYPE_PARITY.md) for code evidence and the [library guide](04_curriculum_and_core_philosophies.md) for review rules.
+Reviewed 2026-10-03 against HEAD `3b9d203`. External guidance is not proof that this repository implements it. See the [capability audit](../audits/PROTOTYPE_PARITY.md) for code evidence and the [library guide](04_curriculum_and_core_philosophies.md) for review rules.
 
 ## Select a resource by the failure under review
 
@@ -41,7 +41,7 @@ Measure actual archive sizes and delivery frequency before unattended branch pub
 
 The owner wants a Worker coordinator, separate headless crawler nodes, and downstream operator/user/app bindings. A message broker is optional infrastructure, not a replacement for leases, source profiles, origin budgets or idempotent submission. Do not add one until a measured failure requires it.
 
-Prefer existing platform primitives and maintained dependencies. Compare caller requirements, runtime support, bundle cost, license, failure behavior and deletion opportunities before adding an abstraction. The [dependency review](CRAWLER_DEPENDENCY_RESEARCH.md) distinguishes parsers from competing schedulers.
+Prefer existing platform primitives and maintained dependencies. Compare caller requirements, runtime support, bundle cost, license, failure behavior and deletion opportunities before adding an abstraction. The [dependency review](../CRAWLER_DEPENDENCY_RESEARCH.md) distinguishes parsers from competing schedulers.
 
 Remove unsupported estimates from decisions: requests per second, memory use, deduplication accuracy and cloud cost need a measured workload and a dated product limit. The former tutorial's fixed performance numbers and claims that local tests proved fleet safety are withdrawn.
 
@@ -94,9 +94,9 @@ No rolling Git tag, force push, retention deletion or new publication trigger ra
 
 - [Percolator publication search](https://research.google/search/?query=Percolator): the previously linked USENIX page could not be retrieved in this review. Obtain the primary paper before borrowing its transaction model.
 - [awesome-crawler](https://github.com/brucedone/awesome-crawler): a discovery index, not a security review or package recommendation.
-- [Historical spikes](SPIKES.md): dated experiments, not current deployment evidence.
+- [Historical spikes](../SPIKES.md): dated experiments, not current deployment evidence.
 
-Local runtime claim races now pass. See [the active tracker](task_tracker.md) for measured results and remaining gates. Remote deployment and broad live crawling remain unverified.
+Local runtime claim races now pass. See [the active tracker](../../task_tracker.md) for measured results and remaining gates. Remote deployment and broad live crawling remain unverified.
 
 ## D1 capacity and authentication research
 
@@ -123,7 +123,7 @@ For paid HTTP Workers, CPU defaults to 30 seconds and can reach five minutes. Fr
 
 Current idle claims return retryAfterMs=1000. The daemon honors that delay and defaults to a 30-second idle heartbeat. An idealized ten-node, continuously idle fleet produces 864,000 claims plus 28,800 heartbeats daily, excluding latency. This arithmetic is not a benchmark. Active jobs, retries, node uptime and user traffic change the totals.
 
-Trace [the daemon](../../../src-crawler/src/runner/daemon.ts) and [D1 claims](../../../src-worker/src/storage/d1/coordinator.ts). Measure empty claims, successful claims, fetching heartbeats, results, duplicate results, user queries and initialization separately. Collect invocation queries, rows_read, rows_written, CPU, storage and latency by environment. Local runtime measurements do not establish remote account consumption.
+Trace [the daemon](../../../../src-crawler/src/runner/daemon.ts) and [D1 claims](../../../../src-worker/src/storage/d1/coordinator.ts). Measure empty claims, successful claims, fetching heartbeats, results, duplicate results, user queries and initialization separately. Collect invocation queries, rows_read, rows_written, CPU, storage and latency by environment. Local runtime measurements do not establish remote account consumption.
 
 One result can write several records and indexes. Rows scanned differ from rows returned. Indexes can reduce reads but add writes and storage. Select indexes from query plans, not a blanket optimization rule. [D1 indexes](https://developers.cloudflare.com/d1/best-practices/use-indexes/).
 
@@ -157,13 +157,13 @@ The initializer still runs DDL through HTTP and does not upgrade earlier table l
 R14-C14 retains remote budget measurement and versioned migration delivery before claiming Free-plan readiness.
 The owner requires fresh version-0 databases, not silent prototype upgrades.
 
-Code anchors: [fresh schema](../../../src-worker/src/storage/d1/utils.ts), [initializer](../../../src-worker/src/storage/d1/coordinator.ts),
-[regressions](../../../src-worker/test/d1_coordinator_store.test.ts). Worker types, 235 units, the preview dry-run build and native D1 passed.
+Code anchors: [fresh schema](../../../../src-worker/src/storage/d1/utils.ts), [initializer](../../../../src-worker/src/storage/d1/coordinator.ts),
+[regressions](../../../../src-worker/test/d1_coordinator_store.test.ts). Worker types, 235 units, the preview dry-run build and native D1 passed.
 All runtime diagnosis used isolated local databases with zero external fetches. No remote schema or migration ran.
 
 ## Fleet batching and staggered sync — proposal, 2026-10-04
 
-The owner proposes assignment sequences, one-to-two-hour sync windows and 15-minute heartbeats. Compare these as separate clocks. This audit does not change runtime settings. [R54-C39A through D](UNMERGED_IMPLEMENTATION_PLAN.md) propose a full fleet-budget gate, G16, after ownership and recovery prerequisites.
+The owner proposes assignment sequences, one-to-two-hour sync windows and 15-minute heartbeats. Compare these as separate clocks. This audit does not change runtime settings. [R54-C39A through D](../../UNMERGED_IMPLEMENTATION_PLAN.md) propose a full fleet-budget gate, G16, after ownership and recovery prerequisites.
 
 ### Four clocks, not one sync interval
 
@@ -174,9 +174,9 @@ The owner proposes assignment sequences, one-to-two-hour sync windows and 15-min
 | Active fetch authority | Claims expire after five minutes. runLeasedJob checks authority before fetch, every five seconds, and before submit. Heartbeats do not renew leases. | Keep active checks separate from idle liveness. A 15-minute check exceeds the current lease lifetime. Longer intervals also delay outage and revocation detection. |
 | Result upload and catalog sync | Node submits each result immediately. A new result needs a live lease. Consumers independently page index/delta. | Persist a minimized outbox first. Delaying new results for one or six hours needs an explicit acceptance/recovery contract. Consumer sync can use another cadence. |
 
-Code anchors: [claim/heartbeat/submit](../../../src-worker/src/storage/d1/coordinator.ts), [wire limits](../../../src-worker/packages/network/src/protocol/node_protocol.ts), [daemon](../../../src-crawler/src/runner/daemon.ts), [lease runner](../../../src-crawler/src/runner/lease_runner.ts). Existing duplicate receipts can replay after lease expiry if identity, key, digest and active credentials match. That does not authorize first-time late submissions.
+Code anchors: [claim/heartbeat/submit](../../../../src-worker/src/storage/d1/coordinator.ts), [wire limits](../../../../src-worker/packages/network/src/protocol/node_protocol.ts), [daemon](../../../../src-crawler/src/runner/daemon.ts), [lease runner](../../../../src-crawler/src/runner/lease_runner.ts). Existing duplicate receipts can replay after lease expiry if identity, key, digest and active credentials match. That does not authorize first-time late submissions.
 
-The prototype sync command at commit 09e9dc8 copied local rows to D1 with rowid checkpoints. That is not the current node-to-coordinator contract. The owner's six-hour schedule is historical intent, not a recovered setting in that command. Do not restore direct D1 writes or rowid replication. The [prototype audit](PROTOTYPE_PARITY.md) records missed in-place changes.
+The prototype sync command at commit 09e9dc8 copied local rows to D1 with rowid checkpoints. That is not the current node-to-coordinator contract. The owner's six-hour schedule is historical intent, not a recovered setting in that command. Do not restore direct D1 writes or rowid replication. The [prototype audit](../audits/PROTOTYPE_PARITY.md) records missed in-place changes.
 
 ### Budget arithmetic, not a benchmark
 

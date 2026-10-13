@@ -429,10 +429,7 @@ export async function revertDeliveryTag(tag, options = {}) {
   const { workspace = root, readGit = git, deleteRemote = false, repository = "SlamTheDragon/vrc-packages", token = options.token || getGitHubToken(workspace), fetchFn = fetch } = options;
   let localDeleted = false;
   let remoteDeleted = false;
-  try {
-    readGit(workspace, "tag", "-d", tag);
-    localDeleted = true;
-  } catch {}
+  // Fail before any deletion: a missing credential or rejected remote delete must keep local refs intact.
   if (deleteRemote) {
     if (!token) throw new Error("Deleting remote tag requires a GitHub token with write permission.");
     const response = await fetchFn(`https://api.github.com/repos/${repository}/git/refs/tags/${encodeURIComponent(tag)}`, {
@@ -449,6 +446,10 @@ export async function revertDeliveryTag(tag, options = {}) {
       throw new Error(`Failed to delete remote tag ${tag}: HTTP ${response.status}`);
     }
   }
+  try {
+    readGit(workspace, "tag", "-d", tag);
+    localDeleted = true;
+  } catch {}
   return { status: "tag-reverted", tag, local: localDeleted, remote: remoteDeleted };
 }
 
@@ -458,7 +459,7 @@ export function createPatchBranch(product, version, options = {}) {
     readGit = git,
     baseBranch,
     tag = productTagPrefixes[product] ? `${productTagPrefixes[product]}/v${version}` : undefined,
-    deleteTag = true
+    deleteTag = false
   } = options;
   if (!product || !version) throw new Error("createPatchBranch requires product and version");
   const branchName = `release/patch/${product}/v${version}`;

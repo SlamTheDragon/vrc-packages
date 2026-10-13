@@ -420,6 +420,24 @@ test("revertDeliveryTag deletes local tag and invokes remote DELETE when request
   expect(remoteDeletedUrl).toBe("https://api.github.com/repos/test/repo/git/refs/tags/vrcp-api%2Fv0.0.9");
 });
 
+test("revertDeliveryTag keeps the local tag when the credential is missing or the remote delete fails", async () => {
+  const gitLog: string[] = [];
+  const mockGit = (_cwd: string, ...args: string[]) => { gitLog.push(args.join(" ")); return ""; };
+  await expect(revertDeliveryTag("vrcp-api/v0.0.9", { workspace: "/test", readGit: mockGit, deleteRemote: true, token: "" }))
+    .rejects.toThrow("requires a GitHub token");
+  await expect(revertDeliveryTag("vrcp-api/v0.0.9", { workspace: "/test", readGit: mockGit, deleteRemote: true, token: "t",
+    fetchFn: (async () => new Response(null, { status: 403 })) as any })).rejects.toThrow("HTTP 403");
+  expect(gitLog).toEqual([]);
+});
+
+test("createPatchBranch retains the release tag by default", () => {
+  const gitLog: string[] = [];
+  const mockGit = (_cwd: string, ...args: string[]) => { gitLog.push(args.join(" ")); return "main"; };
+  const res = createPatchBranch("crawler", "0.0.13", { workspace: "/test", readGit: mockGit, baseBranch: "main" });
+  expect(res.tagDeleted).toBeNull();
+  expect(gitLog.some(entry => entry.startsWith("tag -d"))).toBe(false);
+});
+
 test("patch branch lifecycle creates temporary branch and merges back cleanly", () => {
   const gitLog: string[] = [];
   let currentBranch = "main";
@@ -444,7 +462,8 @@ test("patch branch lifecycle creates temporary branch and merges back cleanly", 
   const createRes = createPatchBranch("crawler", "0.0.12", {
     workspace: "/test",
     readGit: mockGit,
-    baseBranch: "main"
+    baseBranch: "main",
+    deleteTag: true
   });
   expect(createRes.status).toBe("patch-branch-created");
   expect(createRes.branch).toBe("release/patch/crawler/v0.0.12");
