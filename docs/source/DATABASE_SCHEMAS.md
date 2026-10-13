@@ -489,6 +489,7 @@ CREATE INDEX idx_opt_outs_canonical_id ON creator_opt_outs(canonical_id);
 
 #### `coordinator_meta`
 Metadata store for coordinator epoch, initialization status, and settings.
+The `catalog_epoch` value identifies a catalog generation. Fresh D1 initialization uses a full UUID and rereads the winning insert under concurrency. Existing values are preserved. Hard deletion and rating withdrawal do not automatically rotate this value or retain delta tombstones.
 ```sql
 CREATE TABLE coordinator_meta (
   key TEXT PRIMARY KEY,

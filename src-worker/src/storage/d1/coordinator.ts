@@ -1417,13 +1417,15 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
   async getCatalogEpoch(): Promise<string> {
     const row = await this.db.prepare("SELECT value FROM coordinator_meta WHERE key='catalog_epoch'").first<{ value: string }>();
     if (row) return row.value;
-    const initial = "epoch-d1-default";
+    const initial = "epoch-d1-" + crypto.randomUUID();
     await this.db.prepare("INSERT OR IGNORE INTO coordinator_meta(key, value) VALUES ('catalog_epoch', ?)").bind(initial).run();
-    return initial;
+    const stored = await this.db.prepare("SELECT value FROM coordinator_meta WHERE key='catalog_epoch'").first<{ value: string }>();
+    if (!stored) throw new Error("Catalog epoch initialization failed");
+    return stored.value;
   }
 
   async resetCatalogEpoch(): Promise<string> {
-    const next = "epoch-d1-" + Math.random().toString(36).slice(2, 10);
+    const next = "epoch-d1-" + crypto.randomUUID();
     await this.db.prepare("INSERT INTO coordinator_meta(key, value) VALUES ('catalog_epoch', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(next).run();
     return next;
   }

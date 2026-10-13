@@ -33,6 +33,17 @@ export async function refreshFixture(env) {
   const origin = 'https://native-robots.example';
   let clock = Date.now();
   const store = new Coordinator(env.VRCP_D1, () => clock);
+  const storedEpoch = await store.getCatalogEpoch();
+  try {
+    await env.VRCP_D1.prepare("DELETE FROM coordinator_meta WHERE key='catalog_epoch'").run();
+    const epochs = await Promise.all(Array.from({ length: 8 }, () => new Coordinator(env.VRCP_D1).getCatalogEpoch()));
+    check(new Set(epochs).size === 1, 'Concurrent epoch initialization returned a losing candidate');
+    check(/^epoch-d1-[0-9a-f-]{36}$/.test(epochs[0]), 'Fresh epoch lacks a complete UUID');
+    const reset = await store.resetCatalogEpoch();
+    check(reset !== epochs[0] && await store.getCatalogEpoch() === reset, 'Epoch reset was not persisted');
+  } finally {
+    await env.VRCP_D1.prepare("UPDATE coordinator_meta SET value=? WHERE key='catalog_epoch'").bind(storedEpoch).run();
+  }
   const timestampBase = { umbrella: 'tools', category: 'tool', lifecycle: 'active', displayName: 'Timestamp fixture' };
   const timestampIds = ['native-timestamp-unknown', 'native-timestamp-confirmed'];
   try {
@@ -145,7 +156,7 @@ export async function refreshFixture(env) {
   await store.recordRobotsSnapshot(botOrigin, 200, 'User-agent: VRCPDiscoveryBot\nAllow: /\nUser-agent: VRCDiscoveryBot\nAllow: /');
   check((await store.claim(botRequest, botPrincipal)).status === 'leased', 'Replaced snapshot retained stale matchers');
   return { status: 'passed', refreshRace: true, staleCompletion: true, profileRevocation: true,
-    pacingRollback: true, completionRollback: true, botRestrictions: true, timestampProvenance: true };
+    pacingRollback: true, completionRollback: true, botRestrictions: true, timestampProvenance: true, catalogEpoch: true };
 }
 async function operatorAtomicityFixture(env, store, clock) {
   const db = env.VRCP_D1, existingNode = 'native-audit-rotation', freshNode = 'native-audit-new';
@@ -456,6 +467,8 @@ try {
   const refreshCheck = await post('/__refresh', {}, operatorToken);
   assert.equal(refreshCheck.status, 'passed');
   assert.equal(refreshCheck.timestampProvenance, true);
+  assert.equal(refreshCheck.catalogEpoch, true);
+  console.log(JSON.stringify({ check: 'native_D1_catalog_epoch_concurrency', readers: 8, resetPersisted: true, passed: true }));
   console.log(JSON.stringify({ check: 'native_D1_timestamp_provenance', passed: true }));
   console.log(JSON.stringify({ check: 'native_D1_refresh_ownership', ...refreshCheck }));
   const discoveryCheck = await post('/__discovery', {}, operatorToken);

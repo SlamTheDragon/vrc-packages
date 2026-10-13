@@ -61,7 +61,7 @@ Requires a user bearer token (`vrcp_usr_<64-hex>`).
 Public read for catalog index and delta streaming; `Authorization: Bearer <APP_TOKEN>` (`vrcp_app_<64-hex>`) for bounded search and reporting.
 - `POST /v1/app/register`: Gated downstream app registration (requires registrant or operator auth).
 - `GET /v1/app/index`: Bounded catalog pages with `limit` and `cursor`.
-- `GET /v1/app/index/delta`: Keyset-paginated incremental sync feed for package managers (VCC/ALCOM). Emits `upsert` and `delist` envelopes.
+- `GET /v1/app/index/delta`: Pages current general-rated catalog rows. Emits `upsert` and `delist` envelopes; it is not an immutable change journal.
 - `POST /v1/app/index/search`: Bounded search. The request accepts `queryOrigin: "user_authored" | "app_automated"`, but current storage does not use or record it.
 - `POST /v1/app/report`: Records demand, issue reports and pending removal requests. A removal receipt is not verified ownership or approved delisting.
 
@@ -74,6 +74,15 @@ Public read for catalog index and delta streaming; `Authorization: Bearer <APP_T
 - Invalid UTF-8, noncanonical JSON, padding, oversized tokens and incorrect route payloads are rejected. Restart pagination for rejected legacy non-ASCII tokens.
 - Catalog/search/moderator pages descend by timestamp and identifier; delta pages ascend by update timestamp and identifier.
 - Worker and crawler consume the preview SDK and one distributed network archive. Desktop/web keep their separate release SDK channel.
+
+Current delta limits:
+
+- Stable equal-time rows paginate by `(updatedAt, canonicalId)`. A same-time mutation behind a consumed cursor can be missed.
+- Delisted rows emit identifier-only envelopes while they remain general-rated. Hard deletion removes the row without a retained tombstone.
+- Moving a row out of the public rating filter emits no withdrawal envelope. Neither mutation automatically changes the catalog epoch.
+- `nextCursor: null` ends page traversal; it is not a durable synchronization checkpoint or snapshot boundary.
+- Fresh databases initialize unique UUID epochs. Concurrent initializers return the stored winner. Existing epochs remain unchanged unless explicitly reset.
+- R13-C9-DELTA retains the revision, withdrawal and resynchronization contract decision. Do not treat current paging as complete downstream synchronization.
 
 ### 2.6 Timestamp Evidence Boundary
 

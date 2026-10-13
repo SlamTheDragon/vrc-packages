@@ -8,7 +8,7 @@ Here are the latest changelogs of each package and applications. For a full hist
 ## What Changed
 
 <!-- MASTER_SUMMARY -->
-Separate timestamp evidence, preserve settled outbox results and harden catalog delivery. Preview notes describe each changed product.
+Separate timestamp evidence, preserve settled outbox results and use unique catalog epochs. Preview notes describe each changed product.
 <!-- MASTER_SUMMARY -->
 
 ## Table of Contents
@@ -183,11 +183,12 @@ See full history at [docs/changelogs/vrcp-web/preview](https://github.com/SlamTh
 ## VRC Packages Worker - `vrcp-worker-preview`
 
 <!-- vrcp-worker-preview-DESCRIPTION_SUMMARY -->
-Keep missing publication confidence null and preserve existing evidence during metadata updates.
+Use unique catalog epochs and preserve publication evidence during metadata updates.
 <!-- vrcp-worker-preview-DESCRIPTION_SUMMARY -->
 ### Added
 ### Bugs Fixed
 - **Publication Confidence**: Stopped metadata-only canonical upserts from inventing observed confidence or downgrading confirmed publication evidence.
+- **Catalog Epochs**: Give fresh databases unique epochs. Concurrent initialization returns the stored winner and preserves existing epochs.
 ### Changes
 See full history at [docs/changelogs/vrcp-worker/preview](https://github.com/SlamTheDragon/vrc-packages/tree/main/docs/changelogs/vrcp-worker/preview)
 

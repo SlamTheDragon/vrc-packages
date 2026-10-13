@@ -12,6 +12,8 @@ import { PlatformSchema } from "vrc-packages-network/node";
 import { DEFAULT_SEED_JOBS } from "../src/storage/default_seeds.ts";
 import { decodeCatalogCursor } from "vrc-packages-api";
 import { VRCPackageClient } from "vrc-packages-api";
+import { handlePublicCatalogRequest } from "../src/api/public_handler.ts";
+import { InMemoryRateLimiter } from "../src/api/rate_limiter.ts";
 
 export function createMockD1Database(db = new Database(":memory:")): D1Database {
   db.run("PRAGMA foreign_keys = ON;");
@@ -1039,6 +1041,102 @@ describe("Cloudflare D1 Coordinator Store & Edge Worker Adapter", () => {
     const deltaJson = await deltaHttpRes.json() as any;
     expect(deltaJson.deltas).toHaveLength(2);
     expect(deltaJson.epoch).toBe(epoch2);
+  });
+
+  it("initializes distinct catalog epochs, returns the concurrent winner and preserves stored values", async () => {
+    const firstDB = new Database(":memory:"), secondDB = new Database(":memory:");
+    const firstBinding = createMockD1Database(firstDB), secondBinding = createMockD1Database(secondDB);
+    const first = new Coordinator(firstBinding), second = new Coordinator(secondBinding);
+    try {
+      await first.initSchema();
+      await second.initSchema();
+      const readers = Array.from({ length: 8 }, () => new Coordinator(firstBinding));
+      const concurrent = await Promise.all(readers.map(reader => reader.getCatalogEpoch()));
+      expect(new Set(concurrent).size).toBe(1);
+      const initial = concurrent[0]!;
+      expect(initial).toMatch(/^epoch-d1-[0-9a-f-]{36}$/);
+      expect(await first.getCatalogEpoch()).toBe(initial);
+      expect(await second.getCatalogEpoch()).not.toBe(initial);
+      const reset = await first.resetCatalogEpoch();
+      expect(reset).not.toBe(initial);
+      expect(reset).toMatch(/^epoch-d1-[0-9a-f-]{36}$/);
+      expect(await new Coordinator(firstBinding).getCatalogEpoch()).toBe(reset);
+      // Existing deployed epochs must not be silently migrated or invalidated.
+      firstDB.run("UPDATE coordinator_meta SET value='epoch-d1-default' WHERE key='catalog_epoch'");
+      expect(await new Coordinator(firstBinding).getCatalogEpoch()).toBe("epoch-d1-default");
+    } finally { firstDB.close(); secondDB.close(); }
+  });
+
+  it("cannot report an initialized epoch when its persistence fails", async () => {
+    const sqlite = new Database(":memory:");
+    const store = new Coordinator(createMockD1Database(sqlite));
+    try {
+      await store.initSchema();
+      sqlite.run("CREATE TRIGGER reject_catalog_epoch BEFORE INSERT ON coordinator_meta WHEN NEW.key='catalog_epoch' BEGIN SELECT RAISE(ABORT,'Epoch persistence refused'); END");
+      await expect(store.getCatalogEpoch()).rejects.toThrow("Epoch persistence refused");
+      expect(sqlite.query("SELECT value FROM coordinator_meta WHERE key='catalog_epoch'").get()).toBeNull();
+      sqlite.run("DROP TRIGGER reject_catalog_epoch");
+      const recovered = await store.getCatalogEpoch();
+      expect(recovered).toMatch(/^epoch-d1-[0-9a-f-]{36}$/);
+      expect(await store.getCatalogEpoch()).toBe(recovered);
+    } finally { sqlite.close(); }
+  });
+
+  it.each([1, 2, 100])("pages stable equal-time deltas through the installed SDK (limit %s)", async limit => {
+    const sqlite = new Database(":memory:");
+    const timestamp = "2026-10-13T00:00:00.000Z";
+    const store = new Coordinator(createMockD1Database(sqlite), () => Date.parse(timestamp));
+    const ids = ["delta-a", "delta-b", "delta-c", "界".repeat(499) + "a", "😀"];
+    const delisted = new Set([ids[1], ids[4]]);
+    try {
+      await store.initSchema();
+      for (const canonicalId of ids) await store.upsertCanonicalPackage({
+        canonicalId, umbrella: "tools", category: "tool", createdAt: timestamp, updatedAt: timestamp,
+        lifecycle: delisted.has(canonicalId) ? "delisted" : "active",
+        displayName: delisted.has(canonicalId) ? "Delisted metadata must not leak" : "Equal-time fixture tool"
+      });
+      for (const contentRating of ["mature", "adult_restricted", "prohibited"] as const) {
+        await store.upsertCanonicalPackage({ canonicalId: `delta-aa-hidden-${contentRating}`, umbrella: "tools",
+          category: "tool", lifecycle: "delisted", displayName: "Restricted metadata must not leak",
+          createdAt: timestamp, updatedAt: timestamp, contentRating });
+      }
+      const limiter = new InMemoryRateLimiter();
+      const client = new VRCPackageClient({ baseUrl: "https://coordinator.invalid", fetch: Object.assign(
+        async (input: RequestInfo | URL, init?: RequestInit) => {
+          const request = new Request(input, init);
+          expect(request.headers.has("authorization")).toBe(false);
+          const response = await handlePublicCatalogRequest(request, store, limiter);
+          expect(response.status).toBe(200);
+          const wire = await response.clone().text();
+          expect(wire).not.toContain("Delisted metadata must not leak");
+          expect(wire).not.toContain("Restricted metadata must not leak");
+          return response;
+        }, { preconnect() {} }) });
+      const seen: string[] = [], cursors = new Set<string>();
+      const epoch = await store.getCatalogEpoch();
+      let cursor: string | undefined;
+      do {
+        const page = await client.index.syncDeltas({ limit, ...(cursor ? { cursor } : {}) });
+        expect(page.epoch).toBe(epoch);
+        expect(page.deltas.length).toBeGreaterThan(0);
+        expect(page.deltas.length).toBeLessThanOrEqual(limit);
+        for (const delta of page.deltas) {
+          expect(delta.updatedAt).toBe(timestamp);
+          expect(delta.action).toBe(delisted.has(delta.canonicalId) ? "delist" : "upsert");
+          if (delta.action === "delist") expect(delta.package).toBeUndefined();
+          else expect(delta.package?.canonicalId).toBe(delta.canonicalId);
+          seen.push(delta.canonicalId);
+        }
+        cursor = page.nextCursor ?? undefined;
+        if (cursor) {
+          expect(cursors.has(cursor)).toBe(false);
+          cursors.add(cursor);
+        }
+        if (seen.length > ids.length) throw new Error("Delta pagination repeated a row");
+      } while (cursor);
+      expect(seen).toEqual(ids);
+      expect(new Set(seen).size).toBe(ids.length);
+    } finally { sqlite.close(); }
   });
 
   it("autoSeed queues candidates without inventing access approval or robots evidence", async () => {
