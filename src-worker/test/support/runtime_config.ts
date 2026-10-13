@@ -21,7 +21,9 @@ export function initializeCoordinatorConfig(cwd: string, listenPort = 8787): str
 }
 
 /** Configured databases stay inside this process's launch directory; explicit environment paths remain supported. */
-export function loadCoordinatorRuntimeConfig(cwd: string, env: NodeJS.ProcessEnv): CoordinatorRuntimeConfig {
+export function loadCoordinatorRuntimeConfig(cwd: string, env: {
+  COORDINATOR_CONFIG_PATH?: string; COORDINATOR_DB_PATH?: string;
+}): CoordinatorRuntimeConfig {
   const configuredPath = env.COORDINATOR_CONFIG_PATH;
   const path = configuredPath ? (isAbsolute(configuredPath) ? configuredPath : resolve(cwd, configuredPath)) :
     join(cwd, "coordinator.config.json");

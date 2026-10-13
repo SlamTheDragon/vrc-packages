@@ -681,12 +681,12 @@ describe("separate operator control API", () => {
   });
 
   test("operator audits, paginates, and verifies delegated creator claims", async () => {
-    const store = new LocalCoordinatorStore();
+    let fixtureNow = 1700000000000;
+    const store = new LocalCoordinatorStore(":memory:", () => fixtureNow);
     try {
       const app = store.registerApp({ schemaVersion: 1, appName: "Claims Audit App" });
 
       const nowSec = 1700000000;
-      store.now = () => 1700000000000;
       const claim1 = store.recordCreatorClaimIntake(app.appId, {
         schemaVersion: 1,
         attestation: {
@@ -702,7 +702,7 @@ describe("separate operator control API", () => {
         reason: "Primary ownership claim"
       });
 
-      store.now = () => 1700000001000;
+      fixtureNow = 1700000001000;
       const claim2 = store.recordCreatorClaimIntake(app.appId, {
         schemaVersion: 1,
         attestation: {

@@ -11,8 +11,8 @@ import { PlatformSchema, type Platform } from "vrc-packages-network/node";
 
 describe("Capability Token Encoding and Decoding", () => {
   test("generates node-token entropy with portable Web Crypto", () => {
-    const nativeRandom = globalThis.crypto.getRandomValues.bind(globalThis.crypto);
-    const random = spyOn(globalThis.crypto, "getRandomValues").mockImplementation(array => {
+    const nativeRandom = crypto.getRandomValues.bind(crypto);
+    const random = spyOn(crypto, "getRandomValues").mockImplementation(array => {
       expect(array).toBeInstanceOf(Uint8Array);
       expect(array!.byteLength).toBe(32);
       return nativeRandom(array);

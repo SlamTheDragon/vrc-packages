@@ -8,7 +8,7 @@ Here are the latest changelogs of each package and applications. For a full hist
 ## What Changed
 
 <!-- MASTER_SUMMARY -->
-Preserve evidence, settled outbox results and URL resource distinctions. Use unique catalog epochs and bind storefront submissions to assigned source URLs.
+Preserve evidence, settled outbox results and URL resource distinctions. Use unique catalog epochs and bind storefront submissions to assigned source URLs. Typecheck Worker Bun fixtures.
 <!-- MASTER_SUMMARY -->
 
 ## Table of Contents
@@ -183,7 +183,7 @@ See full history at [docs/changelogs/vrcp-web/preview](https://github.com/SlamTh
 ## VRC Packages Worker - `vrcp-worker-preview`
 
 <!-- vrcp-worker-preview-DESCRIPTION_SUMMARY -->
-Use unique catalog epochs, preserve evidence and URL distinctions, and reject substituted storefront identities before ingestion.
+Use unique catalog epochs, preserve evidence and URL distinctions, and reject substituted storefront identities before ingestion. Typecheck Bun fixtures.
 <!-- vrcp-worker-preview-DESCRIPTION_SUMMARY -->
 ### Added
 ### Bugs Fixed
@@ -194,6 +194,8 @@ Use unique catalog epochs, preserve evidence and URL distinctions, and reject su
 - **URL Associations**: Preserve generic path/query case and trailing slashes. Keep case-insensitive repository matching scoped to GitHub sources.
 - **Lead Identities**: Deduplicate serialized host/default-port aliases for new leads without changing retained observation links.
 ### Changes
+- **Fixture Typechecks**: Include Bun TypeScript tests and support in Worker checks. Preserve separate Cloudflare Vitest typing and native runtime verification.
+- **D1 Fixtures**: Check the SQLite adapter against generated bindings. Reject unsupported operations and foreign batch statements instead of reporting synthetic success.
 See full history at [docs/changelogs/vrcp-worker/preview](https://github.com/SlamTheDragon/vrc-packages/tree/main/docs/changelogs/vrcp-worker/preview)
 
 ---

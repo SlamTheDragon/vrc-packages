@@ -1,8 +1,9 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 
 test("production and persistent preview D1 declarations expose the runtime binding without sharing IDs", () => {
-  const config = readFileSync(new URL("../wrangler.toml", import.meta.url), "utf8");
+  const config = readFileSync(resolve(import.meta.dir, "../wrangler.toml"), "utf8");
   const declarations = [...config.matchAll(
     /\[\[(env\.preview\.)?d1_databases\]\]\s+binding\s*=\s*"([^"]+)"\s+database_id\s*=\s*"([^"]+)"/g
   )];

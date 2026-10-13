@@ -135,8 +135,7 @@ describe("Inbound 429 Rate Limiter & Abuse Protection", () => {
       expect(blockedRes.status).toBe(429);
       expect(blockedRes.headers.get("Retry-After")).toBeDefined();
       const body = await blockedRes.json();
-      expect(body.code).toBe("rate_limited");
-      expect(body.schemaVersion).toBe(CATALOG_PROTOCOL_VERSION);
+      expect(body).toMatchObject({ code: "rate_limited", schemaVersion: CATALOG_PROTOCOL_VERSION });
 
       // A different IP is still permitted
       const otherReq = new Request("http://localhost/v1/app/index", {
@@ -174,7 +173,7 @@ describe("Inbound 429 Rate Limiter & Abuse Protection", () => {
       const blockedRes = await handleNodeRequest(blockedReq, store, limiter);
       expect(blockedRes.status).toBe(429);
       const body = await blockedRes.json();
-      expect(body.code).toBe("rate_limited");
+      expect(body).toMatchObject({ code: "rate_limited" });
       expect(blockedRes.headers.get("Retry-After")).toBeDefined();
     });
   });
@@ -209,7 +208,7 @@ describe("Inbound 429 Rate Limiter & Abuse Protection", () => {
       const blockedRes = await handleDownstreamRequest(blockedReq, store, "", limiter);
       expect(blockedRes.status).toBe(429);
       const body = await blockedRes.json();
-      expect(body.code).toBe("rate_limited");
+      expect(body).toMatchObject({ code: "rate_limited" });
     });
   });
 });

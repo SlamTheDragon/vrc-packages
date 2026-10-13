@@ -1184,7 +1184,7 @@ export class LocalCoordinatorStore implements CoordinatorStore, PublicCatalogSto
     const limit = Math.min(Math.max(options?.limit ?? 50, 1), 100);
     let sql = "SELECT * FROM operator_audit_log";
     const conditions: string[] = [];
-    const params: unknown[] = [];
+    const params: SQLQueryBindings[] = [];
     if (options?.entityType) {
       conditions.push("entity_type = ?");
       params.push(options.entityType);

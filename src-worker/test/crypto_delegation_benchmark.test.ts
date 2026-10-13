@@ -75,6 +75,7 @@ describe("Cryptographic Delegation Verification Budget (R54-C38CPU)", () => {
       true,
       ["sign", "verify"]
     );
+    if (!("publicKey" in keyPair)) throw new Error("ECDSA fixture requires a generated key pair");
     const jwkPublic = await crypto.subtle.exportKey("jwk", keyPair.publicKey);
     const payloadBytes = serializeCanonicalAttestation(sampleAttestation);
     const signature = await crypto.subtle.sign(

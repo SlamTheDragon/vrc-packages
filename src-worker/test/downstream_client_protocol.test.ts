@@ -43,7 +43,7 @@ describe("Downstream Client Protocol & Demand Feedback Signals", () => {
     expect(statuses).toEqual([200, 200, 202]);
   });
   test("app registration rejects anonymous callers and records authenticated ownership", async () => {
-    const input = { schemaVersion: 1, appName: "Owned app" };
+    const input = { schemaVersion: 1 as const, appName: "Owned app" };
     const anonymous = new Request("https://worker.example/v1/app/register", {
       method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(input) });
     expect((await handleDownstreamRequest(anonymous, store)).status).toBe(401);

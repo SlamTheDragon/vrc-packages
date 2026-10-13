@@ -1,12 +1,6 @@
 import { describe, expect, it } from "bun:test";
-import { Database } from "bun:sqlite";
+import { Database, type SQLQueryBindings } from "bun:sqlite";
 import { Coordinator } from "../src/storage/d1/coordinator.ts";
-import {
-  type D1Database,
-  type D1PreparedStatement,
-  type D1Result,
-  type D1ExecResult
-} from "../src/storage/d1/definitions.ts";
 import workerEntry, { type Env } from "../src/worker_entry.ts";
 import { PlatformSchema, type Platform, ResultResponseSchema, BatchResultResponseSchema } from "vrc-packages-network/node";
 import { DEFAULT_SEED_JOBS } from "../src/storage/default_seeds.ts";
@@ -16,50 +10,51 @@ import { handlePublicCatalogRequest } from "../src/api/public_handler.ts";
 import { InMemoryRateLimiter } from "../src/api/rate_limiter.ts";
 import { handleNodeRequest } from "../src/api/handler.ts";
 
-export function createMockD1Database(db = new Database(":memory:")): D1Database {
+export function createMockD1Database(db = new Database(":memory:")) {
   db.run("PRAGMA foreign_keys = ON;");
+  const executions = new WeakMap<D1PreparedStatement, () => D1Result<never>>();
+  // SQLite fixture metadata is synthetic, not D1 usage or billing evidence.
+  const meta = (changes = 0, lastRowId = 0): D1Result<never>["meta"] => ({ changes, last_row_id: lastRowId,
+    changed_db: changes > 0, duration: 0, size_after: 0, rows_read: 0, rows_written: 0 });
   return {
     prepare(query: string): D1PreparedStatement {
-      let boundValues: unknown[] = [];
+      let boundValues: SQLQueryBindings[] = [];
       const stmt: D1PreparedStatement = {
         bind(...values: unknown[]): D1PreparedStatement {
-          boundValues = values.map((v) => (v === undefined ? null : v));
+          boundValues = values.map((v) => (v === undefined ? null : v)) as SQLQueryBindings[];
           return stmt;
         },
         async first<T = unknown>(colName?: string): Promise<T | null> {
-          const prepared = db.prepare(query);
-          const row = prepared.get(...(boundValues as any)) as Record<string, unknown> | null;
+          const row = db.prepare(query).get(...boundValues) as Record<string, unknown> | null;
           if (!row) return null;
           if (colName) return (row[colName] as T) ?? null;
           return row as T;
         },
         async run<T = unknown>(): Promise<D1Result<T>> {
-          const prepared = db.prepare(query);
-          const info = prepared.run(...(boundValues as any));
-          return { success: true, meta: { changes: info.changes } };
+          const info = db.prepare(query).run(...boundValues);
+          return { success: true, results: [], meta: meta(info.changes, Number(info.lastInsertRowid)) };
         },
         async all<T = unknown>(): Promise<D1Result<T>> {
-          const prepared = db.prepare(query);
-          const results = prepared.all(...(boundValues as any)) as T[];
-          return { success: true, results };
+          const results = db.prepare(query).all(...boundValues) as T[];
+          return { success: true, results, meta: meta() };
+        },
+        async raw(): Promise<never> {
+          throw new Error("SQLite D1 fixture does not implement raw; use native workerd");
         }
       };
-      (stmt as any)._execute = () => {
-        const prepared = db.prepare(query);
-        const info = prepared.run(...(boundValues as any));
-        return { success: true, meta: { changes: info.changes } };
-      };
+      executions.set(stmt, () => {
+        const info = db.prepare(query).run(...boundValues);
+        return { success: true, results: [], meta: meta(info.changes, Number(info.lastInsertRowid)) };
+      });
       return stmt;
     },
     async batch<T = unknown>(statements: D1PreparedStatement[]): Promise<D1Result<T>[]> {
       const results: D1Result<T>[] = [];
       db.transaction(() => {
-        for (const s of statements) {
-          if (typeof (s as any)._execute === "function") {
-            results.push((s as any)._execute());
-          } else {
-            results.push({ success: true });
-          }
+        for (const statement of statements) {
+          const execute = executions.get(statement);
+          if (!execute) throw new Error("SQLite D1 fixture cannot batch a foreign statement");
+          results.push(execute());
         }
       })();
       return results;
@@ -71,11 +66,31 @@ export function createMockD1Database(db = new Database(":memory:")): D1Database 
         for (const command of commands) db.prepare(command).run();
       })();
       return { count: commands.length, duration: 0 };
+    },
+    withSession(): never {
+      throw new Error("SQLite D1 fixture does not implement sessions; use native workerd");
+    },
+    async dump(): Promise<never> {
+      throw new Error("SQLite D1 fixture does not implement dump; use native workerd");
     }
-  };
+  } satisfies Env["VRCP_D1"];
 }
 
 describe("Cloudflare D1 Coordinator Store & Edge Worker Adapter", () => {
+  it("rejects unsupported fixture operations and rolls back foreign batch statements", async () => {
+    const sqlite = new Database(":memory:"), other = new Database(":memory:");
+    try {
+      const db = createMockD1Database(sqlite), foreign = createMockD1Database(other);
+      await db.exec("CREATE TABLE fixture_contract (value TEXT)");
+      await foreign.exec("CREATE TABLE fixture_contract (value TEXT)");
+      expect(() => db.withSession()).toThrow("does not implement sessions");
+      await expect(db.dump()).rejects.toThrow("does not implement dump");
+      await expect(db.prepare("SELECT 1").raw()).rejects.toThrow("does not implement raw");
+      await expect(db.batch([db.prepare("INSERT INTO fixture_contract VALUES ('local')"),
+        foreign.prepare("INSERT INTO fixture_contract VALUES ('foreign')")])).rejects.toThrow("foreign statement");
+      expect(await db.prepare("SELECT COUNT(*) AS count FROM fixture_contract").first()).toEqual({ count: 0 });
+    } finally { sqlite.close(); other.close(); }
+  });
   async function metadataFixture(platform: Platform, target: string, purpose: "metadata" | "discovery" = "metadata") {
     const sqlite = new Database(":memory:");
     const store = new Coordinator(createMockD1Database(sqlite));
@@ -418,7 +433,8 @@ describe("Cloudflare D1 Coordinator Store & Edge Worker Adapter", () => {
       if (claimed.status !== "leased") throw new Error("Expected lease");
       const origin = fixture.sqlite.query("SELECT * FROM origin_leases").get();
       const client = new VRCPackageClient({ baseUrl: "https://worker.example", operatorToken: "a".repeat(64),
-        fetch: async (input, init) => workerEntry.fetch(new Request(input, init), { VRCP_D1: fixture.db, OPERATOR_TOKEN: "a".repeat(64) }) });
+        fetch: Object.assign(async (input: RequestInfo | URL, init?: RequestInit) =>
+          workerEntry.fetch(new Request(input, init), { VRCP_D1: fixture.db, OPERATOR_TOKEN: "a".repeat(64) }), { preconnect() {} }) });
       const revokePath = `https://worker.example/v1/operator/nodes/${principal.nodeId}/revoke`;
       for (const [payload, authorized, status] of [
         [{ schemaVersion: 1, reason: "Fixture" }, false, 401],
@@ -497,7 +513,8 @@ describe("Cloudflare D1 Coordinator Store & Edge Worker Adapter", () => {
       await store.initSchema();
       const env = { VRCP_D1: db, OPERATOR_TOKEN: "a".repeat(64) };
       const client = new VRCPackageClient({ baseUrl: "https://worker.example", operatorToken: env.OPERATOR_TOKEN,
-        fetch: async (input, init) => workerEntry.fetch(new Request(input, init), env) });
+        fetch: Object.assign(async (input: RequestInfo | URL, init?: RequestInit) =>
+          workerEntry.fetch(new Request(input, init), env), { preconnect() {} }) });
       const input = { schemaVersion: 1 as const, url: "https://seed.example/index.json", platform: "vpm" as const,
         purpose: "metadata" as const, minDelayMs: 1000, reason: "Offline operator candidate" };
       const first = await client.operator.jobs.enqueue(input);
@@ -589,7 +606,8 @@ describe("Cloudflare D1 Coordinator Store & Edge Worker Adapter", () => {
       try {
         const env = { VRCP_D1: createMockD1Database(sqlite), OPERATOR_TOKEN: "a".repeat(64) };
         const client = new VRCPackageClient({ baseUrl: "https://worker.example", operatorToken: env.OPERATOR_TOKEN,
-          fetch: async (input, init) => workerEntry.fetch(new Request(input, init), env) });
+          fetch: Object.assign(async (input: RequestInfo | URL, init?: RequestInit) =>
+            workerEntry.fetch(new Request(input, init), env), { preconnect() {} }) });
         const result = await client.operator.init({ autoSeed });
         expect(result.schemaVersion).toBe(1);
         expect(result.autoSeed).toBe(autoSeed ?? true);
@@ -617,7 +635,9 @@ describe("Cloudflare D1 Coordinator Store & Edge Worker Adapter", () => {
       const db: D1Database = {
         prepare() { operations++; throw new Error("Unexpected database operation"); },
         async batch() { operations++; throw new Error("Unexpected database operation"); },
-        async exec() { operations++; throw new Error("Unexpected database operation"); }
+        async exec() { operations++; throw new Error("Unexpected database operation"); },
+        withSession() { operations++; throw new Error("Unexpected database operation"); },
+        async dump() { operations++; throw new Error("Unexpected database operation"); }
       };
       const response = await workerEntry.fetch(new Request("https://worker.example/v1/operator/init", {
         method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": contentType }, body

@@ -387,7 +387,7 @@ describe("Public Consumer Catalog Protocol (/v1/app/index & /v1/app/index/delta)
       expect(deltaBody.deltas).toHaveLength(1);
       expect(deltaBody.deltas[0].canonicalId).toBe("pkg-gen");
       if (deltaBody.deltas[0].action === "upsert") {
-        expect(deltaBody.deltas[0].package.contentRating).toBe("general");
+        expect(deltaBody.deltas[0].package?.contentRating).toBe("general");
       }
     } finally {
       store.close();

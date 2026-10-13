@@ -1,6 +1,16 @@
-# Active R13-C9: URL association gate checked locally (2026-10-13)
+# Active R13-C9-TEST-TYPES: Worker Bun fixture coverage (2026-10-13)
 
-## Authority and current result
+## Current working theory and verified checkpoint
+
+- Theory confirmed: `test/tsconfig.json` checked only Vitest fixtures. Bun tests also exposed missing fetch.preconnect, incomplete D1 shapes, private clock mutation, unknown JSON/SQL values and runtime-global type mismatches.
+- Added `test/tsconfig.bun.json` to the existing product `check`. Compiler inventory includes all 29 non-Vitest TypeScript test/support files. The separate Vitest project remains. No production type widening, API/wire/schema/dependency or root tooling change.
+- SQLite mock now satisfies generated Worker bindings, uses typed execution bookkeeping, rejects unsupported raw/session/dump operations and rolls back foreign batch statements. Fixture metadata is synthetic, not billing evidence. Clocks use the existing constructor hook; other fixture assertions retain their runtime expectations.
+- Final grouped gate: `bun run check`; 297 Bun tests/3456 assertions/23 files (12.50s); three Cloudflare Vitest tests (8.71s); preview dry-run bundle; full native HTTP/D1 harness. All pass. Type inventory has zero missing fixtures. Root tests did not run because root tooling is unchanged.
+- Verification history: the initial expanded check exposed two additional mock shapes and the metadata index signature; these were corrected before the final pass. Vitest warned about an absent real OPERATOR_TOKEN, but its configured synthetic binding authenticated initialization successfully. No real credential was supplied or needed.
+- JavaScript native harnesses and dependency declarations are not fully statically checked. Native output still confirms public provisional fronts; this typing gate does not resolve authority, budget or fleet risks. No ceremonial publication or version change accompanies this fixture-only checkpoint.
+- Previous turn was progress: local 53a39e5 completed the URL comparison gate below. Routine commit stays local.
+
+## Authority and prior URL gate (53a39e5)
 
 - Branch: preview/crawler-network. Routine checkpoints remain local. Preview publication/dependency synchronization is authorized when needed; no production publication or SDK v0.1.0.
 - Preserve owner README change d99b8f1. No sibling source imports, node_modules edits, source grants or external crawls accompany this gate.
@@ -12,18 +22,18 @@
 
 | Claim | Current code evidence | Exercised evidence | Remaining boundary |
 | --- | --- | --- | --- |
-| Generic URLs preserve resource distinctions | coordinator.ts:719,724,757,778 | d1_coordinator_store.test.ts:135; coordinator_runtime_smoke.mjs:165 | Existing raw aliases are not migrated; encoded aliases beyond URL serialization can stay unmatched. |
-| New lead aliases share one identity | coordinator.ts:647,943 | d1_coordinator_store.test.ts:175,207; native aliasLeadCount=1 | Retained observation payloads remain original. No old lead-key rewrite. |
-| GitHub case handling stays specialized | coordinator.ts:738 | d1_coordinator_store.test.ts:191 | No generic case-insensitive URL rule. |
+| Generic URLs preserve resource distinctions | coordinator.ts:719,724,757,778 | d1_coordinator_store.test.ts:150; coordinator_runtime_smoke.mjs:165 | Existing raw aliases are not migrated; encoded aliases beyond URL serialization can stay unmatched. |
+| New lead aliases share one identity | coordinator.ts:647,943 | d1_coordinator_store.test.ts:190,222; native aliasLeadCount=1 | Retained observation payloads remain original. No old lead-key rewrite. |
+| GitHub case handling stays specialized | coordinator.ts:738 | d1_coordinator_store.test.ts:206 | No generic case-insensitive URL rule. |
 | Public fronts require accepted identity | coordinator.ts:708 and buildCatalogPackagesBatch contradict this claim | Native public HTTP exposes an exact-match provisional front | R13-C9-IDENTITY and Q-PUBLICATION retain evidence/review, propagation, remediation and withdrawal decisions. |
 
 ## Open contracts and next independent work
 
 - R13-C9-IDENTITY remains critical: source permission, truthful observation, identity and publication are separate. No automatic approval, deletion or graph remediation is selected.
 - R13-C9-DELTA remains critical: current-row paging omits same-time mutations behind a consumed cursor; native hard deletion and rating withdrawal lack tombstones/epoch changes. Hard deletion has no production API caller; rating adjustment does. Revision/journal versus epoch/full-resync and retention/disclosure contracts stay deferred.
-- R13-C9-TEST-TYPES: standard test typechecking includes Vitest fixtures, not all Bun store tests. Extra whole-file checks previously failed in existing mock D1/Env and fetch.preconnect sections. Do not claim complete fixture static coverage. This is available independent product-local work.
+- R13-C9-TEST-TYPES inclusion and fixture errors are checked locally above; JavaScript harness and external declaration static coverage remain outside that claim.
 - G12/R50-C31: account-wide requests, D1 rows/index writes, CPU, retained bytes, Linux/container interruption, host power loss and OS I/O remain unproven. No fleet-readiness conclusion follows from scoped checks.
-- Next: product-local Bun fixture typing or a genuine changed Worker preview delivery through root tooling and predecessor proof. Epoch/metadata/URL changes justify runtime verification, but ownership/publication policy remains unresolved. No version, tag, push, deployment or live crawl ran for this gate.
+- Next: independent R13-C9 failure cases or genuine changed Worker preview delivery through root tooling and predecessor proof. Epoch/metadata/URL changes justify runtime verification, but ownership/publication policy remains unresolved. No version, tag, push, deployment or live crawl ran for this gate.
 
 ## Earlier local capability checkpoints
 
