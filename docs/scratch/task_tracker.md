@@ -1,4 +1,12 @@
-# Active R13-C9-TEST-TYPES: Worker Bun fixture coverage (2026-10-13)
+# Paused R13-C9: node lease deadline during slow authority checks (2026-10-13)
+
+## Current runtime theory and plan
+
+- Theory confirmed by a runtime probe: daemon expiry preflight runs only once. `runLeasedJob` has periodic/final heartbeats but no deadline timer, and a pending heartbeat does not cancel ongoing source I/O when the fixed lease expires. The Worker heartbeat checks expiry without renewal; its existing response supplies serverTime.
+- Plan: reproduce through a schema-valid loopback coordinator and real node client, then enforce an independent fixed deadline through source processing and staging. Use monotonic elapsed time and conservative server-time/round-trip bounds without extending authority or changing the wire. Preserve durable outbox settlement and final coordinator checks. Verify aborts, clock/latency cases, stop handling, persistence/replay, node types and dev compilation together.
+- Previous turn was progress: local 67d67ca checked all 29 Worker Bun TypeScript fixtures and native runtimes. No new runtime correction is verified yet. Questions outside fixed-lease enforcement stay deferred.
+- Owner requested pause before implementation. Probe used the real runner and CoordinatorClient against a synthetic loopback HTTP coordinator: a 150ms lease remained source-active at 190ms; cancellation occurred at 501ms after the delayed 403 heartbeat. External source fetches: zero. The probe completed and its server stopped; no live handle remains.
+- No runtime source, test, dependency or version changes were made in this iteration. Resume from R13-C9-LEASE-DEADLINE, implement the bounded deadline correction, then verify the complete node gate. Clock/latency bounds are a proposal, not verified behavior. Crawler preview recovery and publication identities below remain unchanged; no remote action ran.
 
 ## Current working theory and verified checkpoint
 
