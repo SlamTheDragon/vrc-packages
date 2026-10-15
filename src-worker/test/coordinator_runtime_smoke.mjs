@@ -774,6 +774,268 @@ try {
 			externalFetches
 		})
 	);
+
+	// FLEET-S1: Extended failure paths and separate node processes verification
+	// 1. Capability mismatch failure paths
+	const capNode = NodeCredentialResponseSchema.parse(
+		await post('/v1/operator/nodes', {
+			schemaVersion: 1, nodeId: 'runtime-cap-node', capabilities: ['vpm'], reason: 'Capability mismatch fixture'
+		}, operatorToken)
+	);
+
+	const mismatchedClaim = await runtime.dispatchFetch('https://offline.invalid/v1/node/jobs/claim', {
+		method: 'POST',
+		headers: { authorization: `Bearer ${capNode.token}`, 'content-type': 'application/json' },
+		body: JSON.stringify({ schemaVersion: 1, nodeId: capNode.nodeId, capabilities: ['booth'] })
+	});
+	assert.equal(mismatchedClaim.status, 403, 'Claiming unauthorized capability must reject 403');
+
+	const mismatchedHeartbeat = await runtime.dispatchFetch('https://offline.invalid/v1/node/heartbeat', {
+		method: 'POST',
+		headers: { authorization: `Bearer ${capNode.token}`, 'content-type': 'application/json' },
+		body: JSON.stringify({ schemaVersion: 1, nodeId: capNode.nodeId, capabilities: ['booth'], state: 'idle' })
+	});
+	assert.equal(mismatchedHeartbeat.status, 403, 'Heartbeat with unauthorized capability must reject 403');
+
+	// 2. Non-existent / unknown job failure paths
+	const unknownJobId = randomUUID();
+	const unknownLeaseId = randomUUID();
+	const unknownHeartbeat = await runtime.dispatchFetch('https://offline.invalid/v1/node/heartbeat', {
+		method: 'POST',
+		headers: { authorization: `Bearer ${capNode.token}`, 'content-type': 'application/json' },
+		body: JSON.stringify({
+			schemaVersion: 1,
+			nodeId: capNode.nodeId,
+			capabilities: ['vpm'],
+			state: 'fetching',
+			activeJobId: unknownJobId,
+			activeLeaseId: unknownLeaseId
+		})
+	});
+	assert.equal(unknownHeartbeat.status, 403, 'Heartbeat for unknown active job must reject 403');
+
+	const unknownResult = await runtime.dispatchFetch('https://offline.invalid/v1/node/jobs/result', {
+		method: 'POST',
+		headers: { authorization: `Bearer ${capNode.token}`, 'content-type': 'application/json' },
+		body: JSON.stringify({
+			schemaVersion: 1,
+			nodeId: capNode.nodeId,
+			jobId: unknownJobId,
+			leaseId: unknownLeaseId,
+			idempotencyKey: randomUUID(),
+			outcome: {
+				kind: 'changed',
+				observation: {
+					sourceItemKey: 'com.offline.unknown',
+					title: 'Unknown job',
+					summary: '',
+					author: 'Unknown',
+					outboundLinks: [],
+					originUpdatedAt: null
+				}
+			}
+		})
+	});
+	assert.equal(unknownResult.status, 404, 'Result submission for non-existent job must return 404');
+
+	// 3. Lease expiry failure path and cross-node lease isolation
+	const expiryNode = NodeCredentialResponseSchema.parse(
+		await post('/v1/operator/nodes', {
+			schemaVersion: 1, nodeId: 'runtime-expiry-node', capabilities: ['vpm'], reason: 'Lease expiry failure fixture'
+		}, operatorToken)
+	);
+	const reclaimNode = NodeCredentialResponseSchema.parse(
+		await post('/v1/operator/nodes', {
+			schemaVersion: 1, nodeId: 'runtime-reclaim-node', capabilities: ['vpm'], reason: 'Lease reclaim fixture'
+		}, operatorToken)
+	);
+
+	const expiryOrigin = 'https://runtime-expiry.example';
+	await post('/v1/operator/source-profiles', {
+		schemaVersion: 1, platform: 'vpm', origin: expiryOrigin, pathScope: '/',
+		method: 'GET', purpose: 'metadata', minDelayMs: 1000,
+		expiresAt: new Date(Date.now() + 86400000).toISOString(),
+		reviewReference: 'OFFLINE-LEASE-EXPIRY', reason: 'Hermetic lease expiry fixture',
+		retainClasses: ['normalized_facts'], publishClasses: []
+	}, operatorToken);
+
+	const liveDb = await runtime.getD1Database('VRCP_D1');
+	const expiryJobId = randomUUID();
+	const nowIso = new Date().toISOString();
+	await liveDb.prepare('INSERT INTO origin_robots(origin,snapshot_id,status_code,body,fetched_at,expires_at) VALUES (?,?,?,?,?,?)')
+		.bind(expiryOrigin, randomUUID(), 200, 'User-agent: *\nAllow: /', nowIso, new Date(Date.now() + 3600000).toISOString()).run();
+	await liveDb.prepare('INSERT INTO crawl_jobs(job_id,platform,url,origin,state,next_fetch_at,created_at,job_purpose) VALUES (?,?,?,?,?,?,?,?)')
+		.bind(expiryJobId, 'vpm', expiryOrigin + '/index.json', expiryOrigin, 'pending', nowIso, nowIso, 'metadata').run();
+	await liveDb.prepare('INSERT INTO origin_leases VALUES (?,?,?,?,?)')
+		.bind(expiryOrigin, null, null, nowIso, 1000).run();
+
+	// Expiry node claims the job
+	const expiryClaim = ClaimResponseSchema.parse(
+		await post('/v1/node/jobs/claim', { schemaVersion: 1, nodeId: expiryNode.nodeId, capabilities: ['vpm'] }, expiryNode.token)
+	);
+	assert.equal(expiryClaim.status, 'leased');
+	assert.equal(expiryClaim.job.jobId, expiryJobId);
+
+	// Heartbeat succeeds while lease is live
+	const liveHeartbeat = HeartbeatResponseSchema.parse(
+		await post('/v1/node/heartbeat', {
+			schemaVersion: 1, nodeId: expiryNode.nodeId, capabilities: ['vpm'], state: 'fetching',
+			activeJobId: expiryClaim.job.jobId, activeLeaseId: expiryClaim.job.leaseId
+		}, expiryNode.token)
+	);
+	assert.equal(liveHeartbeat.status, 'alive');
+
+	// Cross-node lease isolation: reclaimNode tries to heartbeat or submit with expiryNode active lease
+	const crossHeartbeat = await runtime.dispatchFetch('https://offline.invalid/v1/node/heartbeat', {
+		method: 'POST',
+		headers: { authorization: `Bearer ${reclaimNode.token}`, 'content-type': 'application/json' },
+		body: JSON.stringify({
+			schemaVersion: 1, nodeId: reclaimNode.nodeId, capabilities: ['vpm'], state: 'fetching',
+			activeJobId: expiryClaim.job.jobId, activeLeaseId: expiryClaim.job.leaseId
+		})
+	});
+	assert.equal(crossHeartbeat.status, 403, 'Cross-node heartbeat must reject 403');
+
+	const crossResult = await runtime.dispatchFetch('https://offline.invalid/v1/node/jobs/result', {
+		method: 'POST',
+		headers: { authorization: `Bearer ${reclaimNode.token}`, 'content-type': 'application/json' },
+		body: JSON.stringify({
+			schemaVersion: 1, nodeId: reclaimNode.nodeId, jobId: expiryClaim.job.jobId, leaseId: expiryClaim.job.leaseId,
+			idempotencyKey: randomUUID(),
+			outcome: { kind: 'changed', observation: {
+				sourceItemKey: 'com.offline.cross-submit', title: 'Cross node', summary: '', author: 'Attacker', outboundLinks: [], originUpdatedAt: null
+			} }
+		})
+	});
+	assert.equal(crossResult.status, 403, 'Cross-node submission must reject 403');
+
+	// Artificially expire the lease in D1
+	const expiredPast = new Date(Date.now() - 60000).toISOString();
+	await liveDb.prepare('UPDATE crawl_jobs SET lease_expires_at=? WHERE job_id=?').bind(expiredPast, expiryJobId).run();
+	await liveDb.prepare('UPDATE origin_leases SET lease_expires_at=?,next_allowed_at=? WHERE origin=?').bind(expiredPast, expiredPast, expiryOrigin).run();
+
+	// Heartbeat after lease expiry must fail
+	const expiredHeartbeat = await runtime.dispatchFetch('https://offline.invalid/v1/node/heartbeat', {
+		method: 'POST',
+		headers: { authorization: `Bearer ${expiryNode.token}`, 'content-type': 'application/json' },
+		body: JSON.stringify({
+			schemaVersion: 1, nodeId: expiryNode.nodeId, capabilities: ['vpm'], state: 'fetching',
+			activeJobId: expiryClaim.job.jobId, activeLeaseId: expiryClaim.job.leaseId
+		})
+	});
+	assert.equal(expiredHeartbeat.status, 403, 'Heartbeat with expired lease must reject 403');
+
+	// Result submission after lease expiry must fail
+	const expiredResult = await runtime.dispatchFetch('https://offline.invalid/v1/node/jobs/result', {
+		method: 'POST',
+		headers: { authorization: `Bearer ${expiryNode.token}`, 'content-type': 'application/json' },
+		body: JSON.stringify({
+			schemaVersion: 1, nodeId: expiryNode.nodeId, jobId: expiryClaim.job.jobId, leaseId: expiryClaim.job.leaseId,
+			idempotencyKey: randomUUID(),
+			outcome: { kind: 'changed', observation: {
+				sourceItemKey: 'com.offline.expired-submit', title: 'Expired', summary: '', author: 'Offline', outboundLinks: [], originUpdatedAt: null
+			} }
+		})
+	});
+	assert.equal(expiredResult.status, 403, 'Submission with expired lease must reject 403');
+
+	// Expired job can now be reclaimed by another separate node process
+	const reclaimClaim = ClaimResponseSchema.parse(
+		await post('/v1/node/jobs/claim', { schemaVersion: 1, nodeId: reclaimNode.nodeId, capabilities: ['vpm'] }, reclaimNode.token)
+	);
+	assert.equal(reclaimClaim.status, 'leased', 'Expired job must be reclaimable by another node');
+	assert.equal(reclaimClaim.job.jobId, expiryJobId);
+	assert.notEqual(reclaimClaim.job.leaseId, expiryClaim.job.leaseId, 'New lease ID must be issued on reclaim');
+
+	// Reclaim node can complete the submission successfully
+	const reclaimResultPayload = {
+		schemaVersion: 1, nodeId: reclaimNode.nodeId, jobId: reclaimClaim.job.jobId, leaseId: reclaimClaim.job.leaseId,
+		idempotencyKey: randomUUID(),
+		outcome: { kind: 'changed', observation: {
+			sourceItemKey: 'com.offline.reclaimed-package', title: 'Reclaimed Package', summary: '', author: 'Offline author', outboundLinks: [], originUpdatedAt: null
+		} }
+	};
+	const reclaimReceipt = ResultResponseSchema.parse(
+		await post('/v1/node/jobs/result', reclaimResultPayload, reclaimNode.token)
+	);
+	assert.equal(reclaimReceipt.status, 'accepted');
+
+	// 4. Multi-Node Concurrent Fleet Pacing & Allocation Simulation
+	const fleetNodes = [];
+	for (let i = 1; i <= 3; i++) {
+		fleetNodes.push(NodeCredentialResponseSchema.parse(
+			await post('/v1/operator/nodes', {
+				schemaVersion: 1, nodeId: `runtime-fleet-${i}`, capabilities: ['vpm'], reason: `Fleet simulation node ${i}`
+			}, operatorToken)
+		));
+	}
+	// Seed 2 distinct jobs on 2 distinct origins
+	const fleetOrigins = ['https://fleet-origin-a.example', 'https://fleet-origin-b.example'];
+	for (const fOrigin of fleetOrigins) {
+		await post('/v1/operator/source-profiles', {
+			schemaVersion: 1, platform: 'vpm', origin: fOrigin, pathScope: '/',
+			method: 'GET', purpose: 'metadata', minDelayMs: 1000,
+			expiresAt: new Date(Date.now() + 86400000).toISOString(),
+			reviewReference: 'OFFLINE-FLEET-SIM', reason: 'Multi-node fleet simulation',
+			retainClasses: ['normalized_facts'], publishClasses: []
+		}, operatorToken);
+		const fJobId = randomUUID();
+		await liveDb.prepare('INSERT INTO origin_robots(origin,snapshot_id,status_code,body,fetched_at,expires_at) VALUES (?,?,?,?,?,?)')
+			.bind(fOrigin, randomUUID(), 200, 'User-agent: *\nAllow: /', nowIso, new Date(Date.now() + 3600000).toISOString()).run();
+		await liveDb.prepare('INSERT INTO crawl_jobs(job_id,platform,url,origin,state,next_fetch_at,created_at,job_purpose) VALUES (?,?,?,?,?,?,?,?)')
+			.bind(fJobId, 'vpm', fOrigin + '/index.json', fOrigin, 'pending', nowIso, nowIso, 'metadata').run();
+		await liveDb.prepare('INSERT INTO origin_leases VALUES (?,?,?,?,?)')
+			.bind(fOrigin, null, null, nowIso, 1000).run();
+	}
+
+	// 3 separate nodes claim concurrently for 2 available jobs
+	const fleetClaims = await Promise.all(
+		fleetNodes.map(node => post('/v1/node/jobs/claim', {
+			schemaVersion: 1, nodeId: node.nodeId, capabilities: ['vpm']
+		}, node.token).then(res => ClaimResponseSchema.parse(res)))
+	);
+
+	const leasedFleetClaims = fleetClaims.filter(c => c.status === 'leased');
+	const emptyFleetClaims = fleetClaims.filter(c => c.status === 'empty');
+	assert.equal(leasedFleetClaims.length, 2, 'Exactly 2 nodes must receive leases for 2 jobs');
+	assert.equal(emptyFleetClaims.length, 1, 'Third node must receive empty status');
+
+	// Verify distinct jobs and origins were assigned to the winning nodes
+	const assignedOrigins = new Set(leasedFleetClaims.map(c => c.job.origin));
+	const assignedJobs = new Set(leasedFleetClaims.map(c => c.job.jobId));
+	assert.equal(assignedOrigins.size, 2, 'Leased nodes must have distinct origins');
+	assert.equal(assignedJobs.size, 2, 'Leased nodes must have distinct jobs');
+
+	// Both leased nodes submit results concurrently
+	const fleetReceipts = await Promise.all(
+		fleetClaims.map(async (claim, nodeIdx) => {
+			if (claim.status !== 'leased') return null;
+			const node = fleetNodes[nodeIdx];
+			const payload = {
+				schemaVersion: 1, nodeId: node.nodeId, jobId: claim.job.jobId, leaseId: claim.job.leaseId,
+				idempotencyKey: randomUUID(),
+				outcome: { kind: 'changed', observation: {
+					sourceItemKey: `com.offline.fleet-pkg-${nodeIdx}`, title: `Fleet Package ${nodeIdx}`, summary: '', author: 'Fleet Author', outboundLinks: [], originUpdatedAt: null
+				} }
+			};
+			return ResultResponseSchema.parse(await post('/v1/node/jobs/result', payload, node.token));
+		})
+	);
+	const validReceipts = fleetReceipts.filter(Boolean);
+	assert.equal(validReceipts.length, 2);
+	assert.ok(validReceipts.every(r => r.status === 'accepted'));
+
+	console.log(JSON.stringify({
+		check: 'fleet_s1_failure_paths_and_separate_nodes',
+		capabilityMismatchRejected: true,
+		unknownJobRejected: true,
+		crossNodeLeaseProtected: true,
+		expiredLeaseRejected: true,
+		reclaimAfterExpiryVerified: true,
+		concurrentFleetPacingVerified: true,
+		passed: true
+	}));
+
 } finally {
 	await runtime.dispose();
 }

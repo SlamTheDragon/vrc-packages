@@ -1,36 +1,41 @@
-# Active slice: R16-C20-DOCS (2026-10-16, local commit, no push)
+# Active slice: FLEET-S1 (2026-10-16, local commit, no push)
 
-- Objective: Reconcile source/runbook drafts with delivered code and verified capabilities.
+- Objective: Extend native runtime harness to verify failure paths and separate node processes.
 - Working theory:
-  Earlier docs described outdated or unsupported capabilities:
-  1. `SPECIFICATION_CRAWLER_CLIENT.md` cited `node.config.json`, which was removed under `M-CRAWLER-HEADLESS-ENV` in favor of direct `.env` ingestion. It also omitted the dedicated `[ACTIVITY]` and `[FINDING]` broadcast logging to `latest.log`.
-  2. `SPECIFICATION_CRAWLER_NETWORK.md` claimed delta synchronization lacked tombstones for deletions/withdrawals and claimed public responses exposed provisional cross-source fronts. `R13-C9-DELTA` delivered `catalog_tombstones` and unified delta feeds; `R13-C9-IDENTITY` isolated provisional fronts behind accepted `identity_links`.
-  3. `DELEGATES.md` needed reconciliation regarding `.env` node configuration, activity broadcasts, delta tombstones, and provisional front isolation.
-  4. `DATABASE_SCHEMAS.md` lacked documentation of `catalog_tombstones` and consolidated audit log entities.
-  Updating these drafts aligns documentation with delivered code without asserting unsupported capabilities.
+  The coordinator native runtime smoke harness (`coordinator_runtime_smoke.mjs`) verified happy paths:
+  1. Initialization, node registration, single claim race, and successful result submission passed.
+  2. The harness did not exercise required failure paths on real HTTP requests.
+  3. Missing failure paths include unauthorized capability requests, expired lease submissions, and non-existent jobs.
+  4. Cross-node lease isolation and reclaiming expired jobs were unverified under native Miniflare/D1.
+  5. Multi-node fleet concurrency and origin pacing lacked direct verification.
+  Extending `coordinator_runtime_smoke.mjs` verifies these failure paths and multi-node lifecycles.
 - Implementation steps:
-  1. Update `docs/source/SPECIFICATION_CRAWLER_CLIENT.md` to remove `node.config.json` references and document `.env` configuration and dedicated activity/finding logging.
-  2. Update `docs/source/SPECIFICATION_CRAWLER_NETWORK.md` to document `catalog_tombstones` delta streaming and accepted identity link front isolation.
-  3. Update `DELEGATES.md` to reflect headless `.env` configuration and delta tombstone delivery.
-  4. Update `docs/source/DATABASE_SCHEMAS.md` to document `catalog_tombstones`.
-  5. Run documentation and link validation checks.
-  6. Document changes in `docs/source/CHANGELOG.md`.
+  1. Add capability mismatch failure checks for claim and heartbeat.
+  2. Add unknown job and unknown lease rejection checks.
+  3. Add cross-node lease isolation checks to stop unauthorized submissions.
+  4. Add expired lease checks for heartbeat and result submission.
+  5. Add expired job reclaiming checks for separate node processes.
+  6. Add multi-node concurrent fleet claim and origin pacing checks.
+  7. Run `node test/coordinator_runtime_smoke.mjs` and domain test suites.
+  8. Update changelog and implementation plan ledgers.
 - Verification status: Verified locally.
-  - Link audit: `.agents/scripts/check_doc_links.ts` confirmed zero new broken links.
-  - Crawler domain: 174 tests pass, typecheck clean, dev build compiles.
-  - Worker domain: `bun run check` clean across all 3 tsconfigs.
-  - Documentation: updated `docs/source/CHANGELOG.md`.
+  - Native runtime harness: `node test/coordinator_runtime_smoke.mjs` passed all checks including `fleet_s1_failure_paths_and_separate_nodes`.
+  - Worker domain suite: `bun test` passed 298 tests across 23 files (3510 assertions).
+  - Worker typecheck: `bun run check` clean across all 3 tsconfigs.
+  - Worker Vitest: `bun run test:workers` passed 3 tests.
+  - Crawler domain suite: `bun test` passed 174 tests across 26 files (1463 assertions).
+  - Documentation: updated `docs/source/CHANGELOG.md` under `vrcp-worker-preview`.
 
 # Previous checkpoints
 
+# R16-C20-DOCS checkpoint (2026-10-16, local commit 7dcb2b2)
+- Implemented: Reconciled specifications and runbooks with delivered capabilities; removed node.config.json references.
+- Verified: Link check passed, crawler 174 tests passed, worker typechecks clean.
+
 # R16-C19-BROADCAST checkpoint (2026-10-16, local commit 38d47ab)
-- Implemented: Added `activity()` and `finding()` methods to `Logger` in `logger.ts`; instrumented `daemon.ts` and `main.ts` to broadcast lifecycle activities and package discovery findings to `latest.log`.
+- Implemented: Added `activity()` and `finding()` methods to `Logger`; instrumented daemon and main for latest.log broadcasting.
 - Verified: Crawler `bun test` 174 pass, `bunx tsc --noEmit` clean, dev build compiles.
 
 # R13-C9-DELTA checkpoint (2026-10-16, local commit 0ecf467)
-- Implemented: Added `catalog_tombstones` table and cursor index; recorded tombstones on rating withdrawal, hard deletion, and delist requests; updated `listCatalogDeltasPage` to union tombstones with `NOT EXISTS`.
+- Implemented: Added catalog_tombstones table and cursor index; recorded tombstones on withdrawal/delist; updated delta feed.
 - Verified: Worker `bun test` 298 pass, 3 Vitest pass, workerd smoke pass, typecheck clean.
-
-# R13-C9-IDENTITY checkpoint (2026-10-16, local commit 68e695f)
-- Implemented: `buildCatalogPackagesBatch` enforces `EXISTS` on accepted `identity_links`. Provisional storefront fronts stay internal.
-- Verified: Worker 297 pass, Vitest pass, native smoke pass (`provisionalFrontStillPublic: false`).

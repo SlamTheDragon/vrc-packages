@@ -8,7 +8,7 @@ Here are the latest changelogs of each package and applications. For a full hist
 ## What Changed
 
 <!-- MASTER_SUMMARY -->
-Preserve evidence, settled outbox results and URL resource distinctions. Broadcast crawler activities and findings to the dedicated log file. Isolate provisional storefront fronts from public projection. Emit delist tombstones on package withdrawal. Use unique catalog epochs and typecheck Bun fixtures.
+Preserve evidence, settled outbox results and URL resource distinctions. Broadcast crawler activities and findings to the dedicated log file. Isolate provisional storefront fronts from public projection. Emit delist tombstones on package withdrawal. Verify coordinator failure paths and multi-node fleet allocation in native workerd runtime.
 <!-- MASTER_SUMMARY -->
 
 ## Table of Contents
@@ -186,9 +186,10 @@ See full history at [docs/changelogs/vrcp-web/preview](https://github.com/SlamTh
 ## VRC Packages Worker - `vrcp-worker-preview`
 
 <!-- vrcp-worker-preview-DESCRIPTION_SUMMARY -->
-Use unique catalog epochs, preserve evidence and URL distinctions, withhold provisional fronts from public projection, emit delist tombstones on package withdrawal, and reject substituted storefront identities. Typecheck Bun fixtures.
+Verify coordinator failure paths and multi-node fleet allocation in native workerd runtime. Use unique catalog epochs, preserve evidence and URL distinctions, withhold provisional fronts, and emit delist tombstones.
 <!-- vrcp-worker-preview-DESCRIPTION_SUMMARY -->
 ### Added
+- **Runtime Verification Harness**: Extended the native coordinator harness to test capability mismatch, lease expiry, cross-node lease isolation, and multi-node fleet concurrency.
 ### Bugs Fixed
 - **Delta Feed Tombstones**: Record tombstones and emit delist deltas when packages leave the public general catalog via rating withdrawal or deletion.
 - **Provisional Fronts**: Filter provisional cross-source storefront links from public catalog packages until explicit operator review.
