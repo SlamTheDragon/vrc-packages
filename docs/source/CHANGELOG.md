@@ -206,6 +206,7 @@ Bound claim candidate scans by an explicit page budget. Verify coordinator failu
 ### Changes
 - **Fixture Typechecks**: Include Bun TypeScript tests and support in Worker checks. Preserve separate Cloudflare Vitest typing and native runtime verification.
 - **D1 Fixtures**: Check the SQLite adapter against generated bindings. Reject unsupported operations and foreign batch statements instead of reporting synthetic success.
+- **Specification Reconciliation**: Reconciled API routes, network specifications, and database schemas with delivered claim scan budgets, operator app candidate review, and moderator protocol.
 See full history at [docs/changelogs/vrcp-worker/preview](https://github.com/SlamTheDragon/vrc-packages/tree/main/docs/changelogs/vrcp-worker/preview)
 
 ---

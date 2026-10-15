@@ -25,6 +25,7 @@ This specification distinguishes between two operational deployment models:
   - **Structured Logging**: Logger broadcasts operational activities ([ACTIVITY]) and discovery findings ([FINDING]) to latest.log.
   - The node ingests configuration from `.env` or process environment variables (NODE_ID, NODE_TOKEN, COORDINATOR_URL, NODE_CAPABILITIES, NODE_DB_PATH).
   - Emits local telemetry and durable submissions to `node.db` (`node_runs`, `node_tasks`, `node_outbox`).
+  - **Docker Fleet Deployment**: Nodes deploy using Docker Compose (`src-crawler/docker-compose.yml`). Each node container mounts an isolated data volume (such as `node-data-1:/app/data`) to prevent SQLite database locks. The configuration requires pinned image digests (`VRCP_NODE_IMAGE`). Unverified automated updaters (such as Watchtower) and host Docker socket mounts are prohibited to protect active leases.
 
 ### 1.2 Crawler Client (`src-crawler-client`)
 - **Current implementation:** Tauri with a SvelteKit static frontend. The Rust shell exposes a starter `greet` command and the opener plugin.
@@ -81,8 +82,9 @@ sequenceDiagram
 1. **Lease Claiming (`POST /v1/node/jobs/claim`)**:
    - The node polls for a job that matches its declared capabilities. `PlatformSchema` defines ten capabilities, including storefront and registry drivers.
    - If no jobs are due, the node sleeps for the `retryAfterMs` duration sent by the coordinator.
-2. **Periodic Heartbeat (`POST /v1/node/heartbeat`)**:
+2. **Periodic Heartbeat & Monotonic Deadline (`POST /v1/node/heartbeat`)**:
    - A timer checks active lease authority every 5 seconds. The heartbeat does not extend the lease deadline.
+   - The runner enforces an independent, monotonic deadline from `leaseExpiresAt`. Fetching, parsing, and outbox staging must complete before expiry. If the lease expires before outbox staging, the runner aborts execution and skips result submission.
    - A failed authority check cancels source processing. Detection waits for the periodic check and its bounded retries. It is not instantaneous.
 3. **Observation Parsing**:
    - The node parses outbound responses in memory with `src-crawler/src/adapters/observation_adapter.ts`.

@@ -75,7 +75,7 @@ CREATE INDEX idx_registered_registrants_token ON registered_registrants(token_ha
 ```
 
 #### `registered_apps`
-Stores registered downstream client applications (e.g., ALCOM, VCC, web frontends).
+Stores registered downstream client applications (e.g., ALCOM, VCC, web frontends), intensity tracking counters, and candidate review states.
 ```sql
 CREATE TABLE registered_apps (
   app_id TEXT PRIMARY KEY,
@@ -84,9 +84,16 @@ CREATE TABLE registered_apps (
   contact_email TEXT,
   permissions_json TEXT NOT NULL,         -- JSON array: ["catalog:read", "demand:feedback", ...]
   created_at TEXT NOT NULL,
-  revoked_at TEXT
+  revoked_at TEXT,
+  request_count INTEGER NOT NULL DEFAULT 0,
+  last_active_at TEXT,
+  candidate_status TEXT NOT NULL DEFAULT 'none' CHECK(candidate_status IN ('none', 'review_pending', 'reviewed', 'trusted')),
+  candidate_flags_json TEXT NOT NULL DEFAULT '[]',
+  owner_user_id TEXT REFERENCES registered_users(user_id)
 );
 CREATE INDEX idx_registered_apps_token_hash ON registered_apps(token_hash);
+CREATE INDEX idx_registered_apps_candidate ON registered_apps(candidate_status, request_count);
+CREATE INDEX idx_registered_apps_owner ON registered_apps(owner_user_id);
 ```
 
 #### `node_credentials`
@@ -480,23 +487,50 @@ CREATE TABLE downstream_demand_signals (
 CREATE INDEX idx_downstream_demand_platform ON downstream_demand_signals(requested_platform, resolved_at);
 ```
 
-#### `creator_opt_outs`
-Audit log of all delistings and takedown actions.
+#### `catalog_tickets`
+Unified storage table consolidating creator opt-outs, delegated creator claims, and removal reports.
 ```sql
-CREATE TABLE creator_opt_outs (
-  takedown_id TEXT PRIMARY KEY,
+CREATE TABLE catalog_tickets (
+  ticket_id TEXT PRIMARY KEY,
+  ticket_type TEXT NOT NULL CHECK(ticket_type IN ('opt_out', 'delegated_claim', 'removal_report')),
+  app_id TEXT REFERENCES registered_apps(app_id),
   target_url TEXT,
   canonical_id TEXT,
-  requester_type TEXT NOT NULL CHECK(requester_type IN ('unauthenticated_creator', 'registrant', 'admin_operator')),
+  requester_type TEXT CHECK(requester_type IN ('unauthenticated_creator', 'user', 'admin_operator', 'app')),
   requester_id TEXT,
-  reason TEXT NOT NULL,
-  proof_kind TEXT CHECK(proof_kind IN ('storefront_bio_token', 'dns_txt', 'manual_notice')),
+  creator_id TEXT,
+  reason TEXT,
+  proof_kind TEXT CHECK(proof_kind IN ('storefront_bio_token', 'dns_txt', 'manual_notice', 'delegated_signature')),
   proof_value TEXT,
   contact_email TEXT,
+  challenge_token TEXT,
+  expires_at INTEGER,
+  nonce TEXT,
+  signature TEXT,
+  payload_json TEXT,
+  review_status TEXT NOT NULL DEFAULT 'pending' CHECK(review_status IN ('pending', 'accepted', 'rejected')),
+  review_notes TEXT,
   recorded_at TEXT NOT NULL
 );
-CREATE INDEX idx_opt_outs_target_url ON creator_opt_outs(target_url);
-CREATE INDEX idx_opt_outs_canonical_id ON creator_opt_outs(canonical_id);
+CREATE INDEX idx_catalog_tickets_type_status ON catalog_tickets(ticket_type, review_status);
+CREATE INDEX idx_catalog_tickets_target_url ON catalog_tickets(target_url);
+CREATE INDEX idx_catalog_tickets_canonical_id ON catalog_tickets(canonical_id);
+```
+
+#### `creator_opt_outs`, `creator_claims` & `catalog_reports` (Compatibility Views)
+Backward-compatible views projecting from `catalog_tickets` for existing query contracts.
+```sql
+CREATE VIEW creator_opt_outs AS
+  SELECT ticket_id AS takedown_id, target_url, canonical_id, requester_type, requester_id, reason, proof_kind, proof_value, contact_email, recorded_at
+  FROM catalog_tickets WHERE ticket_type = 'opt_out';
+
+CREATE VIEW creator_claims AS
+  SELECT ticket_id AS claim_id, app_id, target_url AS front_url, creator_id, challenge_token, expires_at, nonce, signature, reason, contact_email, review_status, review_notes, recorded_at
+  FROM catalog_tickets WHERE ticket_type = 'delegated_claim';
+
+CREATE VIEW catalog_reports AS
+  SELECT ticket_id AS report_id, app_id, 'removal_request' AS report_type, payload_json, review_status, review_notes, recorded_at
+  FROM catalog_tickets WHERE ticket_type = 'removal_report';
 ```
 
 #### `coordinator_meta`
@@ -625,4 +659,4 @@ export interface StructuredLogEvent {
 
 App ownership is recorded in `user_app_ownership`: `app_id` is a primary key and registered-app foreign key; `user_id` is a required registered-user foreign key. An index covers user ID and app ID. User-owned app creation writes this relation atomically with the credential record. Existing and operator-created apps have no implied owner. Ownership transfers and backfill are not implemented.
 
-`catalog_reports` stores app-authenticated removal requests separately from `downstream_demand_signals` and creator opt-outs. Fields: `report_id` (primary key), `app_id` (registered-app foreign key), `report_type` (`removal_request`), validated `payload_json`, `review_status` (`pending`, `accepted`, `rejected`; initially pending), and `recorded_at`. An index covers review status, time and ID. Storage rejects writes from revoked or missing apps. No review endpoint or automatic suppression is provided by this table.
+`catalog_reports` is a compatibility view over `catalog_tickets` (`WHERE ticket_type = 'removal_report'`) storing app-authenticated removal requests separately from `downstream_demand_signals`. Fields: `report_id`, `app_id`, `report_type` (`removal_request`), validated `payload_json`, `review_status` (`pending`, `accepted`, `rejected`; initially pending), `review_notes`, and `recorded_at`. Storage rejects writes from revoked or missing apps. No automatic catalog delisting occurs upon report submission.

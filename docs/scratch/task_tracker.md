@@ -22,6 +22,16 @@
   - Crawler domain suite: `bun test` passed 177 tests across 27 files (1483 assertions).
   - Documentation: updated `docs/source/CHANGELOG.md` under `vrcp-worker-preview`.
 
+# DOCS-RECONCILIATION checkpoint (2026-10-16, local commit, no push)
+- Objective: Reconcile all system documentation and specifications with verified implementation.
+- Implemented:
+  1. Updated `docs/source/SPECIFICATION_CRAWLER_NETWORK.md`: documented claim scan subrequest invocation budget (`MAX_CLAIM_SCAN_PAGES = 3`), operator app candidate review routes (`/v1/operator/apps`), downstream intensity flagging, and Moderator Protocol (`/v1/moderator/*`).
+  2. Updated `docs/source/SPECIFICATION_CRAWLER_CLIENT.md`: documented Docker fleet deployment (volume isolation, pinned image digest, Watchtower prohibition) and monotonic lease fetch deadline enforcement.
+  3. Updated `docs/source/DATABASE_SCHEMAS.md`: documented `registered_apps` intensity tracking columns (`request_count`, `last_active_at`, `candidate_status`, `candidate_flags_json`, `owner_user_id`), consolidated `catalog_tickets` schema, and backward-compatible views (`creator_opt_outs`, `creator_claims`, `catalog_reports`).
+  4. Updated `docs/applications/VRCP API/API_ROUTES.md`: documented claim scan budget on `/v1/node/jobs/claim`, added operator application review routes, added Moderator Protocol (§2.5), and updated the Role x Route Access Matrix (§3) with Moderator permissions.
+  5. Updated `docs/source/CHANGELOG.md` under `vrcp-worker-preview`.
+- Verification: Link checker verified zero live broken links (only 20 historical archive links remain in immutable `docs/changelogs/`). Typechecks clean.
+
 # Previous checkpoints
 
 # FLEET-S3 checkpoint (2026-10-16, local commit d1e1bc6)

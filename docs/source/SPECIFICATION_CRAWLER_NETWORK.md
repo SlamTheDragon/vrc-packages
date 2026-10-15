@@ -39,6 +39,8 @@ Requires `Authorization: Bearer <NODE_TOKEN>` (`vrcp_<64-hex><4-hex>`). The 4-he
 - `POST /v1/node/heartbeat`: Checks active lease authority and records node liveness. It does not extend the lease deadline.
 - `POST /v1/node/jobs/result`: Submits observation facts, discovered leads, or access failure diagnostics. Transitions job state and updates canonical catalog tables.
 
+Coordinator claim scans evaluate candidate jobs using bounded pages (`LIMIT 100 OFFSET ?`). The scan evaluates at most three pages (`MAX_CLAIM_SCAN_PAGES = 3`, 300 candidates maximum per request). This bound enforces deterministic execution and complies with Cloudflare Workers Free-tier subrequest quotas (50 subrequests maximum).
+
 Discovery lead rows, source events, the receipt and job/lease updates commit in one D1 batch. Failed lead writes preserve the lease and origin reservation. Native D1 tests cover failures on the first and second lead, exact retry, and duplicate replay. Automatic lead promotion follows the commit. It does not yet have durable retry guarantees. The node stages result payloads and idempotency keys in its durable SQLite outbox before submission. Restart and lost-receipt replay have scoped process tests, not full-fleet proof.
 
 ### 2.2 Operator Control Protocol (`/v1/operator/*`)
@@ -50,6 +52,8 @@ Requires the `OPERATOR_TOKEN` bearer secret. Operators receive newly issued node
 - `GET /v1/operator/leads`: Inspects pending discovery leads with keyset pagination.
 - `POST /v1/operator/leads/{key}/approve` and `POST /v1/operator/leads/{key}/reject`: Triage actions on pending leads.
 - `GET /v1/operator/takedowns` and `POST /v1/operator/takedowns/{id}/verify`: Lists historical requests and records an operator verdict. The route does not implement DNS/bio challenge verification.
+- `GET /v1/operator/apps`: Lists registered downstream applications with candidate filters and cursor pagination.
+- `POST /v1/operator/apps/{appId}/candidate-review`: Records an operator review verdict for high-intensity application candidates.
 
 ### 2.3 User & Registrant Protocol (`/v1/user/*`)
 Requires a user bearer token (`vrcp_usr_<64-hex>`).
@@ -62,10 +66,18 @@ Public read for catalog index and delta streaming; `Authorization: Bearer <APP_T
 - `POST /v1/app/register`: Gated downstream app registration (requires registrant or operator auth).
 - `GET /v1/app/index`: Bounded catalog pages with `limit` and `cursor`.
 - `GET /v1/app/index/delta`: Pages current general-rated catalog rows. Emits `upsert` and `delist` envelopes; it is not an immutable change journal.
-- `POST /v1/app/index/search`: Bounded search. The request accepts `queryOrigin: "user_authored" | "app_automated"`, but current storage does not use or record it.
+- `POST /v1/app/index/search`: Bounded search. The request accepts `queryOrigin: "user_authored" | "app_automated"`, but current storage does not use or record it. Unverified apps only receive general items.
 - `POST /v1/app/report`: Records demand, issue reports and pending removal requests. A removal receipt is not verified ownership or approved delisting.
+- High request intensity automatically flags applications with `candidate_status: "review_pending"` for operator and moderator review.
 
-### 2.5 Pagination Contract
+### 2.5 Moderator Protocol (`/v1/moderator/*`)
+Requires `Authorization: Bearer <USER_TOKEN>` (`vrcp_usr_<64-hex>`). The caller must possess moderator authority (`isModerator: true`) and verified age (`ageVerified: true`).
+- `GET /v1/moderator/ratings`: Lists package ratings with cursor pagination for content review.
+- `POST /v1/moderator/ratings/{canonicalId}`: Adjusts a package content rating with an audit reason.
+- `GET /v1/moderator/apps`: Lists flagged downstream application candidates.
+- `POST /v1/moderator/apps/{appId}/candidate-review`: Records a moderator review verdict on application candidate access.
+
+### 2.6 Pagination Contract
 
 - Catalog, delta, search, operator and moderator routes use the distributed SDK cursor schemas and codecs.
 - Copy each opaque cursor unchanged into its matching route. Cursors do not grant access or replace authentication.
@@ -84,14 +96,14 @@ Current delta limits:
 - Fresh databases initialize unique UUID epochs. Concurrent initializers return the stored winner. Existing epochs remain unchanged unless explicitly reset.
 - R13-C9-DELTA delivered tombstone journaling on withdrawal, delist, and deletion. listCatalogDeltasPage unions general packages with catalog_tombstones.
 
-### 2.6 Timestamp Evidence Boundary
+### 2.7 Timestamp Evidence Boundary
 
 - Observation `originUpdatedAt` records upstream modification only. Creation and publication fields must not populate it.
 - Missing canonical publication evidence remains null. Metadata-only updates preserve existing publication dates and confidence.
 - Catalog creation/update timestamps describe coordinator records, not upstream publication. Search can use catalog creation as a sorting fallback without claiming publication confidence.
 - The current observation wire has no separate upstream creation or release-publication fields. That provenance contract remains pending; no timestamp enum changes occur here.
 
-### 2.7 Observation Identity Boundary
+### 2.8 Observation Identity Boundary
 
 - HTTP handlers enforce the distributed observation schema before ingestion. Whitespace-only catalog titles also fail semantic validation.
 - Each storefront observation uses the assigned URL's exact host and path as its `sourceItemKey`, matching the shipped node parser.
