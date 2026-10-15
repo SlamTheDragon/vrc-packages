@@ -8,7 +8,7 @@ Here are the latest changelogs of each package and applications. For a full hist
 ## What Changed
 
 <!-- MASTER_SUMMARY -->
-Preserve evidence, settled outbox results and URL resource distinctions. Broadcast crawler activities and findings to the dedicated log file. Isolate provisional storefront fronts from public projection. Emit delist tombstones on package withdrawal. Verify coordinator failure paths and multi-node fleet allocation in native workerd runtime.
+Preserve evidence, settled outbox results and URL resource distinctions. Broadcast crawler activities and findings to the dedicated log file. Isolate provisional storefront fronts from public projection. Emit delist tombstones on package withdrawal. Verify coordinator failure paths and multi-node fleet allocation in native workerd runtime. Remove Watchtower from crawler Docker configuration and require isolated fleet data volumes.
 <!-- MASTER_SUMMARY -->
 
 ## Table of Contents
@@ -147,7 +147,7 @@ See full history at [docs/changelogs/vrcp-crawler-client/preview](https://github
 ## VRC Packages Crawler - `vrcp-crawler-node-preview`
 
 <!-- vrcp-crawler-node-preview-DESCRIPTION_SUMMARY -->
-Broadcast crawler activities and findings to the dedicated log file. Preserve settled outbox results and keep creation dates separate from modification evidence.
+Remove Watchtower and host socket mounts from Docker compose. Require pinned image digests and isolate multi-node data volumes. Document environment variables.
 <!-- vrcp-crawler-node-preview-DESCRIPTION_SUMMARY -->
 ### Added
 - **Activity and Finding Broadcast**: Broadcast operational activities and discovery findings with dedicated tags to the node log file.
@@ -157,6 +157,8 @@ Broadcast crawler activities and findings to the dedicated log file. Preserve se
 - **Outbox Settlement**: Ignore late failures for sent or terminal entries. Repeated acknowledgments preserve the first receipt and completion metrics.
 - **Lease Deadline**: Abort source work when the lease expires, even if a heartbeat is pending. An expired lease starts no fetch.
 ### Changes
+- **Docker Fleet Configuration**: Removed unverified Watchtower updater and host Docker socket bindings. Required pinned container image digests and documented multi-node volume isolation.
+- **Environment Template**: Rewrote .env.example with documented configuration values for headless node and Docker fleet deployments.
 - **Runbook Reconciliation**: Updated node and network specifications to reflect environment-variable configuration, activity logging, and delta tombstones.
 See full history at [docs/changelogs/vrcp-crawler-node/preview](https://github.com/SlamTheDragon/vrc-packages/tree/main/docs/changelogs/vrcp-crawler-node/preview)
 

@@ -101,9 +101,15 @@ Docker files live in `src-crawler/`. Inspect the configuration before starting c
 docker compose -f src-crawler/docker-compose.yml config
 ```
 
-The compose file includes Watchtower with the host Docker socket. It is not a verified safe update workflow. Its image name differs from the workflow's publication name. Inspect and settle image trust, update timing, persistence and credential handling before fleet use.
+Configure `src-crawler/.env` from `src-crawler/.env.example`. Set `NODE_TOKEN` to your coordinator token. Set `VRCP_NODE_IMAGE` to a reviewed container image.
 
-`.github/workflows/node-docker.yml` builds only on `vrcp-crawler/v<configured-version>` tag pushes. The container publication switch defaults off. The image target is `ghcr.io/<repository-owner>/vrcp-crawler-node`. Successful CI publication, Linux startup and restart-safe submission remain unverified. Watchtower does not guarantee uninterrupted leases or result recovery.
+Published images live on GitHub Container Registry:
+- Release: `ghcr.io/<repository-owner>/vrcp-crawler-node:<version>`
+- Preview: `ghcr.io/<repository-owner>/vrcp-crawler-node-preview:<version>`
+
+Automatic updaters such as Watchtower are removed. They mount the host Docker socket and can abort active coordinator leases without notice. Update node images manually by changing `VRCP_NODE_IMAGE`.
+
+When you run multiple nodes in a fleet, assign unique `NODE_ID` values. Give each node an isolated data volume. Shared data directories cause SQLite locking errors on `node.db`. The container allows 30 seconds for graceful shutdown on `SIGTERM`.
 
 ## 4. API and Deployment References
 
