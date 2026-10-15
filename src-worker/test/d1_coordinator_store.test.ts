@@ -176,7 +176,8 @@ describe("Cloudflare D1 Coordinator Store & Edge Worker Adapter", () => {
         const publicResponse = await handlePublicCatalogRequest(new Request("https://offline.invalid/v1/app/index"),
           fixture.store, new InMemoryRateLimiter());
         const packages = PublicCatalogListResponseSchema.parse(await publicResponse.json()).packages;
-        expect(packages.find(item => item.canonicalId === canonicalId)?.fronts.length, label).toBe(matches ? 1 : 0);
+        expect((await fixture.store.getPackageFrontsForCanonical(canonicalId)).length, label).toBe(matches ? 1 : 0);
+        expect(packages.find(item => item.canonicalId === canonicalId)?.fronts.length, label).toBe(0);
         expect(Boolean(await fixture.store.getCanonicalPackage(fixture.observation.sourceItemKey)), label).toBe(!matches);
         if (!matches) expect(packages.find(item => item.canonicalId === fixture.observation.sourceItemKey)
           ?.fronts[0]?.storefrontUrl, label).toBe(jobUrl);

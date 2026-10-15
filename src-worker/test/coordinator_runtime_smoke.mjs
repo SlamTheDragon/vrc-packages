@@ -608,8 +608,9 @@ try {
   assert.equal(refreshCheck.metadataBinding, true);
   assert.equal(refreshCheck.urlAssociations.cases, 6);
   assert.equal(refreshCheck.urlAssociations.aliasLeadCount, 1);
+  assert.equal(refreshCheck.urlAssociations.provisionalFrontStillPublic, false);
   console.log(JSON.stringify({ check: 'native_D1_HTTP_URL_associations', ...refreshCheck.urlAssociations,
-    ownershipPolicyResolved: false }));
+    ownershipPolicyResolved: true }));
   console.log(JSON.stringify({ check: 'native_D1_HTTP_metadata_binding', malformedRejected: true,
     rejectedWritesAbsent: true, correctedLeaseAccepted: true, replayPreserved: true }));
   console.log(JSON.stringify({ check: 'native_D1_catalog_epoch_concurrency', readers: 8, resetPersisted: true, passed: true }));

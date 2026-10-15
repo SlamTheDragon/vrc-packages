@@ -1,3 +1,11 @@
+# R13-C9-IDENTITY checkpoint (2026-10-16, local commit, no push)
+
+- Implemented: `buildCatalogPackagesBatch` in `coordinator.ts` and `local_sqlite.ts` now enforces an `EXISTS` check on `identity_links`. Only links with `review_state = 'accepted'` project into public package fronts. Provisional cross-source fronts stay in storage for operator review.
+- Verified: Worker `bun test` 297 pass/0 fail/3483 assertions across 23 files. `vitest run` 3 pass. Native workerd/D1 smoke test passes (`provisionalFrontStillPublic: false`, `ownershipPolicyResolved: true`). `bun run check` clean across all three tsconfigs. `build:preview` compiles. Root tests not run.
+- Next: `R13-C9-DELTA` (tombstone and visibility journal for package withdrawals and deletions).
+
+# Previous checkpoints
+
 # Ledger triage checkpoint (2026-10-14, local commits, no push)
 
 - Diagnosis: 20 author-commented rows were never consumed. Dispositions are recorded in IMPLEMENTATION_PLAN (Owner comment dispositions). Rows R58-ROOT-LOGS, R58-WORKFLOW-CLEANUP and R57-RETENTION removed as owner-marked outdated; all other comments cleared and statuses refreshed.

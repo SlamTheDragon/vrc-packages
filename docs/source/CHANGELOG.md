@@ -8,7 +8,7 @@ Here are the latest changelogs of each package and applications. For a full hist
 ## What Changed
 
 <!-- MASTER_SUMMARY -->
-Preserve evidence, settled outbox results and URL resource distinctions. Use unique catalog epochs and bind storefront submissions to assigned source URLs. Typecheck Worker Bun fixtures.
+Preserve evidence, settled outbox results and URL resource distinctions. Isolate provisional storefront fronts from public projection. Use unique catalog epochs and typecheck Bun fixtures.
 <!-- MASTER_SUMMARY -->
 
 ## Table of Contents
@@ -184,10 +184,11 @@ See full history at [docs/changelogs/vrcp-web/preview](https://github.com/SlamTh
 ## VRC Packages Worker - `vrcp-worker-preview`
 
 <!-- vrcp-worker-preview-DESCRIPTION_SUMMARY -->
-Use unique catalog epochs, preserve evidence and URL distinctions, and reject substituted storefront identities before ingestion. Typecheck Bun fixtures.
+Use unique catalog epochs, preserve evidence and URL distinctions, withhold provisional fronts from public projection, and reject substituted storefront identities. Typecheck Bun fixtures.
 <!-- vrcp-worker-preview-DESCRIPTION_SUMMARY -->
 ### Added
 ### Bugs Fixed
+- **Provisional Fronts**: Filter provisional cross-source storefront links from public catalog packages until explicit operator review.
 - **Publication Confidence**: Stopped metadata-only canonical upserts from inventing observed confidence or downgrading confirmed publication evidence.
 - **Catalog Epochs**: Give fresh databases unique epochs. Concurrent initialization returns the stored winner and preserves existing epochs.
 - **Source Binding**: Reject substituted storefront IDs and URLs, empty catalog names and storefront fields from other source platforms.

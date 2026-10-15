@@ -2311,7 +2311,13 @@ export class LocalCoordinatorStore implements CoordinatorStore, PublicCatalogSto
     }
 
     const frontRows = this.db.prepare(`SELECT front_id, canonical_id, source_key, platform, storefront_url, price, currency, availability, observed_at
-      FROM package_fronts WHERE canonical_id IN (${placeholders})
+      FROM package_fronts pf WHERE pf.canonical_id IN (${placeholders})
+        AND EXISTS (
+          SELECT 1 FROM identity_links il
+          WHERE il.canonical_id = pf.canonical_id
+            AND il.source_key = pf.source_key
+            AND il.review_state = 'accepted'
+        )
       ORDER BY observed_at ASC, front_id ASC`).all(...canonicalIds) as Array<{
       front_id: string; canonical_id: string; source_key: string; platform: Platform;
       storefront_url: string; price: number | null; currency: string | null;
