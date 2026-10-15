@@ -78,11 +78,11 @@ Public read for catalog index and delta streaming; `Authorization: Bearer <APP_T
 Current delta limits:
 
 - Stable equal-time rows paginate by `(updatedAt, canonicalId)`. A same-time mutation behind a consumed cursor can be missed.
-- Delisted rows emit identifier-only envelopes while they remain general-rated. Hard deletion removes the row without a retained tombstone.
-- Moving a row out of the public rating filter emits no withdrawal envelope. Neither mutation automatically changes the catalog epoch.
+- Delisted rows, deleted packages, and rating withdrawals emit delist tombstones through the catalog_tombstones table.
+- Moving a row out of the public rating filter or deleting a canonical package emits a delist tombstone to downstream clients.
 - `nextCursor: null` ends page traversal; it is not a durable synchronization checkpoint or snapshot boundary.
 - Fresh databases initialize unique UUID epochs. Concurrent initializers return the stored winner. Existing epochs remain unchanged unless explicitly reset.
-- R13-C9-DELTA retains the revision, withdrawal and resynchronization contract decision. Do not treat current paging as complete downstream synchronization.
+- R13-C9-DELTA delivered tombstone journaling on withdrawal, delist, and deletion. listCatalogDeltasPage unions general packages with catalog_tombstones.
 
 ### 2.6 Timestamp Evidence Boundary
 
@@ -100,7 +100,7 @@ Current delta limits:
 - Rejected observations create no evidence, receipt or projection writes and preserve the current lease. A corrected submission can use it before expiry.
 - Batch metadata conflicts remain nonterminal conflicts. They are not lease expiry merely because the error mentions release evidence.
 - These checks do not prove truthful fetching, product ownership or cross-source identity. Previously ingested rows are not migrated or removed.
-- Cross-source association remains unsafe: outbound matching can create provisional fronts that public responses expose without an accepted storefront link.
+- Cross-source association: outbound matching creates provisional fronts that stay internal for operator review. Public catalog projection strictly enforces accepted identity_links before exposing fronts.
 - Generic associations compare serialized URLs exactly. Path/query case, trailing slashes, query presence and fragments remain distinct.
 - Serialization normalizes host case and default HTTPS ports. This is conservative comparison, not complete resource equivalence or ownership proof.
 - GitHub repository matching retains its explicit case-insensitive rule, scoped to GitHub sources. Generic source URLs do not inherit that rule.

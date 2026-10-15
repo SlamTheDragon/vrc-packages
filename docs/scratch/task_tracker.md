@@ -1,27 +1,31 @@
-# Active slice: R16-C19-BROADCAST (2026-10-16, local commit, no push)
+# Active slice: R16-C20-DOCS (2026-10-16, local commit, no push)
 
-- Objective: Broadcast all crawler node activities and findings to the dedicated log file (`latest.log`).
+- Objective: Reconcile source/runbook drafts with delivered code and verified capabilities.
 - Working theory:
-  Crawler nodes operate headlessly with credentials from `.env`.
-  Interactive CLI commands were retired.
-  Operators supervise node operations through the dedicated log file (`latest.log`).
-  Currently `logger` only records basic `info`/`warn`/`error` without structured distinction between operational activities and discovered package findings.
-  Adding `activity` and `finding` broadcast channels to `Logger` and integrating them into `daemon.ts` will write structured entries (`[ACTIVITY]`, `[FINDING]`) to `latest.log`.
-  This informs operators of claimed jobs, extracted package metadata, discovered leads, outbox deliveries, rate limits, and listing changes.
+  Earlier docs described outdated or unsupported capabilities:
+  1. `SPECIFICATION_CRAWLER_CLIENT.md` cited `node.config.json`, which was removed under `M-CRAWLER-HEADLESS-ENV` in favor of direct `.env` ingestion. It also omitted the dedicated `[ACTIVITY]` and `[FINDING]` broadcast logging to `latest.log`.
+  2. `SPECIFICATION_CRAWLER_NETWORK.md` claimed delta synchronization lacked tombstones for deletions/withdrawals and claimed public responses exposed provisional cross-source fronts. `R13-C9-DELTA` delivered `catalog_tombstones` and unified delta feeds; `R13-C9-IDENTITY` isolated provisional fronts behind accepted `identity_links`.
+  3. `DELEGATES.md` needed reconciliation regarding `.env` node configuration, activity broadcasts, delta tombstones, and provisional front isolation.
+  4. `DATABASE_SCHEMAS.md` lacked documentation of `catalog_tombstones` and consolidated audit log entities.
+  Updating these drafts aligns documentation with delivered code without asserting unsupported capabilities.
 - Implementation steps:
-  1. Add `activity(msg, meta)` and `finding(msg, meta)` methods to `Logger` in `src-crawler/src/utils/logging/logger.ts`.
-  2. Broadcast lifecycle activities (startup, job claim, outbox staging, delivery, backoff, shutdown) in `src-crawler/src/runner/daemon.ts` and `src-crawler/src/main.ts`.
-  3. Broadcast discovery findings (observed package details, outbound leads, batch package lists, listing issues, delistings, unchanged checks) in `src-crawler/src/runner/daemon.ts`.
-  4. Add unit test suite in `src-crawler/tests/crawler_activity_broadcast.test.ts` to verify formatted entries in `latest.log`.
-  5. Run domain test suite (`bun test src-crawler/tests/`) and typecheck (`bunx tsc --noEmit`).
-  6. Document changes in `docs/source/CHANGELOG.md` under `vrcp-crawler-node` preview.
+  1. Update `docs/source/SPECIFICATION_CRAWLER_CLIENT.md` to remove `node.config.json` references and document `.env` configuration and dedicated activity/finding logging.
+  2. Update `docs/source/SPECIFICATION_CRAWLER_NETWORK.md` to document `catalog_tombstones` delta streaming and accepted identity link front isolation.
+  3. Update `DELEGATES.md` to reflect headless `.env` configuration and delta tombstone delivery.
+  4. Update `docs/source/DATABASE_SCHEMAS.md` to document `catalog_tombstones`.
+  5. Run documentation and link validation checks.
+  6. Document changes in `docs/source/CHANGELOG.md`.
 - Verification status: Verified locally.
-  - Crawler `bun test`: 174 pass, 0 fail, 1463 assertions across 26 files.
-  - Crawler typecheck: `bunx tsc --noEmit` clean.
-  - Crawler dev binary build: `bun run build:dev` compiled.
+  - Link audit: `.agents/scripts/check_doc_links.ts` confirmed zero new broken links.
+  - Crawler domain: 174 tests pass, typecheck clean, dev build compiles.
+  - Worker domain: `bun run check` clean across all 3 tsconfigs.
   - Documentation: updated `docs/source/CHANGELOG.md`.
 
 # Previous checkpoints
+
+# R16-C19-BROADCAST checkpoint (2026-10-16, local commit 38d47ab)
+- Implemented: Added `activity()` and `finding()` methods to `Logger` in `logger.ts`; instrumented `daemon.ts` and `main.ts` to broadcast lifecycle activities and package discovery findings to `latest.log`.
+- Verified: Crawler `bun test` 174 pass, `bunx tsc --noEmit` clean, dev build compiles.
 
 # R13-C9-DELTA checkpoint (2026-10-16, local commit 0ecf467)
 - Implemented: Added `catalog_tombstones` table and cursor index; recorded tombstones on rating withdrawal, hard deletion, and delist requests; updated `listCatalogDeltasPage` to union tombstones with `NOT EXISTS`.

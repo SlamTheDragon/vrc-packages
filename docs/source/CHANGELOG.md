@@ -157,6 +157,7 @@ Broadcast crawler activities and findings to the dedicated log file. Preserve se
 - **Outbox Settlement**: Ignore late failures for sent or terminal entries. Repeated acknowledgments preserve the first receipt and completion metrics.
 - **Lease Deadline**: Abort source work when the lease expires, even if a heartbeat is pending. An expired lease starts no fetch.
 ### Changes
+- **Runbook Reconciliation**: Updated node and network specifications to reflect environment-variable configuration, activity logging, and delta tombstones.
 See full history at [docs/changelogs/vrcp-crawler-node/preview](https://github.com/SlamTheDragon/vrc-packages/tree/main/docs/changelogs/vrcp-crawler-node/preview)
 
 ## VRC Packages API - `vrcp-packages-api-preview`

@@ -72,7 +72,7 @@ const search = await appClient.index.search({
 const deltaPage = await publicClient.index.syncDeltas({ limit: 100 });
 ```
 
-The SDK exposes `index`, not `catalog` or `app.search`. Public index pages accept only `limit` and `cursor`. The default limit is 50, with integer values from 1 through 100. The SDK returns the validated `schemaVersion`, `packages` and `nextCursor` fields, without a total count. A null cursor ends pagination. Search filters belong to authenticated `index.search`. Save delta cursors and handle the returned catalog epoch.
+The SDK exposes `index`, not `catalog` or `app.search`. Public index pages accept only `limit` and `cursor`. The default limit is 50, with integer values from 1 through 100. The SDK returns the validated `schemaVersion`, `packages` and `nextCursor` fields, without a total count. A null cursor ends pagination. Delta sync streams upserts and delist tombstones. Search filters belong to authenticated `index.search`. Save delta cursors and handle the returned catalog epoch.
 
 Search uses SQL text matching and classification heuristics. The Worker accepts queryOrigin but does not record or apply attribution in storage. Dynamic indexed tag lists, full-text ranking and publisher-date semantics remain open. Random sampling is removed.
 
@@ -93,7 +93,7 @@ The route is singular `/v1/app/report`. Removal returns HTTP 202 and a pending r
 
 The coordinator issues node credentials through `/v1/operator/nodes`. A token encodes platform capabilities. Queue entries still need scoped source approval and valid robots evidence before a lease.
 
-The node entry supports runtime identity and paths through its configuration and environment. `NODE_TOKEN` carries the secret separately. See [the node specification](docs/source/SPECIFICATION_CRAWLER_CLIENT.md) for the current execution boundary.
+The headless node ingests runtime identity, paths and credentials directly from `.env` or process environment variables (including `NODE_TOKEN`). It broadcasts operational activities and discovery findings to `latest.log`. See [the node specification](docs/source/SPECIFICATION_CRAWLER_CLIENT.md) for the current execution boundary.
 
 Docker files live in `src-crawler/`. Inspect the configuration before starting containers:
 

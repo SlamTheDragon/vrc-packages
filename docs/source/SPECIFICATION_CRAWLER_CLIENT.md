@@ -22,8 +22,8 @@ This specification distinguishes between two operational deployment models:
   - **Recovery Boundary:** The daemon stages results and idempotency keys in SQLite before submission. Startup replays pending results without refetching sources.
   - **Outbox Bounds:** Default pending quota is 1,000 items. Quota exhaustion pauses claims. Default retention is 24 hours; expiry discards replay eligibility.
   - **Settled Results:** Late failure bookkeeping cannot reopen sent or terminal entries. Repeated accepted receipts preserve the first receipt and counters.
-  - **Structured Logging**: Execution logs and local task records exist. Complete activity coverage remains unverified.
-  - `node.config.json` contains the node ID and selected capabilities. The coordinator issues the secret token. Supply it separately through `NODE_TOKEN`.
+  - **Structured Logging**: Logger broadcasts operational activities ([ACTIVITY]) and discovery findings ([FINDING]) to latest.log.
+  - The node ingests configuration from `.env` or process environment variables (NODE_ID, NODE_TOKEN, COORDINATOR_URL, NODE_CAPABILITIES, NODE_DB_PATH).
   - Emits local telemetry and durable submissions to `node.db` (`node_runs`, `node_tasks`, `node_outbox`).
 
 ### 1.2 Crawler Client (`src-crawler-client`)

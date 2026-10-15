@@ -377,6 +377,18 @@ CREATE INDEX idx_canonical_packages_created ON canonical_packages(created_at DES
 Fresh version-0 initialization declares the two nullable timestamp fields in this table.
 It does not add columns to earlier table layouts. Prototype imports and schema upgrades require a separate, explicit migration.
 
+#### `catalog_tombstones`
+Tracks hard deletions, delistings, and rating withdrawals to feed delist events to downstream synchronization consumers (`listCatalogDeltasPage`).
+```sql
+CREATE TABLE catalog_tombstones (
+  canonical_id TEXT NOT NULL,
+  reason TEXT NOT NULL CHECK(reason IN ('rating_withdrawn', 'deleted', 'delisted')),
+  tombstoned_at TEXT NOT NULL,
+  cursor_seq INTEGER PRIMARY KEY AUTOINCREMENT
+);
+CREATE INDEX idx_catalog_tombstones_cursor ON catalog_tombstones(tombstoned_at ASC, canonical_id ASC);
+```
+
 #### `identity_links`
 Evidence-backed links connecting `source_items` to `canonical_packages`.
 ```sql
