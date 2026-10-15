@@ -370,6 +370,26 @@ export class Logger {
     console.log(`\x1b[32m[INFO]\x1b[0m ${msg}`, meta ? meta : "");
   }
 
+  activity(msg: string, meta?: any) {
+    this.checkRotation().catch(() => {});
+    const line = `[${this.timestamp()}] [ACTIVITY] ${msg} ${meta ? JSON.stringify(meta) : ""}\n`;
+    this.writeToLatest(line);
+    if (this.crawlerLogStream && !this.isClosed && !this.isRotating) {
+      try { this.crawlerLogStream.write(line); } catch (_) {}
+    }
+    console.log(`\x1b[34m[ACTIVITY]\x1b[0m ${msg}`, meta ? meta : "");
+  }
+
+  finding(msg: string, meta?: any) {
+    this.checkRotation().catch(() => {});
+    const line = `[${this.timestamp()}] [FINDING] ${msg} ${meta ? JSON.stringify(meta) : ""}\n`;
+    this.writeToLatest(line);
+    if (this.crawlerLogStream && !this.isClosed && !this.isRotating) {
+      try { this.crawlerLogStream.write(line); } catch (_) {}
+    }
+    console.log(`\x1b[36m[FINDING]\x1b[0m ${msg}`, meta ? meta : "");
+  }
+
   warn(msg: string, meta?: any) {
     this.checkRotation().catch(() => {});
     const line = `[${this.timestamp()}] [WARN] ${msg} ${meta ? JSON.stringify(meta) : ""}\n`;

@@ -96,7 +96,7 @@ export class CrawlerNodeDaemon {
     if (this.stopping) return;
     this.stopping = true;
     this.stopController.abort(new Error("Crawler node stopped"));
-    logger.info(`Crawler node daemon stopping with status: ${status}`, { runId: this.runId });
+    logger.activity(`Crawler node daemon stopping with status: ${status}`, { runId: this.runId });
     if (this.options.stopFilePath && existsSync(this.options.stopFilePath)) {
       try {
         unlinkSync(this.options.stopFilePath);
@@ -143,7 +143,7 @@ export class CrawlerNodeDaemon {
       const entries = this.nodeStore.getPendingOutboxEntries(batchLimit);
       if (entries.length === 0) return 0;
 
-      logger.info(`Flushing ${entries.length} pending outbox entries...`);
+      logger.activity(`Flushing ${entries.length} pending outbox entries...`);
       let flushedCount = 0;
 
       for (let i = 0; i < entries.length; i += MAX_BATCH_RESULTS) {
@@ -175,13 +175,13 @@ export class CrawlerNodeDaemon {
                 sourceVersionCreated: receipt.sourceVersionCreated
               });
               flushedCount++;
-              logger.info(`Outbox entry ${entry.outboxId} successfully delivered for job ${entry.jobId}`);
+              logger.activity(`Outbox entry ${entry.outboxId} successfully delivered for job ${entry.jobId}`);
             } else {
               if (receipt.terminal) {
-                logger.warn(`Terminal rejection for outbox entry ${entry.outboxId}: ${receipt.error}`);
+                logger.activity(`Terminal rejection for outbox entry ${entry.outboxId}: ${receipt.error}`);
                 this.nodeStore.markOutboxTerminal(entry.outboxId, receipt.error);
               } else {
-                logger.warn(`Failed to deliver outbox entry ${entry.outboxId}, scheduling retry: ${receipt.error}`);
+                logger.activity(`Failed to deliver outbox entry ${entry.outboxId}, scheduling retry: ${receipt.error}`);
                 const delayMs = Math.min(5_000 * Math.pow(2, entry.retryCount), 60_000);
                 this.nodeStore.markOutboxFailed(entry.outboxId, receipt.error, delayMs);
               }
@@ -191,10 +191,10 @@ export class CrawlerNodeDaemon {
           const errorMsg = error instanceof Error ? error.message : String(error);
           for (const entry of chunk) {
             if (this.isTerminalOutboxError(error)) {
-              logger.warn(`Terminal rejection for outbox entry ${entry.outboxId}: ${errorMsg}`);
+              logger.activity(`Terminal rejection for outbox entry ${entry.outboxId}: ${errorMsg}`);
               this.nodeStore.markOutboxTerminal(entry.outboxId, errorMsg);
             } else {
-              logger.warn(`Failed to deliver outbox entry ${entry.outboxId}, scheduling retry: ${errorMsg}`);
+              logger.activity(`Failed to deliver outbox entry ${entry.outboxId}, scheduling retry: ${errorMsg}`);
               const delayMs = Math.min(5_000 * Math.pow(2, entry.retryCount), 60_000);
               this.nodeStore.markOutboxFailed(entry.outboxId, errorMsg, delayMs);
             }
@@ -275,7 +275,7 @@ export class CrawlerNodeDaemon {
 
     this.consecutiveEmptyClaims = 0;
 
-    logger.info(`Fetching ${job.platform} ${job.url}`, { jobId: job.jobId });
+    logger.activity(`Claimed ${job.platform} job ${job.jobId} for ${job.url}`, { jobId: job.jobId, platform: job.platform, url: job.url, leaseId: job.leaseId });
     const taskId = this.nodeStore.recordClaimedJob(this.runId, job);
     this.nodeStore.recordTaskProgress(taskId, "fetching");
     const startTime = performance.now();
@@ -309,7 +309,73 @@ export class CrawlerNodeDaemon {
       } else {
         this.nodeStore.recordTaskSuccess(taskId, outcome.kind, result, { durationMs });
       }
-      logger.info("Task completed successfully", {
+      if (outcome.kind === "changed") {
+        logger.finding(`Observed package '${outcome.observation.title}' by '${outcome.observation.author}'`, {
+          jobId: job.jobId,
+          platform: job.platform,
+          sourceItemKey: outcome.observation.sourceItemKey,
+          title: outcome.observation.title,
+          author: outcome.observation.author,
+          version: outcome.observation.release?.version,
+          price: outcome.observation.price,
+          currency: outcome.observation.currency,
+          outboundLinksCount: outcome.observation.outboundLinks?.length ?? 0
+        });
+        if (outcome.observation.outboundLinks && outcome.observation.outboundLinks.length > 0) {
+          logger.finding(`Extracted ${outcome.observation.outboundLinks.length} outbound leads from ${job.url}`, {
+            jobId: job.jobId,
+            outboundLinks: outcome.observation.outboundLinks
+          });
+        }
+      } else if (outcome.kind === "batch" || outcome.kind === "partial_batch") {
+        logger.finding(`Discovered batch of ${outcome.observations.length} packages from ${job.url}`, {
+          jobId: job.jobId,
+          platform: job.platform,
+          count: outcome.observations.length,
+          items: outcome.observations.map((obs) => ({
+            key: obs.sourceItemKey,
+            title: obs.title,
+            version: obs.release?.version
+          }))
+        });
+        if (outcome.kind === "partial_batch" && outcome.issues && outcome.issues.length > 0) {
+          logger.finding(`Encountered ${outcome.issues.length} package listing issues from ${job.url}`, {
+            jobId: job.jobId,
+            issues: outcome.issues
+          });
+        }
+      } else if (outcome.kind === "discovery") {
+        logger.finding(`Discovered ${outcome.leads.length} discovery leads from ${job.url}`, {
+          jobId: job.jobId,
+          platform: job.platform,
+          count: outcome.leads.length,
+          leads: outcome.leads.map((l) => ({ kind: l.kind, url: l.url }))
+        });
+      } else if (outcome.kind === "unchanged") {
+        logger.finding(`Listing unchanged at ${job.url}`, { jobId: job.jobId, platform: job.platform });
+      } else if (outcome.kind === "gone") {
+        logger.finding(`Listing delisted or unavailable at ${job.url}`, { jobId: job.jobId, platform: job.platform });
+      } else if (outcome.kind === "rate_limited") {
+        logger.activity(`Upstream rate limit received for ${job.url}, retry after ${outcome.retryAfterSeconds}s`, {
+          jobId: job.jobId,
+          platform: job.platform,
+          retryAfterSeconds: outcome.retryAfterSeconds
+        });
+      } else if (outcome.kind === "temporary_failure") {
+        logger.activity(`Temporary fetch failure for ${job.url}: ${outcome.reason}`, {
+          jobId: job.jobId,
+          platform: job.platform,
+          reason: outcome.reason
+        });
+      } else if (outcome.kind === "blocked") {
+        logger.activity(`Blocked by robots or policy for ${job.url}: ${outcome.reason}`, {
+          jobId: job.jobId,
+          platform: job.platform,
+          reason: outcome.reason
+        });
+      }
+
+      logger.activity("Task completed successfully", {
         jobId: job.jobId,
         outcome: outcome.kind,
         accepted: result.status,
@@ -338,7 +404,7 @@ export class CrawlerNodeDaemon {
   public async start(): Promise<void> {
     const runOnce = this.options.runOnce ?? false;
     const sleepFn = this.options.sleepFn ?? Bun.sleep;
-    logger.info("Crawler node daemon started", { runId: this.runId, runOnce });
+    logger.activity("Crawler node daemon started", { runId: this.runId, runOnce });
     const stopFilePath = this.options.stopFilePath;
     const stopFilePoll = stopFilePath ? setInterval(() => {
       if (existsSync(stopFilePath)) this.stop();

@@ -8,7 +8,7 @@ Here are the latest changelogs of each package and applications. For a full hist
 ## What Changed
 
 <!-- MASTER_SUMMARY -->
-Preserve evidence, settled outbox results and URL resource distinctions. Isolate provisional storefront fronts from public projection. Emit delist tombstones on package withdrawal. Use unique catalog epochs and typecheck Bun fixtures.
+Preserve evidence, settled outbox results and URL resource distinctions. Broadcast crawler activities and findings to the dedicated log file. Isolate provisional storefront fronts from public projection. Emit delist tombstones on package withdrawal. Use unique catalog epochs and typecheck Bun fixtures.
 <!-- MASTER_SUMMARY -->
 
 ## Table of Contents
@@ -147,9 +147,10 @@ See full history at [docs/changelogs/vrcp-crawler-client/preview](https://github
 ## VRC Packages Crawler - `vrcp-crawler-node-preview`
 
 <!-- vrcp-crawler-node-preview-DESCRIPTION_SUMMARY -->
-Preserve settled outbox results and keep creation dates separate from modification evidence.
+Broadcast crawler activities and findings to the dedicated log file. Preserve settled outbox results and keep creation dates separate from modification evidence.
 <!-- vrcp-crawler-node-preview-DESCRIPTION_SUMMARY -->
 ### Added
+- **Activity and Finding Broadcast**: Broadcast operational activities and discovery findings with dedicated tags to the node log file.
 - **Recovery Checks**: Exercise abrupt process termination over loopback HTTP and actual SQLite-full rollback without filling host disks.
 ### Bugs Fixed
 - **Timestamp Provenance**: Removed the storefront creation-date fallback from modification evidence. Valid modification metadata remains available.
