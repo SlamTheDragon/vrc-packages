@@ -352,8 +352,11 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
     const leasedJobs: CrawlJob[] = [];
     const reservedOrigins = new Set<string>();
 
+    const MAX_CLAIM_SCAN_PAGES = 3;
+    let pagesScanned = 0;
     let offset = 0;
     for (; ;) {
+      if (pagesScanned++ >= MAX_CLAIM_SCAN_PAGES) break;
       const bindParams = [...eligibilityParams(now), offset];
       const res = await this.db.prepare(query).bind(...bindParams).all<JobRow & {
         robots_snapshot_id: string; robots_status_code: number; robots_body: string; robots_expires_at: string;

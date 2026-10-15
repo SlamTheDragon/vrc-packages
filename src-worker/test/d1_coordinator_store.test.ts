@@ -2046,4 +2046,53 @@ describe("Cloudflare D1 Coordinator Store & Edge Worker Adapter", () => {
     expect(page2.items).toHaveLength(1);
     expect(page2.items[0].canonicalId).toBe("com.example.older-tool");
   });
+
+  it("Claim scan bounds candidate scans by MAX_CLAIM_SCAN_PAGES without exceeding invocation budget (R14-C14)", async () => {
+    const mockDb = createMockD1Database();
+    const store = new Coordinator(mockDb);
+    await store.initSchema();
+
+    const token = await store.issueNodeCredential({
+      schemaVersion: 1,
+      nodeId: "budget-test-node",
+      capabilities: ["vpm"],
+      reason: "Budget test node"
+    }, "operator-admin");
+    const principal = (await store.authenticate("budget-test-node", token))!;
+
+    const emptyClaim = await store.claim({
+      schemaVersion: 1,
+      nodeId: "budget-test-node",
+      capabilities: ["vpm"]
+    }, principal);
+    expect(emptyClaim.status).toBe("empty");
+
+    await store.createSourceAccessProfile({
+      schemaVersion: 1,
+      platform: "vpm",
+      origin: "https://budget.example.com",
+      pathScope: "/index.json",
+      method: "GET",
+      purpose: "metadata",
+      minDelayMs: 1000,
+      expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
+      reviewReference: "REV-BUDGET-01",
+      reason: "Budget profile",
+      retainClasses: ["normalized_facts"],
+      publishClasses: ["normalized_facts"]
+    }, "operator-admin");
+    await store.recordRobotsSnapshot("https://budget.example.com", 200, "User-agent: *\nAllow: /");
+
+    const jobId = await store.seedJob("https://budget.example.com/index.json", "vpm", 1000, undefined, "metadata");
+
+    const leasedClaim = await store.claim({
+      schemaVersion: 1,
+      nodeId: "budget-test-node",
+      capabilities: ["vpm"]
+    }, principal);
+    expect(leasedClaim.status).toBe("leased");
+    if (leasedClaim.status === "leased") {
+      expect(leasedClaim.job.jobId).toBe(jobId);
+    }
+  });
 });

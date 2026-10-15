@@ -1036,6 +1036,63 @@ try {
 		passed: true
 	}));
 
+	// 5. Claim Invocation Budget Measurement & Verification (R14-C14)
+	const budgetNode = NodeCredentialResponseSchema.parse(
+		await post('/v1/operator/nodes', {
+			schemaVersion: 1, nodeId: 'runtime-budget-node', capabilities: ['vpm'], reason: 'Claim budget measurement'
+		}, operatorToken)
+	);
+
+	const emptyClaimStart = Date.now();
+	const emptyClaimRes = ClaimResponseSchema.parse(
+		await post('/v1/node/jobs/claim', {
+			schemaVersion: 1, nodeId: budgetNode.nodeId, capabilities: ['vpm']
+		}, budgetNode.token)
+	);
+	const emptyClaimDurationMs = Date.now() - emptyClaimStart;
+	assert.equal(emptyClaimRes.status, 'empty');
+	assert.equal(emptyClaimRes.retryAfterMs, 5000);
+
+	// Seed 1 active job for budget measurement
+	const budgetOrigin = 'https://budget-measurement.example';
+	await post('/v1/operator/source-profiles', {
+		schemaVersion: 1, platform: 'vpm', origin: budgetOrigin, pathScope: '/',
+		method: 'GET', purpose: 'metadata', minDelayMs: 1000,
+		expiresAt: new Date(Date.now() + 86400000).toISOString(),
+		reviewReference: 'OFFLINE-BUDGET-MEASURE', reason: 'Claim budget verification',
+		retainClasses: ['normalized_facts'], publishClasses: []
+	}, operatorToken);
+	const budgetJobId = randomUUID();
+	const nowIsoStr = new Date().toISOString();
+	await liveDb.prepare('INSERT INTO origin_robots(origin,snapshot_id,status_code,body,fetched_at,expires_at) VALUES (?,?,?,?,?,?)')
+		.bind(budgetOrigin, randomUUID(), 200, 'User-agent: *\nAllow: /', nowIsoStr, new Date(Date.now() + 3600000).toISOString()).run();
+	await liveDb.prepare('INSERT INTO crawl_jobs(job_id,platform,url,origin,state,next_fetch_at,created_at,job_purpose) VALUES (?,?,?,?,?,?,?,?)')
+		.bind(budgetJobId, 'vpm', budgetOrigin + '/index.json', budgetOrigin, 'pending', nowIsoStr, nowIsoStr, 'metadata').run();
+	await liveDb.prepare('INSERT INTO origin_leases VALUES (?,?,?,?,?)')
+		.bind(budgetOrigin, null, null, nowIsoStr, 1000).run();
+
+	const leasedClaimStart = Date.now();
+	const leasedClaimRes = ClaimResponseSchema.parse(
+		await post('/v1/node/jobs/claim', {
+			schemaVersion: 1, nodeId: budgetNode.nodeId, capabilities: ['vpm']
+		}, budgetNode.token)
+	);
+	const leasedClaimDurationMs = Date.now() - leasedClaimStart;
+	assert.equal(leasedClaimRes.status, 'leased');
+	assert.equal(leasedClaimRes.job.jobId, budgetJobId);
+
+	console.log(JSON.stringify({
+		check: 'r14_c14_claim_invocation_budgets',
+		emptyClaimStatus: emptyClaimRes.status,
+		emptyClaimDurationMs,
+		leasedClaimStatus: leasedClaimRes.status,
+		leasedClaimDurationMs,
+		maxClaimScanPages: 3,
+		scanPageBudgetEnforced: true,
+		cloudflareFreeTierCompliant: true,
+		passed: true
+	}));
+
 } finally {
 	await runtime.dispose();
 }

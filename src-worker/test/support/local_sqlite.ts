@@ -1247,8 +1247,11 @@ export class LocalCoordinatorStore implements CoordinatorStore, PublicCatalogSto
       // a later allowed origin behind the first 100 rows.
       const leasedJobs: CrawlJob[] = [];
       const reservedOrigins = new Set<string>();
+      const MAX_CLAIM_SCAN_PAGES = 3;
+      let pagesScanned = 0;
       let offset = 0;
       for (;;) {
+        if (pagesScanned++ >= MAX_CLAIM_SCAN_PAGES) break;
         const candidates = selectCandidates.all(now, now, ...request.capabilities, now, now, now, now, now,
           now, offset) as (JobRow & {
           robots_snapshot_id: string; robots_status_code: number; robots_body: string; robots_expires_at: string

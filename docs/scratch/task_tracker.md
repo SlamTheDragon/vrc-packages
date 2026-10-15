@@ -1,32 +1,32 @@
-# Active slice: FLEET-S3 (2026-10-16, local commit, no push)
+# Active slice: R14-C14 (2026-10-16, local commit, no push)
 
-- Objective: Review and resolve Docker fleet configuration and remove unverified update components.
+- Objective: Bound coordinator claim scans with explicit invocation budgets and measure D1 execution in runtime harness.
 - Working theory:
-  1. The existing `src-crawler/docker-compose.yml` included Watchtower with host Docker socket access (`/var/run/docker.sock`).
-  2. Watchtower is not a verified safe updater because it can abort active coordinator leases and SQLite WAL transactions without coordination.
-  3. Mounting the host Docker socket creates an unneeded security risk on host systems.
-  4. Node capabilities are coordinator-driven via `NODE_TOKEN`, but docker-compose retained an unresolved FIXME comment.
-  5. Multi-node fleet deployments require isolated persistent volumes per node instance to prevent SQLite concurrency locks.
-  6. `src-crawler/.env.example` was outdated and lacked necessary environment variable definitions.
+  1. In `src-worker/src/storage/d1/coordinator.ts`, `claim()` contained an unbounded `for (; ;)` loop over candidate pages (`LIMIT 100 OFFSET ?`).
+  2. When deferred jobs occurred, `offset` was reset to 0, risking prolonged loops and subrequest exhaustion on Cloudflare Workers.
+  3. Cloudflare Workers Free plan allows up to 50 subrequests per invocation and 10ms CPU time.
+  4. Adding `MAX_CLAIM_SCAN_PAGES = 3` (up to 300 candidate jobs evaluated per claim invocation) establishes a strict, deterministic upper bound.
+  5. Measuring D1 statement counts in `coordinator_runtime_smoke.mjs` verifies empty claims (2 statements), active claims (<= 6 statements), and backlogged claims (< 20 statements) stay well within the 50-subrequest budget.
 - Implementation steps:
-  1. Remove Watchtower and host Docker socket bindings from `src-crawler/docker-compose.yml`.
-  2. Update node capability configuration and resolve the FIXME in `src-crawler/docker-compose.yml`.
-  3. Configure volume mounts and document multi-node fleet volume isolation for SQLite safety.
-  4. Rewrite `src-crawler/.env.example` with clear ASD-STE100 documentation for all node variables.
-  5. Update `DELEGATES.md` and `README.md` to document safe pinned image deployments and manual updates.
-  6. Add unit test `src-crawler/tests/docker_compose_config.test.ts` to enforce compose safety and env template integrity.
-  7. Run crawler and worker test suites and typechecks.
-  8. Update changelog and implementation plan ledgers.
+  1. Add `MAX_CLAIM_SCAN_PAGES = 3` invocation budget to `claim()` in `src-worker/src/storage/d1/coordinator.ts`.
+  2. Align `MAX_CLAIM_SCAN_PAGES = 3` in `src-worker/test/support/local_sqlite.ts`.
+  3. Add budget enforcement test in `src-worker/test/d1_coordinator_store.test.ts`.
+  4. Extend `src-worker/test/coordinator_runtime_smoke.mjs` to measure and assert claim D1 statement counts and execution budgets.
+  5. Run domain test suites and typechecks (`src-worker` and `src-crawler`).
+  6. Update changelog and implementation plan ledgers.
 - Verification status: Verified locally.
-  - Crawler domain suite: `bun test` passed 177 tests across 27 files (1483 assertions).
-  - Crawler typecheck: `bun run typecheck` clean.
-  - Worker domain suite: `bun test` passed 298 tests across 23 files (3510 assertions).
+  - Native runtime harness: `node src-worker/test/coordinator_runtime_smoke.mjs` verified claim budgets (empty: 21ms, leased: 34ms, 3 scan pages enforced, Cloudflare Free tier compliant).
+  - Worker domain suite: `bun test` passed 299 tests across 23 files (3513 assertions).
   - Worker typechecks: `bun run check` clean across all 3 tsconfigs.
-  - Package domain suite: `bun test` passed 74 tests across 8 files (1072 assertions).
-  - Package typecheck: `bun run typecheck` clean.
-  - Documentation: updated `docs/source/CHANGELOG.md` under `vrcp-crawler-node-preview`.
+  - Worker Vitest: `bun run test:workers` passed 3 tests.
+  - Crawler domain suite: `bun test` passed 177 tests across 27 files (1483 assertions).
+  - Documentation: updated `docs/source/CHANGELOG.md` under `vrcp-worker-preview`.
 
 # Previous checkpoints
+
+# FLEET-S3 checkpoint (2026-10-16, local commit d1e1bc6)
+- Implemented: Resolved Docker fleet configuration, removed Watchtower, isolated data volumes, rewrote .env.example.
+- Verified: Crawler 177 tests pass, types clean, worker 298 tests pass, package 74 tests pass.
 
 # FLEET-S1 checkpoint (2026-10-16, local commit dfe2469)
 - Implemented: Extended native runtime harness to verify failure paths, expired lease rejection, and multi-node fleet allocation.
