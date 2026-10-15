@@ -69,6 +69,8 @@ CREATE TABLE IF NOT EXISTS canonical_packages ( canonical_id TEXT PRIMARY KEY, u
 CREATE TABLE IF NOT EXISTS coordinator_meta ( key TEXT PRIMARY KEY, value TEXT NOT NULL );
 CREATE INDEX IF NOT EXISTS idx_canonical_packages_updated ON canonical_packages(updated_at ASC, canonical_id ASC);
 CREATE INDEX IF NOT EXISTS idx_canonical_packages_created ON canonical_packages(created_at DESC, canonical_id DESC);
+CREATE TABLE IF NOT EXISTS catalog_tombstones ( canonical_id TEXT NOT NULL, reason TEXT NOT NULL CHECK(reason IN ('rating_withdrawn','deleted','delisted')), recorded_at TEXT NOT NULL, PRIMARY KEY(canonical_id, recorded_at) );
+CREATE INDEX IF NOT EXISTS idx_catalog_tombstones_cursor ON catalog_tombstones(recorded_at ASC, canonical_id ASC);
 CREATE TABLE IF NOT EXISTS identity_links ( link_id TEXT PRIMARY KEY, source_key TEXT NOT NULL, canonical_id TEXT NOT NULL, evidence_kind TEXT NOT NULL CHECK(evidence_kind IN ('vpm_id','repository_match','cross_storefront_link','curator_verified','simhash_match')), confidence REAL NOT NULL CHECK(confidence >= 0.0 AND confidence <= 1.0), review_state TEXT NOT NULL CHECK(review_state IN ('provisional','accepted','rejected')), created_at TEXT NOT NULL, reviewed_at TEXT, FOREIGN KEY(source_key) REFERENCES source_items(source_key), FOREIGN KEY(canonical_id) REFERENCES canonical_packages(canonical_id) );
 CREATE INDEX IF NOT EXISTS idx_identity_links_source ON identity_links(source_key);
 CREATE INDEX IF NOT EXISTS idx_identity_links_canonical ON identity_links(canonical_id);

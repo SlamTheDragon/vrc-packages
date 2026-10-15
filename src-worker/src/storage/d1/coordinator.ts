@@ -1574,31 +1574,46 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
   async listCatalogDeltasPage(limit: number, cursor: CatalogDeltaCursor | null): Promise<{ epoch: string; deltas: CatalogDelta[]; nextCursor: string | null; }> {
     if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error("Catalog limit must be 1..100");
     const epoch = await this.getCatalogEpoch();
-    const conditions: string[] = ["p.content_rating = 'general'"];
+    const conditions: string[] = [];
     const params: (string | number)[] = [];
     if (cursor) {
-      conditions.push("(p.updated_at, p.canonical_id) > (?, ?)");
+      conditions.push("(d.updated_at, d.canonical_id) > (?, ?)");
       params.push(cursor.updatedAt, cursor.canonicalId);
     }
-    const where = `WHERE ${conditions.join(" AND ")}`;
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
     params.push(limit + 1);
-    const pkgRes = await this.db.prepare(`SELECT p.canonical_id, p.umbrella, p.category, p.lifecycle, p.display_name, p.vpm_id, p.created_at, p.updated_at, p.published_at, p.timestamp_confidence, p.content_rating FROM canonical_packages p ${where}
-      ORDER BY p.updated_at ASC, p.canonical_id ASC LIMIT ?`)
+    const query = `SELECT d.canonical_id, d.umbrella, d.category, d.lifecycle, d.display_name, d.vpm_id, d.created_at, d.updated_at, d.published_at, d.timestamp_confidence, d.content_rating, d.delta_action FROM (
+      SELECT p.canonical_id, p.umbrella, p.category, p.lifecycle, p.display_name, p.vpm_id, p.created_at, p.updated_at, p.published_at, p.timestamp_confidence, p.content_rating,
+        CASE WHEN p.lifecycle = 'delisted' THEN 'delist' ELSE 'upsert' END AS delta_action
+      FROM canonical_packages p WHERE p.content_rating = 'general'
+      UNION ALL
+      SELECT t.canonical_id, NULL AS umbrella, NULL AS category, 'delisted' AS lifecycle, '' AS display_name, NULL AS vpm_id, '' AS created_at, t.recorded_at AS updated_at, NULL AS published_at, NULL AS timestamp_confidence, 'general' AS content_rating, 'delist' AS delta_action
+      FROM catalog_tombstones t
+      WHERE NOT EXISTS (
+        SELECT 1 FROM canonical_packages p
+        WHERE p.canonical_id = t.canonical_id
+          AND p.updated_at = t.recorded_at
+          AND p.lifecycle = 'delisted'
+          AND p.content_rating = 'general'
+      )
+    ) d ${where}
+    ORDER BY d.updated_at ASC, d.canonical_id ASC LIMIT ?`;
+    const pkgRes = await this.db.prepare(query)
       .bind(...params).all<{
-        canonical_id: string; umbrella: string; category: string; lifecycle: string;
+        canonical_id: string; umbrella: string | null; category: string | null; lifecycle: string;
         display_name: string; vpm_id: string | null; created_at: string; updated_at: string;
         published_at?: string | null; timestamp_confidence?: string | null;
-        content_rating?: string | null;
+        content_rating?: string | null; delta_action: "upsert" | "delist";
       }>();
     const pkgRows = pkgRes.results || [];
     const visible = pkgRows.slice(0, limit);
     const last = visible.at(-1);
-    const nonDelisted = visible.filter((p) => p.lifecycle !== "delisted");
-    const builtPackages = await this.buildCatalogPackagesBatch(nonDelisted);
+    const nonDelisted = visible.filter((p) => p.delta_action !== "delist");
+    const builtPackages = await this.buildCatalogPackagesBatch(nonDelisted as any);
     const packageMap = new Map(builtPackages.map((p) => [p.canonicalId, p]));
     const deltas: CatalogDelta[] = [];
     for (const pkg of visible) {
-      if (pkg.lifecycle === "delisted") {
+      if (pkg.delta_action === "delist") {
         deltas.push({
           action: "delist",
           canonicalId: pkg.canonical_id,
@@ -1868,6 +1883,9 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
     const publishedAt = pkg.publishedAt ?? null;
     const timestampConfidence = pkg.timestampConfidence ?? (publishedAt ? "confirmed" : null);
     const contentRating = pkg.contentRating ?? "general";
+    const existing = await this.db.prepare(
+      "SELECT content_rating FROM canonical_packages WHERE canonical_id = ?"
+    ).bind(pkg.canonicalId).first<{ content_rating: string }>();
     await this.db.prepare(`
       INSERT INTO canonical_packages (canonical_id, umbrella, category, lifecycle, display_name, vpm_id, created_at, updated_at, published_at, timestamp_confidence, content_rating)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -1882,6 +1900,12 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
         timestamp_confidence = COALESCE(excluded.timestamp_confidence, canonical_packages.timestamp_confidence),
         content_rating = excluded.content_rating
     `).bind(pkg.canonicalId, pkg.umbrella, pkg.category, pkg.lifecycle, pkg.displayName, vpmId, createdAt, updatedAt, publishedAt, timestampConfidence, contentRating).run();
+    if (existing && existing.content_rating === "general" && contentRating !== "general") {
+      await this.db.prepare(`
+        INSERT OR IGNORE INTO catalog_tombstones (canonical_id, reason, recorded_at)
+        VALUES (?, 'rating_withdrawn', ?)
+      `).bind(pkg.canonicalId, updatedAt).run();
+    }
     const result = await this.getCanonicalPackage(pkg.canonicalId);
     return result!;
   }
@@ -2044,8 +2068,20 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
   }
 
   async deleteCanonicalPackage(canonicalId: string): Promise<boolean> {
+    const existing = await this.db.prepare(
+      "SELECT canonical_id, content_rating FROM canonical_packages WHERE canonical_id = ?"
+    ).bind(canonicalId).first<{ canonical_id: string; content_rating: string }>();
+
+    await this.db.prepare("DELETE FROM identity_links WHERE canonical_id = ?").bind(canonicalId).run();
     const res = await this.db.prepare("DELETE FROM canonical_packages WHERE canonical_id = ?").bind(canonicalId).run();
-    return ((res.meta as any)?.changes ?? 0) > 0;
+    const deleted = (((res.meta as any)?.changes ?? 0) > 0);
+    if (deleted && existing && existing.content_rating === "general") {
+      const now = new Date(this.now()).toISOString();
+      await this.db.prepare(
+        "INSERT OR IGNORE INTO catalog_tombstones (canonical_id, reason, recorded_at) VALUES (?, 'deleted', ?)"
+      ).bind(canonicalId, now).run();
+    }
+    return deleted;
   }
 
   async upsertPackageFront(front: {
@@ -2515,6 +2551,9 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
         UPDATE canonical_packages SET lifecycle = 'delisted', updated_at = ?
         WHERE canonical_id = ? AND lifecycle != 'delisted'
       `).bind(recordedAt, input.canonicalId).run();
+      await this.db.prepare(
+        "INSERT OR IGNORE INTO catalog_tombstones (canonical_id, reason, recorded_at) VALUES (?, 'delisted', ?)"
+      ).bind(input.canonicalId, recordedAt).run();
     }
     if (input.targetUrl) {
       await this.db.prepare(`
@@ -2523,6 +2562,14 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
           SELECT DISTINCT pf.canonical_id FROM package_fronts pf WHERE pf.storefront_url = ?
         ) AND lifecycle != 'delisted'
       `).bind(recordedAt, input.targetUrl).run();
+      const matchingFronts = await this.db.prepare(
+        "SELECT DISTINCT pf.canonical_id FROM package_fronts pf WHERE pf.storefront_url = ?"
+      ).bind(input.targetUrl).all<{ canonical_id: string }>();
+      for (const row of matchingFronts.results || []) {
+        await this.db.prepare(
+          "INSERT OR IGNORE INTO catalog_tombstones (canonical_id, reason, recorded_at) VALUES (?, 'delisted', ?)"
+        ).bind(row.canonical_id, recordedAt).run();
+      }
     }
 
     return {
@@ -3167,6 +3214,13 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
       SET content_rating = ?, updated_at = ?
       WHERE canonical_id = ?
     `).bind(newRating, updatedAt, canonicalId).run();
+
+    if (previousRating === "general" && newRating !== "general") {
+      await this.db.prepare(`
+        INSERT OR IGNORE INTO catalog_tombstones (canonical_id, reason, recorded_at)
+        VALUES (?, 'rating_withdrawn', ?)
+      `).bind(canonicalId, updatedAt).run();
+    }
 
     return {
       canonicalId,

@@ -379,6 +379,13 @@ export class LocalCoordinatorStore implements CoordinatorStore, PublicCatalogSto
       CREATE VIEW IF NOT EXISTS catalog_reports AS SELECT ticket_id AS report_id, app_id, 'removal_request' AS report_type, payload_json, review_status, recorded_at FROM catalog_tickets WHERE ticket_type = 'removal_report';
       CREATE INDEX IF NOT EXISTS idx_canonical_packages_updated ON canonical_packages(updated_at ASC, canonical_id ASC);
       CREATE INDEX IF NOT EXISTS idx_canonical_packages_created ON canonical_packages(created_at DESC, canonical_id DESC);
+      CREATE TABLE IF NOT EXISTS catalog_tombstones (
+        canonical_id TEXT NOT NULL,
+        reason TEXT NOT NULL CHECK(reason IN ('rating_withdrawn','deleted','delisted')),
+        recorded_at TEXT NOT NULL,
+        PRIMARY KEY(canonical_id, recorded_at)
+      );
+      CREATE INDEX IF NOT EXISTS idx_catalog_tombstones_cursor ON catalog_tombstones(recorded_at ASC, canonical_id ASC);
     `);
     // Existing local coordinator databases predate these local-only markers.
     this.db.transaction(() => {
@@ -2220,8 +2227,20 @@ export class LocalCoordinatorStore implements CoordinatorStore, PublicCatalogSto
   }
 
   deleteCanonicalPackage(canonicalId: string): boolean {
+    const existing = this.db.prepare(
+      "SELECT canonical_id, content_rating FROM canonical_packages WHERE canonical_id = ?"
+    ).get(canonicalId) as { canonical_id: string; content_rating: string } | undefined;
+
+    this.db.prepare("DELETE FROM identity_links WHERE canonical_id = ?").run(canonicalId);
     const res = this.db.prepare("DELETE FROM canonical_packages WHERE canonical_id = ?").run(canonicalId);
-    return res.changes > 0;
+    const deleted = res.changes > 0;
+    if (deleted && existing && existing.content_rating === "general") {
+      const now = new Date(this.now()).toISOString();
+      this.db.prepare(
+        "INSERT OR IGNORE INTO catalog_tombstones (canonical_id, reason, recorded_at) VALUES (?, 'deleted', ?)"
+      ).run(canonicalId, now);
+    }
+    return deleted;
   }
 
   private syncPackageFrontFromSourceItem(canonicalId: string, sourceKey: string): void {
@@ -2411,30 +2430,45 @@ export class LocalCoordinatorStore implements CoordinatorStore, PublicCatalogSto
       { epoch: string; deltas: CatalogDelta[]; nextCursor: string | null } {
     if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error("Catalog limit must be 1..100");
     const epoch = this.getCatalogEpoch();
-    const conditions: string[] = ["p.content_rating = 'general'"];
+    const conditions: string[] = [];
     const params: SQLQueryBindings[] = [];
     if (cursor) {
-      conditions.push("(p.updated_at, p.canonical_id) > (?, ?)");
+      conditions.push("(d.updated_at, d.canonical_id) > (?, ?)");
       params.push(cursor.updatedAt, cursor.canonicalId);
     }
-    const where = `WHERE ${conditions.join(" AND ")}`;
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
     params.push(limit + 1);
-    const pkgRows = this.db.prepare(`SELECT p.canonical_id, p.umbrella, p.category, p.lifecycle, p.display_name, p.vpm_id, p.created_at, p.updated_at, p.published_at, p.timestamp_confidence, p.content_rating FROM canonical_packages p ${where}
-      ORDER BY p.updated_at ASC, p.canonical_id ASC LIMIT ?`)
+    const query = `SELECT d.canonical_id, d.umbrella, d.category, d.lifecycle, d.display_name, d.vpm_id, d.created_at, d.updated_at, d.published_at, d.timestamp_confidence, d.content_rating, d.delta_action FROM (
+      SELECT p.canonical_id, p.umbrella, p.category, p.lifecycle, p.display_name, p.vpm_id, p.created_at, p.updated_at, p.published_at, p.timestamp_confidence, p.content_rating,
+        CASE WHEN p.lifecycle = 'delisted' THEN 'delist' ELSE 'upsert' END AS delta_action
+      FROM canonical_packages p WHERE p.content_rating = 'general'
+      UNION ALL
+      SELECT t.canonical_id, NULL AS umbrella, NULL AS category, 'delisted' AS lifecycle, '' AS display_name, NULL AS vpm_id, '' AS created_at, t.recorded_at AS updated_at, NULL AS published_at, NULL AS timestamp_confidence, 'general' AS content_rating, 'delist' AS delta_action
+      FROM catalog_tombstones t
+      WHERE NOT EXISTS (
+        SELECT 1 FROM canonical_packages p
+        WHERE p.canonical_id = t.canonical_id
+          AND p.updated_at = t.recorded_at
+          AND p.lifecycle = 'delisted'
+          AND p.content_rating = 'general'
+      )
+    ) d ${where}
+    ORDER BY d.updated_at ASC, d.canonical_id ASC LIMIT ?`;
+    const pkgRows = this.db.prepare(query)
       .all(...params) as {
-        canonical_id: string; umbrella: string; category: string; lifecycle: string;
+        canonical_id: string; umbrella: string | null; category: string | null; lifecycle: string;
         display_name: string; vpm_id: string | null; created_at: string; updated_at: string;
         published_at?: string | null; timestamp_confidence?: string | null;
-        content_rating?: string | null;
+        content_rating?: string | null; delta_action: "upsert" | "delist";
       }[];
     const visible = pkgRows.slice(0, limit);
     const last = visible.at(-1);
-    const nonDelisted = visible.filter((p) => p.lifecycle !== "delisted");
-    const builtPackages = this.buildCatalogPackagesBatch(nonDelisted);
+    const nonDelisted = visible.filter((p) => p.delta_action !== "delist");
+    const builtPackages = this.buildCatalogPackagesBatch(nonDelisted as any);
     const packageMap = new Map(builtPackages.map((p) => [p.canonicalId, p]));
     const deltas: CatalogDelta[] = [];
     for (const pkg of visible) {
-      if (pkg.lifecycle === "delisted") {
+      if (pkg.delta_action === "delist") {
         deltas.push({
           action: "delist",
           canonicalId: pkg.canonical_id,
@@ -2740,6 +2774,10 @@ export class LocalCoordinatorStore implements CoordinatorStore, PublicCatalogSto
           UPDATE canonical_packages SET lifecycle = 'delisted', updated_at = ?
           WHERE canonical_id = ? AND lifecycle != 'delisted'
         `).run(recordedAt, input.canonicalId);
+        this.db.prepare(`
+          INSERT OR IGNORE INTO catalog_tombstones (canonical_id, reason, recorded_at)
+          VALUES (?, 'delisted', ?)
+        `).run(input.canonicalId, recordedAt);
       }
       if (input.targetUrl) {
         // Delist all packages whose fronts point to this URL
@@ -2749,6 +2787,15 @@ export class LocalCoordinatorStore implements CoordinatorStore, PublicCatalogSto
             SELECT DISTINCT pf.canonical_id FROM package_fronts pf WHERE pf.storefront_url = ?
           ) AND lifecycle != 'delisted'
         `).run(recordedAt, input.targetUrl);
+        const matching = this.db.prepare(
+          "SELECT DISTINCT pf.canonical_id FROM package_fronts pf WHERE pf.storefront_url = ?"
+        ).all(input.targetUrl) as { canonical_id: string }[];
+        for (const row of matching) {
+          this.db.prepare(`
+            INSERT OR IGNORE INTO catalog_tombstones (canonical_id, reason, recorded_at)
+            VALUES (?, 'delisted', ?)
+          `).run(row.canonical_id, recordedAt);
+        }
       }
     }).immediate();
 
@@ -3381,6 +3428,13 @@ export class LocalCoordinatorStore implements CoordinatorStore, PublicCatalogSto
       SET content_rating = ?, updated_at = ?
       WHERE canonical_id = ?
     `).run(newRating, updatedAt, canonicalId);
+
+    if (previousRating === "general" && newRating !== "general") {
+      this.db.prepare(`
+        INSERT OR IGNORE INTO catalog_tombstones (canonical_id, reason, recorded_at)
+        VALUES (?, 'rating_withdrawn', ?)
+      `).run(canonicalId, updatedAt);
+    }
 
     return {
       canonicalId,

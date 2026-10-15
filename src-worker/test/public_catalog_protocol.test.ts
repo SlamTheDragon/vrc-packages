@@ -5,7 +5,7 @@ import {
   CATALOG_PROTOCOL_VERSION,
   PublicCatalogListResponseSchema,
   CatalogDeltaResponseSchema,
-  decodeCatalogDeltaCursor,
+  decodeCatalogDeltaCursor, encodeCatalogDeltaCursor,
   type CatalogDelta,
   decodeCatalogCursor, encodeCatalogCursor, VRCPackageClient
 } from "vrc-packages-api";
@@ -389,6 +389,80 @@ describe("Public Consumer Catalog Protocol (/v1/app/index & /v1/app/index/delta)
       if (deltaBody.deltas[0].action === "upsert") {
         expect(deltaBody.deltas[0].package?.contentRating).toBe("general");
       }
+    } finally {
+      store.close();
+    }
+  });
+
+  test("public delta endpoint emits delist tombstones on rating withdrawal and hard deletion", async () => {
+    let mockTime = 1000000;
+    const store = new LocalCoordinatorStore(":memory:", () => mockTime);
+    try {
+      mockTime = 1001000;
+      seedVpmAndCatalogItem(store, "pkg.gen1", "com.example.pkg1", "Package 1", "active");
+      mockTime = 1002000;
+      seedVpmAndCatalogItem(store, "pkg.gen2", "com.example.pkg2", "Package 2", "active");
+      mockTime = 1003000;
+      seedVpmAndCatalogItem(store, "pkg.gen3", "com.example.pkg3", "Package 3", "active");
+
+      const initialDeltas = await handlePublicCatalogRequest(publicGet("/v1/app/index/delta"), store);
+      expect(initialDeltas.status).toBe(200);
+      const initialBody = CatalogDeltaResponseSchema.parse(await initialDeltas.json());
+      expect(initialBody.deltas).toHaveLength(3);
+      expect(initialBody.deltas.every(d => d.action === "upsert")).toBe(true);
+
+      mockTime = 1004000;
+      const adjustRes = store.adjustPackageRating("com.example.pkg1", "adult_restricted", "moderator-1", "Restricted content");
+      expect(adjustRes).not.toBeNull();
+      expect(adjustRes?.previousRating).toBe("general");
+      expect(adjustRes?.newRating).toBe("adult_restricted");
+
+      mockTime = 1005000;
+      const deleteRes = store.deleteCanonicalPackage("com.example.pkg2");
+      expect(deleteRes).toBe(true);
+
+      const afterMutationDeltas = await handlePublicCatalogRequest(publicGet("/v1/app/index/delta"), store);
+      expect(afterMutationDeltas.status).toBe(200);
+      const afterMutationBody = CatalogDeltaResponseSchema.parse(await afterMutationDeltas.json());
+      expect(afterMutationBody.deltas).toHaveLength(3);
+
+      const pkg3Delta = afterMutationBody.deltas.find(d => d.canonicalId === "com.example.pkg3");
+      expect(pkg3Delta?.action).toBe("upsert");
+      expect(pkg3Delta?.package?.displayName).toBe("Package 3");
+
+      const pkg1Delta = afterMutationBody.deltas.find(d => d.canonicalId === "com.example.pkg1");
+      expect(pkg1Delta?.action).toBe("delist");
+      expect(pkg1Delta?.package).toBeUndefined();
+
+      const pkg2Delta = afterMutationBody.deltas.find(d => d.canonicalId === "com.example.pkg2");
+      expect(pkg2Delta?.action).toBe("delist");
+      expect(pkg2Delta?.package).toBeUndefined();
+
+      const pkg3Cursor = encodeCatalogDeltaCursor({
+        updatedAt: pkg3Delta!.updatedAt,
+        canonicalId: pkg3Delta!.canonicalId
+      });
+      const cursorDeltas = await handlePublicCatalogRequest(publicGet(`/v1/app/index/delta?cursor=${pkg3Cursor}`), store);
+      expect(cursorDeltas.status).toBe(200);
+      const cursorBody = CatalogDeltaResponseSchema.parse(await cursorDeltas.json());
+      expect(cursorBody.deltas).toHaveLength(2);
+      expect(cursorBody.deltas.map(d => d.canonicalId)).toEqual(["com.example.pkg1", "com.example.pkg2"]);
+      expect(cursorBody.deltas.every(d => d.action === "delist")).toBe(true);
+
+      mockTime = 1006000;
+      const delistReq = store.submitDelistRequest({
+        canonicalId: "com.example.pkg3",
+        requesterId: "owner",
+        reason: "Delisted by request",
+        requesterType: "admin_operator"
+      });
+      expect(delistReq.status).toBe("accepted");
+
+      const finalDeltas = await handlePublicCatalogRequest(publicGet("/v1/app/index/delta"), store);
+      const finalBody = CatalogDeltaResponseSchema.parse(await finalDeltas.json());
+      expect(finalBody.deltas).toHaveLength(3);
+      expect(finalBody.deltas.every(d => d.action === "delist")).toBe(true);
+      expect(finalBody.deltas.map(d => d.canonicalId)).toEqual(["com.example.pkg1", "com.example.pkg2", "com.example.pkg3"]);
     } finally {
       store.close();
     }

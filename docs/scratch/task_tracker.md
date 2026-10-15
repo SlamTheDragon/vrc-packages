@@ -1,3 +1,21 @@
+# Active slice: R13-C9-DELTA checkpoint (2026-10-16, local commit, no push)
+
+- Objective: Emit delist tombstones to downstream sync clients when packages leave the public catalog.
+- Implemented:
+  1. Added `catalog_tombstones` table and cursor index to `D1_SCHEMA_SQL` in `utils.ts` and `local_sqlite.ts`.
+  2. Inserted tombstones on rating withdrawal (`adjustPackageRating` and `upsertCanonicalPackage` transitioning general to non-general).
+  3. Inserted tombstones on hard deletion (`deleteCanonicalPackage` for general packages), and deleted referencing `identity_links` to prevent foreign key errors.
+  4. Inserted tombstones on delist requests (`submitDelistRequest` for canonical IDs and matching storefront fronts).
+  5. Refactored `listCatalogDeltasPage` to `UNION ALL` general packages from `canonical_packages` with `catalog_tombstones`, avoiding duplicate delists via `NOT EXISTS`.
+- Verified:
+  - Worker `bun test`: 298 pass, 0 fail, 3510 assertions across 23 files (including new protocol and store tests).
+  - Vitest: 3 pass, 0 fail.
+  - Native workerd/D1 smoke test: all checks pass (`coordinator_runtime_smoke.mjs`).
+  - `bun run check`: clean across all three tsconfigs (`tsc --noEmit`, `test/tsconfig.json`, `test/tsconfig.bun.json`).
+  - `bun run build:preview`: dry-run compilation clean.
+  - Sibling domain suites: `src-crawler` 172 pass / 1446 assertions; `src-package` 74 pass / 1072 assertions. Root tests not run.
+- Next: Check ledger for active vertical slices or triage next milestone gate.
+
 # R13-C9-IDENTITY checkpoint (2026-10-16, local commit, no push)
 
 - Implemented: `buildCatalogPackagesBatch` in `coordinator.ts` and `local_sqlite.ts` now enforces an `EXISTS` check on `identity_links`. Only links with `review_state = 'accepted'` project into public package fronts. Provisional cross-source fronts stay in storage for operator review.

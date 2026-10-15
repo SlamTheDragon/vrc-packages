@@ -8,7 +8,7 @@ Here are the latest changelogs of each package and applications. For a full hist
 ## What Changed
 
 <!-- MASTER_SUMMARY -->
-Preserve evidence, settled outbox results and URL resource distinctions. Isolate provisional storefront fronts from public projection. Use unique catalog epochs and typecheck Bun fixtures.
+Preserve evidence, settled outbox results and URL resource distinctions. Isolate provisional storefront fronts from public projection. Emit delist tombstones on package withdrawal. Use unique catalog epochs and typecheck Bun fixtures.
 <!-- MASTER_SUMMARY -->
 
 ## Table of Contents
@@ -184,10 +184,11 @@ See full history at [docs/changelogs/vrcp-web/preview](https://github.com/SlamTh
 ## VRC Packages Worker - `vrcp-worker-preview`
 
 <!-- vrcp-worker-preview-DESCRIPTION_SUMMARY -->
-Use unique catalog epochs, preserve evidence and URL distinctions, withhold provisional fronts from public projection, and reject substituted storefront identities. Typecheck Bun fixtures.
+Use unique catalog epochs, preserve evidence and URL distinctions, withhold provisional fronts from public projection, emit delist tombstones on package withdrawal, and reject substituted storefront identities. Typecheck Bun fixtures.
 <!-- vrcp-worker-preview-DESCRIPTION_SUMMARY -->
 ### Added
 ### Bugs Fixed
+- **Delta Feed Tombstones**: Record tombstones and emit delist deltas when packages leave the public general catalog via rating withdrawal or deletion.
 - **Provisional Fronts**: Filter provisional cross-source storefront links from public catalog packages until explicit operator review.
 - **Publication Confidence**: Stopped metadata-only canonical upserts from inventing observed confidence or downgrading confirmed publication evidence.
 - **Catalog Epochs**: Give fresh databases unique epochs. Concurrent initialization returns the stored winner and preserves existing epochs.

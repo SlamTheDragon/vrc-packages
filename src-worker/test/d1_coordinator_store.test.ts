@@ -1314,6 +1314,18 @@ describe("Cloudflare D1 Coordinator Store & Edge Worker Adapter", () => {
     const deltaJson = await deltaHttpRes.json() as any;
     expect(deltaJson.deltas).toHaveLength(2);
     expect(deltaJson.epoch).toBe(epoch2);
+
+    await store.adjustPackageRating("d1-pkg-active", "adult_restricted", "operator-1", "Rating adjustment test");
+    const deltaAfterRatingRes = await store.listCatalogDeltasPage(10, null);
+    const ratingWithdrawnDelta = deltaAfterRatingRes.deltas.find((d) => d.canonicalId === "d1-pkg-active");
+    expect(ratingWithdrawnDelta?.action).toBe("delist");
+    expect(ratingWithdrawnDelta?.package).toBeUndefined();
+
+    await store.deleteCanonicalPackage("d1-pkg-delisted");
+    const deltaAfterDeleteRes = await store.listCatalogDeltasPage(10, null);
+    const deletedDelta = deltaAfterDeleteRes.deltas.find((d) => d.canonicalId === "d1-pkg-delisted");
+    expect(deletedDelta?.action).toBe("delist");
+    expect(deletedDelta?.package).toBeUndefined();
   });
 
   it("initializes distinct catalog epochs, returns the concurrent winner and preserves stored values", async () => {

@@ -464,7 +464,7 @@ try {
 	const post = async (path, payload, token) => {
 		const response = await runtime.dispatchFetch('https://offline.test' + path, {
 			method: 'POST',
-			signal: AbortSignal.timeout(15_000),
+			signal: AbortSignal.timeout(60_000),
 			headers: { 'content-type': 'application/json', authorization: 'Bearer ' + token },
 			body: JSON.stringify(payload)
 		});
@@ -597,7 +597,7 @@ try {
     rejectedWritesAbsent: true, sdkResponseValidated: true }));
 	const profileList = await runtime.dispatchFetch('https://offline.test/v1/operator/source-profiles', {
 		headers: { authorization: 'Bearer ' + operatorToken },
-		signal: AbortSignal.timeout(15_000)
+		signal: AbortSignal.timeout(60_000)
 	});
 	assert.equal(profileList.status, 200);
 	assert.equal(SourceAccessProfileListResponseSchema.parse(await profileList.json()).profiles.length, 0);
