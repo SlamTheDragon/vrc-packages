@@ -1,3 +1,19 @@
+# Active slice: STAGE-1-OPERATIONAL-SYNC (2026-10-18, local commit, remote push)
+
+- Objective: Reconcile double-entry scratch ledgers and synchronize branch `preview/crawler-network` with origin.
+- Working theory:
+  1. The static health audit identified a 5-slice duplicate tracking leak (`R14-C14`, `FLEET-S3`, `FLEET-S1`, `R16-C20-DOCS`, `R16-C19-BROADCAST`) between `IMPLEMENTATION_PLAN.md` and `UNMERGED_IMPLEMENTATION_PLAN.md`.
+  2. Pruning the duplicated rows from `UNMERGED_IMPLEMENTATION_PLAN.md` preserves `IMPLEMENTATION_PLAN.md` as the canonical accepted ledger.
+  3. 15 local commits on `preview/crawler-network` are fully verified by local test suites and typechecks; pushing them establishes the remote baseline before implementing Stage 2 security and policy fixes.
+- Implementation steps:
+  1. Prune duplicated rows from `docs/scratch/UNMERGED_IMPLEMENTATION_PLAN.md`.
+  2. Stage and commit scratch ledger reconciliation and `docs/scratch/research/audits/2026-10-18_STATUS.md`.
+  3. Push `preview/crawler-network` to `origin/preview/crawler-network`.
+  4. Transition to Stage 2: P0 security and zero-binary ingestion policy enforcement.
+- Verification status: Verified locally.
+  - Scratch footprint invariant: 3 canonical root files in `docs/scratch/` and 1 folder `research/`.
+  - Git status: clean working tree upon commit.
+
 # Active slice: R14-C14 (2026-10-16, local commit, no push)
 
 - Objective: Bound coordinator claim scans with explicit invocation budgets and measure D1 execution in runtime harness.
@@ -31,21 +47,3 @@
   4. Updated `docs/applications/VRCP API/API_ROUTES.md`: documented claim scan budget on `/v1/node/jobs/claim`, added operator application review routes, added Moderator Protocol (§2.5), and updated the Role x Route Access Matrix (§3) with Moderator permissions.
   5. Updated `docs/source/CHANGELOG.md` under `vrcp-worker-preview`.
 - Verification: Link checker verified zero live broken links (only 20 historical archive links remain in immutable `docs/changelogs/`). Typechecks clean.
-
-# Previous checkpoints
-
-# FLEET-S3 checkpoint (2026-10-16, local commit d1e1bc6)
-- Implemented: Resolved Docker fleet configuration, removed Watchtower, isolated data volumes, rewrote .env.example.
-- Verified: Crawler 177 tests pass, types clean, worker 298 tests pass, package 74 tests pass.
-
-# FLEET-S1 checkpoint (2026-10-16, local commit dfe2469)
-- Implemented: Extended native runtime harness to verify failure paths, expired lease rejection, and multi-node fleet allocation.
-- Verified: Native runtime smoke passed all checks, worker domain 298 passed, crawler domain 174 passed, typechecks clean.
-
-# R16-C20-DOCS checkpoint (2026-10-16, local commit 7dcb2b2)
-- Implemented: Reconciled specifications and runbooks with delivered capabilities; removed node.config.json references.
-- Verified: Link check passed, crawler 174 tests passed, worker typechecks clean.
-
-# R16-C19-BROADCAST checkpoint (2026-10-16, local commit 38d47ab)
-- Implemented: Added `activity()` and `finding()` methods to `Logger`; instrumented daemon and main for latest.log broadcasting.
-- Verified: Crawler `bun test` 174 pass, `bunx tsc --noEmit` clean, dev build compiles.
