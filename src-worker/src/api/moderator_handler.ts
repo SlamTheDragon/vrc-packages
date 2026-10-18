@@ -127,7 +127,7 @@ export async function handleModeratorRequest(
     return failure(403, "forbidden", "Moderator authority with verified age required");
   }
 
-  const modRate = rateLimiter.check(`moderator:${user.userId}`, RATE_LIMIT_POLICIES.MODERATOR_ROUTES);
+  const modRate = await rateLimiter.check(`moderator:${user.userId}`, RATE_LIMIT_POLICIES.MODERATOR_ROUTES);
   if (!modRate.allowed) {
     workerLogger.warn("Moderator route rate limit exceeded", { path, userId: user.userId });
     return rateLimitResponse(modRate, MODERATOR_PROTOCOL_VERSION, "Rate limit exceeded for moderator requests. Please retry later.");

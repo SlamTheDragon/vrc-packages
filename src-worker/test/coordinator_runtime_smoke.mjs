@@ -229,7 +229,7 @@ async function metadataBindingFixture(env, store, clock) {
   await store.createSourceAccessProfile({ schemaVersion: 1, platform: 'booth', origin: 'https://booth.pm',
     pathScope: '/ja/items/98765', method: 'GET', purpose: 'metadata', minDelayMs: 1000,
     expiresAt: new Date(clock + 3600000).toISOString(), reviewReference: 'OFFLINE-METADATA-FIXTURE',
-    reason: 'Hermetic metadata source binding', retainClasses: ['normalized_facts'], publishClasses: []
+    reason: 'Hermetic metadata source binding', retainClasses: ['normalized_facts'], publishClasses: ['normalized_facts']
   }, 'offline-fixture');
   await store.recordRobotsSnapshot('https://booth.pm', 404);
   await store.seedJob(target, 'booth', 1000, undefined, 'metadata');
@@ -451,6 +451,7 @@ const runtime = new Miniflare(
 				compatibilityDate: workerConfig.compatibility_date,
 				compatibilityFlags: workerConfig.compatibility_flags,
 				d1Databases: { VRCP_D1: randomUUID() },
+				kvNamespaces: { RATE_LIMIT_KV: randomUUID() },
 				bindings: { OPERATOR_TOKEN: operatorToken },
 				outboundService: () => {
 					externalFetches++;
@@ -671,7 +672,7 @@ try {
 			reviewReference: 'OFFLINE-RUNTIME-ONLY',
 			reason: 'Hermetic workerd concurrency fixture',
 			retainClasses: ['normalized_facts'],
-			publishClasses: []
+			publishClasses: ['normalized_facts']
 		},
 		operatorToken
 	);

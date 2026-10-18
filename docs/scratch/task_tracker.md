@@ -1,14 +1,25 @@
-# Active slice: STAGE-15-AUTHOR-ROULETTE-AND-LEDGER-COMPACTION (2026-10-18, local commit, local-only session per user instructions)
+# Active slice: STAGE-16-DISTRIBUTED-KV-RATE-LIMITING (2026-10-18, local commit, local-only session per user instructions)
 
-- Status: in_progress
-- Objective: Reconcile unmerged implementation plan rows by conducting question roulette to gather author comments for pending unmerged rows (R50-C31-RECOVERY, R60-C60C, R54-C39C-RATE-LIMIT, R58-CONFIG-TAMPER), and advance the active gate.
+- Status: verified
+- Objective: Implement distributed Cloudflare KV and native Rate Limiting bindings for coordinator rate limiting per author requirement (`R54-C39C-RATE-LIMIT`: "Require distributed Cloudflare KV or Rate Limiting bindings before considering rate limiting verified").
 - Working theory:
-  1. Author directed: "the question roulette was aimed to fill in author comment cells when necessary, I was hoping you'd make those connection. Continue what you're doing."
-  2. Invoke `ask_question` with purpose, affects, and improves structured for author decision.
-  3. Fill author responses directly into author comments in `UNMERGED_IMPLEMENTATION_PLAN.md` and merge verified rows into `IMPLEMENTATION_PLAN.md`.
-- Verification status: in_progress.
+  1. Author directed: "Require distributed Cloudflare KV or Rate Limiting bindings before considering rate limiting verified."
+  2. In `src-worker/src/api/rate_limiter.ts`, expand `IRateLimiter` to support `check(): RateLimitResult | Promise<RateLimitResult>`.
+  3. Implement `KvRateLimiter` utilizing Cloudflare `KVNamespace` (`RATE_LIMIT_KV` binding) with bucket-based keying (`rl:${key}:${bucket}`) and automatic `expirationTtl`.
+  4. Implement `CloudflareBindingRateLimiter` supporting Cloudflare's native rate limit binding.
+  5. Implement `createRateLimiter(env)` selecting `KvRateLimiter` or `CloudflareBindingRateLimiter` when configured, falling back to `InMemoryRateLimiter`.
+  6. Wire `createRateLimiter(env)` into `worker_entry.ts` and await `rateLimiter.check()` across all API route handlers (`public`, `node`, `downstream`, `operator`, `moderator`, `user`).
+  7. Add `RATE_LIMIT_KV` to `wrangler.toml` and update types.
+- Verification status: verified. 320/320 worker unit tests pass (3653 assertions across 23 files); 3/3 Cloudflare Vitest tests pass; 100% native workerd runtime smoke check passes; Wrangler dry-run preview build passes; clean TypeScript checks across source, vitest, and bun test tsconfigs (0 errors).
 
 # Previous checkpoints
+
+# STAGE-15-AUTHOR-ROULETTE-AND-LEDGER-COMPACTION checkpoint (2026-10-18, local commit)
+- Status: verified
+- Objective: Reconcile unmerged implementation plan rows by conducting question roulette to gather author comments for pending unmerged rows (`R50-C31-RECOVERY`, `R60-C60C`, `R54-C39C-RATE-LIMIT`, `R58-CONFIG-TAMPER`), and compact scratch ledgers.
+- Implemented: Question roulette collected 4 author decisions. Recorded author comment cells in `UNMERGED_IMPLEMENTATION_PLAN.md` and appended author comment dispositions to `IMPLEMENTATION_PLAN.md`.
+- Verification: Clean double-entry ledgers aligned with author instructions.
+
 
 # STAGE-14-HIGH-CONFIDENCE-STOREFRONT-AUTO-LINK checkpoint (2026-10-18, local commit)
 - Status: verified

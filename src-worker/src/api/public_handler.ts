@@ -63,7 +63,7 @@ export async function handlePublicCatalogRequest(
   }
 
   const clientIp = extractClientIp(request);
-  const rateResult = rateLimiter.check(`public:${clientIp}`, RATE_LIMIT_POLICIES.PUBLIC_CATALOG);
+  const rateResult = await rateLimiter.check(`public:${clientIp}`, RATE_LIMIT_POLICIES.PUBLIC_CATALOG);
   if (!rateResult.allowed) {
     workerLogger.warn("Public catalog rate limit exceeded", { path: url.pathname, clientIp });
     return rateLimitResponse(rateResult, CATALOG_PROTOCOL_VERSION, "Rate limit exceeded for public catalog endpoints. Please retry later.");

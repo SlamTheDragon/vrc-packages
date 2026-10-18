@@ -1,6 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import {
   InMemoryRateLimiter,
+  KvRateLimiter,
+  CloudflareBindingRateLimiter,
+  createRateLimiter,
+  type IKVNamespace,
+  type CloudflareRateLimiterBinding,
   extractClientIp,
   rateLimitResponse,
   applyRateLimitHeaders,
@@ -211,4 +216,151 @@ describe("Inbound 429 Rate Limiter & Abuse Protection", () => {
       expect(body).toMatchObject({ code: "rate_limited" });
     });
   });
+
+  describe("KvRateLimiter Unit Tests", () => {
+    function createMockKv(): IKVNamespace & { store: Map<string, { value: string; expirationTtl?: number }> } {
+      const store = new Map<string, { value: string; expirationTtl?: number }>();
+      return {
+        store,
+        async get(key: string) {
+          const entry = store.get(key);
+          return entry ? entry.value : null;
+        },
+        async put(key: string, value: string, options?: { expirationTtl?: number }) {
+          store.set(key, { value, expirationTtl: options?.expirationTtl });
+        },
+        async delete(key: string) {
+          store.delete(key);
+        }
+      };
+    }
+
+    test("allows requests up to the configured limit and decrements remaining in KV", async () => {
+      const mockKv = createMockKv();
+      const limiter = new KvRateLimiter(mockKv);
+      const policy = { limit: 3, windowSeconds: 60 };
+      const key = "test:ip:kv1";
+      const now = 10_000;
+
+      const r1 = await limiter.check(key, policy, now);
+      expect(r1.allowed).toBe(true);
+      expect(r1.limit).toBe(3);
+      expect(r1.remaining).toBe(2);
+
+      const r2 = await limiter.check(key, policy, now + 1000);
+      expect(r2.allowed).toBe(true);
+      expect(r2.remaining).toBe(1);
+
+      const r3 = await limiter.check(key, policy, now + 2000);
+      expect(r3.allowed).toBe(true);
+      expect(r3.remaining).toBe(0);
+
+      // Exceeded
+      const r4 = await limiter.check(key, policy, now + 3000);
+      expect(r4.allowed).toBe(false);
+      expect(r4.remaining).toBe(0);
+      expect(r4.resetAfterSeconds).toBeGreaterThan(0);
+    });
+
+    test("resets window when time advances to next window bucket", async () => {
+      const mockKv = createMockKv();
+      const limiter = new KvRateLimiter(mockKv);
+      const policy = { limit: 2, windowSeconds: 60 };
+      const key = "test:ip:kv2";
+      const bucket0Now = 10_000;
+
+      const r1 = await limiter.check(key, policy, bucket0Now);
+      expect(r1.allowed).toBe(true);
+      const r2 = await limiter.check(key, policy, bucket0Now + 1000);
+      expect(r2.allowed).toBe(true);
+      const r3 = await limiter.check(key, policy, bucket0Now + 2000);
+      expect(r3.allowed).toBe(false);
+
+      // Advance time into next window bucket
+      const bucket1Now = 65_000;
+      const r4 = await limiter.check(key, policy, bucket1Now);
+      expect(r4.allowed).toBe(true);
+      expect(r4.remaining).toBe(1);
+    });
+
+    test("handles KV write/read exceptions gracefully and fails open", async () => {
+      const failingKv: IKVNamespace = {
+        async get() {
+          throw new Error("KV offline");
+        },
+        async put() {
+          throw new Error("KV put failed");
+        }
+      };
+      const limiter = new KvRateLimiter(failingKv);
+      const policy = { limit: 5, windowSeconds: 60 };
+      const res = await limiter.check("failing:key", policy);
+      expect(res.allowed).toBe(true);
+      expect(res.remaining).toBe(4);
+    });
+
+    test("enforces 429 when plugged into handlePublicCatalogRequest", async () => {
+      const store = new LocalCoordinatorStore();
+      const mockKv = createMockKv();
+      const limiter = new KvRateLimiter(mockKv);
+
+      const now = Date.now();
+      const bucket = Math.floor(now / 60000);
+      await mockKv.put(`rl:public:198.51.100.99:${bucket}`, "60");
+
+      const req = new Request("http://localhost/v1/app/index", {
+        headers: { "cf-connecting-ip": "198.51.100.99" }
+      });
+      const res = await handlePublicCatalogRequest(req, store, limiter);
+      expect(res.status).toBe(429);
+      expect(res.headers.get("Retry-After")).toBeDefined();
+      const body = await res.json();
+      expect(body).toMatchObject({ code: "rate_limited" });
+    });
+  });
+
+  describe("CloudflareBindingRateLimiter & Factory Unit Tests", () => {
+    test("CloudflareBindingRateLimiter forwards to native limit binding", async () => {
+      let passedKey = "";
+      const mockBinding: CloudflareRateLimiterBinding = {
+        async limit(options) {
+          passedKey = options.key;
+          return { success: options.key.includes("allow") };
+        }
+      };
+      const limiter = new CloudflareBindingRateLimiter(mockBinding);
+      const policy = { limit: 10, windowSeconds: 60 };
+
+      const r1 = await limiter.check("test:allow:1", policy);
+      expect(r1.allowed).toBe(true);
+      expect(passedKey).toBe("test:allow:1");
+
+      const r2 = await limiter.check("test:block:1", policy);
+      expect(r2.allowed).toBe(false);
+      expect(passedKey).toBe("test:block:1");
+    });
+
+    test("createRateLimiter selects KvRateLimiter when RATE_LIMIT_KV is present", () => {
+      const mockKv: IKVNamespace = {
+        async get() { return null; },
+        async put() {}
+      };
+      const limiter = createRateLimiter({ RATE_LIMIT_KV: mockKv });
+      expect(limiter).toBeInstanceOf(KvRateLimiter);
+    });
+
+    test("createRateLimiter selects CloudflareBindingRateLimiter when RATE_LIMITER is present", () => {
+      const mockBinding: CloudflareRateLimiterBinding = {
+        async limit() { return { success: true }; }
+      };
+      const limiter = createRateLimiter({ RATE_LIMITER: mockBinding });
+      expect(limiter).toBeInstanceOf(CloudflareBindingRateLimiter);
+    });
+
+    test("createRateLimiter defaults to InMemoryRateLimiter when no bindings are present", () => {
+      const limiter = createRateLimiter();
+      expect(limiter).toBeInstanceOf(InMemoryRateLimiter);
+    });
+  });
 });
+

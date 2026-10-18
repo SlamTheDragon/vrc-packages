@@ -83,7 +83,7 @@ export async function handleDownstreamRequest(
   // App registration authenticates the creator before reading the payload.
   if (isRegister) {
     const clientIp = extractClientIp(request);
-    const regRate = rateLimiter.check(`app:register:${clientIp}`, RATE_LIMIT_POLICIES.APP_REGISTER);
+    const regRate = await rateLimiter.check(`app:register:${clientIp}`, RATE_LIMIT_POLICIES.APP_REGISTER);
     if (!regRate.allowed) {
       workerLogger.warn("App register rate limit exceeded", { path, clientIp });
       return rateLimitResponse(regRate, DOWNSTREAM_PROTOCOL_VERSION, "Rate limit exceeded for application registration. Please retry later.");
@@ -140,7 +140,7 @@ export async function handleDownstreamRequest(
 
   // 3. Consolidated Reporting Route (/v1/app/report) per API_ROUTES.md §2.4
   if (isFeedback) {
-    const reportRate = rateLimiter.check(`app:report:${app.appId}`, RATE_LIMIT_POLICIES.APP_REPORT);
+    const reportRate = await rateLimiter.check(`app:report:${app.appId}`, RATE_LIMIT_POLICIES.APP_REPORT);
     if (!reportRate.allowed) {
       workerLogger.warn("App report rate limit exceeded", { path, appId: app.appId });
       return rateLimitResponse(reportRate, DOWNSTREAM_PROTOCOL_VERSION, "Rate limit exceeded for application report submissions. Please retry later.");
@@ -238,7 +238,7 @@ export async function handleDownstreamRequest(
       return failure(403, "forbidden", "Application is not authorized for delegated creator claims");
     }
 
-    const claimRate = rateLimiter.check(`app:claim:${app.appId}`, RATE_LIMIT_POLICIES.APP_CLAIMS_INTAKE);
+    const claimRate = await rateLimiter.check(`app:claim:${app.appId}`, RATE_LIMIT_POLICIES.APP_CLAIMS_INTAKE);
     if (!claimRate.allowed) {
       workerLogger.warn("App claim intake rate limit exceeded", { path, appId: app.appId });
       return rateLimitResponse(claimRate, DOWNSTREAM_PROTOCOL_VERSION, "Rate limit exceeded for delegated creator claims intake. Please retry later.");
@@ -281,7 +281,7 @@ export async function handleDownstreamRequest(
       return failure(403, "forbidden", "Application is not authorized for catalog searches");
     }
 
-    const searchRate = rateLimiter.check(`app:search:${app.appId}`, RATE_LIMIT_POLICIES.APP_SEARCH);
+    const searchRate = await rateLimiter.check(`app:search:${app.appId}`, RATE_LIMIT_POLICIES.APP_SEARCH);
     if (!searchRate.allowed) {
       workerLogger.warn("App search rate limit exceeded", { path, appId: app.appId });
       return rateLimitResponse(searchRate, DOWNSTREAM_PROTOCOL_VERSION, "Rate limit exceeded for catalog searches. Please retry later.");

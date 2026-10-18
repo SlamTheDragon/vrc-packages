@@ -78,7 +78,7 @@ export async function handleUserRequest(
     return failure(401, "unauthorized", "Invalid user credential");
   }
 
-  const userRate = rateLimiter.check(`user:${user.userId}`, RATE_LIMIT_POLICIES.USER_ROUTES);
+  const userRate = await rateLimiter.check(`user:${user.userId}`, RATE_LIMIT_POLICIES.USER_ROUTES);
   if (!userRate.allowed) {
     workerLogger.warn("User route rate limit exceeded", { path, userId: user.userId });
     return rateLimitResponse(userRate, DOWNSTREAM_PROTOCOL_VERSION, "Rate limit exceeded for user requests. Please retry later.");

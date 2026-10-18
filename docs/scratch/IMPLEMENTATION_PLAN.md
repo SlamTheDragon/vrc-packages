@@ -139,3 +139,7 @@ Consumed from question roulette in the unmerged ledger:
 - **R13-C9-DELTA**: Record withdrawals, deletions, and delists in catalog_tombstones and stream in delta feeds.
 - **DELIVERY-WORKFLOW-LEAN**: Keep the existing 14 separate workflow files unchanged to avoid any regression risk in CI delivery automation.
 - **FLEET-S4**: Execute the multi-platform fleet crawl simulation in src-crawler/tests/fleet_crawl_simulation.test.ts using mock coordinator loopback wire fixtures for automated CI/domain test suites, with preview Cloudflare Worker deployment authorized for live data verification.
+- **R50-C31-RECOVERY**: Use root deployment & publication tooling to recover failed distributions.
+- **R54-C39C-RATE-LIMIT**: Require distributed Cloudflare KV or Rate Limiting bindings before considering rate limiting verified.
+- **R58-CONFIG-TAMPER**: Require remote GitHub assets verification in all environments including local development.
+- **R60-C60C**: Add automatic rollback that cleans unstaged version and changelog modifications if delivery crashes before commit.

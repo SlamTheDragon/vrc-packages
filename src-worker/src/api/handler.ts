@@ -126,7 +126,7 @@ export async function handleNodeRequest(
     : RATE_LIMIT_POLICIES.NODE_RESULT;
 
   const rateKey = `node:${isClaim ? "claim" : isHeartbeat ? "heartbeat" : "result"}:${clientIp}:${tokenPrefix}`;
-  const rateResult = rateLimiter.check(rateKey, policy);
+  const rateResult = await rateLimiter.check(rateKey, policy);
   if (!rateResult.allowed) {
     workerLogger.warn("Node rate limit exceeded", { path, clientIp });
     return rateLimitResponse(

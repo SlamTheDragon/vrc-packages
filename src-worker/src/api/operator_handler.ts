@@ -158,7 +158,7 @@ export async function handleOperatorRequest(
     return failure(401, "unauthorized", "Operator bearer credential required");
   }
   const clientIp = extractClientIp(request);
-  const operatorRate = rateLimiter.check(`operator:${clientIp}`, RATE_LIMIT_POLICIES.OPERATOR_ROUTES);
+  const operatorRate = await rateLimiter.check(`operator:${clientIp}`, RATE_LIMIT_POLICIES.OPERATOR_ROUTES);
   if (!operatorRate.allowed) {
     workerLogger.warn("Operator rate limit exceeded", { path: url.pathname, clientIp });
     return rateLimitResponse(operatorRate, OPERATOR_PROTOCOL_VERSION, "Rate limit exceeded for operator requests. Please retry later.");

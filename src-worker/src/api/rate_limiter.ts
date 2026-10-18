@@ -32,8 +32,18 @@ export interface RateLimitResult {
 }
 
 export interface IRateLimiter {
-  check(key: string, policy: RateLimitPolicy, now?: number): RateLimitResult;
-  reset?(): void;
+  check(key: string, policy: RateLimitPolicy, now?: number): RateLimitResult | Promise<RateLimitResult>;
+  reset?(): void | Promise<void>;
+}
+
+export interface IKVNamespace {
+  get(key: string): Promise<string | null>;
+  put(key: string, value: string, options?: { expirationTtl?: number }): Promise<void>;
+  delete?(key: string): Promise<void>;
+}
+
+export interface CloudflareRateLimiterBinding {
+  limit(options: { key: string }): Promise<{ success: boolean }>;
 }
 
 export class InMemoryRateLimiter implements IRateLimiter {
@@ -91,7 +101,84 @@ export class InMemoryRateLimiter implements IRateLimiter {
   }
 }
 
+export class KvRateLimiter implements IRateLimiter {
+  constructor(private kv: IKVNamespace) {}
+
+  async check(key: string, policy: RateLimitPolicy, now = Date.now()): Promise<RateLimitResult> {
+    const windowSec = policy.windowSeconds;
+    const bucket = Math.floor(now / (windowSec * 1000));
+    const storageKey = `rl:${key}:${bucket}`;
+    const resetAtEpoch = (bucket + 1) * windowSec;
+    const resetAfterSeconds = Math.max(1, resetAtEpoch - Math.floor(now / 1000));
+
+    let currentCount = 0;
+    try {
+      const raw = await this.kv.get(storageKey);
+      if (raw) {
+        currentCount = parseInt(raw, 10) || 0;
+      }
+    } catch {
+      currentCount = 0;
+    }
+
+    if (currentCount >= policy.limit) {
+      return {
+        allowed: false,
+        limit: policy.limit,
+        remaining: 0,
+        resetAfterSeconds
+      };
+    }
+
+    const nextCount = currentCount + 1;
+    const ttl = Math.max(60, windowSec * 2);
+    try {
+      await this.kv.put(storageKey, String(nextCount), { expirationTtl: ttl });
+    } catch {
+      // Edge KV write tolerance
+    }
+
+    return {
+      allowed: true,
+      limit: policy.limit,
+      remaining: Math.max(0, policy.limit - nextCount),
+      resetAfterSeconds
+    };
+  }
+}
+
+export class CloudflareBindingRateLimiter implements IRateLimiter {
+  constructor(private binding: CloudflareRateLimiterBinding) {}
+
+  async check(key: string, policy: RateLimitPolicy): Promise<RateLimitResult> {
+    const res = await this.binding.limit({ key });
+    return {
+      allowed: res.success,
+      limit: policy.limit,
+      remaining: res.success ? policy.limit - 1 : 0,
+      resetAfterSeconds: policy.windowSeconds
+    };
+  }
+}
+
 export const defaultRateLimiter = new InMemoryRateLimiter();
+
+export function createRateLimiter(env?: {
+  RATE_LIMIT_KV?: IKVNamespace;
+  VRCP_KV?: IKVNamespace;
+  RATE_LIMITER?: CloudflareRateLimiterBinding;
+}): IRateLimiter {
+  if (env?.RATE_LIMIT_KV) {
+    return new KvRateLimiter(env.RATE_LIMIT_KV);
+  }
+  if (env?.VRCP_KV) {
+    return new KvRateLimiter(env.VRCP_KV);
+  }
+  if (env?.RATE_LIMITER) {
+    return new CloudflareBindingRateLimiter(env.RATE_LIMITER);
+  }
+  return defaultRateLimiter;
+}
 
 export function extractClientIp(request: Request): string {
   const cfIp = request.headers.get("cf-connecting-ip");
