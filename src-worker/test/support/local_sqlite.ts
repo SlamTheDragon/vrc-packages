@@ -810,7 +810,7 @@ export class LocalCoordinatorStore implements CoordinatorStore, PublicCatalogSto
     if (supplied.length !== expected.length || !crypto.timingSafeEqual(supplied, expected)) return null;
 
     const storedCapabilities = JSON.parse(row.capabilities_json) as Platform[];
-    if (isCapabilityToken(bearer)) {
+    if (!isCapabilityToken(bearer)) return null;
       const parsed = parseCapabilityToken(bearer);
       if (!parsed) return null;
       const parsedSet = new Set(parsed.capabilities);
@@ -818,7 +818,7 @@ export class LocalCoordinatorStore implements CoordinatorStore, PublicCatalogSto
       if (parsedSet.size !== storedSet.size || [...parsedSet].some((c) => !storedSet.has(c))) {
         return null;
       }
-    }
+
     return { nodeId, capabilities: storedCapabilities, credentialVersion: row.token_hash };
   }
 

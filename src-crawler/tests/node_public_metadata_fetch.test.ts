@@ -139,4 +139,35 @@ describe("standalone node public metadata transport", () => {
     }, requestHttps)).rejects.toThrow();
     expect(lookups).toBe(0);
   });
+  test("rejects URLs with binary extensions before DNS lookup", async () => {
+    let lookups = 0;
+    const resolve = async () => { lookups++; return [{ address: "1.1.1.1", family: 4 }]; };
+    for (const url of [
+      "https://example.org/download.zip",
+      "https://example.org/model.unitypackage",
+      "https://example.org/installer.exe",
+      "https://example.org/archive.tar.gz",
+      "https://example.org/binary.7z"
+    ]) {
+      await expect(fetchPublicMetadata(url, {}, resolve)).rejects.toBeInstanceOf(UnsafeMetadataTarget);
+    }
+    expect(lookups).toBe(0);
+  });
+
+  test("aborts a response with binary Content-Type", async () => {
+    const requestHttps = ((_options: any, callback: (response: any) => void) => {
+      const req = Object.assign(new EventEmitter(), {
+        end() {
+          callback(Object.assign(new PassThrough(), {
+            statusCode: 200,
+            headers: { "content-type": "application/zip" }
+          }));
+        },
+        destroy(error: Error) { req.emit("error", error); }
+      });
+      return req;
+    }) as unknown as typeof https.request;
+    await expect(fetchPublicMetadata("https://example.org/index.json", {},
+      async () => [{ address: "1.1.1.1", family: 4 }], requestHttps)).rejects.toThrow("Rejected binary response content-type");
+  });
 });

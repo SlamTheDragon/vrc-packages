@@ -6,6 +6,23 @@ import { logger } from "../utils/logging/logger.ts";
 
 const MAX_METADATA_BYTES = 2_000_000;
 
+export const PROHIBITED_BINARY_EXTENSIONS = [
+  ".zip", ".unitypackage", ".exe", ".tar", ".gz", ".tgz",
+  ".7z", ".rar", ".iso", ".bin", ".dll", ".dylib", ".so", ".msi"
+];
+
+export const PROHIBITED_BINARY_CONTENT_TYPES = [
+  "application/zip",
+  "application/x-zip-compressed",
+  "application/octet-stream",
+  "application/x-msdownload",
+  "application/x-tar",
+  "application/gzip",
+  "application/x-gzip",
+  "application/x-7z-compressed",
+  "application/x-rar-compressed"
+];
+
 export class UnsafeMetadataTarget extends Error {}
 
 type Address = { address: string; family: number };
@@ -23,6 +40,11 @@ export async function fetchPublicMetadata(
   if (isItchSearchUrl(target.href)) {
     logger.warn(`Rejected itch.io /search URL: ${target.href}`);
     throw new UnsafeMetadataTarget("itch.io /search is disallowed by published robots rules");
+  }
+  const pathnameLower = target.pathname.toLowerCase();
+  if (PROHIBITED_BINARY_EXTENSIONS.some((ext) => pathnameLower.endsWith(ext))) {
+    logger.warn(`Rejected binary metadata target URL: ${target.href}`);
+    throw new UnsafeMetadataTarget("Metadata target must not point to an archive or executable binary");
   }
   if (target.protocol !== "https:" || target.username || target.password || target.hash ||
       (target.port && target.port !== "443")) {
@@ -52,6 +74,11 @@ export async function fetchPublicMetadata(
       const declared = Number(res.headers["content-length"] || 0);
       if (declared > MAX_METADATA_BYTES) {
         req.destroy(new Error("Metadata response exceeds 2 MB"));
+        return;
+      }
+      const contentType = String(res.headers["content-type"] || "").toLowerCase().split(";")[0].trim();
+      if (PROHIBITED_BINARY_CONTENT_TYPES.includes(contentType)) {
+        req.destroy(new Error(`Rejected binary response content-type: ${contentType}`));
         return;
       }
       const chunks: Buffer[] = [];

@@ -9,6 +9,7 @@ import { VRCPackageClient } from "vrc-packages-api";
 import { handlePublicCatalogRequest } from "../src/api/public_handler.ts";
 import { InMemoryRateLimiter } from "../src/api/rate_limiter.ts";
 import { handleNodeRequest } from "../src/api/handler.ts";
+import { sha256Hex } from "../src/storage/d1/utils.ts";
 
 export function createMockD1Database(db = new Database(":memory:")) {
   db.run("PRAGMA foreign_keys = ON;");
@@ -531,6 +532,11 @@ describe("Cloudflare D1 Coordinator Store & Edge Worker Adapter", () => {
       const token = await store.issueNodeCredential({ schemaVersion: 1, nodeId: "enqueue-test", capabilities: ["vpm"], reason: "Fixture" }, "fixture");
       const principal = (await store.authenticate("enqueue-test", token))!;
       expect((await store.claim({ schemaVersion: 1, nodeId: principal.nodeId, capabilities: ["vpm"] }, principal)).status).toBe("empty");
+      const rawToken = "raw-token-without-capability-prefix-that-should-be-rejected";
+      const rawHash = await sha256Hex(rawToken);
+      sqlite.run("INSERT INTO node_credentials(node_id, token_hash, capabilities_json) VALUES (?, ?, ?)",
+        ["raw-node", rawHash, JSON.stringify(["vpm"])]);
+      expect(await store.authenticate("raw-node", rawToken)).toBeNull();
       sqlite.run("CREATE TRIGGER reject_seed_audit BEFORE INSERT ON operator_audit_log WHEN NEW.entity_type='job' BEGIN SELECT RAISE(ABORT,'fixture audit failure'); END;");
       await expect(client.operator.jobs.enqueue({ ...input, url: "https://other.example/index.json" })).rejects.toThrow();
       expect(sqlite.query("SELECT COUNT(*) AS count FROM crawl_jobs").get()).toEqual({ count: 1 });

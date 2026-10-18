@@ -153,6 +153,7 @@ Remove Watchtower and host socket mounts from Docker compose. Require pinned ima
 - **Activity and Finding Broadcast**: Broadcast operational activities and discovery findings with dedicated tags to the node log file.
 - **Recovery Checks**: Exercise abrupt process termination over loopback HTTP and actual SQLite-full rollback without filling host disks.
 ### Bugs Fixed
+- **Zero-Binary Ingestion**: Reject URL targets with binary extensions and responses with binary content types before socket or body processing.
 - **Timestamp Provenance**: Removed the storefront creation-date fallback from modification evidence. Valid modification metadata remains available.
 - **Outbox Settlement**: Ignore late failures for sent or terminal entries. Repeated acknowledgments preserve the first receipt and completion metrics.
 - **Lease Deadline**: Abort source work when the lease expires, even if a heartbeat is pending. An expired lease starts no fetch.
@@ -194,6 +195,7 @@ Bound claim candidate scans by an explicit page budget. Verify coordinator failu
 - **Claim Invocation Budgets**: Bound candidate scans to three pages per claim invocation. Measured and asserted empty and leased claim D1 statement budgets in native workerd runtime.
 - **Runtime Verification Harness**: Extended the native coordinator harness to test capability mismatch, lease expiry, cross-node lease isolation, and multi-node fleet concurrency.
 ### Bugs Fixed
+- **Capability Token Authentication**: Fail closed when bearer tokens do not match the capability format.
 - **Claim Loop Budget**: Prevented unbounded claim candidate pagination when deferred jobs occur.
 - **Delta Feed Tombstones**: Record tombstones and emit delist deltas when packages leave the public general catalog via rating withdrawal or deletion.
 - **Provisional Fronts**: Filter provisional cross-source storefront links from public catalog packages until explicit operator review.
