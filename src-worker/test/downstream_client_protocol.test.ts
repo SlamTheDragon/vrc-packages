@@ -11,6 +11,7 @@ import { type ReportSubmissionRequest } from "vrc-packages-api";
 describe("Downstream Client Protocol & Demand Feedback Signals", () => {
   test("actual report HTTP receipts satisfy the SDK for demand, issue and removal", async () => {
     const app = store.registerApp({ schemaVersion: 1, appName: "Receipt fixture" });
+    store.reviewAppCandidate(app.appId, { candidateStatus: "trusted" }, "moderator-fixture");
     const statuses: number[] = [];
     const client = new VRCPackageClient({ baseUrl: "https://worker.example", appToken: app.appToken,
       fetch: Object.assign(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -71,6 +72,16 @@ describe("Downstream Client Protocol & Demand Feedback Signals", () => {
     expect((await handleDownstreamRequest(request("/v1/app/report", "POST", payload), store)).status).toBe(401);
     expect((await handleDownstreamRequest(request("/v1/app/report", "POST", { ...payload, reason: "" }, registered.appToken), store)).status).toBe(400);
     expect((await handleDownstreamRequest(request("/v1/app/report", "POST", { schemaVersion: 1, reportType: "removal_request", reason: "No target" }, registered.appToken), store)).status).toBe(400);
+
+    // Untrusted app rejected with 403 (R54-C38A / R54-C38R / R54-C38B)
+    const untrustedRes = await handleDownstreamRequest(request("/v1/app/report", "POST", payload, registered.appToken), store);
+    expect(untrustedRes.status).toBe(403);
+    const untrustedBody = await untrustedRes.json() as any;
+    expect(untrustedBody.error).toContain("trusted registered app status required");
+
+    // Promote to trusted status
+    store.reviewAppCandidate(registered.appId, { candidateStatus: "trusted" }, "moderator-test");
+
     const response = await handleDownstreamRequest(request("/v1/app/report", "POST", payload, registered.appToken), store);
     expect(response.status).toBe(202);
     const body = await response.json() as { reportId: string };
@@ -625,7 +636,8 @@ describe("Downstream Client Protocol & Demand Feedback Signals", () => {
     const feedbackBody = await feedbackRes.json() as any;
     expect(feedbackBody.error).toContain("Application is not authorized for demand feedback");
 
-    // Removal request still succeeds even without demand:feedback
+    // Removal request requires trusted app status (R54-C38)
+    store.reviewAppCandidate(app.appId, { candidateStatus: "trusted" }, "moderator-test");
     const removalRes = await handleDownstreamRequest(
       request("/v1/app/report", "POST", { schemaVersion: 1, reportType: "removal_request", canonicalId: "pkg-1", reason: "opt out" }, app.appToken),
       store
@@ -708,5 +720,64 @@ describe("Downstream Client Protocol & Demand Feedback Signals", () => {
     expect(metaPayload.reportType).toBe("issue_report");
     expect(metaPayload.reportKind).toBe("broken_link");
     expect(metaPayload.reason).toBe("Target returns 404");
+  });
+
+  test("POST /v1/app/report gates creator takedowns on trusted app status and routes into catalog_tickets (R54-C38)", async () => {
+    const untrustedApp = store.registerApp({ schemaVersion: 1, appName: "Untrusted Takedown Submitter" });
+    const takedownPayload = {
+      schemaVersion: 1,
+      reportType: "removal_request",
+      canonicalId: "com.example.infringing-pkg",
+      reason: "Creator requested package delisting"
+    };
+
+    // 1. Untrusted application rejected with 403
+    const untrustedRes = await handleDownstreamRequest(
+      request("/v1/app/report", "POST", takedownPayload, untrustedApp.appToken),
+      store
+    );
+    expect(untrustedRes.status).toBe(403);
+    const errBody = await untrustedRes.json() as any;
+    expect(errBody.error).toContain("trusted registered app status required");
+
+    // 2. Review and promote application to trusted
+    const review = store.reviewAppCandidate(
+      untrustedApp.appId,
+      { candidateStatus: "trusted", notes: "Verified verified creator tool" },
+      "moderator-lead"
+    );
+    expect(review.candidateStatus).toBe("trusted");
+    expect(review.permissions).toContain("takedowns:submit");
+
+    // 3. Trusted application accepted with 202
+    const trustedRes = await handleDownstreamRequest(
+      request("/v1/app/report", "POST", takedownPayload, untrustedApp.appToken),
+      store
+    );
+    expect(trustedRes.status).toBe(202);
+    const receipt = await trustedRes.json() as any;
+    expect(receipt.status).toBe("accepted");
+    expect(receipt.reportId).toBeDefined();
+
+    // 4. Verify catalog_tickets entry
+    const ticket = store.db.prepare(
+      "SELECT ticket_id, ticket_type, app_id, canonical_id, requester_type, reason, review_status FROM catalog_tickets WHERE ticket_id = ?"
+    ).get(receipt.reportId) as any;
+    expect(ticket).toBeDefined();
+    expect(ticket.ticket_type).toBe("removal_report");
+    expect(ticket.app_id).toBe(untrustedApp.appId);
+    expect(ticket.canonical_id).toBe("com.example.infringing-pkg");
+    expect(ticket.requester_type).toBe("app");
+    expect(ticket.reason).toBe("Creator requested package delisting");
+    expect(ticket.review_status).toBe("pending");
+
+    // 5. Verify catalog_reports view projection
+    const reportView = store.db.prepare(
+      "SELECT report_id, app_id, report_type, review_status FROM catalog_reports WHERE report_id = ?"
+    ).get(receipt.reportId) as any;
+    expect(reportView).toBeDefined();
+    expect(reportView.report_type).toBe("removal_report");
+    expect(reportView.app_id).toBe(untrustedApp.appId);
+    expect(reportView.review_status).toBe("pending");
   });
 });

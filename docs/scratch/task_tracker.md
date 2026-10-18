@@ -1,16 +1,29 @@
-# Active slice: STAGE-17-DYNAMIC-HEARTBEAT-AND-LEASE-CALIBRATION (2026-10-18, local commit, local-only session per user instructions)
+# Active slice: STAGE-18-TRUSTED-APP-TAKEDOWN-INTAKE (2026-10-18, local commit, local-only session per user instructions)
 
 - Status: verified
-- Objective: Standardize coordinator crawl lease durations to fixed 120s and implement dynamic crawler heartbeat scaling (5s to 30s) based on origin fetch duration, adhering to Cloudflare free subrequest quotas (`R54-C39A / R54-C39B`).
+- Objective: Route trusted application creator takedown submissions directly into `catalog_tickets` as `'removal_report'` tickets with `'app'` requester type, gated by trusted registered app status (`R54-C38A / R54-C38R / R54-C38B` / `G15`). Reject untrusted applications with 403 Forbidden.
 - Working theory:
-  1. Author directed: "Adopt dynamic heartbeat intervals scaling from 5s to 30s based on origin fetch duration, with leases fixed at 120s, while keeping in mind Cloudflare's free budget."
-  2. In `src-worker/src/storage/d1/coordinator.ts` and `src-worker/test/support/local_sqlite.ts`, calibrate job lease duration to fixed 120 seconds (`CRAWL_JOB_LEASE_MS = 120 * 1000` ms, instead of 5 minutes).
-  3. In `src-crawler/src/runner/daemon.ts`, track moving average fetch durations per origin and dynamically scale `heartbeatIntervalMs` between 5,000ms (5s) and 30,000ms (30s) when invoking `runLeasedJob`.
-  4. In `src-crawler/src/runner/lease_runner.ts`, dynamically scale interval pulses based on elapsed fetch time while preserving short test fixture overrides (< 5000ms).
-  5. Added unit and integration tests asserting dynamic heartbeat scaling and fixed 120s lease duration in `node_daemon.test.ts`, `node_lease_runner.test.ts`, and `d1_coordinator_store.test.ts`.
-- Verification: 189/189 crawler unit tests pass (1700 assertions) across 28 files; 320/320 worker unit tests pass (3653 assertions) across 23 files; 67/67 D1 store tests pass (1121 assertions); 100% native workerd runtime smoke check passes; clean typechecks across crawler and worker.
+  1. Author directed: "Route trusted app takedown submissions directly into catalog_tickets as 'removal_report' tickets for moderator review, gated by trusted registered app status".
+  2. In `src-worker/src/storage/d1/coordinator.ts` and `src-worker/test/support/local_sqlite.ts`:
+     - Update `authenticateApp` to query `candidate_status` from `registered_apps` and return `candidateStatus` and `isTrusted` flags alongside permissions.
+     - In `reviewAppCandidate`: add `"takedowns:submit"` when an app is reviewed as `"trusted"` or granted delegation.
+     - In `recordRemovalReport`: populate `catalog_tickets` with `requester_type = 'app'` and `reason = parsed.reason ?? "Creator takedown requested by trusted app"`.
+  3. In `src-worker/src/api/downstream_handler.ts`:
+     - In `removal_request` branch: gate on `app.candidateStatus === 'trusted'` or `app.isTrusted === true` or permissions including `"takedowns:submit"` or `"claims:delegate"`.
+     - Reject untrusted apps with 403 Forbidden (`"Application is not authorized for creator takedown requests; trusted registered app status required"`).
+     - Submit valid trusted reports to `store.recordRemovalReport` returning 202 Accepted.
+  4. In `src-worker/test/downstream_client_protocol.test.ts`:
+     - Test that untrusted apps are rejected with 403 Forbidden.
+     - Test that trusted apps are accepted with 202 and create `removal_report` tickets in `catalog_tickets`.
+- Verification: 321/321 worker unit tests pass (3675 assertions) across 23 files; 13/13 downstream client tests pass (192 assertions); 100% native workerd runtime smoke check passes; 189/189 crawler tests pass; clean TypeScript checks across crawler and worker.
 
 # Previous checkpoints
+
+# STAGE-18-TRUSTED-APP-TAKEDOWN-INTAKE checkpoint (2026-10-18, local commit)
+- Status: verified
+- Objective: Route trusted application creator takedown submissions directly into `catalog_tickets` as `'removal_report'` tickets with `'app'` requester type, gated by trusted registered app status (`R54-C38A / R54-C38R / R54-C38B` / `G15`). Reject untrusted applications with 403 Forbidden.
+- Implemented: `DownstreamAppPrincipal` with `candidateStatus` and `isTrusted` in `downstream_handler.ts`; gated `removal_request` on trusted app status; populated `catalog_tickets` with `requester_type = 'app'` and `reason` in `coordinator.ts` and `local_sqlite.ts`; added `"takedowns:submit"` in `reviewAppCandidate`; verified in `downstream_client_protocol.test.ts`.
+- Verification: 321/321 worker tests pass, 100% native workerd runtime smoke passes, 189/189 crawler tests pass, clean typechecks.
 
 # STAGE-17-DYNAMIC-HEARTBEAT-AND-LEASE-CALIBRATION checkpoint (2026-10-18, local commit)
 - Status: verified

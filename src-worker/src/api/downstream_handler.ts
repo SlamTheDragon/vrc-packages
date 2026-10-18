@@ -33,14 +33,22 @@ import {
   type IRateLimiter
 } from "./rate_limiter.ts";
 
+export interface DownstreamAppPrincipal {
+  appId: string;
+  appName: string;
+  permissions: string[];
+  candidateStatus?: "none" | "review_pending" | "reviewed" | "trusted";
+  isTrusted?: boolean;
+  isAgeVerified?: boolean;
+}
+
 export interface DownstreamStore {
   recordRemovalReport(appId: string, input: ReportSubmissionRequest): Promise<ReportSubmissionResponse> | ReportSubmissionResponse;
   recordIssueReport(appId: string, input: ReportSubmissionRequest): Promise<ReportSubmissionResponse> | ReportSubmissionResponse;
   recordCreatorClaimIntake(appId: string, input: CreatorClaimIntakeRequest): Promise<CreatorClaimIntakeResponse> | CreatorClaimIntakeResponse;
   registerApp(input: RegisterAppRequest, ownerUserId?: string): Promise<RegisterAppResponse> | RegisterAppResponse;
   authenticateUser(token: string): Promise<{ userId: string; userName: string; ageVerified?: boolean } | null> | { userId: string; userName: string; ageVerified?: boolean } | null;
-  authenticateApp(appToken: string): Promise<{ appId: string; appName: string; permissions: string[]; isAgeVerified?: boolean } | null> |
-    { appId: string; appName: string; permissions: string[]; isAgeVerified?: boolean } | null;
+  authenticateApp(appToken: string): Promise<DownstreamAppPrincipal | null> | DownstreamAppPrincipal | null;
   recordDownstreamFeedback(appId: string, input: DownstreamFeedbackRequest): Promise<DownstreamFeedbackResponse> |
     DownstreamFeedbackResponse;
   searchCatalogPackages(input: CatalogSearchRequest, options?: { isAgeVerified?: boolean }): Promise<CatalogSearchResponse> | CatalogSearchResponse;
@@ -163,6 +171,12 @@ export async function handleDownstreamRequest(
     }
 
     if (reportParsed.success && reportParsed.data.reportType === "removal_request") {
+      const isTrusted = app.candidateStatus === "trusted" || app.isTrusted === true || app.permissions.includes("takedowns:submit") || app.permissions.includes("claims:delegate");
+      if (!isTrusted) {
+        workerLogger.warn("Untrusted application attempted creator takedown request", { path, appId: app.appId });
+        return failure(403, "forbidden", "Application is not authorized for creator takedown requests; trusted registered app status required");
+      }
+
       try {
         const response = await store.recordRemovalReport(app.appId, reportParsed.data);
         return applyRateLimitHeaders(json(ReportSubmissionResponseSchema.parse(response), 202), reportRate);

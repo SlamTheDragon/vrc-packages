@@ -2387,9 +2387,10 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
     const recordedAt = new Date(this.now()).toISOString();
     const targetUrl = parsed.targetUrl ?? null;
     const canonicalId = parsed.canonicalId ?? null;
-    const result = await this.db.prepare(`INSERT INTO catalog_tickets(ticket_id,ticket_type,app_id,target_url,canonical_id,payload_json,review_status,recorded_at)
-      SELECT ?,'removal_report',app_id,?,?,?,'pending',? FROM registered_apps WHERE app_id=? AND revoked_at IS NULL`)
-      .bind(reportId, targetUrl, canonicalId, JSON.stringify(parsed), recordedAt, appId).run();
+    const reason = parsed.reason ?? "Creator takedown requested by trusted app";
+    const result = await this.db.prepare(`INSERT INTO catalog_tickets(ticket_id,ticket_type,app_id,target_url,canonical_id,requester_type,reason,payload_json,review_status,recorded_at)
+      SELECT ?,'removal_report',app_id,?,?,'app',?,?, 'pending',? FROM registered_apps WHERE app_id=? AND revoked_at IS NULL`)
+      .bind(reportId, targetUrl, canonicalId, reason, JSON.stringify(parsed), recordedAt, appId).run();
     if ((result.meta as { changes?: number } | undefined)?.changes !== 1) throw new CoordinatorConflict("Invalid application credential", 403);
     return { schemaVersion: 1, status: "accepted", reportId, recordedAt };
   }
@@ -2458,22 +2459,26 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
   }
 
   /** Authenticates a downstream application bearer token. */
-  async authenticateApp(appToken: string): Promise<{ appId: string; appName: string; permissions: string[]; isAgeVerified?: boolean } | null> {
+  async authenticateApp(appToken: string): Promise<{ appId: string; appName: string; permissions: string[]; candidateStatus?: "none" | "review_pending" | "reviewed" | "trusted"; isTrusted?: boolean; isAgeVerified?: boolean } | null> {
     if (!/^vrcp_app_[a-f0-9]{64}$/.test(appToken)) return null;
     const tokenHash = await sha256Hex(appToken);
     const row = await this.db.prepare(`
-      SELECT a.app_id, a.app_name, a.permissions_json, a.revoked_at,
+      SELECT a.app_id, a.app_name, a.permissions_json, a.revoked_at, a.candidate_status,
              COALESCE(MAX(u.age_verified), 0) AS age_verified
       FROM registered_apps a
       LEFT JOIN registered_users u ON u.user_id = a.owner_user_id AND u.revoked_at IS NULL
       WHERE a.token_hash = ?
       GROUP BY a.app_id
-    `).bind(tokenHash).first<{ app_id: string; app_name: string; permissions_json: string; revoked_at: string | null; age_verified: number }>();
+    `).bind(tokenHash).first<{ app_id: string; app_name: string; permissions_json: string; revoked_at: string | null; candidate_status: string; age_verified: number }>();
     if (!row || row.revoked_at) return null;
+    const permissions = JSON.parse(row.permissions_json) as string[];
+    const candidateStatus = (row.candidate_status || "none") as "none" | "review_pending" | "reviewed" | "trusted";
     return {
       appId: row.app_id,
       appName: row.app_name,
-      permissions: JSON.parse(row.permissions_json) as string[],
+      permissions,
+      candidateStatus,
+      isTrusted: candidateStatus === "trusted" || permissions.includes("takedowns:submit") || permissions.includes("claims:delegate"),
       isAgeVerified: Boolean(row.age_verified)
     };
   }
@@ -3238,8 +3243,10 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
     const currentPerms = new Set<string>(JSON.parse(row.permissions_json));
     if (input.grantDelegation === true || input.candidateStatus === "trusted") {
       currentPerms.add("claims:delegate");
+      currentPerms.add("takedowns:submit");
     } else if (input.grantDelegation === false) {
       currentPerms.delete("claims:delegate");
+      currentPerms.delete("takedowns:submit");
     }
     const newPerms = Array.from(currentPerms);
 
