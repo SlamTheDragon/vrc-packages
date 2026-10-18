@@ -1,14 +1,12 @@
-# Active slice: STAGE-11-INITIAL-SEEDS-AND-STOREFRONT-DISCOVERY (2026-10-18, local commit, local-only session per user instructions)
+# Active slice: STAGE-12-MULTI-PLATFORM-FLEET-INGESTION (2026-10-18, local commit, local-only session per user instructions)
 
-- Status: verified
-- Objective: Implement approved initial seed definitions and explicit source access profiles policy for open VPM community listings with robots preflight required, add Ko-fi storefront seed and classification, and support auto-queue rule matching for high-confidence storefront leads while keeping domain/custom-domain storefronts in operator review (`FLEET-S2`).
+- Status: open
+- Objective: Design and implement the multi-platform end-to-end fleet crawl simulation (`FLEET-S4`), exercising concurrent coordinator leases, multi-driver fetching (VPM, GitHub, storefront leads), schema-valid receipt ingestion, outbox replay, and catalog projection.
 - Working theory:
-  1. Candidate jobs in `DEFAULT_SEED_JOBS` include approved open VPM listings and storefronts with Ko-fi added (`https://ko-fi.com/s/sample-vrc-item`).
-  2. `DEFAULT_APPROVED_SOURCE_PROFILES` defines explicit, non-synthetic source access profiles for open VPM community listings (`vrchat-community.github.io/template-package/` and `raw.githubusercontent.com/vrchat-community/template-package-listing/`).
-  3. Coordinator exposes `seedInitialProfiles(actor?: string)` for explicit profile attachment without violating the candidate-only `autoSeed` invariant.
-  4. `classifyOutboundLeadKind` recognizes `ko-fi.com` as a `storefront_product`.
-  5. `activeAutoQueueRuleForLead` supports `storefront_product`, `github_repository`, and `publisher_site` alongside `vpm_listing`, enabling high-confidence auto-queue rules to autopass reviewed storefronts while unreviewed domain-level and custom-domain storefronts stay pending review.
-- Verification status: verified. 310 worker tests passed (3611 assertions), 3 Vitest tests passed, 100% native workerd runtime smoke check passed, 182 crawler tests passed (1636 assertions), worker and crawler typechecks clean.
+  1. `FLEET-S1` (Worker/D1 harness failure paths and fleet concurrency), `FLEET-S2` (Multi-platform initial seeds, approved VPM community profiles, Ko-fi storefront classification), and `FLEET-S3` (Docker fleet compose and isolated data volumes) are all verified.
+  2. Implement an end-to-end multi-platform fleet crawl simulation test in `src-crawler/tests/fleet_crawl_simulation.test.ts` utilizing local wire mocks adhering strictly to the `src-crawler` independent boundary rule.
+  3. Validate concurrent leased execution across VPM package manifests, GitHub releases, and storefront product leads, verifying outbox queuing and atomic coordinator result submission.
+- Verification status: open. Awaiting author comment input via question roulette on simulation architecture, user auth registration, and delivery workflow lean optimization.
 
 # Previous checkpoints
 
