@@ -47,7 +47,7 @@ erDiagram
     CANONICAL_PACKAGES ||--o{ PACKAGE_FRONTS : "exposes"
     CANONICAL_PACKAGES ||--o| DESKTOP_TOOL_EVIDENCE : "classifies"
     
-    REGISTERED_REGISTRANTS ||--o{ REGISTERED_APPS : "registers"
+    REGISTERED_USERS ||--o{ REGISTERED_APPS : "registers"
     REGISTERED_APPS ||--o{ DOWNSTREAM_DEMAND_SIGNALS : "emits"
     
     SOURCE_ACCESS_PROFILES ||--o{ SOURCE_ACCESS_PROFILE_ACTIONS : "audited_by"
@@ -59,19 +59,21 @@ erDiagram
 ## 3. Coordinator Database Schema (`coordinator.db` / D1)
 
 ### 3.1 Authentication, Principals & Workforce Distribution
-<!-- FIXME: use registered_users and propagate changes across codebase -->
-#### `registered_registrants`
-Stores verified user identities provisioned by the Web Operator Panel (Firebase Auth).
+
+#### `registered_users`
+Stores registered user identities for user-level endpoints, moderation permissions, and application registration.
 ```sql
-CREATE TABLE registered_registrants (
-  registrant_id TEXT PRIMARY KEY,
-  registrant_name TEXT NOT NULL,
-  token_hash TEXT NOT NULL,               -- SHA-256 digest of vrcp_reg_<64-hex>
+CREATE TABLE registered_users (
+  user_id TEXT PRIMARY KEY,
+  user_name TEXT NOT NULL,
+  token_hash TEXT NOT NULL UNIQUE,        -- SHA-256 digest of vrcp_usr_<64-hex>
   contact_email TEXT,
+  age_verified INTEGER NOT NULL DEFAULT 0 CHECK(age_verified IN (0,1)),
+  is_moderator INTEGER NOT NULL DEFAULT 0 CHECK(is_moderator IN (0,1)),
   created_at TEXT NOT NULL,               -- ISO-8601
   revoked_at TEXT                         -- ISO-8601 or NULL
 );
-CREATE INDEX idx_registered_registrants_token ON registered_registrants(token_hash);
+CREATE INDEX idx_registered_users_token ON registered_users(token_hash);
 ```
 
 #### `registered_apps`
@@ -94,6 +96,7 @@ CREATE TABLE registered_apps (
 CREATE INDEX idx_registered_apps_token_hash ON registered_apps(token_hash);
 CREATE INDEX idx_registered_apps_candidate ON registered_apps(candidate_status, request_count);
 CREATE INDEX idx_registered_apps_owner ON registered_apps(owner_user_id);
+CREATE INDEX idx_registered_apps_pagination ON registered_apps(created_at DESC, app_id DESC);
 ```
 
 #### `node_credentials`
@@ -105,14 +108,22 @@ CREATE TABLE node_credentials (
   capabilities_json TEXT NOT NULL,        -- JSON array: ["booth", "github", "vpm"]
   revoked_at TEXT
 );
-CREATE TABLE node_credential_actions (
+CREATE TABLE operator_audit_log (
   action_id INTEGER PRIMARY KEY AUTOINCREMENT,
-  node_id TEXT NOT NULL REFERENCES node_credentials(node_id),
-  actor TEXT NOT NULL,                    -- "operator-api" or "registrant:<id>"
-  action TEXT NOT NULL,                   -- "issued" | "revoked"
+  entity_type TEXT NOT NULL CHECK(entity_type IN ('node','lead','job','rule','profile')),
+  entity_id TEXT NOT NULL,
+  actor TEXT NOT NULL,                    -- "operator-api" or principal ID
+  action TEXT NOT NULL,                   -- e.g. "issued" | "revoked" | "approved" | "rejected"
   reason TEXT NOT NULL,
   occurred_at TEXT NOT NULL
 );
+CREATE INDEX idx_operator_audit_log_entity ON operator_audit_log(entity_type, entity_id, occurred_at);
+CREATE INDEX idx_operator_audit_log_occurred ON operator_audit_log(occurred_at DESC, action_id DESC);
+
+-- Compatibility view for node credential actions
+CREATE VIEW node_credential_actions AS
+  SELECT action_id, entity_id AS node_id, actor, action, reason, occurred_at
+  FROM operator_audit_log WHERE entity_type='node';
 ```
 
 #### `node_heartbeats`
@@ -147,17 +158,20 @@ Cached RFC 9309 robots.txt snapshots (24-hour TTL) and refresh mutexes.
 ```sql
 CREATE TABLE origin_robots (
   origin TEXT PRIMARY KEY,
-  snapshot_id TEXT NOT NULL,
-  status_code INTEGER NOT NULL,
-  body TEXT NOT NULL,
-  fetched_at TEXT NOT NULL,
-  expires_at TEXT NOT NULL
+  snapshot_id TEXT,
+  status_code INTEGER,
+  body TEXT,
+  fetched_at TEXT,
+  expires_at TEXT,
+  refresh_lease_id TEXT,
+  refresh_lease_expires_at TEXT
 );
-CREATE TABLE origin_robots_refresh_leases (
-  origin TEXT PRIMARY KEY,
-  lease_id TEXT NOT NULL,
-  lease_expires_at TEXT NOT NULL
-);
+CREATE INDEX idx_origin_robots_refresh ON origin_robots(origin, refresh_lease_expires_at);
+
+-- Mutex lease compatibility projection view
+CREATE VIEW origin_robots_refresh_leases AS
+  SELECT origin, refresh_lease_id AS lease_id, refresh_lease_expires_at AS lease_expires_at
+  FROM origin_robots WHERE refresh_lease_id IS NOT NULL;
 ```
 
 #### `suppressed_urls`
@@ -240,6 +254,13 @@ CREATE TABLE source_leads (
 );
 CREATE INDEX idx_source_leads_status ON source_leads(status, kind);
 CREATE INDEX idx_source_leads_page ON source_leads(status, first_seen_at, lead_key);
+CREATE INDEX idx_source_leads_target ON source_leads(target_url);
+CREATE INDEX idx_source_leads_discovered_url ON source_leads(discovered_from_url);
+
+-- Audit projection view
+CREATE VIEW operator_actions AS
+  SELECT action_id, actor, action, entity_id AS lead_key, reason, occurred_at
+  FROM operator_audit_log WHERE entity_type='lead';
 ```
 
 #### `crawl_jobs`
@@ -265,20 +286,13 @@ CREATE TABLE crawl_jobs (
 );
 CREATE INDEX idx_crawl_jobs_ready ON crawl_jobs(state, next_fetch_at, platform);
 CREATE INDEX idx_crawl_jobs_origin_due ON crawl_jobs(origin, next_fetch_at, state);
-```
+CREATE INDEX idx_crawl_jobs_profile ON crawl_jobs(lease_profile_id);
+CREATE INDEX idx_crawl_jobs_rule ON crawl_jobs(source_rule_id);
 
-#### `job_seed_actions` (implemented locally, 2026-10-03)
-
-Manual operator enqueue writes this record in the same transaction as queue and pacing changes. Failed actions do not create success records. Matching repeated requests record separate operator actions without resetting job state. This record does not authorize source access.
-
-```sql
-CREATE TABLE job_seed_actions (
-  action_id TEXT PRIMARY KEY,
-  job_id TEXT NOT NULL REFERENCES crawl_jobs(job_id),
-  actor TEXT NOT NULL,
-  reason TEXT NOT NULL,
-  occurred_at TEXT NOT NULL
-);
+-- Compatibility view for manual operator job enqueue audits
+CREATE VIEW job_seed_actions AS
+  SELECT cast(action_id as text) AS action_id, entity_id AS job_id, actor, reason, occurred_at
+  FROM operator_audit_log WHERE entity_type='job';
 ```
 
 #### `job_results`
@@ -310,6 +324,7 @@ CREATE TABLE source_items (
   latest_version_no INTEGER NOT NULL,
   gone_at TEXT                            -- Tombstone timestamp if observed 404/deleted
 );
+CREATE INDEX idx_source_items_url ON source_items(source_url);
 ```
 
 #### `source_versions`
@@ -375,10 +390,13 @@ CREATE TABLE canonical_packages (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   published_at TEXT,
-  timestamp_confidence TEXT
+  timestamp_confidence TEXT,
+  content_rating TEXT NOT NULL DEFAULT 'general'
 );
 CREATE INDEX idx_canonical_packages_updated ON canonical_packages(updated_at ASC, canonical_id ASC);
 CREATE INDEX idx_canonical_packages_created ON canonical_packages(created_at DESC, canonical_id DESC);
+CREATE INDEX idx_canonical_packages_rating ON canonical_packages(content_rating);
+CREATE INDEX idx_canonical_packages_published ON canonical_packages(published_at DESC, canonical_id DESC);
 ```
 
 Fresh version-0 initialization declares the two nullable timestamp fields in this table.
@@ -390,10 +408,10 @@ Tracks hard deletions, delistings, and rating withdrawals to feed delist events 
 CREATE TABLE catalog_tombstones (
   canonical_id TEXT NOT NULL,
   reason TEXT NOT NULL CHECK(reason IN ('rating_withdrawn', 'deleted', 'delisted')),
-  tombstoned_at TEXT NOT NULL,
-  cursor_seq INTEGER PRIMARY KEY AUTOINCREMENT
+  recorded_at TEXT NOT NULL,
+  PRIMARY KEY(canonical_id, recorded_at)
 );
-CREATE INDEX idx_catalog_tombstones_cursor ON catalog_tombstones(tombstoned_at ASC, canonical_id ASC);
+CREATE INDEX idx_catalog_tombstones_cursor ON catalog_tombstones(recorded_at ASC, canonical_id ASC);
 ```
 
 #### `identity_links`
@@ -429,6 +447,7 @@ CREATE TABLE package_fronts (
   UNIQUE(canonical_id, source_key)
 );
 CREATE INDEX idx_package_fronts_canonical ON package_fronts(canonical_id);
+CREATE INDEX idx_package_fronts_storefront ON package_fronts(storefront_url);
 ```
 
 #### `avatar_compatibilities`
@@ -512,24 +531,26 @@ CREATE TABLE catalog_tickets (
   review_notes TEXT,
   recorded_at TEXT NOT NULL
 );
-CREATE INDEX idx_catalog_tickets_type_status ON catalog_tickets(ticket_type, review_status);
+CREATE UNIQUE INDEX idx_catalog_tickets_nonce ON catalog_tickets(app_id, nonce) WHERE nonce IS NOT NULL;
+CREATE INDEX idx_catalog_tickets_review ON catalog_tickets(ticket_type, review_status, recorded_at, ticket_id);
+CREATE INDEX idx_catalog_tickets_canonical ON catalog_tickets(canonical_id);
 CREATE INDEX idx_catalog_tickets_target_url ON catalog_tickets(target_url);
-CREATE INDEX idx_catalog_tickets_canonical_id ON catalog_tickets(canonical_id);
+CREATE INDEX idx_catalog_tickets_takedowns ON catalog_tickets(ticket_type, recorded_at DESC, ticket_id DESC);
 ```
 
-#### `creator_opt_outs`, `creator_claims` & `catalog_reports` (Compatibility Views)
+#### `creator_opt_outs`, `delegated_creator_claims` & `catalog_reports` (Compatibility Views)
 Backward-compatible views projecting from `catalog_tickets` for existing query contracts.
 ```sql
 CREATE VIEW creator_opt_outs AS
-  SELECT ticket_id AS takedown_id, target_url, canonical_id, requester_type, requester_id, reason, proof_kind, proof_value, contact_email, recorded_at
+  SELECT ticket_id AS takedown_id, target_url, canonical_id, requester_type, requester_id, reason, proof_kind, proof_value, contact_email, recorded_at, review_status, review_notes
   FROM catalog_tickets WHERE ticket_type = 'opt_out';
 
-CREATE VIEW creator_claims AS
-  SELECT ticket_id AS claim_id, app_id, target_url AS front_url, creator_id, challenge_token, expires_at, nonce, signature, reason, contact_email, review_status, review_notes, recorded_at
+CREATE VIEW delegated_creator_claims AS
+  SELECT ticket_id AS claim_id, app_id, 'creator_ownership_claim' AS action, target_url AS front_url, creator_id, challenge_token, expires_at, nonce, signature, payload_json, reason, contact_email, review_status, review_notes, recorded_at
   FROM catalog_tickets WHERE ticket_type = 'delegated_claim';
 
 CREATE VIEW catalog_reports AS
-  SELECT ticket_id AS report_id, app_id, 'removal_request' AS report_type, payload_json, review_status, review_notes, recorded_at
+  SELECT ticket_id AS report_id, app_id, 'removal_request' AS report_type, payload_json, review_status, recorded_at
   FROM catalog_tickets WHERE ticket_type = 'removal_report';
 ```
 
@@ -583,6 +604,25 @@ CREATE TABLE node_tasks (
 );
 CREATE INDEX idx_node_tasks_job ON node_tasks(job_id);
 CREATE INDEX idx_node_tasks_run ON node_tasks(run_id);
+
+CREATE TABLE node_outbox (
+  outbox_id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL REFERENCES node_runs(run_id) ON DELETE CASCADE,
+  task_id TEXT NOT NULL REFERENCES node_tasks(task_id) ON DELETE CASCADE,
+  job_id TEXT NOT NULL,
+  lease_id TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL,
+  outcome_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  retry_count INTEGER NOT NULL DEFAULT 0,
+  next_retry_at TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  last_error TEXT,
+  receipt_json TEXT
+);
+CREATE INDEX idx_node_outbox_status_retry ON node_outbox(status, next_retry_at);
+CREATE INDEX idx_node_outbox_job ON node_outbox(job_id);
+CREATE INDEX idx_node_outbox_task ON node_outbox(task_id);
 ```
 
 ---

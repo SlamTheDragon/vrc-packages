@@ -212,6 +212,7 @@ Bound claim candidate scans by an explicit page budget. Verify coordinator failu
 - **URL Associations**: Preserve generic path/query case and trailing slashes. Keep case-insensitive repository matching scoped to GitHub sources.
 - **Lead Identities**: Deduplicate serialized host/default-port aliases for new leads without changing retained observation links.
 ### Changes
+- **Database Schema Reconciliation**: Reconcile DATABASE_SCHEMAS.md with D1 tables, views, ten query indexes, and node outbox storage.
 - **API Route Documentation**: Align AGENTS.md route reference path and document batched job results and operator app delegation endpoints.
 - **Fixture Typechecks**: Include Bun TypeScript tests and support in Worker checks. Preserve separate Cloudflare Vitest typing and native runtime verification.
 - **D1 Fixtures**: Check the SQLite adapter against generated bindings. Reject unsupported operations and foreign batch statements instead of reporting synthetic success.
