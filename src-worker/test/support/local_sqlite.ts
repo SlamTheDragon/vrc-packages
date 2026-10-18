@@ -1558,6 +1558,7 @@ export class LocalCoordinatorStore implements CoordinatorStore, PublicCatalogSto
         // When an observation has an accepted or provisional identity link to a canonical package
         // (or if it is a storefront platform with an outbound match), upsert a row into package_fronts.
         const linkedCanonicalIds = new Set<string>();
+        const highConfidenceCanonicalIds = new Set<string>();
         const existingLinks = this.db.prepare(`
           SELECT canonical_id FROM identity_links
           WHERE source_key = ? AND review_state IN ('accepted', 'provisional')
@@ -1619,7 +1620,7 @@ export class LocalCoordinatorStore implements CoordinatorStore, PublicCatalogSto
           // Outbound match 2: source leads where target_url matches this job URL (e.g. storefront discovered from VPM)
           const normalizedJobUrl = job.url.toLowerCase().replace(/\/+$/, "");
           const jobLeadMatches = this.db.prepare(`
-            SELECT DISTINCT il.canonical_id
+            SELECT DISTINCT il.canonical_id, sl.discovered_from_item_key, sl.claimed_package_id, sl.status as lead_status
             FROM source_leads sl
             JOIN identity_links il ON (
               (sl.discovered_from_item_key IS NOT NULL AND (
@@ -1631,9 +1632,18 @@ export class LocalCoordinatorStore implements CoordinatorStore, PublicCatalogSto
             )
             WHERE LOWER(RTRIM(sl.target_url, '/')) = ?
               AND il.review_state IN ('accepted', 'provisional')
-          `).all(normalizedJobUrl) as { canonical_id: string }[];
-          for (const { canonical_id } of jobLeadMatches) {
-            linkedCanonicalIds.add(canonical_id);
+          `).all(normalizedJobUrl) as {
+            canonical_id: string;
+            discovered_from_item_key: string | null;
+            claimed_package_id: string | null;
+            lead_status: string;
+          }[];
+          for (const r of jobLeadMatches) {
+            linkedCanonicalIds.add(r.canonical_id);
+            // High-confidence: approved lead (operator approved or high-confidence auto-pass) -> auto-link as accepted
+            if (r.lead_status === "approved") {
+              highConfidenceCanonicalIds.add(r.canonical_id);
+            }
           }
         }
 
@@ -1671,12 +1681,23 @@ export class LocalCoordinatorStore implements CoordinatorStore, PublicCatalogSto
 
         for (const canonicalId of linkedCanonicalIds) {
           if (isStorefront) {
+            const isHighConfidence = highConfidenceCanonicalIds.has(canonicalId);
             const hasLink = this.db.prepare(`SELECT 1 FROM identity_links WHERE source_key=? AND canonical_id=?`).get(sourceKey, canonicalId);
             if (!hasLink) {
               this.db.prepare(`INSERT INTO identity_links
-                (link_id,source_key,canonical_id,evidence_kind,confidence,review_state,created_at)
-                VALUES (?,?,?,'cross_storefront_link',0.8,'provisional',?)`).run(
-                  crypto.randomUUID(), sourceKey, canonicalId, now);
+                (link_id,source_key,canonical_id,evidence_kind,confidence,review_state,created_at,reviewed_at)
+                VALUES (?,?,?,'cross_storefront_link',?,?,?,?)`).run(
+                  crypto.randomUUID(), sourceKey, canonicalId,
+                  isHighConfidence ? 0.95 : 0.8,
+                  isHighConfidence ? "accepted" : "provisional",
+                  now,
+                  isHighConfidence ? now : null);
+            } else if (isHighConfidence) {
+              this.db.prepare(`UPDATE identity_links
+                SET review_state='accepted', confidence=0.95, reviewed_at=?
+                WHERE source_key=? AND canonical_id=? AND review_state='provisional'`).run(
+                now, sourceKey, canonicalId
+              );
             }
 
             const rawStorefrontUrl = (observation as any).storefrontUrl || job.url;

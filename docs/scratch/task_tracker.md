@@ -1,15 +1,21 @@
-# Active slice: STAGE-14-HIGH-CONFIDENCE-STOREFRONT-AUTO-LINK (2026-10-18, local commit, local-only session per user instructions)
+# Active slice: STAGE-15-AUTHOR-ROULETTE-AND-LEDGER-COMPACTION (2026-10-18, local commit, local-only session per user instructions)
 
 - Status: in_progress
-- Objective: Revise `R13-C9-IDENTITY` per author direction to allow high-confidence storefront leads (manifest-declared package leads or verified publisher matches) to auto-link with accepted review state without operator review, while keeping unverified heuristic outbound links as provisional.
+- Objective: Reconcile unmerged implementation plan rows by conducting question roulette to gather author comments for pending unmerged rows (R50-C31-RECOVERY, R60-C60C, R54-C39C-RATE-LIMIT, R58-CONFIG-TAMPER), and advance the active gate.
 - Working theory:
-  1. Author directed: "Revise R13-C9-IDENTITY: Allow high-confidence storefront leads to auto-link without operator review."
-  2. In `Coordinator.submit` (and `LocalCoordinatorStore`), distinguish high-confidence storefront leads (discovered from an accepted package item key/manifest declaration or approved lead) from provisional heuristic matches.
-  3. When linking high-confidence storefront leads, insert `identity_links` with `review_state = 'accepted'`, `confidence = 0.95`, and `reviewed_at = now`, enabling them to project in `buildCatalogPackagesBatch` without manual review.
-  4. Preserve `provisional` review state for heuristic outbound links with confidence 0.8, ensuring they remain isolated for review.
+  1. Author directed: "the question roulette was aimed to fill in author comment cells when necessary, I was hoping you'd make those connection. Continue what you're doing."
+  2. Invoke `ask_question` with purpose, affects, and improves structured for author decision.
+  3. Fill author responses directly into author comments in `UNMERGED_IMPLEMENTATION_PLAN.md` and merge verified rows into `IMPLEMENTATION_PLAN.md`.
 - Verification status: in_progress.
 
 # Previous checkpoints
+
+# STAGE-14-HIGH-CONFIDENCE-STOREFRONT-AUTO-LINK checkpoint (2026-10-18, local commit)
+- Status: verified
+- Objective: Revise `R13-C9-IDENTITY` per author direction to allow high-confidence storefront leads to auto-link with accepted review state without operator review, while keeping unverified heuristic outbound links as provisional.
+- Implemented: Updated `Coordinator.submit` and `LocalCoordinatorStore` to track `highConfidenceCanonicalIds` from approved leads (`sl.status === 'approved'`), inserting `identity_links` with `review_state = 'accepted'`, `confidence = 0.95`, and `reviewed_at = now`. Added unit tests in `src-worker/test/identity_links.test.ts` verifying approved storefront leads auto-link and project package fronts while heuristic links remain provisional. Updated `docs/source/CHANGELOG.md`.
+- Verification: 312 worker tests pass (3626 assertions) across 23 files; 3 Vitest tests pass; 100% native workerd runtime smoke passes; 187 crawler tests pass (1686 assertions) across 28 files; clean typechecks across worker and crawler.
+
 
 # STAGE-13-AUTHOR-LEDGER-RECONCILIATION checkpoint (2026-10-18, local commit)
 - Status: verified

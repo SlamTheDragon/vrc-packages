@@ -757,6 +757,7 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
       // When an observation has an accepted or provisional identity link to a canonical package
       // (or if it is a storefront platform with an outbound match), upsert a row into package_fronts.
       const linkedCanonicalIds = new Set<string>();
+      const highConfidenceCanonicalIds = new Set<string>();
       const existingLinksRes = await this.db.prepare(`
         SELECT canonical_id FROM identity_links
         WHERE source_key = ? AND review_state IN ('accepted', 'provisional')
@@ -818,7 +819,7 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
         // Outbound match 2: source leads where target_url matches this job URL (e.g. storefront discovered from VPM)
         const normalizedJobUrl = job.url;
         const jobLeadMatchesRes = await this.db.prepare(`
-          SELECT DISTINCT il.canonical_id
+          SELECT DISTINCT il.canonical_id, sl.discovered_from_item_key, sl.claimed_package_id, sl.status as lead_status
           FROM source_leads sl
           JOIN identity_links il ON (
             (sl.discovered_from_item_key IS NOT NULL AND (
@@ -830,9 +831,18 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
           )
           WHERE sl.target_url = ?
             AND il.review_state IN ('accepted', 'provisional')
-        `).bind(normalizedJobUrl).all<{ canonical_id: string; }>();
-        for (const { canonical_id } of jobLeadMatchesRes.results || []) {
-          linkedCanonicalIds.add(canonical_id);
+        `).bind(normalizedJobUrl).all<{
+          canonical_id: string;
+          discovered_from_item_key: string | null;
+          claimed_package_id: string | null;
+          lead_status: string;
+        }>();
+        for (const r of jobLeadMatchesRes.results || []) {
+          linkedCanonicalIds.add(r.canonical_id);
+          // High-confidence: approved lead (operator approved or high-confidence auto-pass) -> auto-link as accepted
+          if (r.lead_status === "approved") {
+            highConfidenceCanonicalIds.add(r.canonical_id);
+          }
         }
       }
 
@@ -873,14 +883,28 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
 
       for (const canonicalId of linkedCanonicalIds) {
         if (isStorefront) {
+          const isHighConfidence = highConfidenceCanonicalIds.has(canonicalId);
           const alreadyLinked = (existingLinksRes.results || []).some(r => r.canonical_id === canonicalId) ||
             canonicalId === observation.sourceItemKey;
           if (!alreadyLinked) {
             batchStmts.push(
               this.db.prepare(`INSERT OR IGNORE INTO identity_links
-                (link_id,source_key,canonical_id,evidence_kind,confidence,review_state,created_at)
-                VALUES (?,?,?,'cross_storefront_link',0.8,'provisional',?)`).bind(
-                crypto.randomUUID(), sourceKey, canonicalId, now)
+                (link_id,source_key,canonical_id,evidence_kind,confidence,review_state,created_at,reviewed_at)
+                VALUES (?,?,?,'cross_storefront_link',?,?,?,?)`).bind(
+                crypto.randomUUID(), sourceKey, canonicalId,
+                isHighConfidence ? 0.95 : 0.8,
+                isHighConfidence ? "accepted" : "provisional",
+                now,
+                isHighConfidence ? now : null
+              )
+            );
+          } else if (isHighConfidence) {
+            batchStmts.push(
+              this.db.prepare(`UPDATE identity_links
+                SET review_state='accepted', confidence=0.95, reviewed_at=?
+                WHERE source_key=? AND canonical_id=? AND review_state='provisional'`).bind(
+                now, sourceKey, canonicalId
+              )
             );
           }
 
