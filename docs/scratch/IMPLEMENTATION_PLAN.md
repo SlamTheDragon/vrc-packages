@@ -144,3 +144,7 @@ Consumed from question roulette in the unmerged ledger:
 - **R54-C39C-RATE-LIMIT**: Require distributed Cloudflare KV or Rate Limiting bindings before considering rate limiting verified.
 - **R58-CONFIG-TAMPER**: Require remote GitHub assets verification in all environments including local development.
 - **R60-C60C**: Add automatic rollback that cleans unstaged version and changelog modifications if delivery crashes before commit.
+- **DELIVERY-CLI-CONTRACT**: Previews trigger worker runs directly without guards to publish artifacts, release pages, and related assets automatically, provided the branch itself is identified as the lead branch. If not lead, require a merge from the latest lead branch.
+- **DELIVERY-RECOVERY-GUARDS**: Make failure diagnosis strictly read-only and require proof of absence of remote publication before authorizing any local tag deletion.
+- **R55-C55D**: Keep separate legacy names per distribution channel while retaining vrc-packages for repositories and npm packages.
+- **Q-API-REVIEW**: Use root publication procedure for this preview path, where scripts manage version bumping, changelogs, publication, deployment, and GitHub Actions.
