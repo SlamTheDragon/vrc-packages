@@ -1,12 +1,15 @@
 # Active slice: STAGE-12-MULTI-PLATFORM-FLEET-INGESTION (2026-10-18, local commit, local-only session per user instructions)
 
-- Status: open
-- Objective: Design and implement the multi-platform end-to-end fleet crawl simulation (`FLEET-S4`), exercising concurrent coordinator leases, multi-driver fetching (VPM, GitHub, storefront leads), schema-valid receipt ingestion, outbox replay, and catalog projection.
+- Status: in_progress
+- Objective: Implement multi-platform end-to-end fleet crawl simulation (`FLEET-S4`) in `src-crawler/tests/fleet_crawl_simulation.test.ts`, exercising concurrent coordinator leases, multi-driver fetching (VPM community listing, GitHub release, Booth/Ko-fi storefront product leads), schema-valid receipt ingestion, outbox replay, and backoff handling without cross-project imports.
 - Working theory:
-  1. `FLEET-S1` (Worker/D1 harness failure paths and fleet concurrency), `FLEET-S2` (Multi-platform initial seeds, approved VPM community profiles, Ko-fi storefront classification), and `FLEET-S3` (Docker fleet compose and isolated data volumes) are all verified.
-  2. Implement an end-to-end multi-platform fleet crawl simulation test in `src-crawler/tests/fleet_crawl_simulation.test.ts` utilizing local wire mocks adhering strictly to the `src-crawler` independent boundary rule.
-  3. Validate concurrent leased execution across VPM package manifests, GitHub releases, and storefront product leads, verifying outbox queuing and atomic coordinator result submission.
-- Verification status: open. Awaiting author comment input via question roulette on simulation architecture, user auth registration, and delivery workflow lean optimization.
+  1. Author directed: Implement multi-platform fleet crawl simulation using mock coordinator loopback wire fixtures to test concurrent leases, VPM/GitHub/storefront drivers, outbox delivery, and backoff without cross-boundary imports or external network access. Live Cloudflare Worker preview testing remains authorized.
+  2. Implement `src-crawler/tests/fleet_crawl_simulation.test.ts` covering:
+     a) Concurrent multi-node lease claims and pacing.
+     b) Multi-driver observation ingestion across VPM package manifests, GitHub repository/release metadata, and storefront discovery leads (Booth, Ko-fi).
+     c) Durable outbox persistence, result buffering, and crash-restart replay.
+     d) RFC 9309 delegated robots.txt preflight fetching and coordinator snapshot submission.
+- Verification status: in_progress.
 
 # Previous checkpoints
 
