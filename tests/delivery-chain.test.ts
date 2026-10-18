@@ -1397,5 +1397,33 @@ test("askBinary formats prompt with (Y/n) or (y/N) and respects defaults and exp
   expect(await askBinary(askUpperN, "Proceed?", true)).toBe(false);
 });
 
+test("startDelivery rolls back unstaged version and changelog modifications if commit fails", async () => {
+  await fixture(async (workspace, git) => {
+    const versionsBefore = await readFile(resolve(workspace, "config.preview.versions.json"), "utf8");
+    await mkdir(resolve(workspace, "docs/source"), { recursive: true });
+    const changelogContent = "# Changelog\n\n## What Changed\n\n### Internal - Packages\n\n## VRC Packages Network `vrcp-packages-network`\n\n### Added\n- **Test Item**: Sample\n";
+    await writeFile(resolve(workspace, "docs/source/CHANGELOG.md"), changelogContent);
+    git(workspace, "add", "docs/source/CHANGELOG.md");
+    git(workspace, "commit", "-m", "Add sample source changelog");
+    const commitBefore = git(workspace, "rev-parse", "HEAD");
+
+    // Pass a git wrapper where 'commit' fails
+    const flakyGit = (cwd: string, ...args: string[]) => {
+      if (args[0] === "commit") {
+        throw new Error("Simulated commit crash during preparation");
+      }
+      return git(cwd, ...args);
+    };
+
+    await expect(startDelivery("preview", "network", true, workspace, now, flakyGit)).rejects.toThrow("Simulated commit crash");
+
+    // Assert that worktree was cleanly rolled back to HEAD
+    expect(git(workspace, "status", "--porcelain")).toBe("");
+    expect(git(workspace, "rev-parse", "HEAD")).toBe(commitBefore);
+    expect(await readFile(resolve(workspace, "config.preview.versions.json"), "utf8")).toBe(versionsBefore);
+    expect((await readFile(resolve(workspace, "docs/source/CHANGELOG.md"), "utf8")).replace(/\r\n/g, "\n")).toBe(changelogContent.replace(/\r\n/g, "\n"));
+  });
+}, 60_000);
+
 
 

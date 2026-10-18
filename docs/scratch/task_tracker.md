@@ -1,3 +1,9 @@
+# STAGE-20-DELIVERY-SCRIPT-HARDENING checkpoint (2026-10-18, local commit)
+- Status: verified
+- Objective: Implement targeted delivery script hardening: add atomic rollback on delivery preparation crash (R60-C60C) and read-only failure diagnosis with publication preconditions on tag deletion (DELIVERY-RECOVERY-GUARDS).
+- Implemented: Added `rollbackPreparation` in `scripts/delivery-chain.mjs` resetting staged files, restoring tracked files, cleaning untracked artifacts (`git clean -fd`), and cleaning temporary release branches upon crash before git commit; guarded `deliveryTroubleshooting` and CLI `diagnose` output against suggesting tag reversion after publication; added partial publication detection in `scripts/delivery-recovery.mjs` `diagnoseFailure` returning strictly read-only reconciliation actions; enforced verified absence of published release assets in `revertDeliveryTag` before tag deletion and blocked local deletion when remote tag exists without explicit `deleteRemote: true`.
+- Verification: 27/27 tests pass in `tests/delivery-recovery.test.ts` (212 assertions); 56/56 tests pass in `tests/delivery-chain.test.ts` (491 assertions); 50/50 delivery workflow tests pass in `tests/delivery.test.ts` (1081 assertions).
+
 # STAGE-19-PREVIEW-D1-INIT-AUTOMATION checkpoint (2026-10-18, local commit)
 - Status: verified
 - Objective: Implement automated preview D1 schema verification and non-production seed population script (`R58-PREVIEW-INIT` / `Q-WORKER-PREVIEW`).

@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, rmSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { relative, resolve } from "node:path";
@@ -380,20 +380,47 @@ export async function startDelivery(channel, product, execute = false, workspace
     throw new Error("Repository changed after planning");
   }
   extractProductChangelog(channel, product, plan.version, workspace, true);
-  if (channel === "release" && !force) git(workspace, "checkout", "-b", plan.releaseBranch);
-  const result = await bumpVersion(channel, product, increment, workspace, now);
-  if (result.version !== plan.version) throw new Error("Config changed after planning. Inspect it before retrying.");
-  const metadata = await versionFiles("sync", channel, product, workspace);
-  const changelogResult = extractProductChangelog(channel, product, plan.version, workspace);
-  const changelogPaths = (changelogResult?.changed ?? []).map(file => relative(workspace, file).replace(/\\/g, "/"));
-  const paths = [plan.configPath, ...metadata.changed, ...changelogPaths];
-  git(workspace, "add", "--", ...paths);
-  const commitMessages = [`${channel === "release" ? "Prepare" : "Deliver"} ${product} ${channel} ${plan.version}`];
-  if (changelogResult?.section && changelogResult.section !== "- none currently") commitMessages.push(changelogResult.section);
-  if (channel === "release") {
-    commitMessages.push(`VRCP-Release-Product: ${product}\nVRCP-Release-Version: ${plan.version}${force ? "\nVRCP-Release-Direct: true" : ""}\nVRCP-Release-Base: ${plan.head}`);
+  const createdReleaseBranch = channel === "release" && !force;
+  if (createdReleaseBranch) git(workspace, "checkout", "-b", plan.releaseBranch);
+  let createdArchiveFile = null;
+  const rollbackPreparation = () => {
+    try { git(workspace, "reset", "HEAD"); } catch {}
+    try { git(workspace, "checkout", "HEAD", "--", "."); } catch {}
+    try { git(workspace, "clean", "-fd"); } catch {}
+    if (createdArchiveFile) {
+      try {
+        if (existsSync(createdArchiveFile)) rmSync(createdArchiveFile, { force: true });
+      } catch {}
+    }
+    if (createdReleaseBranch) {
+      try {
+        git(workspace, "checkout", plan.branch);
+        git(workspace, "branch", "-D", plan.releaseBranch);
+      } catch {}
+    }
+  };
+
+  let changelogResult;
+  let paths;
+  try {
+    const result = await bumpVersion(channel, product, increment, workspace, now);
+    if (result.version !== plan.version) throw new Error("Config changed after planning. Inspect it before retrying.");
+    const metadata = await versionFiles("sync", channel, product, workspace);
+    changelogResult = extractProductChangelog(channel, product, plan.version, workspace);
+    createdArchiveFile = changelogResult?.file ?? null;
+    const changelogPaths = (changelogResult?.changed ?? []).map(file => relative(workspace, file).replace(/\\/g, "/"));
+    paths = [plan.configPath, ...metadata.changed, ...changelogPaths];
+    git(workspace, "add", "--", ...paths);
+    const commitMessages = [`${channel === "release" ? "Prepare" : "Deliver"} ${product} ${channel} ${plan.version}`];
+    if (changelogResult?.section && changelogResult.section !== "- none currently") commitMessages.push(changelogResult.section);
+    if (channel === "release") {
+      commitMessages.push(`VRCP-Release-Product: ${product}\nVRCP-Release-Version: ${plan.version}${force ? "\nVRCP-Release-Direct: true" : ""}\nVRCP-Release-Base: ${plan.head}`);
+    }
+    git(workspace, "commit", "--only", ...commitMessages.flatMap(m => ["-m", m]), "--", ...paths);
+  } catch (error) {
+    rollbackPreparation();
+    throw error;
   }
-  git(workspace, "commit", "--only", ...commitMessages.flatMap(m => ["-m", m]), "--", ...paths);
   if (channel === "release" && !force) return retryReleasePreparation(plan.releaseBranch, workspace, git);
   if (channel === "release" && force) {
     const commit = git(workspace, "rev-parse", "HEAD");
@@ -618,7 +645,10 @@ export function deliveryTroubleshooting(result) {
       : failedJobs.some(name => name.includes("publish")) ? "publication" : "build-or-runtime-check";
     next.unshift("Inspect the exact failed jobs. Note: Rerunning a workflow executes the frozen tagged commit, not new code on your branch.");
     if (runId) next.unshift(`[Transient Retry] bun run recovery rerun ${runId}`);
-    if (channel === "preview") {
+    const isPostPublication = stage === "release-attachment" || stage === "publication" || Boolean(result.release) || Boolean(result.artifactsVerified);
+    if (isPostPublication) {
+      next.unshift("[Reconciliation] bun run publish:reconcile (Partial publication detected; do NOT revert tag)");
+    } else if (channel === "preview") {
       next.unshift(`[If Patched] bun run recovery revert-tag ${tag} --remote && bun run publish:preview ${product}`);
     } else {
       next.unshift(`[If Patched] bun run recovery patch-branch create ${product} ${result.version || "version"}`);
@@ -1496,7 +1526,17 @@ export const main = defineCommand({
               `Reruns the FROZEN tagged commit (use ONLY if failure was network/timeout/CDN delay)`
             ]);
           }
-          if (isPreview) {
+          const isPostPublication = result.stage === "release-attachment" || result.stage === "publication" || Boolean(result.artifactsVerified);
+          if (isPostPublication) {
+            remediationEntries.push([
+              "2. Reconcile Publication",
+              "bun run publish:reconcile"
+            ]);
+            remediationEntries.push([
+              "   ↳ Scope",
+              "Partial publication detected; do NOT revert tag. Reconcile existing version assets."
+            ]);
+          } else if (isPreview) {
             remediationEntries.push([
               "2. Patched Preview",
               `bun run recovery revert-tag ${tag} --remote && bun run publish:preview ${prod}`

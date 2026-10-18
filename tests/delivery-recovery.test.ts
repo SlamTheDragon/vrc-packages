@@ -557,5 +557,67 @@ test("promptInteractiveRecovery option 3 switches to temporary patch branch and 
   expect(messages.some(m => m.includes("release/patch/crawler/v0.0.12"))).toBe(true);
 });
 
+test("revertDeliveryTag rejects deletion when remote publication with assets exists", async () => {
+  const gitLog: string[] = [];
+  const mockGit = (_cwd: string, ...args: string[]) => { gitLog.push(args.join(" ")); return ""; };
+  const fetchMock = async (url: string) => {
+    if (url.includes("/releases/tags/")) {
+      return new Response(JSON.stringify({ draft: false, assets: [{ name: "release-asset.zip" }] }), { status: 200 });
+    }
+    return new Response(null, { status: 204 });
+  };
+  await expect(revertDeliveryTag("vrcp-api/v0.0.9", {
+    workspace: "/test",
+    readGit: mockGit,
+    deleteRemote: true,
+    repository: "test/repo",
+    token: "ghp_token",
+    fetchFn: fetchMock as any
+  })).rejects.toThrow("remote publication exists with published assets");
+  expect(gitLog).toEqual([]);
+});
+
+test("revertDeliveryTag rejects local deletion when remote tag exists without deleteRemote", async () => {
+  const gitLog: string[] = [];
+  const mockGit = (_cwd: string, ...args: string[]) => {
+    gitLog.push(args.join(" "));
+    if (args[0] === "ls-remote") return "abcd\trefs/tags/vrcp-api/v0.0.9";
+    return "";
+  };
+  await expect(revertDeliveryTag("vrcp-api/v0.0.9", {
+    workspace: "/test",
+    readGit: mockGit,
+    deleteRemote: false,
+    repository: "test/repo",
+    token: ""
+  })).rejects.toThrow("remote tag exists on remote repository");
+  expect(gitLog.some(entry => entry.startsWith("tag -d"))).toBe(false);
+});
+
+test("diagnoseFailure detects partial publication and recommends reconciliation instead of tag deletion", () => {
+  const diagnosis = diagnoseFailure({
+    tag: "vrcp-api/v0.0.9",
+    hasPublishedOutputs: true,
+    error: "release attachment failed after upload"
+  });
+  expect(diagnosis.category).toBe("partial-publication");
+  expect(diagnosis.continuity).toBe("requires-reconciliation");
+  expect(diagnosis.suggestedActions).toContain("reconcile");
+  expect(diagnosis.suggestedActions).not.toContain("revert-tag");
+});
+
+test("deliveryTroubleshooting recommends reconciliation and avoids revert-tag when failure is post-publication", () => {
+  const result = {
+    tag: "vrcp-crawler/v2026.10.15-pre",
+    status: "ci-failed",
+    jobs: [{ name: "release-attachment", conclusion: "failure" }],
+    artifactsVerified: true
+  };
+  const troubleshooting = deliveryTroubleshooting(result as any);
+  expect(troubleshooting.stage).toBe("release-attachment");
+  expect(troubleshooting.next.some(n => n.includes("publish:reconcile"))).toBe(true);
+  expect(troubleshooting.next.some(n => n.includes("revert-tag"))).toBe(false);
+});
+
 
 
