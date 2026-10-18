@@ -1,14 +1,21 @@
-# Active slice: STAGE-13-AUTHOR-LEDGER-RECONCILIATION (2026-10-18, local commit, local-only session per user instructions)
+# Active slice: STAGE-14-HIGH-CONFIDENCE-STOREFRONT-AUTO-LINK (2026-10-18, local commit, local-only session per user instructions)
 
 - Status: in_progress
-- Objective: Reconcile unmerged implementation plan rows by conducting question roulette to gather author comments for verified R13-C9 slices (`R13-C9-LEASE-DEADLINE`, `R13-C9-IDENTITY`, `R13-C9-TEST-TYPES`, `R13-C9-DELTA`), and prepare ledger compaction.
+- Objective: Revise `R13-C9-IDENTITY` per author direction to allow high-confidence storefront leads (manifest-declared package leads or verified publisher matches) to auto-link with accepted review state without operator review, while keeping unverified heuristic outbound links as provisional.
 - Working theory:
-  1. Author directed: Question roulette / grill-me queries populate empty author comment cells in `UNMERGED_IMPLEMENTATION_PLAN.md`.
-  2. Query author on four verified R13-C9 architectural slices detailing purpose, what it affects, and what it improves.
-  3. Record author comments in `UNMERGED_IMPLEMENTATION_PLAN.md`, prune accepted items into canonical ledger, and preserve minimal scratch footprint.
+  1. Author directed: "Revise R13-C9-IDENTITY: Allow high-confidence storefront leads to auto-link without operator review."
+  2. In `Coordinator.submit` (and `LocalCoordinatorStore`), distinguish high-confidence storefront leads (discovered from an accepted package item key/manifest declaration or approved lead) from provisional heuristic matches.
+  3. When linking high-confidence storefront leads, insert `identity_links` with `review_state = 'accepted'`, `confidence = 0.95`, and `reviewed_at = now`, enabling them to project in `buildCatalogPackagesBatch` without manual review.
+  4. Preserve `provisional` review state for heuristic outbound links with confidence 0.8, ensuring they remain isolated for review.
 - Verification status: in_progress.
 
 # Previous checkpoints
+
+# STAGE-13-AUTHOR-LEDGER-RECONCILIATION checkpoint (2026-10-18, local commit)
+- Status: verified
+- Objective: Reconcile unmerged implementation plan rows by conducting question roulette to gather author comments for verified R13-C9 slices (`R13-C9-LEASE-DEADLINE`, `R13-C9-IDENTITY`, `R13-C9-TEST-TYPES`, `R13-C9-DELTA`), and prepare ledger compaction.
+- Implemented: Question roulette collected author decisions. Pruned accepted rows `R13-C9-LEASE-DEADLINE`, `R13-C9-TEST-TYPES`, and `R13-C9-DELTA` from `UNMERGED_IMPLEMENTATION_PLAN.md` and merged into `IMPLEMENTATION_PLAN.md`. Recorded author revision disposition for `R13-C9-IDENTITY` (`Revise: Allow high-confidence storefront leads to auto-link without operator review`). Added 2026-10-18 dispositions section.
+- Verification: 310 worker tests pass (3611 assertions); 3 Vitest tests pass; 100% native runtime smoke passes; 187 crawler tests pass (1686 assertions); clean typechecks across worker and crawler.
 
 # STAGE-12-MULTI-PLATFORM-FLEET-INGESTION checkpoint (2026-10-18, local commit)
 - Status: verified
