@@ -1,15 +1,15 @@
-# Active slice: STAGE-9-DELEGATED-ROBOTS-PREFLIGHT (2026-10-18, local commit, local-only session per user instructions)
+# Active slice: STAGE-10-REPORT-INTAKE-PARTITIONING (2026-10-18, local commit, local-only session per user instructions)
 
 - Status: verified
-- Objective: Delegate robots.txt preflight fetching to crawler nodes via coordinator leases (`R24-C21`).
+- Objective: Partition application report intake between rating calibration disputes and safety quarantine tickets (`R56-C56C`).
 - Working theory:
-  1. Safe robots transport using DNS lookup and pinned host validation is non-portable to Cloudflare Workers due to runtime network constraints.
-  2. The coordinator exposes `/v1/node/robots/claim` to lease due robots.txt refreshes under origin pacing and `/v1/node/robots/result` to store returned RFC 9309 snapshots.
-  3. The crawler node daemon attempts a delegated robots preflight claim upon receiving an empty crawl job claim before entering idle backoff.
-  4. The crawler fetches robots.txt using SSRF-safe pinned metadata transport and submits status code and body back to the coordinator.
-  5. Coordinator stores snapshots in D1 `origin_robots`, unblocking dependent crawl jobs.
+  1. Content rating disputes (`explicit_false_positive`, `explicit_false_negative`, `misclassified`) represent calibration challenges and belong in `/v1/moderator` inspection.
+  2. Suspected illegal content (`inappropriate`) represents critical safety incidents and must be quarantined in an isolated operator-only queue, preventing exposure to volunteer moderators.
+  3. Metadata issues (`broken_link`, `wrong_metadata`) remain downstream feedback signals without exposing restricted materials.
+  4. In `catalog_tickets`, `ticket_type` includes `'rating_dispute'`, `'safety_quarantine'`, and `'metadata_issue'`.
+  5. In `listModeratorRatingsPage`, `reportCount` counts `removal_report` and `rating_dispute`, while excluding `safety_quarantine`.
 - Verification status: verified.
-  - Worker test suite: 305 tests passed (3562 assertions) in `src-worker/test/`.
+  - Worker test suite: 307 tests passed (3592 assertions) in `src-worker/test/`.
   - Worker vitest suite: 3 tests passed in `src-worker/test/worker_runtime.vitest.ts`.
   - Coordinator runtime smoke: 100% passed in `src-worker/test/coordinator_runtime_smoke.mjs`.
   - Crawler test suite: 182 tests passed (1636 assertions) in `src-crawler/tests/`.
@@ -17,6 +17,12 @@
   - Crawler typecheck: `tsc --noEmit` clean.
 
 # Previous checkpoints
+
+# STAGE-9-DELEGATED-ROBOTS-PREFLIGHT checkpoint (2026-10-18, local commit 7e69552)
+- Status: verified
+- Objective: Delegate robots.txt preflight fetching to crawler nodes via coordinator leases (`R24-C21`).
+- Implemented: Coordinator exposes `/v1/node/robots/claim` and `/v1/node/robots/result`; crawler daemon executes robots preflight checks on empty job claim using SSRF-safe pinned metadata transport; D1 stores origin snapshots.
+- Verification: 305 worker tests passed, 3 vitest tests passed, 100% native runtime smoke passed, 182 crawler tests passed, clean typechecks.
 
 # STAGE-8-PUBLICATION-CLASSES-ENFORCEMENT checkpoint (2026-10-18, local commit 9e27525)
 - Status: verified

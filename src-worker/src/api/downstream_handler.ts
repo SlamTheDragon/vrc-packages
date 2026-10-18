@@ -35,6 +35,7 @@ import {
 
 export interface DownstreamStore {
   recordRemovalReport(appId: string, input: ReportSubmissionRequest): Promise<ReportSubmissionResponse> | ReportSubmissionResponse;
+  recordIssueReport(appId: string, input: ReportSubmissionRequest): Promise<ReportSubmissionResponse> | ReportSubmissionResponse;
   recordCreatorClaimIntake(appId: string, input: CreatorClaimIntakeRequest): Promise<CreatorClaimIntakeResponse> | CreatorClaimIntakeResponse;
   registerApp(input: RegisterAppRequest, ownerUserId?: string): Promise<RegisterAppResponse> | RegisterAppResponse;
   authenticateUser(token: string): Promise<{ userId: string; userName: string; ageVerified?: boolean } | null> | { userId: string; userName: string; ageVerified?: boolean } | null;
@@ -168,6 +169,23 @@ export async function handleDownstreamRequest(
       } catch (error) {
         workerLogger.error("Failed to record removal report", error, { path, appId: app.appId });
         return failure(500, "internal_error", "Removal report could not be recorded");
+      }
+    }
+
+    const isInspectionOrSafety = reportParsed.success &&
+      reportParsed.data.reportType === "issue_report" &&
+      (reportParsed.data.reportKind === "explicit_false_positive" ||
+       reportParsed.data.reportKind === "explicit_false_negative" ||
+       reportParsed.data.reportKind === "misclassified" ||
+       reportParsed.data.reportKind === "inappropriate");
+
+    if (isInspectionOrSafety && reportParsed.success) {
+      try {
+        const response = await store.recordIssueReport(app.appId, reportParsed.data);
+        return applyRateLimitHeaders(json(ReportSubmissionResponseSchema.parse(response), 200), reportRate);
+      } catch (error) {
+        workerLogger.error("Failed to record issue report", error, { path, appId: app.appId });
+        return failure(500, "internal_error", "Issue report could not be recorded");
       }
     }
 

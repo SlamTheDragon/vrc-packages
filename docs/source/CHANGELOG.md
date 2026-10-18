@@ -192,9 +192,10 @@ See full history at [docs/changelogs/vrcp-web/preview](https://github.com/SlamTh
 ## VRC Packages Worker - `vrcp-worker-preview`
 
 <!-- vrcp-worker-preview-DESCRIPTION_SUMMARY -->
-Delegate robots.txt preflight fetching to crawler nodes under leased origin pacing. Enforce source access profile publication rights in public catalog and delta feeds. Enforce per-isolate inbound 429 rate limiting. Bound claim candidate scans by an explicit page budget. Verify coordinator failure paths and multi-node fleet allocation in native workerd runtime. Use unique catalog epochs, preserve evidence and URL distinctions, withhold provisional fronts, and emit delist tombstones.
+Partition application reports into rating calibration disputes for moderator review and safety quarantine tickets for operator intake. Delegate robots.txt preflight fetching to crawler nodes under leased origin pacing. Enforce source access profile publication rights in public catalog and delta feeds. Enforce per-isolate inbound 429 rate limiting. Bound claim candidate scans by an explicit page budget. Verify coordinator failure paths and multi-node fleet allocation in native workerd runtime. Use unique catalog epochs, preserve evidence and URL distinctions, withhold provisional fronts, and emit delist tombstones.
 <!-- vrcp-worker-preview-DESCRIPTION_SUMMARY -->
 ### Added
+- **Report Intake Partitioning**: Partition application report intake between rating calibration disputes and safety quarantine tickets (R56-C56C). Rating disputes route to volunteer moderator review while suspected unlawful content is quarantined for operator-only intake.
 - **Delegated Robots Preflight Protocol**: Added /v1/node/robots/claim and /v1/node/robots/result endpoints (R24-C21). Worker leases due origin preflights to crawler nodes and ingests RFC 9309 snapshots.
 - **Publication Rights Enforcement**: Enforce source access profile publication classes in catalog projection and delta streaming (R13-C3 / Q-PUBLICATION). Withhold packages whose source profile sets publishClasses: [] and emit delist tombstones.
 - **Inbound Rate Limiting**: Enforce per-isolate inbound 429 rate limiting with RFC-compliant headers across public, node, and downstream routes.

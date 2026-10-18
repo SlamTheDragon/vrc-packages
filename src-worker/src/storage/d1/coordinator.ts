@@ -2339,6 +2339,28 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
     return { schemaVersion: 1, status: "accepted", reportId, recordedAt };
   }
 
+  async recordIssueReport(appId: string, input: unknown): Promise<{ schemaVersion: 1; status: "accepted"; reportId: string; recordedAt: string }> {
+    const parsed = ReportSubmissionRequestSchema.parse(input);
+    if (parsed.reportType !== "issue_report") throw new CoordinatorConflict("Issue report required", 400);
+    const reportId = crypto.randomUUID();
+    const recordedAt = new Date(this.now()).toISOString();
+    const targetUrl = parsed.targetUrl ? new URL(parsed.targetUrl).href : null;
+    const canonicalId = parsed.canonicalId ?? null;
+
+    let ticketType = "metadata_issue";
+    if (parsed.reportKind === "explicit_false_positive" || parsed.reportKind === "explicit_false_negative" || parsed.reportKind === "misclassified") {
+      ticketType = "rating_dispute";
+    } else if (parsed.reportKind === "inappropriate") {
+      ticketType = "safety_quarantine";
+    }
+
+    const result = await this.db.prepare(`INSERT INTO catalog_tickets(ticket_id,ticket_type,app_id,target_url,canonical_id,reason,payload_json,review_status,recorded_at)
+      SELECT ?,?,app_id,?,?,?,?, 'pending',? FROM registered_apps WHERE app_id=? AND revoked_at IS NULL`)
+      .bind(reportId, ticketType, targetUrl, canonicalId, parsed.reason ?? parsed.reportKind ?? null, JSON.stringify(parsed), recordedAt, appId).run();
+    if ((result.meta as { changes?: number } | undefined)?.changes !== 1) throw new CoordinatorConflict("Invalid application credential", 403);
+    return { schemaVersion: 1, status: "accepted", reportId, recordedAt };
+  }
+
   /** Lists owned app metadata without credentials or hashes. */
   async listUserApps(userId: string, limit: number, cursor: string | null, appId?: string): Promise<UserAppListResponse> {
     const query = UserAppListQuerySchema.parse({ limit, cursor: cursor ?? undefined });
@@ -3254,7 +3276,7 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
 
     const res = await this.db.prepare(`
       SELECT c.canonical_id, c.display_name, c.content_rating, c.umbrella, c.category, c.updated_at,
-             (SELECT COUNT(*) FROM catalog_tickets r WHERE r.ticket_type = 'removal_report' AND (r.canonical_id = c.canonical_id OR json_extract(r.payload_json, '$.canonicalId') = c.canonical_id)) AS report_count
+             (SELECT COUNT(*) FROM catalog_tickets r WHERE r.ticket_type IN ('removal_report', 'rating_dispute') AND (r.canonical_id = c.canonical_id OR json_extract(r.payload_json, '$.canonicalId') = c.canonical_id)) AS report_count
       FROM canonical_packages c
       ${where}
       ORDER BY c.updated_at DESC, c.canonical_id DESC

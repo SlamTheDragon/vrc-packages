@@ -632,4 +632,81 @@ describe("Downstream Client Protocol & Demand Feedback Signals", () => {
     );
     expect(removalRes.status).toBe(202);
   });
+
+  test("POST /v1/app/report partitions issue reports into rating_dispute, safety_quarantine, and metadata_issue (R56-C56C)", async () => {
+    const app = store.registerApp({ schemaVersion: 1, appName: "Report Partitioning Test" });
+
+    // 1. Rating calibration dispute (explicit_false_positive)
+    const ratingRes = await handleDownstreamRequest(
+      request("/v1/app/report", "POST", {
+        schemaVersion: 1,
+        reportType: "issue_report",
+        reportKind: "explicit_false_positive",
+        canonicalId: "com.example.rating-pkg",
+        reason: "Item is safe for general audiences"
+      }, app.appToken),
+      store
+    );
+    expect(ratingRes.status).toBe(200);
+    const ratingData = await ratingRes.json() as any;
+    expect(ratingData.status).toBe("accepted");
+    expect(ratingData.reportId).toBeDefined();
+
+    const ratingRow = store.db.prepare("SELECT ticket_type, canonical_id, reason, review_status FROM catalog_tickets WHERE ticket_id = ?")
+      .get(ratingData.reportId) as any;
+    expect(ratingRow).toBeDefined();
+    expect(ratingRow.ticket_type).toBe("rating_dispute");
+    expect(ratingRow.canonical_id).toBe("com.example.rating-pkg");
+    expect(ratingRow.reason).toBe("Item is safe for general audiences");
+    expect(ratingRow.review_status).toBe("pending");
+
+    // 2. Suspected illegal / safety quarantine (inappropriate)
+    const safetyRes = await handleDownstreamRequest(
+      request("/v1/app/report", "POST", {
+        schemaVersion: 1,
+        reportType: "issue_report",
+        reportKind: "inappropriate",
+        canonicalId: "com.example.safety-pkg",
+        reason: "Suspected unlawful material"
+      }, app.appToken),
+      store
+    );
+    expect(safetyRes.status).toBe(200);
+    const safetyData = await safetyRes.json() as any;
+    expect(safetyData.status).toBe("accepted");
+    expect(safetyData.reportId).toBeDefined();
+
+    const safetyRow = store.db.prepare("SELECT ticket_type, canonical_id, reason, review_status FROM catalog_tickets WHERE ticket_id = ?")
+      .get(safetyData.reportId) as any;
+    expect(safetyRow).toBeDefined();
+    expect(safetyRow.ticket_type).toBe("safety_quarantine");
+    expect(safetyRow.canonical_id).toBe("com.example.safety-pkg");
+    expect(safetyRow.reason).toBe("Suspected unlawful material");
+    expect(safetyRow.review_status).toBe("pending");
+
+    // 3. Metadata issue (broken_link)
+    const metaRes = await handleDownstreamRequest(
+      request("/v1/app/report", "POST", {
+        schemaVersion: 1,
+        reportType: "issue_report",
+        reportKind: "broken_link",
+        targetUrl: "https://example.org/broken-url",
+        reason: "Target returns 404"
+      }, app.appToken),
+      store
+    );
+    expect(metaRes.status).toBe(200);
+    const metaData = await metaRes.json() as any;
+    expect(metaData.status).toBe("accepted");
+    expect(metaData.reportId).toBeDefined();
+
+    const metaRow = store.db.prepare("SELECT target_url, metadata_json FROM downstream_demand_signals WHERE signal_id = ?")
+      .get(metaData.reportId) as any;
+    expect(metaRow).toBeDefined();
+    expect(metaRow.target_url).toBe("https://example.org/broken-url");
+    const metaPayload = JSON.parse(metaRow.metadata_json);
+    expect(metaPayload.reportType).toBe("issue_report");
+    expect(metaPayload.reportKind).toBe("broken_link");
+    expect(metaPayload.reason).toBe("Target returns 404");
+  });
 });

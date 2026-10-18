@@ -365,4 +365,54 @@ describe("Moderator Protocol (/v1/moderator/*) — R56-C56C1", () => {
       store.close();
     }
   });
+
+  test("moderator ratings list counts rating disputes but excludes safety quarantine tickets (R56-C56C)", async () => {
+    const store = new LocalCoordinatorStore(":memory:");
+    try {
+      const mod = store.issueUserToken("vol-mod", "mod@example.com", true, true);
+      seedTestPackage(store, "com.example.dispute-pack", "Dispute Pack", "mature");
+      seedTestPackage(store, "com.example.clean-pack", "Clean Pack", "general");
+
+      const app = store.registerApp({ schemaVersion: 1, appName: "Dispute Tester" });
+
+      // Record a rating dispute ticket
+      store.recordIssueReport(app.appId, {
+        schemaVersion: 1,
+        reportType: "issue_report",
+        reportKind: "explicit_false_positive",
+        canonicalId: "com.example.dispute-pack",
+        reason: "False positive mature classification"
+      });
+
+      // Record a safety quarantine ticket on the same package
+      store.recordIssueReport(app.appId, {
+        schemaVersion: 1,
+        reportType: "issue_report",
+        reportKind: "inappropriate",
+        canonicalId: "com.example.dispute-pack",
+        reason: "Suspected unlawful material quarantined"
+      });
+
+      // Query /v1/moderator/ratings
+      const res = await handleModeratorRequest(jsonRequest(
+        "/v1/moderator/ratings",
+        "GET",
+        undefined,
+        mod.token
+      ), store);
+      expect(res.status).toBe(200);
+      const data = ModeratorRatingListResponseSchema.parse(await res.json());
+
+      const disputePack = data.ratings.find(r => r.canonicalId === "com.example.dispute-pack");
+      expect(disputePack).toBeDefined();
+      // reportCount should be 1 (only the rating dispute, NOT the safety quarantine)
+      expect(disputePack?.reportCount).toBe(1);
+
+      const cleanPack = data.ratings.find(r => r.canonicalId === "com.example.clean-pack");
+      expect(cleanPack).toBeDefined();
+      expect(cleanPack?.reportCount).toBe(0);
+    } finally {
+      store.close();
+    }
+  });
 });

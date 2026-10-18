@@ -511,7 +511,7 @@ Unified storage table consolidating creator opt-outs, delegated creator claims, 
 ```sql
 CREATE TABLE catalog_tickets (
   ticket_id TEXT PRIMARY KEY,
-  ticket_type TEXT NOT NULL CHECK(ticket_type IN ('opt_out', 'delegated_claim', 'removal_report')),
+  ticket_type TEXT NOT NULL CHECK(ticket_type IN ('opt_out', 'delegated_claim', 'removal_report', 'rating_dispute', 'safety_quarantine', 'metadata_issue')),
   app_id TEXT REFERENCES registered_apps(app_id),
   target_url TEXT,
   canonical_id TEXT,
@@ -550,8 +550,8 @@ CREATE VIEW delegated_creator_claims AS
   FROM catalog_tickets WHERE ticket_type = 'delegated_claim';
 
 CREATE VIEW catalog_reports AS
-  SELECT ticket_id AS report_id, app_id, 'removal_request' AS report_type, payload_json, review_status, recorded_at
-  FROM catalog_tickets WHERE ticket_type = 'removal_report';
+  SELECT ticket_id AS report_id, app_id, ticket_type AS report_type, payload_json, review_status, recorded_at
+  FROM catalog_tickets WHERE ticket_type IN ('removal_report', 'rating_dispute', 'safety_quarantine', 'metadata_issue');
 ```
 
 #### `coordinator_meta`

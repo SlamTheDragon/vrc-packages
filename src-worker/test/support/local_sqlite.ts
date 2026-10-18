@@ -350,7 +350,7 @@ export class LocalCoordinatorStore implements CoordinatorStore, PublicCatalogSto
       CREATE INDEX IF NOT EXISTS idx_downstream_demand_platform ON downstream_demand_signals(requested_platform, resolved_at);
       CREATE TABLE IF NOT EXISTS catalog_tickets (
         ticket_id TEXT PRIMARY KEY,
-        ticket_type TEXT NOT NULL CHECK(ticket_type IN ('opt_out','delegated_claim','removal_report')),
+        ticket_type TEXT NOT NULL CHECK(ticket_type IN ('opt_out','delegated_claim','removal_report','rating_dispute','safety_quarantine','metadata_issue')),
         app_id TEXT REFERENCES registered_apps(app_id),
         target_url TEXT,
         canonical_id TEXT,
@@ -376,7 +376,7 @@ export class LocalCoordinatorStore implements CoordinatorStore, PublicCatalogSto
       CREATE INDEX IF NOT EXISTS idx_catalog_tickets_target_url ON catalog_tickets(target_url);
       CREATE VIEW IF NOT EXISTS creator_opt_outs AS SELECT ticket_id AS takedown_id, target_url, canonical_id, requester_type, requester_id, reason, proof_kind, proof_value, contact_email, recorded_at, review_status, review_notes FROM catalog_tickets WHERE ticket_type = 'opt_out';
       CREATE VIEW IF NOT EXISTS delegated_creator_claims AS SELECT ticket_id AS claim_id, app_id, 'creator_ownership_claim' AS action, target_url AS front_url, creator_id, challenge_token, expires_at, nonce, signature, payload_json, reason, contact_email, review_status, review_notes, recorded_at FROM catalog_tickets WHERE ticket_type = 'delegated_claim';
-      CREATE VIEW IF NOT EXISTS catalog_reports AS SELECT ticket_id AS report_id, app_id, 'removal_request' AS report_type, payload_json, review_status, recorded_at FROM catalog_tickets WHERE ticket_type = 'removal_report';
+      CREATE VIEW IF NOT EXISTS catalog_reports AS SELECT ticket_id AS report_id, app_id, ticket_type AS report_type, payload_json, review_status, recorded_at FROM catalog_tickets WHERE ticket_type IN ('removal_report','rating_dispute','safety_quarantine','metadata_issue');
       CREATE INDEX IF NOT EXISTS idx_canonical_packages_updated ON canonical_packages(updated_at ASC, canonical_id ASC);
       CREATE INDEX IF NOT EXISTS idx_canonical_packages_created ON canonical_packages(created_at DESC, canonical_id DESC);
       CREATE TABLE IF NOT EXISTS catalog_tombstones (
@@ -437,7 +437,7 @@ export class LocalCoordinatorStore implements CoordinatorStore, PublicCatalogSto
         this.db.run(`INSERT OR IGNORE INTO catalog_tickets (ticket_id, ticket_type, app_id, payload_json, review_status, recorded_at)
           SELECT report_id, 'removal_report', app_id, payload_json, review_status, recorded_at FROM catalog_reports`);
         this.db.run("DROP TABLE catalog_reports");
-        this.db.run("CREATE VIEW IF NOT EXISTS catalog_reports AS SELECT ticket_id AS report_id, app_id, 'removal_request' AS report_type, payload_json, review_status, recorded_at FROM catalog_tickets WHERE ticket_type = 'removal_report'");
+        this.db.run("CREATE VIEW IF NOT EXISTS catalog_reports AS SELECT ticket_id AS report_id, app_id, ticket_type AS report_type, payload_json, review_status, recorded_at FROM catalog_tickets WHERE ticket_type IN ('removal_report','rating_dispute','safety_quarantine','metadata_issue')");
       }
       this.db.run("UPDATE catalog_tickets SET review_status = 'accepted' WHERE review_status IS NULL");
       const jobColumns = this.db.prepare("PRAGMA table_info(crawl_jobs)").all() as { name: string }[];
@@ -2577,6 +2577,28 @@ export class LocalCoordinatorStore implements CoordinatorStore, PublicCatalogSto
     return { schemaVersion: 1, status: "accepted", reportId, recordedAt };
   }
 
+  recordIssueReport(appId: string, input: unknown): ReportSubmissionResponse {
+    const parsed = ReportSubmissionRequestSchema.parse(input);
+    if (parsed.reportType !== "issue_report") throw new CoordinatorConflict("Issue report required", 400);
+    const reportId = crypto.randomUUID();
+    const recordedAt = new Date(this.now()).toISOString();
+    const targetUrl = parsed.targetUrl ? new URL(parsed.targetUrl).href : null;
+    const canonicalId = parsed.canonicalId ?? null;
+
+    let ticketType = "metadata_issue";
+    if (parsed.reportKind === "explicit_false_positive" || parsed.reportKind === "explicit_false_negative" || parsed.reportKind === "misclassified") {
+      ticketType = "rating_dispute";
+    } else if (parsed.reportKind === "inappropriate") {
+      ticketType = "safety_quarantine";
+    }
+
+    const result = this.db.prepare(`INSERT INTO catalog_tickets(ticket_id,ticket_type,app_id,target_url,canonical_id,reason,payload_json,review_status,recorded_at)
+      SELECT ?,?,app_id,?,?,?,?, 'pending',? FROM registered_apps WHERE app_id=? AND revoked_at IS NULL`)
+      .run(reportId, ticketType, targetUrl, canonicalId, parsed.reason ?? parsed.reportKind ?? null, JSON.stringify(parsed), recordedAt, appId);
+    if (result.changes !== 1) throw new CoordinatorConflict("Invalid application credential", 403);
+    return { schemaVersion: 1, status: "accepted", reportId, recordedAt };
+  }
+
   /** Lists owned app metadata without credentials or hashes. */
   listUserApps(userId: string, limit: number, cursor: string | null, appId?: string): UserAppListResponse {
     const query = UserAppListQuerySchema.parse({ limit, cursor: cursor ?? undefined });
@@ -3435,7 +3457,7 @@ export class LocalCoordinatorStore implements CoordinatorStore, PublicCatalogSto
 
     const rows = this.db.prepare(`
       SELECT c.canonical_id, c.display_name, c.content_rating, c.umbrella, c.category, c.updated_at,
-             (SELECT COUNT(*) FROM catalog_tickets r WHERE r.ticket_type = 'removal_report' AND (r.canonical_id = c.canonical_id OR json_extract(r.payload_json, '$.canonicalId') = c.canonical_id)) AS report_count
+             (SELECT COUNT(*) FROM catalog_tickets r WHERE r.ticket_type IN ('removal_report', 'rating_dispute') AND (r.canonical_id = c.canonical_id OR json_extract(r.payload_json, '$.canonicalId') = c.canonical_id)) AS report_count
       FROM canonical_packages c
       ${where}
       ORDER BY c.updated_at DESC, c.canonical_id DESC
