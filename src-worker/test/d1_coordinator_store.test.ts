@@ -892,6 +892,9 @@ describe("Cloudflare D1 Coordinator Store & Edge Worker Adapter", () => {
 
     expect(claimRes.status).toBe("leased");
     if (claimRes.status !== "leased") throw new Error("Expected leased status");
+    // Fixed 120s lease duration calibrated per R54-C39B
+    const leaseDurationMs = new Date(claimRes.job.leaseExpiresAt).getTime() - new Date().getTime();
+    expect(Math.abs(leaseDurationMs - 120_000)).toBeLessThan(5_000);
     expect(claimRes.job.jobId).toBe(jobId);
     expect(claimRes.job.url).toBe("https://vpm.example.com/index.json");
     expect(claimRes.job.platform).toBe("vpm");

@@ -1313,7 +1313,7 @@ export class LocalCoordinatorStore implements CoordinatorStore, PublicCatalogSto
             next_allowed_at: string; min_delay_ms: number;
           };
           if (lease.next_allowed_at > now || (lease.active_job_id && lease.lease_expires_at && lease.lease_expires_at > now)) continue;
-          const expires = new Date(nowMs + 5 * 60 * 1000).toISOString();
+          const expires = new Date(nowMs + 120 * 1000).toISOString();
           const leaseId = crypto.randomUUID();
           const nextAllowed = new Date(nowMs + Math.max(lease.min_delay_ms, profile.minDelayMs)).toISOString();
           this.db.prepare(`UPDATE crawl_jobs SET state='leased',claimed_by=?,lease_id=?,

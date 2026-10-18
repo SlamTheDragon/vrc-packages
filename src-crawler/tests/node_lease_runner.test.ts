@@ -174,4 +174,37 @@ describe("node lease runner", () => {
     expect(aborted).toBe(true);
     expect(submissions).toBe(0);
   });
+
+  test("dynamic heartbeat scheduling cleanly clears timeout when fetch completes before interval (R54-C39B)", async () => {
+    let submissions = 0;
+    const client = {
+      heartbeat: async () => ({
+        schemaVersion: 1,
+        status: "alive",
+        serverTime: new Date().toISOString()
+      }),
+      submit: async (): Promise<ResultResponse> => {
+        submissions++;
+        return {
+          schemaVersion: 1,
+          status: "accepted",
+          jobId: fixtureJob.jobId,
+          duplicate: false,
+          sourceVersionCreated: true
+        };
+      }
+    };
+    const start = Date.now();
+    const { outcome, result } = await runLeasedJob(
+      fixtureJob,
+      client,
+      async () => new Response(JSON.stringify({ name: "com.example.pkg", version: "1.0.0" }), { status: 200 }),
+      5_000
+    );
+    const elapsed = Date.now() - start;
+    expect(outcome.kind).toBe("changed");
+    expect(result.status).toBe("accepted");
+    expect(submissions).toBe(1);
+    expect(elapsed).toBeLessThan(1_000);
+  });
 });

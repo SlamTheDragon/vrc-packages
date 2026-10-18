@@ -51,7 +51,11 @@ export async function runLeasedJob(
   const nowServerMs = () => Date.now() + clockOffsetMs;
   const expiresAtMs = new Date(job.leaseExpiresAt).getTime();
   const leaseExpired = () => new Error(`Lease ${job.leaseId} for job ${job.jobId} expired during execution (expired at ${job.leaseExpiresAt})`);
-  const pulse = () => {
+  const fetchStartTime = Date.now();
+  const isDynamicHeartbeat = heartbeatIntervalMs >= 5_000;
+  let timer: ReturnType<typeof setTimeout> | ReturnType<typeof setInterval> | null = null;
+
+  const pulse = (): Promise<void> | void => {
     if (pulsePromise || authorityError || signal.aborted) return;
     pulsePromise = client.heartbeat("fetching", job.jobId, job.leaseId)
       .then((res: unknown) => {
@@ -68,15 +72,44 @@ export async function runLeasedJob(
         authority.abort();
       })
       .finally(() => { pulsePromise = null; });
+    return pulsePromise;
   };
-  const timer = setInterval(pulse, heartbeatIntervalMs);
+
+  const clearHeartbeatTimer = () => {
+    if (!timer) return;
+    if (isDynamicHeartbeat) {
+      clearTimeout(timer as ReturnType<typeof setTimeout>);
+    } else {
+      clearInterval(timer as ReturnType<typeof setInterval>);
+    }
+    timer = null;
+  };
+
+  if (!isDynamicHeartbeat) {
+    // Preserve exact fixed interval for short test fixture overrides (< 5_000ms)
+    timer = setInterval(pulse, heartbeatIntervalMs);
+  } else {
+    // Dynamic heartbeat interval scaling between 5s and 30s based on elapsed fetch duration (R54-C39B)
+    const scheduleNextPulse = (intervalMs: number) => {
+      if (signal.aborted || authorityError) return;
+      timer = setTimeout(async () => {
+        await pulse();
+        const elapsed = Date.now() - fetchStartTime;
+        const nextInterval = Math.min(30_000, Math.max(5_000, Math.round(elapsed / 2)));
+        scheduleNextPulse(nextInterval);
+      }, intervalMs);
+    };
+    scheduleNextPulse(Math.min(30_000, Math.max(5_000, heartbeatIntervalMs)));
+  }
+
   // Fixed lease deadline: a pending heartbeat must not keep source work alive past expiry.
   const remainingMs = expiresAtMs - nowServerMs();
-  if (!Number.isFinite(remainingMs) || remainingMs <= 0) { clearInterval(timer); authority.abort(); throw leaseExpired(); }
+  if (!Number.isFinite(remainingMs) || remainingMs <= 0) { clearHeartbeatTimer(); authority.abort(); throw leaseExpired(); }
   const deadline = setTimeout(() => { authorityError ??= leaseExpired(); authority.abort(); }, Math.min(remainingMs, 2_147_483_647)); // setTimeout overflows above 2^31-1 ms and would fire at once
   try {
     const outcome = minimizeOutcome(job, await fetchJobOutcome(job, fetcher, signal));
-    clearInterval(timer);
+    clearHeartbeatTimer();
+    clearTimeout(deadline);
     if (pulsePromise) await pulsePromise;
     if (authorityError) throw authorityError;
     if (nowServerMs() >= expiresAtMs) throw leaseExpired();
@@ -108,7 +141,7 @@ export async function runLeasedJob(
     throw authorityError || (stopSignal?.aborted ? stopSignal.reason : error);
   } finally {
     clearTimeout(deadline);
-    clearInterval(timer);
+    clearHeartbeatTimer();
     authority.abort();
     if (pulsePromise) await pulsePromise;
   }

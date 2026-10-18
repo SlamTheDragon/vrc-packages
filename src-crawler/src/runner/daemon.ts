@@ -42,6 +42,7 @@ export class CrawlerNodeDaemon {
   private runId: string;
   private isFlushingOutbox: boolean = false;
   private readonly claimedJobsQueue: CrawlJob[] = [];
+  private readonly originDurations = new Map<string, number>();
 
   constructor(
     private readonly config: NodeRuntimeConfig,
@@ -71,6 +72,31 @@ export class CrawlerNodeDaemon {
 
   public get currentIdleDelayMs(): number {
     return this.lastCalculatedDelayMs;
+  }
+
+  public getOriginDuration(origin: string): number | undefined {
+    return this.originDurations.get(origin);
+  }
+
+  public recordOriginDuration(origin: string, durationMs: number): void {
+    if (!origin || !Number.isFinite(durationMs) || durationMs <= 0) return;
+    const existing = this.originDurations.get(origin);
+    if (existing === undefined) {
+      this.originDurations.set(origin, durationMs);
+    } else {
+      // Exponential moving average: 70% existing, 30% new sample
+      this.originDurations.set(origin, Math.round(existing * 0.7 + durationMs * 0.3));
+    }
+  }
+
+  public computeDynamicHeartbeatInterval(origin: string): number {
+    const avgDuration = this.originDurations.get(origin);
+    if (!avgDuration) {
+      return 5_000;
+    }
+    // Scale dynamically between 5,000ms (5s) and 30,000ms (30s) based on origin fetch duration (R54-C39B)
+    const scaled = Math.round(avgDuration / 2);
+    return Math.min(30_000, Math.max(5_000, scaled));
   }
 
   public calculateIdleDelay(baseRetryAfterMs: number): number {
@@ -332,11 +358,12 @@ export class CrawlerNodeDaemon {
     const idempotencyKey = crypto.randomUUID();
 
     try {
+      const effectiveHeartbeatMs = this.options.heartbeatIntervalMs ?? this.computeDynamicHeartbeatInterval(job.origin);
       const { outcome, result } = await runLeasedJob(
         job,
         this.client,
         fetchFn,
-        this.options.heartbeatIntervalMs ?? 5_000,
+        effectiveHeartbeatMs,
         this.stopController.signal,
         {
           idempotencyKey,
@@ -351,6 +378,7 @@ export class CrawlerNodeDaemon {
         }
       );
       const durationMs = Math.round(performance.now() - startTime);
+      this.recordOriginDuration(job.origin, durationMs);
       if (stagedOutboxId) {
         this.nodeStore.markOutboxDelivered(stagedOutboxId, result, { durationMs });
       } else {

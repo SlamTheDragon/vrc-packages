@@ -924,5 +924,41 @@ describe("node-owned daemon lifecycle through serialized contracts", () => {
         store.close();
       }
     });
+
+    test("tracks origin duration and computes dynamic heartbeat interval between 5s and 30s (R54-C39B)", () => {
+      const store = new LocalNodeStore(":memory:");
+      const daemon = new CrawlerNodeDaemon(config, store, client(), {});
+
+      try {
+        // Unknown origin defaults to 5,000ms
+        expect(daemon.computeDynamicHeartbeatInterval("https://unknown.example.org")).toBe(5_000);
+
+        // Fast origin (1,000ms) floors at 5,000ms
+        daemon.recordOriginDuration("https://fast.example.org", 1_000);
+        expect(daemon.getOriginDuration("https://fast.example.org")).toBe(1_000);
+        expect(daemon.computeDynamicHeartbeatInterval("https://fast.example.org")).toBe(5_000);
+
+        // Medium origin (24,000ms) scales to half (12,000ms)
+        daemon.recordOriginDuration("https://medium.example.org", 24_000);
+        expect(daemon.getOriginDuration("https://medium.example.org")).toBe(24_000);
+        expect(daemon.computeDynamicHeartbeatInterval("https://medium.example.org")).toBe(12_000);
+
+        // Slow origin (90,000ms) caps at 30,000ms
+        daemon.recordOriginDuration("https://slow.example.org", 90_000);
+        expect(daemon.getOriginDuration("https://slow.example.org")).toBe(90_000);
+        expect(daemon.computeDynamicHeartbeatInterval("https://slow.example.org")).toBe(30_000);
+
+        // Exponential moving average updates: 70% existing + 30% new
+        daemon.recordOriginDuration("https://ema.example.org", 10_000);
+        expect(daemon.getOriginDuration("https://ema.example.org")).toBe(10_000);
+        daemon.recordOriginDuration("https://ema.example.org", 20_000);
+        // 10000 * 0.7 + 20000 * 0.3 = 7000 + 6000 = 13000
+        expect(daemon.getOriginDuration("https://ema.example.org")).toBe(13_000);
+        expect(daemon.computeDynamicHeartbeatInterval("https://ema.example.org")).toBe(6_500);
+      } finally {
+        daemon.stop();
+        store.close();
+      }
+    });
   });
 });

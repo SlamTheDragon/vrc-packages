@@ -48,6 +48,7 @@ import { deriveCategoryFromTags, deriveUmbrellaFromTags, classifyDesktopTool, in
 import { extractAvatarCompatibility, type AvatarCompatibility } from "../../domain/classification/avatar_compatibility.ts";
 import { cleanTitle, cleanTrackingParams } from "vrc-packages-network/catalog-hygiene";
 import { STOREFRONT_PLATFORMS } from "vrc-packages-network/node";
+export const CRAWL_JOB_LEASE_MS = 120 * 1000; // 120s fixed lease per author direction (R54-C39B)
 import { DEFAULT_SEED_JOBS, DEFAULT_APPROVED_SOURCE_PROFILES } from "../default_seeds.js";
 import type {
   D1Database,
@@ -436,7 +437,7 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
         if (lease.next_allowed_at > now || (lease.active_job_id && lease.lease_expires_at && lease.lease_expires_at > now)) continue;
         const reservationMs = this.now();
         const reservationTime = new Date(reservationMs).toISOString();
-        const expires = new Date(reservationMs + 5 * 60 * 1000).toISOString();
+        const expires = new Date(reservationMs + CRAWL_JOB_LEASE_MS).toISOString();
         const leaseId = crypto.randomUUID();
         const nextAllowed = new Date(reservationMs + Math.max(lease.min_delay_ms, profile.minDelayMs)).toISOString();
 

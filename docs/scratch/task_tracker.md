@@ -1,18 +1,29 @@
-# Active slice: STAGE-16-DISTRIBUTED-KV-RATE-LIMITING (2026-10-18, local commit, local-only session per user instructions)
+# Active slice: STAGE-17-DYNAMIC-HEARTBEAT-AND-LEASE-CALIBRATION (2026-10-18, local commit, local-only session per user instructions)
 
 - Status: verified
-- Objective: Implement distributed Cloudflare KV and native Rate Limiting bindings for coordinator rate limiting per author requirement (`R54-C39C-RATE-LIMIT`: "Require distributed Cloudflare KV or Rate Limiting bindings before considering rate limiting verified").
+- Objective: Standardize coordinator crawl lease durations to fixed 120s and implement dynamic crawler heartbeat scaling (5s to 30s) based on origin fetch duration, adhering to Cloudflare free subrequest quotas (`R54-C39A / R54-C39B`).
 - Working theory:
-  1. Author directed: "Require distributed Cloudflare KV or Rate Limiting bindings before considering rate limiting verified."
-  2. In `src-worker/src/api/rate_limiter.ts`, expand `IRateLimiter` to support `check(): RateLimitResult | Promise<RateLimitResult>`.
-  3. Implement `KvRateLimiter` utilizing Cloudflare `KVNamespace` (`RATE_LIMIT_KV` binding) with bucket-based keying (`rl:${key}:${bucket}`) and automatic `expirationTtl`.
-  4. Implement `CloudflareBindingRateLimiter` supporting Cloudflare's native rate limit binding.
-  5. Implement `createRateLimiter(env)` selecting `KvRateLimiter` or `CloudflareBindingRateLimiter` when configured, falling back to `InMemoryRateLimiter`.
-  6. Wire `createRateLimiter(env)` into `worker_entry.ts` and await `rateLimiter.check()` across all API route handlers (`public`, `node`, `downstream`, `operator`, `moderator`, `user`).
-  7. Add `RATE_LIMIT_KV` to `wrangler.toml` and update types.
-- Verification status: verified. 320/320 worker unit tests pass (3653 assertions across 23 files); 3/3 Cloudflare Vitest tests pass; 100% native workerd runtime smoke check passes; Wrangler dry-run preview build passes; clean TypeScript checks across source, vitest, and bun test tsconfigs (0 errors).
+  1. Author directed: "Adopt dynamic heartbeat intervals scaling from 5s to 30s based on origin fetch duration, with leases fixed at 120s, while keeping in mind Cloudflare's free budget."
+  2. In `src-worker/src/storage/d1/coordinator.ts` and `src-worker/test/support/local_sqlite.ts`, calibrate job lease duration to fixed 120 seconds (`CRAWL_JOB_LEASE_MS = 120 * 1000` ms, instead of 5 minutes).
+  3. In `src-crawler/src/runner/daemon.ts`, track moving average fetch durations per origin and dynamically scale `heartbeatIntervalMs` between 5,000ms (5s) and 30,000ms (30s) when invoking `runLeasedJob`.
+  4. In `src-crawler/src/runner/lease_runner.ts`, dynamically scale interval pulses based on elapsed fetch time while preserving short test fixture overrides (< 5000ms).
+  5. Added unit and integration tests asserting dynamic heartbeat scaling and fixed 120s lease duration in `node_daemon.test.ts`, `node_lease_runner.test.ts`, and `d1_coordinator_store.test.ts`.
+- Verification: 189/189 crawler unit tests pass (1700 assertions) across 28 files; 320/320 worker unit tests pass (3653 assertions) across 23 files; 67/67 D1 store tests pass (1121 assertions); 100% native workerd runtime smoke check passes; clean typechecks across crawler and worker.
 
 # Previous checkpoints
+
+# STAGE-17-DYNAMIC-HEARTBEAT-AND-LEASE-CALIBRATION checkpoint (2026-10-18, local commit)
+- Status: verified
+- Objective: Standardize coordinator crawl lease durations to fixed 120s and implement dynamic crawler heartbeat scaling (5s to 30s) based on origin fetch duration, adhering to Cloudflare free subrequest quotas (`R54-C39A / R54-C39B`).
+- Implemented: `CRAWL_JOB_LEASE_MS = 120 * 1000` in `coordinator.ts` and `local_sqlite.ts`; `originDurations` tracking map and `computeDynamicHeartbeatInterval` (5s-30s) in `daemon.ts`; dynamic pulse timer rescheduling in `lease_runner.ts`; verified in `node_daemon.test.ts`, `node_lease_runner.test.ts`, and `d1_coordinator_store.test.ts`.
+- Verification: 189/189 crawler tests pass, 320/320 worker tests pass, 100% native workerd runtime smoke passes, clean typechecks.
+
+# STAGE-16-DISTRIBUTED-KV-RATE-LIMITING checkpoint (2026-10-18, local commit 393571b)
+- Status: verified
+- Objective: Implement distributed Cloudflare KV and native Rate Limiting bindings for coordinator rate limiting per author requirement (`R54-C39C-RATE-LIMIT`: "Require distributed Cloudflare KV or Rate Limiting bindings before considering rate limiting verified").
+- Implemented: Expanded `IRateLimiter` to support async checks; implemented `KvRateLimiter` with bucket keying (`rl:${key}:${bucket}`) and expirationTtl; implemented `CloudflareBindingRateLimiter`; implemented `createRateLimiter(env)` factory; wired KV binding into `wrangler.toml` and awaited checks in all route handlers.
+- Verification: 320/320 worker unit tests passed across 23 files; 3/3 Cloudflare Vitest tests passed; 100% native workerd runtime smoke check passed; clean typechecks.
+
 
 # STAGE-15-AUTHOR-ROULETTE-AND-LEDGER-COMPACTION checkpoint (2026-10-18, local commit)
 - Status: verified
