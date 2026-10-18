@@ -8,7 +8,7 @@ Here are the latest changelogs of each package and applications. For a full hist
 ## What Changed
 
 <!-- MASTER_SUMMARY -->
-Delegate robots.txt preflight fetching to crawler nodes under coordinator leases. Preserve evidence, settled outbox results and URL resource distinctions. Broadcast crawler activities and findings to the dedicated log file. Isolate provisional storefront fronts from public projection. Emit delist tombstones on package withdrawal. Enforce source access profile publication rights in public catalog and delta feeds. Configure initial approved VPM community seeds and classify Ko-fi storefront leads into operator review. Verify coordinator failure paths and multi-node fleet allocation in native workerd runtime. Bound claim candidate scans with explicit invocation budgets to protect Cloudflare quotas. Remove Watchtower from crawler Docker configuration and require isolated fleet data volumes.
+Delegate robots.txt preflight fetching to crawler nodes under coordinator leases. Preserve evidence, settled outbox results and URL resource distinctions. Broadcast crawler activities and findings to the dedicated log file. Isolate provisional storefront fronts from public projection. Emit delist tombstones on package withdrawal. Enforce source access profile publication rights in public catalog and delta feeds. Configure initial approved VPM community seeds and classify Ko-fi storefront leads into operator review. Verify multi-platform crawler fleet ingestion across VPM, GitHub, Booth, and Ko-fi drivers under lease isolation and crash recovery. Verify coordinator failure paths and multi-node fleet allocation in native workerd runtime. Bound claim candidate scans with explicit invocation budgets to protect Cloudflare quotas. Remove Watchtower from crawler Docker configuration and require isolated fleet data volumes.
 <!-- MASTER_SUMMARY -->
 
 ## Table of Contents
@@ -147,9 +147,10 @@ See full history at [docs/changelogs/vrcp-crawler-client/preview](https://github
 ## VRC Packages Crawler - `vrcp-crawler-node-preview`
 
 <!-- vrcp-crawler-node-preview-DESCRIPTION_SUMMARY -->
-Execute delegated robots.txt preflight refreshes during empty job claims using pinned DNS lookups and SSRF defenses. Remove Watchtower and host socket mounts from Docker compose. Require pinned image digests and isolate multi-node data volumes. Document environment variables.
+Execute delegated robots.txt preflight refreshes during empty job claims using pinned DNS lookups and SSRF defenses. Remove Watchtower and host socket mounts from Docker compose. Require pinned image digests and isolate multi-node data volumes. Verify multi-platform fleet crawl simulation under concurrent node leases and crash recovery. Document environment variables.
 <!-- vrcp-crawler-node-preview-DESCRIPTION_SUMMARY -->
 ### Added
+- **Fleet Crawl Simulation Suite**: Verify concurrent multi-node lease isolation, multi-driver ingestion (VPM, GitHub, Booth, Ko-fi), outbox edge retry, and crash-restart recovery (FLEET-S4).
 - **Delegated Robots Preflight Ingestion**: Ingest leased robots.txt preflight refresh tasks when job claims return empty (R24-C21). Retrieve snapshots using SSRF-safe pinned metadata transport and submit results to coordinator.
 - **Batch Claim Queueing**: Queue multiple claimed jobs from coordinator responses to prevent abandoned leases in daemon execution.
 - **Clock Offset Calibration**: Calibrate local lease deadlines against coordinator serverTime received in heartbeats and date headers.

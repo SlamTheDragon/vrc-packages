@@ -1,19 +1,22 @@
-# Active slice: STAGE-12-MULTI-PLATFORM-FLEET-INGESTION (2026-10-18, local commit, local-only session per user instructions)
+# Active slice: STAGE-13-AUTHOR-LEDGER-RECONCILIATION (2026-10-18, local commit, local-only session per user instructions)
 
 - Status: in_progress
-- Objective: Implement multi-platform end-to-end fleet crawl simulation (`FLEET-S4`) in `src-crawler/tests/fleet_crawl_simulation.test.ts`, exercising concurrent coordinator leases, multi-driver fetching (VPM community listing, GitHub release, Booth/Ko-fi storefront product leads), schema-valid receipt ingestion, outbox replay, and backoff handling without cross-project imports.
+- Objective: Reconcile unmerged implementation plan rows by conducting question roulette to gather author comments for verified R13-C9 slices (`R13-C9-LEASE-DEADLINE`, `R13-C9-IDENTITY`, `R13-C9-TEST-TYPES`, `R13-C9-DELTA`), and prepare ledger compaction.
 - Working theory:
-  1. Author directed: Implement multi-platform fleet crawl simulation using mock coordinator loopback wire fixtures to test concurrent leases, VPM/GitHub/storefront drivers, outbox delivery, and backoff without cross-boundary imports or external network access. Live Cloudflare Worker preview testing remains authorized.
-  2. Implement `src-crawler/tests/fleet_crawl_simulation.test.ts` covering:
-     a) Concurrent multi-node lease claims and pacing.
-     b) Multi-driver observation ingestion across VPM package manifests, GitHub repository/release metadata, and storefront discovery leads (Booth, Ko-fi).
-     c) Durable outbox persistence, result buffering, and crash-restart replay.
-     d) RFC 9309 delegated robots.txt preflight fetching and coordinator snapshot submission.
+  1. Author directed: Question roulette / grill-me queries populate empty author comment cells in `UNMERGED_IMPLEMENTATION_PLAN.md`.
+  2. Query author on four verified R13-C9 architectural slices detailing purpose, what it affects, and what it improves.
+  3. Record author comments in `UNMERGED_IMPLEMENTATION_PLAN.md`, prune accepted items into canonical ledger, and preserve minimal scratch footprint.
 - Verification status: in_progress.
 
 # Previous checkpoints
 
-# STAGE-11-INITIAL-SEEDS-AND-STOREFRONT-DISCOVERY checkpoint (2026-10-18, local commit)
+# STAGE-12-MULTI-PLATFORM-FLEET-INGESTION checkpoint (2026-10-18, local commit)
+- Status: verified
+- Objective: Implement multi-platform end-to-end fleet crawl simulation (`FLEET-S4`) in `src-crawler/tests/fleet_crawl_simulation.test.ts`, exercising concurrent coordinator leases, multi-driver fetching (VPM community listing, GitHub release, Booth/Ko-fi storefront product leads), schema-valid receipt ingestion, outbox replay, and backoff handling without cross-project imports.
+- Implemented: `src-crawler/tests/fleet_crawl_simulation.test.ts` with 5 operational tests covering multi-node lease isolation, multi-driver ingestion (VPM, GitHub, Booth, Ko-fi), outbox edge retry under 522 Origin Timeout, crash-restart recovery with SQLite outbox draining, and delegated robots preflight ingestion.
+- Verification: 5/5 fleet simulation tests pass (50 assertions); 187/187 crawler tests pass (1686 assertions); 310/310 worker tests pass (3611 assertions); 3 Vitest tests pass; 100% native workerd runtime smoke passes; clean typechecks across crawler and worker.
+
+# STAGE-11-INITIAL-SEEDS-AND-STOREFRONT-DISCOVERY checkpoint (2026-10-18, local commit 818744e)
 - Status: verified
 - Objective: Implement approved initial seed definitions and explicit source access profiles policy for open VPM community listings with robots preflight required, add Ko-fi storefront seed and classification, and partition storefront leads into pending operator review (`FLEET-S2`).
 - Implemented: `DEFAULT_SEED_JOBS` contains Ko-fi sample seed; `DEFAULT_APPROVED_SOURCE_PROFILES` provides pre-configured approved VPM community listings; coordinator `seedInitialProfiles` seeds profiles idempotently; `classifyOutboundLeadKind` recognizes `ko-fi.com` as `storefront_product`; storefront leads stay partitioned in `source_leads` with `pending_review` status.
