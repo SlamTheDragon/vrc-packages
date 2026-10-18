@@ -386,6 +386,14 @@ export class LocalCoordinatorStore implements CoordinatorStore, PublicCatalogSto
         PRIMARY KEY(canonical_id, recorded_at)
       );
       CREATE INDEX IF NOT EXISTS idx_catalog_tombstones_cursor ON catalog_tombstones(recorded_at ASC, canonical_id ASC);
+      CREATE INDEX IF NOT EXISTS idx_source_items_url ON source_items(source_url);
+      CREATE INDEX IF NOT EXISTS idx_source_leads_target ON source_leads(target_url);
+      CREATE INDEX IF NOT EXISTS idx_source_leads_discovered_url ON source_leads(discovered_from_url);
+      CREATE INDEX IF NOT EXISTS idx_crawl_jobs_claimed_state ON crawl_jobs(claimed_by, state);
+      CREATE INDEX IF NOT EXISTS idx_package_fronts_storefront ON package_fronts(storefront_url);
+      CREATE INDEX IF NOT EXISTS idx_registered_apps_page ON registered_apps(created_at DESC, app_id DESC);
+      CREATE INDEX IF NOT EXISTS idx_canonical_packages_rating_updated ON canonical_packages(content_rating, updated_at DESC, canonical_id ASC);
+      CREATE INDEX IF NOT EXISTS idx_canonical_packages_category_rating ON canonical_packages(category, content_rating);
     `);
     // Existing local coordinator databases predate these local-only markers.
     this.db.transaction(() => {
@@ -464,6 +472,8 @@ export class LocalCoordinatorStore implements CoordinatorStore, PublicCatalogSto
       ON source_leads(first_seen_node_id,first_seen_at DESC,lead_key DESC)`);
     this.db.run(`CREATE INDEX IF NOT EXISTS idx_source_leads_last_node
       ON source_leads(last_seen_node_id,last_seen_at DESC,lead_key DESC)`);
+    this.db.run("CREATE INDEX IF NOT EXISTS idx_crawl_jobs_lease_profile ON crawl_jobs(lease_profile_id)");
+    this.db.run("CREATE INDEX IF NOT EXISTS idx_crawl_jobs_source_rule ON crawl_jobs(source_rule_id)");
     if (autoSeed) {
       this.seedInitialJobs();
     }

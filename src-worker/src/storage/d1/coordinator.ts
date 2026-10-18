@@ -210,16 +210,37 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
     return cached.matchers.every(matcher => matcher.isAllowed(job.url));
   }
 
-  async activeSourceAccessProfileForTarget(platform: Platform, target: string, purpose: SourcePurpose): Promise<SourceAccessProfile | null> {
+  private async executeBatchChunked<T = unknown>(statements: D1PreparedStatement[], chunkSize = 50): Promise<D1Result<T>[]> {
+    if (statements.length === 0) return [];
+    if (statements.length <= chunkSize) {
+      return (await this.db.batch(statements)) as D1Result<T>[];
+    }
+    const results: D1Result<T>[] = [];
+    for (let i = 0; i < statements.length; i += chunkSize) {
+      const chunk = statements.slice(i, i + chunkSize);
+      const res = (await this.db.batch(chunk)) as D1Result<T>[];
+      results.push(...res);
+    }
+    return results;
+  }
+
+  async activeSourceAccessProfileForTarget(platform: Platform, target: string, purpose: SourcePurpose, cache?: Map<string, SourceAccessProfileRow[]>): Promise<SourceAccessProfile | null> {
     let origin: string;
     try { origin = new URL(target).origin; } catch { return null; }
     const nowMs = this.now();
     const now = new Date(nowMs).toISOString();
-    const res = await this.db.prepare(`SELECT * FROM source_access_profiles
-      WHERE platform=? AND origin=? AND purpose=? AND disabled_at IS NULL AND expires_at>?
-      ORDER BY length(path_scope) DESC,created_at ASC,profile_id ASC`)
-      .bind(platform, origin, purpose, now).all<SourceAccessProfileRow>();
-    const rows = res.results || [];
+    const cacheKey = `${platform}:${origin}:${purpose}`;
+    let rows: SourceAccessProfileRow[];
+    if (cache && cache.has(cacheKey)) {
+      rows = cache.get(cacheKey)!;
+    } else {
+      const res = await this.db.prepare(`SELECT * FROM source_access_profiles
+        WHERE platform=? AND origin=? AND purpose=? AND disabled_at IS NULL AND expires_at>?
+        ORDER BY length(path_scope) DESC,created_at ASC,profile_id ASC`)
+        .bind(platform, origin, purpose, now).all<SourceAccessProfileRow>();
+      rows = res.results || [];
+      if (cache) cache.set(cacheKey, rows);
+    }
     for (const row of rows) {
       const profile = this.sourceAccessProfileFromRow(row);
       if (sourceAccessProfileMatches(profile, platform, target, purpose, nowMs)) return profile;
@@ -251,8 +272,9 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
       .bind(origin, now, now).all<JobRow>();
     const rows = res.results || [];
     let delay: number | null = null;
+    const profileCache = new Map<string, SourceAccessProfileRow[]>();
     for (const job of rows) {
-      const profile = await this.activeSourceAccessProfileForTarget(job.platform, job.url, job.job_purpose);
+      const profile = await this.activeSourceAccessProfileForTarget(job.platform, job.url, job.job_purpose, profileCache);
       if (profile) delay = Math.max(delay ?? 0, profile.minDelayMs);
     }
     return delay;
@@ -351,6 +373,7 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
     const maxJobs = Math.max(1, Math.min(request.maxJobs ?? 1, 10));
     const leasedJobs: CrawlJob[] = [];
     const reservedOrigins = new Set<string>();
+    const profileCache = new Map<string, SourceAccessProfileRow[]>();
 
     const MAX_CLAIM_SCAN_PAGES = 3;
     let pagesScanned = 0;
@@ -366,7 +389,7 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
       let deferred = false;
       for (const job of candidates) {
         if (reservedOrigins.has(job.origin)) continue;
-        const profile = await this.activeSourceAccessProfileForTarget(job.platform, job.url, job.job_purpose);
+        const profile = await this.activeSourceAccessProfileForTarget(job.platform, job.url, job.job_purpose, profileCache);
         if (!profile) continue;
         if (!this.robotsAllows(job)) {
           await this.db.prepare(`UPDATE crawl_jobs SET next_fetch_at=?,robots_deferred_until=?,
@@ -994,7 +1017,7 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
     );
 
     if (batchStmts.length > 0) {
-      await this.db.batch(batchStmts);
+      await this.executeBatchChunked(batchStmts);
     }
 
     if (outcome.kind === "discovery") {
@@ -1322,7 +1345,7 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
         this.db.prepare(`INSERT INTO operator_audit_log(entity_type,entity_id,actor,action,reason,occurred_at)
           VALUES ('rule',?,?, 'disable', ?, ?)`).bind(ruleId, actor, reason.trim(), now)
       );
-      await this.db.batch(batchStmts);
+      await this.executeBatchChunked(batchStmts);
       row.disabled_at = now;
     }
     return this.autoQueueRuleFromRow(row);
@@ -1405,7 +1428,7 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
       this.db.prepare(`INSERT INTO operator_audit_log(entity_type,entity_id,actor,action,reason,occurred_at)
         VALUES ('profile',?,?, 'disable', ?, ?)`).bind(profileId, actor, reason.trim(), now)
     );
-    await this.db.batch(batchStmts);
+    await this.executeBatchChunked(batchStmts);
     const updatedRow = await this.db.prepare("SELECT * FROM source_access_profiles WHERE profile_id=?")
       .bind(profileId).first<SourceAccessProfileRow>();
     return this.sourceAccessProfileFromRow(updatedRow!);
@@ -1743,7 +1766,7 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
         SELECT 'job',job_id,?,'seed',?,? FROM crawl_jobs WHERE url=? AND platform=? AND job_purpose=? AND ${authoritySql}`)
         .bind(audit.actor, audit.reason.trim(), now, parsed.href, platform, purpose, ...authorityParams));
     }
-    await this.db.batch(batchStmts);
+    await this.executeBatchChunked(batchStmts);
 
     const stored = await this.db.prepare(`SELECT job_id,platform,job_purpose,
       EXISTS (SELECT 1 FROM suppressed_urls WHERE url=?) AS suppressed,
@@ -2718,7 +2741,7 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
       }
     }
 
-    await this.db.batch(batchStatements);
+    await this.executeBatchChunked(batchStatements);
 
     return {
       takedownId,

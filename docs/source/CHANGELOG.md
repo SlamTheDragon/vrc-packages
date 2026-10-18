@@ -192,6 +192,9 @@ See full history at [docs/changelogs/vrcp-web/preview](https://github.com/SlamTh
 Bound claim candidate scans by an explicit page budget. Verify coordinator failure paths and multi-node fleet allocation in native workerd runtime. Use unique catalog epochs, preserve evidence and URL distinctions, withhold provisional fronts, and emit delist tombstones.
 <!-- vrcp-worker-preview-DESCRIPTION_SUMMARY -->
 ### Added
+- **D1 High-Frequency Indexes**: Add ten query indexes for canonical packages, crawl jobs, source leads, items, fronts, and apps.
+- **Statement Batch Chunking**: Chunk large D1 batch executions into fifty statements to protect subrequest budgets.
+- **Source Access Profile Memoization**: Cache active source profile lookups to remove duplicate D1 queries during claims.
 - **Claim Invocation Budgets**: Bound candidate scans to three pages per claim invocation. Measured and asserted empty and leased claim D1 statement budgets in native workerd runtime.
 - **Runtime Verification Harness**: Extended the native coordinator harness to test capability mismatch, lease expiry, cross-node lease isolation, and multi-node fleet concurrency.
 ### Bugs Fixed

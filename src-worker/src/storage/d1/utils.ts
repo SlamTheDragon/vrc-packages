@@ -105,5 +105,15 @@ CREATE INDEX IF NOT EXISTS idx_catalog_tickets_target_url ON catalog_tickets(tar
 CREATE VIEW IF NOT EXISTS creator_opt_outs AS SELECT ticket_id AS takedown_id, target_url, canonical_id, requester_type, requester_id, reason, proof_kind, proof_value, contact_email, recorded_at, review_status, review_notes FROM catalog_tickets WHERE ticket_type = 'opt_out';
 CREATE VIEW IF NOT EXISTS delegated_creator_claims AS SELECT ticket_id AS claim_id, app_id, 'creator_ownership_claim' AS action, target_url AS front_url, creator_id, challenge_token, expires_at, nonce, signature, payload_json, reason, contact_email, review_status, review_notes, recorded_at FROM catalog_tickets WHERE ticket_type = 'delegated_claim';
 CREATE VIEW IF NOT EXISTS catalog_reports AS SELECT ticket_id AS report_id, app_id, 'removal_request' AS report_type, payload_json, review_status, recorded_at FROM catalog_tickets WHERE ticket_type = 'removal_report';
+CREATE INDEX IF NOT EXISTS idx_source_items_url ON source_items(source_url);
+CREATE INDEX IF NOT EXISTS idx_source_leads_target ON source_leads(target_url);
+CREATE INDEX IF NOT EXISTS idx_source_leads_discovered_url ON source_leads(discovered_from_url);
+CREATE INDEX IF NOT EXISTS idx_crawl_jobs_lease_profile ON crawl_jobs(lease_profile_id);
+CREATE INDEX IF NOT EXISTS idx_crawl_jobs_source_rule ON crawl_jobs(source_rule_id);
+CREATE INDEX IF NOT EXISTS idx_crawl_jobs_claimed_state ON crawl_jobs(claimed_by, state);
+CREATE INDEX IF NOT EXISTS idx_package_fronts_storefront ON package_fronts(storefront_url);
+CREATE INDEX IF NOT EXISTS idx_registered_apps_page ON registered_apps(created_at DESC, app_id DESC);
+CREATE INDEX IF NOT EXISTS idx_canonical_packages_rating_updated ON canonical_packages(content_rating, updated_at DESC, canonical_id ASC);
+CREATE INDEX IF NOT EXISTS idx_canonical_packages_category_rating ON canonical_packages(category, content_rating);
 `;
 
