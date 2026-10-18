@@ -191,9 +191,10 @@ See full history at [docs/changelogs/vrcp-web/preview](https://github.com/SlamTh
 ## VRC Packages Worker - `vrcp-worker-preview`
 
 <!-- vrcp-worker-preview-DESCRIPTION_SUMMARY -->
-Bound claim candidate scans by an explicit page budget. Verify coordinator failure paths and multi-node fleet allocation in native workerd runtime. Use unique catalog epochs, preserve evidence and URL distinctions, withhold provisional fronts, and emit delist tombstones.
+Enforce per-isolate inbound 429 rate limiting. Bound claim candidate scans by an explicit page budget. Verify coordinator failure paths and multi-node fleet allocation in native workerd runtime. Use unique catalog epochs, preserve evidence and URL distinctions, withhold provisional fronts, and emit delist tombstones.
 <!-- vrcp-worker-preview-DESCRIPTION_SUMMARY -->
 ### Added
+- **Inbound Rate Limiting**: Enforce per-isolate inbound 429 rate limiting with RFC-compliant headers across public, node, and downstream routes.
 - **Downstream Permission Enforcement**: Verify application permissions for catalog search and demand feedback, returning 403 on missing permissions.
 - **D1 High-Frequency Indexes**: Add ten query indexes for canonical packages, crawl jobs, source leads, items, fronts, and apps.
 - **Statement Batch Chunking**: Chunk large D1 batch executions into fifty statements to protect subrequest budgets.
