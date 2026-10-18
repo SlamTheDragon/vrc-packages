@@ -153,3 +153,5 @@ Consumed from question roulette in the unmerged ledger:
 - **R54-C38A / R54-C38R / R54-C38B**: Registered applications approved to be trusted can submit creator takedown requests directly into moderation queues.
 - **R54-C39A / R54-C39B**: Adopt dynamic heartbeat intervals scaling from 5s to 30s based on origin fetch duration, with leases fixed at 120s, while keeping within Cloudflare's free subrequest budget.
 - **R57-DEPLOYMENT-LINKS**: Keep deployment card destination links unchanged per existing policy (SDK to npm, crawler and client to tagged GitHub Releases, Worker links deferred).
+- **DELIVERY-MAINTENANCE**: Implement targeted script hardening: add atomic rollback on delivery crash (R60-C60C) and read-only failure diagnosis (DELIVERY-RECOVERY-GUARDS) without deleting existing workflows.
+- **G15 extension / R54-C38**: Route trusted app takedown submissions directly into catalog_tickets as 'removal_report' tickets for moderator review, gated by trusted registered app status.
