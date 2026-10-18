@@ -1,21 +1,30 @@
-# Active slice: STAGE-4-CRAWLER-CONCURRENCY-TIMING (2026-10-18, local commit, no push)
+# Active slice: STAGE-5-DOCS-AND-SDK-ALIGNMENT (2026-10-18, local commit, capability gate push)
 
-- Objective: Handle batched job claims and calibrate lease expiration deadlines via coordinator serverTime clock offset.
+- Objective: Align API route documentation with actual coordinator routes and enforce downstream application permissions.
 - Working theory:
-  1. In `src-crawler/src/runner/daemon.ts:262`, `const { job } = claim;` ignored `claim.jobs` when multiple jobs were returned in a batched claim response, abandoning subsequent leases.
-  2. Introducing `claimedJobsQueue: CrawlJob[] = []` buffers all jobs from a batch claim and processes them sequentially in subsequent daemon steps without redundant coordinator calls.
-  3. Distributed nodes may suffer from clock drift against the coordinator. Calculating `clockOffset = serverTime - Date.now()` from heartbeat responses and HTTP date headers allows local lease preflight and execution deadlines to stay synchronized with the coordinator authority.
+  1. `AGENTS.md` referenced `docs/source/API_ROUTES.md`, which was relocated to `docs/applications/VRCP API/API_ROUTES.md`.
+  2. `POST /v1/node/jobs/results` (batch results submission) and `POST /v1/operator/apps/{appId}/delegation` (key generation for delegated apps) were implemented in the coordinator but omitted from route documentation.
+  3. In `src-worker/src/api/downstream_handler.ts`, registered app permissions were checked for `catalog:read` and `sync:read`, but `catalog:search` and `demand:feedback` were unenforced despite being declared in `APP_CAPABILITIES` and capability sets.
 - Implementation steps:
-  1. Add `getClockOffset()` and track clock offset from HTTP Date header and heartbeat responses in `src-crawler/src/client/node_client.ts`.
-  2. In `src-crawler/src/runner/lease_runner.ts`, calibrate execution deadline and pre-submission lease validity using `nowServerMs() = Date.now() + clockOffsetMs`.
-  3. In `src-crawler/src/runner/daemon.ts`, queue `claim.jobs` into `claimedJobsQueue` and use clock offset in preflight lease check.
-  4. Add unit tests for batch queueing in `src-crawler/tests/node_daemon.test.ts` and clock offset calibration in `src-crawler/tests/node_lease_runner.test.ts`.
-  5. Update `docs/source/CHANGELOG.md` under `vrcp-crawler-node-preview`.
+  1. Correct documentation reference in `AGENTS.md` to `docs/applications/VRCP API/API_ROUTES.md`.
+  2. Add route documentation and payload schemas for `POST /v1/node/jobs/results` and `POST /v1/operator/apps/{appId}/delegation` in `docs/applications/VRCP API/API_ROUTES.md`.
+  3. Enforce `catalog:search` on downstream search routes and `demand:feedback` on demand/issue report routes (with removal requests exempt) in `src-worker/src/api/downstream_handler.ts`.
+  4. Add downstream client protocol permission test in `src-worker/test/downstream_client_protocol.test.ts`.
+  5. Update `docs/source/CHANGELOG.md` under `vrcp-worker-preview`.
 - Verification status: Verified locally.
-  - Crawler test suite: `bun test` passed 181 tests across 27 files (1529 assertions).
+  - Worker test suite: 300 tests passed (3588 assertions) in `src-worker/test/`.
+  - Worker Vitest suite: 3 tests passed in `src-worker`.
+  - Native runtime smoke: `coordinator_runtime_smoke.mjs` passed 100%.
+  - Worker typecheck: `bun run check` clean across all 3 tsconfigs.
+  - Crawler test suite: 181 tests passed (1529 assertions) in `src-crawler/tests/`.
   - Crawler typecheck: `bunx tsc --noEmit` clean.
 
 # Previous checkpoints
+
+# STAGE-4-CRAWLER-CONCURRENCY-TIMING checkpoint (2026-10-18, local commit 6d7ef39)
+- Objective: Handle batched job claims and calibrate lease expiration deadlines via coordinator serverTime clock offset.
+- Implemented: `claimedJobsQueue` buffer in `daemon.ts`, `getClockOffset()` tracking in `node_client.ts`, `nowServerMs()` calibration in `lease_runner.ts`, and unit tests in `node_daemon.test.ts` and `node_lease_runner.test.ts`.
+- Verification: 181 crawler tests pass, crawler typecheck clean.
 
 # STAGE-3-COORDINATOR-SCALING checkpoint (2026-10-18, local commit 3573ef5)
 - Objective: Scale coordinator queries and protect Cloudflare Worker D1 subrequest limits with high-frequency indexes, batch statement chunking, and source-access profile lookup memoization.
@@ -34,7 +43,3 @@
   2. Committed scratch ledger reconciliation and status audit doc `2026-10-18_STATUS.md`.
   3. Pushed 16 commits on `preview/crawler-network` to `origin/preview/crawler-network`.
 - Verification: Clean origin tracking, zero duplicate tracking rows, scratch footprint invariant preserved.
-
-# R14-C14 checkpoint (2026-10-16, local commit 21a53d5)
-- Objective: Bound coordinator claim scans with explicit invocation budgets and measure D1 execution in runtime harness.
-- Verified: Native runtime smoke verified claim budgets (empty: 21ms, leased: 34ms, 3 scan pages enforced); 299 worker tests pass; 177 crawler tests pass; typechecks clean.

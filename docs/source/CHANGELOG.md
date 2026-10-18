@@ -194,6 +194,7 @@ See full history at [docs/changelogs/vrcp-web/preview](https://github.com/SlamTh
 Bound claim candidate scans by an explicit page budget. Verify coordinator failure paths and multi-node fleet allocation in native workerd runtime. Use unique catalog epochs, preserve evidence and URL distinctions, withhold provisional fronts, and emit delist tombstones.
 <!-- vrcp-worker-preview-DESCRIPTION_SUMMARY -->
 ### Added
+- **Downstream Permission Enforcement**: Verify application permissions for catalog search and demand feedback, returning 403 on missing permissions.
 - **D1 High-Frequency Indexes**: Add ten query indexes for canonical packages, crawl jobs, source leads, items, fronts, and apps.
 - **Statement Batch Chunking**: Chunk large D1 batch executions into fifty statements to protect subrequest budgets.
 - **Source Access Profile Memoization**: Cache active source profile lookups to remove duplicate D1 queries during claims.
@@ -211,6 +212,7 @@ Bound claim candidate scans by an explicit page budget. Verify coordinator failu
 - **URL Associations**: Preserve generic path/query case and trailing slashes. Keep case-insensitive repository matching scoped to GitHub sources.
 - **Lead Identities**: Deduplicate serialized host/default-port aliases for new leads without changing retained observation links.
 ### Changes
+- **API Route Documentation**: Align AGENTS.md route reference path and document batched job results and operator app delegation endpoints.
 - **Fixture Typechecks**: Include Bun TypeScript tests and support in Worker checks. Preserve separate Cloudflare Vitest typing and native runtime verification.
 - **D1 Fixtures**: Check the SQLite adapter against generated bindings. Reject unsupported operations and foreign batch statements instead of reporting synthetic success.
 - **Specification Reconciliation**: Reconciled API routes, network specifications, and database schemas with delivered claim scan budgets, operator app candidate review, and moderator protocol.

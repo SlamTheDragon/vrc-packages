@@ -602,4 +602,34 @@ describe("Downstream Client Protocol & Demand Feedback Signals", () => {
       store.close();
     }
   });
+
+  test("enforces application permissions for search and demand feedback", async () => {
+    const app = store.registerApp({ schemaVersion: 1, appName: "Permission test" });
+    // Revoke catalog:search and demand:feedback
+    store.db.prepare("UPDATE registered_apps SET permissions_json = ? WHERE app_id = ?")
+      .run(JSON.stringify([]), app.appId);
+
+    const searchRes = await handleDownstreamRequest(
+      request("/v1/app/index/search", "POST", { schemaVersion: 1 }, app.appToken),
+      store
+    );
+    expect(searchRes.status).toBe(403);
+    const searchBody = await searchRes.json() as any;
+    expect(searchBody.error).toContain("Application is not authorized for catalog searches");
+
+    const feedbackRes = await handleDownstreamRequest(
+      request("/v1/app/report", "POST", { schemaVersion: 1, reportType: "demand_signal", query: "test", reason: "missing" }, app.appToken),
+      store
+    );
+    expect(feedbackRes.status).toBe(403);
+    const feedbackBody = await feedbackRes.json() as any;
+    expect(feedbackBody.error).toContain("Application is not authorized for demand feedback");
+
+    // Removal request still succeeds even without demand:feedback
+    const removalRes = await handleDownstreamRequest(
+      request("/v1/app/report", "POST", { schemaVersion: 1, reportType: "removal_request", canonicalId: "pkg-1", reason: "opt out" }, app.appToken),
+      store
+    );
+    expect(removalRes.status).toBe(202);
+  });
 });

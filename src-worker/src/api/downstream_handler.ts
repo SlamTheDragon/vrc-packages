@@ -171,6 +171,10 @@ export async function handleDownstreamRequest(
       }
     }
 
+    if (!app.permissions.includes("demand:feedback")) {
+      return failure(403, "forbidden", "Application is not authorized for demand feedback");
+    }
+
     let feedbackInput: DownstreamFeedbackRequest;
     if (reportParsed.success) {
       const data = reportParsed.data;
@@ -255,6 +259,10 @@ export async function handleDownstreamRequest(
 
   // 5. Configurable Multi-Facet Search
   if (isSearch) {
+    if (!app.permissions.includes("catalog:search")) {
+      return failure(403, "forbidden", "Application is not authorized for catalog searches");
+    }
+
     const searchRate = rateLimiter.check(`app:search:${app.appId}`, RATE_LIMIT_POLICIES.APP_SEARCH);
     if (!searchRate.allowed) {
       workerLogger.warn("App search rate limit exceeded", { path, appId: app.appId });
