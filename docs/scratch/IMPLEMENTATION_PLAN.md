@@ -148,3 +148,7 @@ Consumed from question roulette in the unmerged ledger:
 - **DELIVERY-RECOVERY-GUARDS**: Make failure diagnosis strictly read-only and require proof of absence of remote publication before authorizing any local tag deletion.
 - **R55-C55D**: Keep separate legacy names per distribution channel while retaining vrc-packages for repositories and npm packages.
 - **Q-API-REVIEW**: Use root publication procedure for this preview path, where scripts manage version bumping, changelogs, publication, deployment, and GitHub Actions.
+- **DELIVERY-PROOF-SEMANTICS**: Check artifact existence for the predecessor/previous tag and verify its path for publication.
+- **R54-C38A / R54-C38R / R54-C38B**: Registered applications approved to be trusted can submit creator takedown requests directly into moderation queues.
+- **R54-C39A / R54-C39B**: Adopt dynamic heartbeat intervals scaling from 5s to 30s based on origin fetch duration, with leases fixed at 120s, while keeping within Cloudflare's free subrequest budget.
+- **R57-DEPLOYMENT-LINKS**: Keep deployment card destination links unchanged per existing policy (SDK to npm, crawler and client to tagged GitHub Releases, Worker links deferred).
