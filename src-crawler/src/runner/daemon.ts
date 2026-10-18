@@ -4,7 +4,7 @@ import { runLeasedJob } from "./lease_runner.ts";
 import { fetchPublicMetadata } from "../client/public_metadata_fetch.ts";
 import type { NodeRuntimeConfig } from "../config/runtime_config.ts";
 import type { LocalNodeStore } from "../storage/local_sqlite.ts";
-import { PROTOCOL_VERSION, MAX_BATCH_RESULTS, type HeartbeatRequest } from "vrc-packages-network/node";
+import { PROTOCOL_VERSION, MAX_BATCH_RESULTS, type HeartbeatRequest, type CrawlJob } from "vrc-packages-network/node";
 import { logger } from "../utils/logging/logger.ts";
 
 export interface CrawlerNodeDaemonOptions {
@@ -13,6 +13,7 @@ export interface CrawlerNodeDaemonOptions {
   stopFilePath?: string;
   sleepFn?: (ms: number) => Promise<void>;
   heartbeatIntervalMs?: number;
+  maxClaimJobs?: number;
   maxPendingOutboxQuota?: number;
   outboxTtlMs?: number;
   outboxPruneIntervalMs?: number;
@@ -38,6 +39,7 @@ export class CrawlerNodeDaemon {
   private consecutiveEmptyClaims: number = 0;
   private runId: string;
   private isFlushingOutbox: boolean = false;
+  private readonly claimedJobsQueue: CrawlJob[] = [];
 
   constructor(
     private readonly config: NodeRuntimeConfig,
@@ -235,39 +237,53 @@ export class CrawlerNodeDaemon {
     await this.flushOutbox();
     if (this.stopping) return "stopped";
 
-    // Flow control: pause claims when outbox quota is exhausted
-    const maxQuota = this.options.maxPendingOutboxQuota ?? 1000;
-    const pendingCount = this.nodeStore.getPendingOutboxCount();
-    if (pendingCount >= maxQuota) {
-      logger.warn(`Outbox pending quota reached (${pendingCount}/${maxQuota}). Pausing job claims until outbox drains.`);
-      this.consecutiveEmptyClaims++;
-      this.lastCalculatedDelayMs = this.calculateIdleDelay(5_000);
-      return "empty";
+    if (this.claimedJobsQueue.length === 0) {
+      // Flow control: pause claims when outbox quota is exhausted
+      const maxQuota = this.options.maxPendingOutboxQuota ?? 1000;
+      const pendingCount = this.nodeStore.getPendingOutboxCount();
+      if (pendingCount >= maxQuota) {
+        logger.warn(`Outbox pending quota reached (${pendingCount}/${maxQuota}). Pausing job claims until outbox drains.`);
+        this.consecutiveEmptyClaims++;
+        this.lastCalculatedDelayMs = this.calculateIdleDelay(5_000);
+        return "empty";
+      }
+
+      const claim = await this.client.claim(this.options.maxClaimJobs);
+      if (this.stopping) return "stopped";
+      if (claim.status === "empty") {
+        this.consecutiveEmptyClaims++;
+        this.lastRetryAfterMs = claim.retryAfterMs;
+        this.lastCalculatedDelayMs = this.calculateIdleDelay(claim.retryAfterMs);
+        logger.debug("No jobs available to claim", {
+          retryAfterMs: this.lastRetryAfterMs,
+          calculatedDelayMs: this.lastCalculatedDelayMs,
+          consecutiveEmptyClaims: this.consecutiveEmptyClaims
+        });
+        return "empty";
+      }
+
+      const batch = claim.jobs && claim.jobs.length > 0 ? claim.jobs : [claim.job];
+      this.claimedJobsQueue.push(...batch);
     }
 
-    const claim = await this.client.claim();
-    if (this.stopping) return "stopped";
-    if (claim.status === "empty") {
-      this.consecutiveEmptyClaims++;
-      this.lastRetryAfterMs = claim.retryAfterMs;
-      this.lastCalculatedDelayMs = this.calculateIdleDelay(claim.retryAfterMs);
-      logger.debug("No jobs available to claim", {
-        retryAfterMs: this.lastRetryAfterMs,
-        calculatedDelayMs: this.lastCalculatedDelayMs,
-        consecutiveEmptyClaims: this.consecutiveEmptyClaims
-      });
-      return "empty";
+    let job: CrawlJob | undefined;
+    while (this.claimedJobsQueue.length > 0) {
+      const candidate = this.claimedJobsQueue.shift()!;
+      // Fail closed: enforce lease unexpired preflight check with clock calibration
+      const clockOffset = typeof (this.client as any).getClockOffset === "function" ? (this.client as any).getClockOffset() : 0;
+      const nowMs = Date.now() + clockOffset;
+      if (new Date(candidate.leaseExpiresAt).getTime() <= nowMs) {
+        const errorMsg = `Lease ${candidate.leaseId} for job ${candidate.jobId} expired before execution (expired at ${candidate.leaseExpiresAt})`;
+        logger.warn(errorMsg);
+        const taskId = this.nodeStore.recordClaimedJob(this.runId, candidate);
+        this.nodeStore.recordTaskFailure(taskId, errorMsg, { durationMs: 0 });
+        continue;
+      }
+      job = candidate;
+      break;
     }
 
-    const { job } = claim;
-
-    // Fail closed: enforce lease unexpired preflight check
-    const nowMs = Date.now();
-    if (new Date(job.leaseExpiresAt).getTime() <= nowMs) {
-      const errorMsg = `Lease ${job.leaseId} for job ${job.jobId} expired before execution (expired at ${job.leaseExpiresAt})`;
-      logger.warn(errorMsg);
-      const taskId = this.nodeStore.recordClaimedJob(this.runId, job);
-      this.nodeStore.recordTaskFailure(taskId, errorMsg, { durationMs: 0 });
+    if (!job) {
       this.consecutiveEmptyClaims++;
       this.lastCalculatedDelayMs = this.calculateIdleDelay(5_000);
       return "empty";

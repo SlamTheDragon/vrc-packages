@@ -14,7 +14,7 @@ const config: NodeRuntimeConfig = { nodeId: "daemon-fixture", token: "fixture-on
 const job = CrawlJobSchema.parse({ jobId: "daemon-job", leaseId: crypto.randomUUID(), platform: "vpm",
   purpose: "metadata", url: "https://example.org/index.json", origin: "https://example.org",
   leaseExpiresAt: "2099-01-01T00:00:00.000Z", retainClasses: ["normalized_facts"], etag: null, lastModified: null });
-const leased: ClaimResponse = { schemaVersion: 1, status: "leased", job };
+const leased: ClaimResponse = { schemaVersion: 1 as const, status: "leased", job };
 const empty: ClaimResponse = { schemaVersion: 1, status: "empty", retryAfterMs: 1000 };
 const client = () => new CoordinatorClient(config.baseUrl, config.token, config.nodeId, config.capabilities,
   { maxRetries: 0 });
@@ -798,6 +798,74 @@ describe("node-owned daemon lifecycle through serialized contracts", () => {
 
         // Pending outbox entries should now be 0 (dead item is not pending)
         expect(store.getPendingOutboxEntries().length).toBe(0);
+      } finally {
+        daemon.stop();
+        store.close();
+      }
+    });
+
+    test("processes multiple jobs sequentially from batch claim without refetching", async () => {
+      const store = new LocalNodeStore(":memory:");
+      const job1: CrawlJob = {
+        jobId: "batch-job-1",
+        leaseId: crypto.randomUUID(),
+        platform: "vpm",
+        purpose: "metadata",
+        url: "https://example.org/pkg1.json",
+        origin: "https://example.org",
+        leaseExpiresAt: new Date(Date.now() + 60000).toISOString(),
+        retainClasses: ["normalized_facts"],
+        etag: null,
+        lastModified: null,
+      };
+      const job2: CrawlJob = {
+        jobId: "batch-job-2",
+        leaseId: crypto.randomUUID(),
+        platform: "vpm",
+        purpose: "metadata",
+        url: "https://example.org/pkg2.json",
+        origin: "https://example.org",
+        leaseExpiresAt: new Date(Date.now() + 60000).toISOString(),
+        retainClasses: ["normalized_facts"],
+        etag: null,
+        lastModified: null,
+      };
+      const batchClaim = {
+        schemaVersion: 1 as const,
+        status: "leased" as const,
+        job: job1,
+        jobs: [job1, job2]
+      };
+
+      let claimCalls = 0;
+      const testClient = client();
+      const origClaim = testClient.claim.bind(testClient);
+      testClient.claim = async (...args) => {
+        claimCalls++;
+        return origClaim(...args);
+      };
+
+      const daemon = new CrawlerNodeDaemon(config, store, testClient);
+
+      try {
+        await withWire(
+          batchClaim,
+          async () => {
+            // Step 1 claims batch and executes job 1
+            const res1 = await daemon.step();
+            expect(res1).toBe("claimed");
+            expect(claimCalls).toBe(1);
+
+            // Step 2 executes job 2 from the local queue without calling coordinator claim
+            const res2 = await daemon.step();
+            expect(res2).toBe("claimed");
+            expect(claimCalls).toBe(1);
+          }
+        );
+
+        const tasks = store.listTasksForRun(daemon.currentRunId);
+        expect(tasks.length).toBe(2);
+        expect(tasks.map(t => t.jobId)).toEqual(["batch-job-1", "batch-job-2"]);
       } finally {
         daemon.stop();
         store.close();

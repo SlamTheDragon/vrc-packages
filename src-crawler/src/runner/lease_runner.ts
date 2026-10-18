@@ -6,6 +6,7 @@ export type Outcome = ResultRequest["outcome"];
 export type LeaseClient = {
   heartbeat: (state: "fetching", activeJobId: string, activeLeaseId: string) => Promise<unknown>;
   submit: (request: Omit<ResultRequest, "schemaVersion" | "nodeId">) => Promise<ResultResponse>;
+  getClockOffset?: () => number;
 };
 export type MetadataFetcher = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
@@ -34,16 +35,33 @@ export async function runLeasedJob(
 ): Promise<{ outcome: Outcome; result: ResultResponse }> {
   if (!Number.isInteger(heartbeatIntervalMs) || heartbeatIntervalMs < 1) throw new Error("Invalid heartbeat interval");
   stopSignal?.throwIfAborted();
-  await client.heartbeat("fetching", job.jobId, job.leaseId);
+  let clockOffsetMs = client.getClockOffset?.() ?? 0;
+  const initialHeartbeat = await client.heartbeat("fetching", job.jobId, job.leaseId);
+  if (initialHeartbeat && typeof initialHeartbeat === "object" && "serverTime" in initialHeartbeat) {
+    const serverTimeMs = new Date((initialHeartbeat as { serverTime: string }).serverTime).getTime();
+    if (Number.isFinite(serverTimeMs)) {
+      clockOffsetMs = serverTimeMs - Date.now();
+    }
+  }
   stopSignal?.throwIfAborted();
   const authority = new AbortController();
   const signal = stopSignal ? AbortSignal.any([authority.signal, stopSignal]) : authority.signal;
   let authorityError: unknown;
   let pulsePromise: Promise<void> | null = null;
+  const nowServerMs = () => Date.now() + clockOffsetMs;
+  const expiresAtMs = new Date(job.leaseExpiresAt).getTime();
+  const leaseExpired = () => new Error(`Lease ${job.leaseId} for job ${job.jobId} expired during execution (expired at ${job.leaseExpiresAt})`);
   const pulse = () => {
     if (pulsePromise || authorityError || signal.aborted) return;
     pulsePromise = client.heartbeat("fetching", job.jobId, job.leaseId)
-      .then(() => {})
+      .then((res: unknown) => {
+        if (res && typeof res === "object" && "serverTime" in res) {
+          const serverTimeMs = new Date((res as { serverTime: string }).serverTime).getTime();
+          if (Number.isFinite(serverTimeMs)) {
+            clockOffsetMs = serverTimeMs - Date.now();
+          }
+        }
+      })
       .catch((error: unknown) => {
         logger.warn(`Heartbeat pulse lost for leased job ${job.jobId}`, error);
         authorityError = error;
@@ -53,9 +71,7 @@ export async function runLeasedJob(
   };
   const timer = setInterval(pulse, heartbeatIntervalMs);
   // Fixed lease deadline: a pending heartbeat must not keep source work alive past expiry.
-  const expiresAtMs = new Date(job.leaseExpiresAt).getTime();
-  const leaseExpired = () => new Error(`Lease ${job.leaseId} for job ${job.jobId} expired during execution (expired at ${job.leaseExpiresAt})`);
-  const remainingMs = expiresAtMs - Date.now();
+  const remainingMs = expiresAtMs - nowServerMs();
   if (!Number.isFinite(remainingMs) || remainingMs <= 0) { clearInterval(timer); authority.abort(); throw leaseExpired(); }
   const deadline = setTimeout(() => { authorityError ??= leaseExpired(); authority.abort(); }, Math.min(remainingMs, 2_147_483_647)); // setTimeout overflows above 2^31-1 ms and would fire at once
   try {
@@ -63,10 +79,17 @@ export async function runLeasedJob(
     clearInterval(timer);
     if (pulsePromise) await pulsePromise;
     if (authorityError) throw authorityError;
-    if (Date.now() >= expiresAtMs) throw leaseExpired();
+    if (nowServerMs() >= expiresAtMs) throw leaseExpired();
     signal.throwIfAborted();
     // A final lease check closes the race between the last periodic pulse and submission.
-    await client.heartbeat("fetching", job.jobId, job.leaseId);
+    const finalHeartbeat = await client.heartbeat("fetching", job.jobId, job.leaseId);
+    if (finalHeartbeat && typeof finalHeartbeat === "object" && "serverTime" in finalHeartbeat) {
+      const serverTimeMs = new Date((finalHeartbeat as { serverTime: string }).serverTime).getTime();
+      if (Number.isFinite(serverTimeMs)) {
+        clockOffsetMs = serverTimeMs - Date.now();
+      }
+    }
+    if (nowServerMs() >= expiresAtMs) throw leaseExpired();
     signal.throwIfAborted();
 
     const idempotencyKey = options?.idempotencyKey ?? crypto.randomUUID();

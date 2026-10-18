@@ -1,24 +1,26 @@
-# Active slice: STAGE-3-COORDINATOR-SCALING (2026-10-18, local commit, no push)
+# Active slice: STAGE-4-CRAWLER-CONCURRENCY-TIMING (2026-10-18, local commit, no push)
 
-- Objective: Scale coordinator queries and protect Cloudflare Worker D1 subrequest limits with high-frequency indexes, batch statement chunking, and source-access profile lookup memoization.
+- Objective: Handle batched job claims and calibrate lease expiration deadlines via coordinator serverTime clock offset.
 - Working theory:
-  1. High-frequency queries in `crawl_jobs`, `source_items`, `source_leads`, `package_fronts`, `registered_apps`, and `canonical_packages` lack composite and single-column indexes, resulting in full table scans under load.
-  2. Adding 10 targeted indexes reduces query latency and row reads significantly in D1.
-  3. D1 has a hard limit on batch statement sizes. Adding `executeBatchChunked<T>(statements, chunkSize = 50)` ensures batch writes never breach Cloudflare Worker limits.
-  4. Repeated source profile lookups in claim loops cause redundant D1 queries for the same origin/path. Memoizing lookups in `Coordinator.claim()` eliminates repetitive D1 calls per invocation.
+  1. In `src-crawler/src/runner/daemon.ts:262`, `const { job } = claim;` ignored `claim.jobs` when multiple jobs were returned in a batched claim response, abandoning subsequent leases.
+  2. Introducing `claimedJobsQueue: CrawlJob[] = []` buffers all jobs from a batch claim and processes them sequentially in subsequent daemon steps without redundant coordinator calls.
+  3. Distributed nodes may suffer from clock drift against the coordinator. Calculating `clockOffset = serverTime - Date.now()` from heartbeat responses and HTTP date headers allows local lease preflight and execution deadlines to stay synchronized with the coordinator authority.
 - Implementation steps:
-  1. Add 10 high-frequency indexes to `D1_SCHEMA_SQL` in `src-worker/src/storage/d1/utils.ts`.
-  2. Add indexes in `src-worker/test/support/local_sqlite.ts`, ensuring post-migration indexing for schema upgrade test safety.
-  3. Add `executeBatchChunked<T>` to `Coordinator` in `src-worker/src/storage/d1/coordinator.ts`.
-  4. Wire `profileCache` memoization in `Coordinator.claim()` and `activeSourceAccessProfileForTarget()`.
-  5. Update `docs/source/CHANGELOG.md` under `vrcp-worker-preview`.
+  1. Add `getClockOffset()` and track clock offset from HTTP Date header and heartbeat responses in `src-crawler/src/client/node_client.ts`.
+  2. In `src-crawler/src/runner/lease_runner.ts`, calibrate execution deadline and pre-submission lease validity using `nowServerMs() = Date.now() + clockOffsetMs`.
+  3. In `src-crawler/src/runner/daemon.ts`, queue `claim.jobs` into `claimedJobsQueue` and use clock offset in preflight lease check.
+  4. Add unit tests for batch queueing in `src-crawler/tests/node_daemon.test.ts` and clock offset calibration in `src-crawler/tests/node_lease_runner.test.ts`.
+  5. Update `docs/source/CHANGELOG.md` under `vrcp-crawler-node-preview`.
 - Verification status: Verified locally.
-  - Worker domain suite: `bun test` passed 299 tests across 23 files (3514 assertions).
-  - Worker typechecks: `bun run check` clean across all 3 tsconfigs.
-  - Worker Vitest: `bun run test:workers` passed 3 tests.
-  - Native runtime smoke: `node src-worker/test/coordinator_runtime_smoke.mjs` passed 100% of checks.
+  - Crawler test suite: `bun test` passed 181 tests across 27 files (1529 assertions).
+  - Crawler typecheck: `bunx tsc --noEmit` clean.
 
 # Previous checkpoints
+
+# STAGE-3-COORDINATOR-SCALING checkpoint (2026-10-18, local commit 3573ef5)
+- Objective: Scale coordinator queries and protect Cloudflare Worker D1 subrequest limits with high-frequency indexes, batch statement chunking, and source-access profile lookup memoization.
+- Implemented: 10 targeted D1 query indexes, 50-statement batch chunking helper, profileCache memoization, and safe upgrade test ordering.
+- Verification: 299 worker tests pass, 3 Vitest tests pass, all typechecks clean, 100% native runtime smoke checks pass.
 
 # STAGE-2-SECURITY-POLICY checkpoint (2026-10-18, local commit 2d26f30)
 - Objective: Enforce strict capability token format in Coordinator.authenticate() and block binary URLs/content types in crawler fetchPublicMetadata().

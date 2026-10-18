@@ -150,6 +150,8 @@ See full history at [docs/changelogs/vrcp-crawler-client/preview](https://github
 Remove Watchtower and host socket mounts from Docker compose. Require pinned image digests and isolate multi-node data volumes. Document environment variables.
 <!-- vrcp-crawler-node-preview-DESCRIPTION_SUMMARY -->
 ### Added
+- **Batch Claim Queueing**: Queue multiple claimed jobs from coordinator responses to prevent abandoned leases in daemon execution.
+- **Clock Offset Calibration**: Calibrate local lease deadlines against coordinator serverTime received in heartbeats and date headers.
 - **Activity and Finding Broadcast**: Broadcast operational activities and discovery findings with dedicated tags to the node log file.
 - **Recovery Checks**: Exercise abrupt process termination over loopback HTTP and actual SQLite-full rollback without filling host disks.
 ### Bugs Fixed

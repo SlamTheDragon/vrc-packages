@@ -148,4 +148,30 @@ describe("node lease runner", () => {
     expect(aborted).toBe(true);
     expect(submissions).toBe(0);
   });
+
+  test("calibrates lease deadline using serverTime clock offset", async () => {
+    let submissions = 0;
+    // Server is 50 seconds ahead of local node time
+    // Lease expires in 50ms relative to server (even though local clock thinks 50050ms remaining)
+    const serverTimeAhead = new Date(Date.now() + 50_000).toISOString();
+    const leaseExpiresAt = new Date(Date.now() + 50_000 + 50).toISOString();
+    const client = {
+      heartbeat: async () => ({
+        schemaVersion: 1,
+        status: "alive",
+        serverTime: serverTimeAhead
+      }),
+      submit: async (): Promise<ResultResponse> => {
+        submissions++;
+        throw new Error("unexpected submission");
+      }
+    };
+    const soonServer = CrawlJobSchema.parse({ ...fixtureJob, leaseExpiresAt });
+    let aborted = false;
+    await expect(runLeasedJob(soonServer, client, (_input, init) => new Promise<Response>((_resolve, reject) =>
+      init?.signal?.addEventListener("abort", () => { aborted = true; reject(new Error("aborted")); }, { once: true })),
+      1_000)).rejects.toThrow("expired during execution");
+    expect(aborted).toBe(true);
+    expect(submissions).toBe(0);
+  });
 });

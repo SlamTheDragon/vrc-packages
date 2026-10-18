@@ -42,6 +42,11 @@ export interface CoordinatorClientOptions {
 export class CoordinatorClient {
   private readonly maxRetries: number;
   private readonly retryBaseDelayMs: number;
+  private clockOffsetMs: number = 0;
+
+  public getClockOffset(): number {
+    return this.clockOffsetMs;
+  }
 
   constructor(
     private readonly baseUrl: string,
@@ -85,6 +90,13 @@ export class CoordinatorClient {
         });
 
         if (response.ok) {
+          const dateHeader = response.headers.get("date");
+          if (dateHeader) {
+            const serverMs = new Date(dateHeader).getTime();
+            if (Number.isFinite(serverMs)) {
+              this.clockOffsetMs = serverMs - Date.now();
+            }
+          }
           const contentLengthHeader = response.headers.get("content-length");
           if (contentLengthHeader !== null) {
             const parsedLength = parseInt(contentLengthHeader, 10);
@@ -176,7 +188,12 @@ export class CoordinatorClient {
     const payload = HeartbeatRequestSchema.parse({ schemaVersion: PROTOCOL_VERSION,
       nodeId: this.nodeId, capabilities: this.capabilities, state,
       ...(activeJobId ? { activeJobId } : {}), ...(activeLeaseId ? { activeLeaseId } : {}) });
-    return HeartbeatResponseSchema.parse(await this.post("/v1/node/heartbeat", payload, 5_000));
+    const response = HeartbeatResponseSchema.parse(await this.post("/v1/node/heartbeat", payload, 5_000));
+    const serverMs = new Date(response.serverTime).getTime();
+    if (Number.isFinite(serverMs)) {
+      this.clockOffsetMs = serverMs - Date.now();
+    }
+    return response;
   }
 
   async submit(request: Omit<ResultRequest, "schemaVersion" | "nodeId">): Promise<ResultResponse> {
