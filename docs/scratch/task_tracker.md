@@ -1,25 +1,25 @@
-# Active slice: STAGE-18-TRUSTED-APP-TAKEDOWN-INTAKE (2026-10-18, local commit, local-only session per user instructions)
+# Active goal status: PAUSED (User explicit pause request, 2026-10-18)
 
-- Status: verified
-- Objective: Route trusted application creator takedown submissions directly into `catalog_tickets` as `'removal_report'` tickets with `'app'` requester type, gated by trusted registered app status (`R54-C38A / R54-C38R / R54-C38B` / `G15`). Reject untrusted applications with 403 Forbidden.
-- Working theory:
-  1. Author directed: "Route trusted app takedown submissions directly into catalog_tickets as 'removal_report' tickets for moderator review, gated by trusted registered app status".
-  2. In `src-worker/src/storage/d1/coordinator.ts` and `src-worker/test/support/local_sqlite.ts`:
-     - Update `authenticateApp` to query `candidate_status` from `registered_apps` and return `candidateStatus` and `isTrusted` flags alongside permissions.
-     - In `reviewAppCandidate`: add `"takedowns:submit"` when an app is reviewed as `"trusted"` or granted delegation.
-     - In `recordRemovalReport`: populate `catalog_tickets` with `requester_type = 'app'` and `reason = parsed.reason ?? "Creator takedown requested by trusted app"`.
-  3. In `src-worker/src/api/downstream_handler.ts`:
-     - In `removal_request` branch: gate on `app.candidateStatus === 'trusted'` or `app.isTrusted === true` or permissions including `"takedowns:submit"` or `"claims:delegate"`.
-     - Reject untrusted apps with 403 Forbidden (`"Application is not authorized for creator takedown requests; trusted registered app status required"`).
-     - Submit valid trusted reports to `store.recordRemovalReport` returning 202 Accepted.
-  4. In `src-worker/test/downstream_client_protocol.test.ts`:
-     - Test that untrusted apps are rejected with 403 Forbidden.
-     - Test that trusted apps are accepted with 202 and create `removal_report` tickets in `catalog_tickets`.
-- Verification: 321/321 worker unit tests pass (3675 assertions) across 23 files; 13/13 downstream client tests pass (192 assertions); 100% native workerd runtime smoke check passes; 189/189 crawler tests pass; clean TypeScript checks across crawler and worker.
+- State: Paused by user request. Working tree clean for code; double-entry ledgers updated with author comment dispositions.
+- Preceding completed slice: STAGE-18-TRUSTED-APP-TAKEDOWN-INTAKE (verified, committed locally in `5c97ad2`).
+- Resolved Author Decisions (Question Roulette Round 4, 2026-10-18):
+  1. `R60-C60D`: Exempt immutable `docs/changelogs/` archives from strict local link checks while strictly enforcing zero broken links across all active documentation. Pruned verified row from unmerged ledger.
+  2. `R56-C56D`: Maintain all legal documentation in `LEGAL.md` strictly marked as draft without compliance claims, and limit personal data ingestion to anonymous IDs and boolean flags. Pruned verified row from unmerged ledger.
+  3. `R58-DIRTY-COMMIT`: Allow preview publication on ahead branches to automatically commit all non-ignored pending changes as a pre-delivery checkpoint, while keeping production releases strictly on clean main. Recorded in `IMPLEMENTATION_PLAN.md`.
+  4. `R58-PREVIEW-INIT` / `Q-WORKER-PREVIEW`: Selected as next implementation slice — implement automated preview D1 schema verification and non-production seed population script.
+- Queued slice on resume: `STAGE-19-PREVIEW-D1-INIT-AUTOMATION` (`R58-PREVIEW-INIT` / `Q-WORKER-PREVIEW`)
+  - Target:
+    - Update `scripts/worker-preview-init.mjs` to authorize preview delivery runs (`cloudflare-worker.yml` with `VRCP_WORKER_OPERATION_ENV: cloudflare-preview`) alongside manual dispatch.
+    - Add `--auto-seed` / `--seed` support in `scripts/worker-preview-init.mjs` and `previewFetch` to allow populating approved test seeds on initial preview deployments.
+    - Wire `initSchema` in `src-worker/src/storage/d1/coordinator.ts` and `local_sqlite.ts` to execute `seedInitialProfiles` when `autoSeed: true`.
+    - Add automated preview initialization step to `.github/workflows/cloudflare-worker.yml` after preview deployment.
+    - Verify with `bun test ./tests/worker-preview-init.test.ts`.
+- Open risks:
+  - Preview Cloudflare credentials and operator token must remain strictly in protected GitHub Secrets / CI environments.
+  - Initial preview seeding must remain idempotent (`CREATE TABLE IF NOT EXISTS`, deduplicated URL/profile checks) so repeated delivery runs do not fail or duplicate rows.
+  - Scratch footprint invariant preserved (strictly 3 files: `IMPLEMENTATION_PLAN.md`, `UNMERGED_IMPLEMENTATION_PLAN.md`, `task_tracker.md`).
 
-# Previous checkpoints
-
-# STAGE-18-TRUSTED-APP-TAKEDOWN-INTAKE checkpoint (2026-10-18, local commit)
+# STAGE-18-TRUSTED-APP-TAKEDOWN-INTAKE checkpoint (2026-10-18, local commit 5c97ad2)
 - Status: verified
 - Objective: Route trusted application creator takedown submissions directly into `catalog_tickets` as `'removal_report'` tickets with `'app'` requester type, gated by trusted registered app status (`R54-C38A / R54-C38R / R54-C38B` / `G15`). Reject untrusted applications with 403 Forbidden.
 - Implemented: `DownstreamAppPrincipal` with `candidateStatus` and `isTrusted` in `downstream_handler.ts`; gated `removal_request` on trusted app status; populated `catalog_tickets` with `requester_type = 'app'` and `reason` in `coordinator.ts` and `local_sqlite.ts`; added `"takedowns:submit"` in `reviewAppCandidate`; verified in `downstream_client_protocol.test.ts`.
