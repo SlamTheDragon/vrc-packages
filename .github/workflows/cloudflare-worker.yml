@@ -121,3 +121,12 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           OPERATOR_TOKEN: ${{ secrets.OPERATOR_TOKEN }}
+      - name: Prepare checked distributed preview dependencies
+        run: bun run prepare:dev preview worker
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - name: Initialize preview D1 schema and seeds
+        run: bun run worker:preview:init --execute --seed
+        env:
+          OPERATOR_TOKEN: ${{ secrets.OPERATOR_TOKEN }}
+          VRCP_WORKER_OPERATION_ENV: cloudflare-preview

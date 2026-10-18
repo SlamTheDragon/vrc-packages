@@ -4,15 +4,30 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 export const previewOrigin = "https://vrc-package-crawler-preview.slamthedragon.workers.dev";
 
 export function requirePreviewInitialization(env) {
-  if (env.GITHUB_ACTIONS !== "true" || env.GITHUB_EVENT_NAME !== "workflow_dispatch" ||
-      env.GITHUB_REPOSITORY !== "SlamTheDragon/vrc-packages" || env.GITHUB_REF !== "refs/heads/main" ||
-      env.GITHUB_WORKFLOW_REF !== "SlamTheDragon/vrc-packages/.github/workflows/worker-preview-init.yml@refs/heads/main" ||
-      env.VRCP_WORKER_OPERATION_ENV !== "cloudflare-preview" || !/^[a-f0-9]{64}$/i.test(env.OPERATOR_TOKEN ?? "")) {
-    throw new Error("Preview initialization requires its main-ref manual workflow and protected operator secret");
+  if (env.GITHUB_ACTIONS !== "true" ||
+      env.GITHUB_REPOSITORY !== "SlamTheDragon/vrc-packages" ||
+      env.VRCP_WORKER_OPERATION_ENV !== "cloudflare-preview" ||
+      !/^[a-f0-9]{64}$/i.test(env.OPERATOR_TOKEN ?? "")) {
+    throw new Error("Preview initialization requires its verified GitHub environment and protected operator secret");
+  }
+
+  const isManualMainDispatch =
+    env.GITHUB_EVENT_NAME === "workflow_dispatch" &&
+    env.GITHUB_REF === "refs/heads/main" &&
+    env.GITHUB_WORKFLOW_REF === "SlamTheDragon/vrc-packages/.github/workflows/worker-preview-init.yml@refs/heads/main";
+
+  const isAutomatedPreviewDelivery =
+    typeof env.GITHUB_WORKFLOW_REF === "string" &&
+    env.GITHUB_WORKFLOW_REF.startsWith("SlamTheDragon/vrc-packages/.github/workflows/cloudflare-worker.yml@") &&
+    (env.GITHUB_REF?.startsWith("refs/tags/cloudflare-worker/v") || env.GITHUB_REF === "refs/heads/main") &&
+    (env.GITHUB_EVENT_NAME === "push" || env.GITHUB_EVENT_NAME === "workflow_dispatch");
+
+  if (!isManualMainDispatch && !isAutomatedPreviewDelivery) {
+    throw new Error("Preview initialization requires its main-ref manual workflow or preview delivery context");
   }
 }
 
-export function previewFetch(request = fetch) {
+export function previewFetch(request = fetch, allowedAutoSeed = false) {
   return async (input, init) => {
     const url = new URL(String(input));
     if (url.origin !== previewOrigin || url.username || url.password || url.hash ||
@@ -22,8 +37,10 @@ export function previewFetch(request = fetch) {
     }
     if (init.method === "POST") {
       const body = JSON.parse(init.body);
-      if (body?.schemaVersion !== 1 || body.autoSeed !== false || Object.keys(body).length !== 2) {
-        throw new Error("Preview initialization must explicitly disable seeding");
+      if (body?.schemaVersion !== 1 || body.autoSeed !== allowedAutoSeed || Object.keys(body).length !== 2) {
+        throw new Error(allowedAutoSeed
+          ? "Preview initialization must specify schemaVersion and enabled seeding"
+          : "Preview initialization must explicitly disable seeding");
       }
     }
     const response = await request(url.href, { ...init, redirect: "error", signal: AbortSignal.timeout(30_000) });
@@ -49,26 +66,28 @@ export function previewFetch(request = fetch) {
   };
 }
 
-export async function initializePreview(Client, env = process.env, request = fetch) {
+export async function initializePreview(Client, env = process.env, request = fetch, { autoSeed = false } = {}) {
   requirePreviewInitialization(env);
-  const client = new Client({ baseUrl: previewOrigin, operatorToken: env.OPERATOR_TOKEN, fetch: previewFetch(request) });
-  const initialized = await client.operator.init({ autoSeed: false });
-  if (initialized.autoSeed !== false) throw new Error("Preview initialization did not confirm disabled seeding");
+  const client = new Client({ baseUrl: previewOrigin, operatorToken: env.OPERATOR_TOKEN, fetch: previewFetch(request, autoSeed) });
+  const initialized = await client.operator.init({ autoSeed });
+  if (initialized.autoSeed !== autoSeed) throw new Error("Preview initialization did not confirm expected seeding");
   const catalog = await client.index.query({ limit: 1 });
-  return { target: previewOrigin, autoSeed: false, schemaVersion: catalog.schemaVersion, catalogRead: "passed" };
+  return { target: previewOrigin, autoSeed, schemaVersion: catalog.schemaVersion, catalogRead: "passed" };
 }
 
 if (import.meta.main) {
   try {
     const args = process.argv.slice(2);
+    const hasExecute = args.includes("--execute");
+    const autoSeed = args.includes("--seed") || args.includes("--auto-seed");
     if (args.length === 0) {
       console.log(JSON.stringify({ purpose: "plan-only", target: previewOrigin, autoSeed: false,
         next: "Run worker-preview-init.yml on main to initialize preview without a version bump" }));
-    } else if (args.length === 1 && args[0] === "--execute") {
+    } else if (hasExecute && args.every(a => a === "--execute" || a === "--seed" || a === "--auto-seed")) {
       requirePreviewInitialization(process.env);
       const workerDirectory = fileURLToPath(new URL("../src-worker/", import.meta.url));
       const { VRCPackageClient } = await import(pathToFileURL(Bun.resolveSync("vrc-packages-api", workerDirectory)).href);
-      console.log(JSON.stringify(await initializePreview(VRCPackageClient)));
+      console.log(JSON.stringify(await initializePreview(VRCPackageClient, process.env, fetch, { autoSeed })));
     } else throw new Error("Invalid initialization arguments");
   } catch {
     // SDK, transport and schema errors can contain remote data. Do not print them.

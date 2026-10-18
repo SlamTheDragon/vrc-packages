@@ -1,23 +1,8 @@
-# Active goal status: PAUSED (User explicit pause request, 2026-10-18)
-
-- State: Paused by user request. Working tree clean for code; double-entry ledgers updated with author comment dispositions.
-- Preceding completed slice: STAGE-18-TRUSTED-APP-TAKEDOWN-INTAKE (verified, committed locally in `5c97ad2`).
-- Resolved Author Decisions (Question Roulette Round 4, 2026-10-18):
-  1. `R60-C60D`: Exempt immutable `docs/changelogs/` archives from strict local link checks while strictly enforcing zero broken links across all active documentation. Pruned verified row from unmerged ledger.
-  2. `R56-C56D`: Maintain all legal documentation in `LEGAL.md` strictly marked as draft without compliance claims, and limit personal data ingestion to anonymous IDs and boolean flags. Pruned verified row from unmerged ledger.
-  3. `R58-DIRTY-COMMIT`: Allow preview publication on ahead branches to automatically commit all non-ignored pending changes as a pre-delivery checkpoint, while keeping production releases strictly on clean main. Recorded in `IMPLEMENTATION_PLAN.md`.
-  4. `R58-PREVIEW-INIT` / `Q-WORKER-PREVIEW`: Selected as next implementation slice — implement automated preview D1 schema verification and non-production seed population script.
-- Queued slice on resume: `STAGE-19-PREVIEW-D1-INIT-AUTOMATION` (`R58-PREVIEW-INIT` / `Q-WORKER-PREVIEW`)
-  - Target:
-    - Update `scripts/worker-preview-init.mjs` to authorize preview delivery runs (`cloudflare-worker.yml` with `VRCP_WORKER_OPERATION_ENV: cloudflare-preview`) alongside manual dispatch.
-    - Add `--auto-seed` / `--seed` support in `scripts/worker-preview-init.mjs` and `previewFetch` to allow populating approved test seeds on initial preview deployments.
-    - Wire `initSchema` in `src-worker/src/storage/d1/coordinator.ts` and `local_sqlite.ts` to execute `seedInitialProfiles` when `autoSeed: true`.
-    - Add automated preview initialization step to `.github/workflows/cloudflare-worker.yml` after preview deployment.
-    - Verify with `bun test ./tests/worker-preview-init.test.ts`.
-- Open risks:
-  - Preview Cloudflare credentials and operator token must remain strictly in protected GitHub Secrets / CI environments.
-  - Initial preview seeding must remain idempotent (`CREATE TABLE IF NOT EXISTS`, deduplicated URL/profile checks) so repeated delivery runs do not fail or duplicate rows.
-  - Scratch footprint invariant preserved (strictly 3 files: `IMPLEMENTATION_PLAN.md`, `UNMERGED_IMPLEMENTATION_PLAN.md`, `task_tracker.md`).
+# STAGE-19-PREVIEW-D1-INIT-AUTOMATION checkpoint (2026-10-18, local commit)
+- Status: verified
+- Objective: Implement automated preview D1 schema verification and non-production seed population script (`R58-PREVIEW-INIT` / `Q-WORKER-PREVIEW`).
+- Implemented: Added `isAutomatedPreviewDelivery` in `scripts/worker-preview-init.mjs` authorizing `cloudflare-worker.yml` on preview tags; added `--seed` / `--auto-seed` supporting `autoSeed: true` with 64 KiB limits and operator token validation; added steps in `.github/workflows/cloudflare-worker.yml` to prepare dependencies and initialize preview D1 schema with seeds; verified R13-C2 invariant that `autoSeed` creates candidate jobs only with 0 profiles.
+- Verification: 9/9 unit tests pass in `tests/worker-preview-init.test.ts` (58 assertions); 50/50 workflow delivery tests pass in `tests/delivery.test.ts` (1081 assertions); 321/321 worker tests pass (3675 assertions); 100% native workerd runtime smoke check passes (24/24 steps); 189/189 crawler tests pass (1700 assertions); all typechecks clean.
 
 # STAGE-18-TRUSTED-APP-TAKEDOWN-INTAKE checkpoint (2026-10-18, local commit 5c97ad2)
 - Status: verified
