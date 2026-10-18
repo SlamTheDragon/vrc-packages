@@ -133,7 +133,7 @@ describe("Cloudflare D1 Coordinator Store & Edge Worker Adapter", () => {
       pathScope: target.pathname, method: "GET", purpose: "metadata", minDelayMs: delay,
       ...(target.search ? { exactQuery: target.search.slice(1) } : {}),
       expiresAt: new Date(Date.now() + 3600000).toISOString(), reviewReference: "OFFLINE-URL-EQUIVALENCE",
-      reason: "Hermetic accepted source fixture", retainClasses: ["normalized_facts"], publishClasses: [] }, "fixture-operator");
+      reason: "Hermetic accepted source fixture", retainClasses: ["normalized_facts"], publishClasses: ["normalized_facts"] }, "fixture-operator");
     await store.recordRobotsSnapshot(target.origin, 404);
     await store.seedJob(target.href, platform, delay, undefined, "metadata");
     const token = await store.createNodeCredential(nodeId, [platform]);

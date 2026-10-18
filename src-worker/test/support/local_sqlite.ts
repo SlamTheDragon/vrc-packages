@@ -2325,25 +2325,60 @@ export class LocalCoordinatorStore implements CoordinatorStore, PublicCatalogSto
     const canonicalIds = pkgRows.map((p) => p.canonical_id);
     const placeholders = canonicalIds.map(() => "?").join(",");
 
-    const linkRows = this.db.prepare(`SELECT link_id, canonical_id, source_key, evidence_kind, confidence, created_at
-      FROM identity_links WHERE canonical_id IN (${placeholders}) AND review_state='accepted'
-      ORDER BY created_at ASC`).all(...canonicalIds) as Array<{
+    const linkRows = this.db.prepare(`SELECT il.link_id, il.canonical_id, il.source_key, il.evidence_kind, il.confidence, il.created_at,
+        sap.publish_classes_json
+      FROM identity_links il
+      LEFT JOIN (
+        SELECT sv.source_key, sap_inner.publish_classes_json
+        FROM source_versions sv
+        JOIN source_access_profiles sap_inner ON sv.source_profile_id = sap_inner.profile_id
+        WHERE sv.version_no = (
+          SELECT MAX(sv2.version_no) FROM source_versions sv2 WHERE sv2.source_key = sv.source_key
+        )
+      ) sap ON il.source_key = sap.source_key
+      WHERE il.canonical_id IN (${placeholders}) AND il.review_state='accepted'
+      ORDER BY il.created_at ASC`).all(...canonicalIds) as Array<{
       link_id: string; canonical_id: string; source_key: string; evidence_kind: string;
-      confidence: number; created_at: string;
+      confidence: number; created_at: string; publish_classes_json: string | null;
     }>;
     const linksByCanonical = new Map<string, CatalogIdentityLink[]>();
+    const canonicalHasLinks = new Set<string>();
+    const canonicalHasPublishableLink = new Set<string>();
     for (const l of linkRows) {
-      const list = linksByCanonical.get(l.canonical_id) || [];
-      list.push({
-        linkId: l.link_id, sourceKey: l.source_key,
-        evidenceKind: l.evidence_kind as CatalogIdentityLink["evidenceKind"],
-        confidence: l.confidence, createdAt: l.created_at
-      });
-      linksByCanonical.set(l.canonical_id, list);
+      canonicalHasLinks.add(l.canonical_id);
+      let canPublish = true;
+      if (l.publish_classes_json !== null && l.publish_classes_json !== undefined) {
+        try {
+          const parsed = JSON.parse(l.publish_classes_json);
+          canPublish = Array.isArray(parsed) && parsed.length > 0 && parsed.includes("normalized_facts");
+        } catch {
+          canPublish = false;
+        }
+      }
+      if (canPublish) {
+        canonicalHasPublishableLink.add(l.canonical_id);
+        const list = linksByCanonical.get(l.canonical_id) || [];
+        list.push({
+          linkId: l.link_id, sourceKey: l.source_key,
+          evidenceKind: l.evidence_kind as CatalogIdentityLink["evidenceKind"],
+          confidence: l.confidence, createdAt: l.created_at
+        });
+        linksByCanonical.set(l.canonical_id, list);
+      }
     }
 
-    const frontRows = this.db.prepare(`SELECT front_id, canonical_id, source_key, platform, storefront_url, price, currency, availability, observed_at
-      FROM package_fronts pf WHERE pf.canonical_id IN (${placeholders})
+    const frontRows = this.db.prepare(`SELECT pf.front_id, pf.canonical_id, pf.source_key, pf.platform, pf.storefront_url, pf.price, pf.currency, pf.availability, pf.observed_at,
+        sap.publish_classes_json
+      FROM package_fronts pf
+      LEFT JOIN (
+        SELECT sv.source_key, sap_inner.publish_classes_json
+        FROM source_versions sv
+        JOIN source_access_profiles sap_inner ON sv.source_profile_id = sap_inner.profile_id
+        WHERE sv.version_no = (
+          SELECT MAX(sv2.version_no) FROM source_versions sv2 WHERE sv2.source_key = sv.source_key
+        )
+      ) sap ON pf.source_key = sap.source_key
+      WHERE pf.canonical_id IN (${placeholders})
         AND EXISTS (
           SELECT 1 FROM identity_links il
           WHERE il.canonical_id = pf.canonical_id
@@ -2354,39 +2389,53 @@ export class LocalCoordinatorStore implements CoordinatorStore, PublicCatalogSto
       front_id: string; canonical_id: string; source_key: string; platform: Platform;
       storefront_url: string; price: number | null; currency: string | null;
       availability: "available" | "delisted" | "unknown"; observed_at: string;
+      publish_classes_json: string | null;
     }>;
     const frontsByCanonical = new Map<string, PackageFront[]>();
     for (const f of frontRows) {
-      const list = frontsByCanonical.get(f.canonical_id) || [];
-      list.push({
-        frontId: f.front_id,
-        canonicalId: f.canonical_id,
-        sourceKey: f.source_key,
-        platform: f.platform,
-        storefrontUrl: f.storefront_url,
-        price: f.price,
-        currency: f.currency,
-        availability: f.availability,
-        observedAt: f.observed_at
-      });
-      frontsByCanonical.set(f.canonical_id, list);
+      let canPublish = true;
+      if (f.publish_classes_json !== null && f.publish_classes_json !== undefined) {
+        try {
+          const parsed = JSON.parse(f.publish_classes_json);
+          canPublish = Array.isArray(parsed) && parsed.length > 0 && parsed.includes("normalized_facts");
+        } catch {
+          canPublish = false;
+        }
+      }
+      if (canPublish) {
+        const list = frontsByCanonical.get(f.canonical_id) || [];
+        list.push({
+          frontId: f.front_id,
+          canonicalId: f.canonical_id,
+          sourceKey: f.source_key,
+          platform: f.platform,
+          storefrontUrl: f.storefront_url,
+          price: f.price,
+          currency: f.currency,
+          availability: f.availability,
+          observedAt: f.observed_at
+        });
+        frontsByCanonical.set(f.canonical_id, list);
+      }
     }
 
-    return pkgRows.map((pkg) => ({
-      canonicalId: pkg.canonical_id,
-      umbrella: pkg.umbrella as CatalogPackage["umbrella"],
-      category: pkg.category,
-      lifecycle: pkg.lifecycle as CatalogPackage["lifecycle"],
-      displayName: pkg.display_name,
-      vpmId: pkg.vpm_id,
-      createdAt: pkg.created_at,
-      updatedAt: pkg.updated_at,
-      publishedAt: pkg.published_at ?? null,
-      timestampConfidence: (pkg.timestamp_confidence as CatalogPackage["timestampConfidence"]) ?? null,
-      contentRating: (pkg.content_rating as CatalogPackage["contentRating"]) || "general",
-      acceptedLinks: linksByCanonical.get(pkg.canonical_id) || [],
-      fronts: frontsByCanonical.get(pkg.canonical_id) || []
-    }));
+    return pkgRows
+      .filter((pkg) => !canonicalHasLinks.has(pkg.canonical_id) || canonicalHasPublishableLink.has(pkg.canonical_id))
+      .map((pkg) => ({
+        canonicalId: pkg.canonical_id,
+        umbrella: pkg.umbrella as CatalogPackage["umbrella"],
+        category: pkg.category,
+        lifecycle: pkg.lifecycle as CatalogPackage["lifecycle"],
+        displayName: pkg.display_name,
+        vpmId: pkg.vpm_id,
+        createdAt: pkg.created_at,
+        updatedAt: pkg.updated_at,
+        publishedAt: pkg.published_at ?? null,
+        timestampConfidence: (pkg.timestamp_confidence as CatalogPackage["timestampConfidence"]) ?? null,
+        contentRating: (pkg.content_rating as CatalogPackage["contentRating"]) || "general",
+        acceptedLinks: linksByCanonical.get(pkg.canonical_id) || [],
+        fronts: frontsByCanonical.get(pkg.canonical_id) || []
+      }));
   }
 
   private buildCatalogPackage(pkg: {
@@ -2495,6 +2544,12 @@ export class LocalCoordinatorStore implements CoordinatorStore, PublicCatalogSto
             canonicalId: pkg.canonical_id,
             updatedAt: pkg.updated_at,
             package: item
+          });
+        } else {
+          deltas.push({
+            action: "delist",
+            canonicalId: pkg.canonical_id,
+            updatedAt: pkg.updated_at
           });
         }
       }

@@ -8,7 +8,7 @@ Here are the latest changelogs of each package and applications. For a full hist
 ## What Changed
 
 <!-- MASTER_SUMMARY -->
-Preserve evidence, settled outbox results and URL resource distinctions. Broadcast crawler activities and findings to the dedicated log file. Isolate provisional storefront fronts from public projection. Emit delist tombstones on package withdrawal. Verify coordinator failure paths and multi-node fleet allocation in native workerd runtime. Bound claim candidate scans with explicit invocation budgets to protect Cloudflare quotas. Remove Watchtower from crawler Docker configuration and require isolated fleet data volumes.
+Preserve evidence, settled outbox results and URL resource distinctions. Broadcast crawler activities and findings to the dedicated log file. Isolate provisional storefront fronts from public projection. Emit delist tombstones on package withdrawal. Enforce source access profile publication rights in public catalog and delta feeds. Verify coordinator failure paths and multi-node fleet allocation in native workerd runtime. Bound claim candidate scans with explicit invocation budgets to protect Cloudflare quotas. Remove Watchtower from crawler Docker configuration and require isolated fleet data volumes.
 <!-- MASTER_SUMMARY -->
 
 ## Table of Contents
@@ -191,9 +191,10 @@ See full history at [docs/changelogs/vrcp-web/preview](https://github.com/SlamTh
 ## VRC Packages Worker - `vrcp-worker-preview`
 
 <!-- vrcp-worker-preview-DESCRIPTION_SUMMARY -->
-Enforce per-isolate inbound 429 rate limiting. Bound claim candidate scans by an explicit page budget. Verify coordinator failure paths and multi-node fleet allocation in native workerd runtime. Use unique catalog epochs, preserve evidence and URL distinctions, withhold provisional fronts, and emit delist tombstones.
+Enforce source access profile publication rights in public catalog and delta feeds. Enforce per-isolate inbound 429 rate limiting. Bound claim candidate scans by an explicit page budget. Verify coordinator failure paths and multi-node fleet allocation in native workerd runtime. Use unique catalog epochs, preserve evidence and URL distinctions, withhold provisional fronts, and emit delist tombstones.
 <!-- vrcp-worker-preview-DESCRIPTION_SUMMARY -->
 ### Added
+- **Publication Rights Enforcement**: Enforce source access profile publication classes in catalog projection and delta streaming (R13-C3 / Q-PUBLICATION). Withhold packages whose source profile sets publishClasses: [] and emit delist tombstones.
 - **Inbound Rate Limiting**: Enforce per-isolate inbound 429 rate limiting with RFC-compliant headers across public, node, and downstream routes.
 - **Downstream Permission Enforcement**: Verify application permissions for catalog search and demand feedback, returning 403 on missing permissions.
 - **D1 High-Frequency Indexes**: Add ten query indexes for canonical packages, crawl jobs, source leads, items, fronts, and apps.
