@@ -15,9 +15,16 @@ description: "Self-management, resilience, operational evidence, and pre-edit gu
    - Review statements before communicating: verify that numbers, parameters, routes, and citations represent the current verified state.
    - Write all prose, reports, and messages in ASD-STE100 Simplified Technical English (short sentences, simple tenses, active voice, zero marketing adjectives).
 
-3. **Pre-edit guard verification**:
-   - Before executing any file modification (`replace_file_content` or `write_to_file`), verify the proposed diff against authority, AST invariants, inbound callers, and schema contracts.
-   - Guard against accidental deletions, unintended rewrites, and syntax errors. Abort any edit that violates architectural covenants, source access boundaries, or credential protection rules.
+3. **Pre-edit subagent submission harness and edit-guard rules**:
+   - **Pre-edit audit requirement**: Before executing any file modification (`replace_file_content` or `write_to_file`), submit the proposed diff, target file path, rationale, and evidence source to the `edit-guard` sub-agent.
+   - **Relevant prompt context**: The submission payload to `edit-guard` must enumerate the original user prompt and only the relevant underlying prompts that followed since the original prompt. Do not include unrelated conversational exchanges. The edit guard evaluates the edit against this specific prompt lineage.
+   - **Code safety enforcement**: The edit guard must practice strict code safety. It must verify that the proposed edit introduces no destructive file overwrites, accidental truncations, syntax defects, type regressions, broken contracts, or unhandled runtime hazards.
+   - **Explicit data proof**: The parent agent must identify and supply explicit data proof to satisfy the edit (e.g., exact file line references, test outputs, compiler/typecheck diagnostics, schemas, or calculation results). The edit guard must reject edits backed only by unsupported prose assertions.
+   - **Skeptical posture and zero implicit trust**: The edit guard must remain skeptical at all times. It must never trust the parent agent for its potentially reckless actions or claims. The edit guard must independently audit the raw diff against the live file and the relevant prompts.
+   - **Strict verdict protocol**:
+     - The edit guard must reply with `[PERMITTED]` only when the proposed change fully satisfies prompt requirements, code safety checks, explicit data proof, and repository rules.
+     - If any violation, safety risk, missing data proof, reckless behavior, or prompt deviation is detected, the edit guard must reply with `[DENIED] <reason>`, explaining the exact failure.
+     - The parent agent must abort the edit immediately if the response is `[DENIED] <reason>` or anything other than `[PERMITTED]`.
 
 4. **Zero data invention and zero synthetic mockups**:
    - Never invent wire DTO fields, fake audit reasons, uncalibrated performance claims, or synthetic mock schemas.
