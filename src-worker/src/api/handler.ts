@@ -1,6 +1,7 @@
+import { z } from "zod";
 import {
   ClaimRequestSchema, ClaimResponseSchema, HeartbeatRequestSchema, HeartbeatResponseSchema, PROTOCOL_VERSION,
-  ResultRequestSchema, ResultResponseSchema, BatchResultRequestSchema, BatchResultResponseSchema,
+  ResultRequestSchema, ResultResponseSchema, BatchResultRequestSchema, BatchResultResponseSchema, NodeIdSchema,
   type ClaimRequest, type ClaimResponse, type HeartbeatRequest, type HeartbeatResponse,
   type ResultRequest, type ResultResponse, type BatchResultRequest, type BatchResultResponse,
   type Platform
@@ -13,6 +14,22 @@ export interface NodePrincipal {
   credentialVersion: string;
 }
 
+export const NodeRobotsClaimRequestSchema = z.strictObject({
+  schemaVersion: z.literal(PROTOCOL_VERSION),
+  nodeId: NodeIdSchema
+});
+
+export const NodeRobotsResultRequestSchema = z.strictObject({
+  schemaVersion: z.literal(PROTOCOL_VERSION),
+  nodeId: NodeIdSchema,
+  origin: z.string().url().refine((val) => {
+    try { return new URL(val).origin === val; } catch { return false; }
+  }, "Canonical HTTPS origin required"),
+  leaseId: z.string().uuid(),
+  statusCode: z.number().int().min(100).max(599),
+  body: z.string().max(512 * 1024).default("")
+});
+
 /** Runtime-neutral storage boundary. A local SQLite adapter implements this first. */
 export interface CoordinatorStore {
   authenticate(nodeId: string, bearer: string): Promise<NodePrincipal | null> | NodePrincipal | null;
@@ -20,6 +37,8 @@ export interface CoordinatorStore {
   heartbeat(request: HeartbeatRequest, principal: NodePrincipal): Promise<HeartbeatResponse> | HeartbeatResponse;
   submit(request: ResultRequest, principal: NodePrincipal): Promise<ResultResponse> | ResultResponse;
   submitBatch(request: BatchResultRequest, principal: NodePrincipal): Promise<BatchResultResponse> | BatchResultResponse;
+  claimDueRobotsRefresh?(): Promise<{ origin: string; leaseId: string } | null> | { origin: string; leaseId: string } | null;
+  completeRobotsRefresh?(origin: string, leaseId: string, statusCode: number, body?: string): Promise<boolean> | boolean;
 }
 
 export class CoordinatorConflict extends Error {
@@ -79,7 +98,11 @@ export async function handleNodeRequest(
   rateLimiter: IRateLimiter = defaultRateLimiter
 ): Promise<Response> {
   const path = new URL(request.url).pathname;
-  if (request.method !== "POST" || !["/v1/node/jobs/claim", "/v1/node/jobs/result", "/v1/node/jobs/results", "/v1/node/heartbeat"].includes(path)) {
+  const ALLOWED_NODE_ROUTES = [
+    "/v1/node/jobs/claim", "/v1/node/jobs/result", "/v1/node/jobs/results",
+    "/v1/node/heartbeat", "/v1/node/robots/claim", "/v1/node/robots/result"
+  ];
+  if (request.method !== "POST" || !ALLOWED_NODE_ROUTES.includes(path)) {
     return failure(404, "not_found", "Route not found");
   }
 
@@ -91,6 +114,8 @@ export async function handleNodeRequest(
 
   const clientIp = extractClientIp(request);
   const tokenPrefix = auth.slice(7, 23);
+  const isRobotsClaim = path === "/v1/node/robots/claim";
+  const isRobotsResult = path === "/v1/node/robots/result";
   const isClaim = path.endsWith("/claim");
   const isHeartbeat = path.endsWith("/heartbeat");
 
@@ -121,8 +146,10 @@ export async function handleNodeRequest(
     return failure(400, "bad_json", "Request body must be valid JSON");
   }
 
-  const isBatchResult = path.endsWith("/results") || (path.endsWith("/result") && Array.isArray((payload as Record<string, unknown> | null)?.results));
-  const parsed = isClaim ? ClaimRequestSchema.safeParse(payload) :
+  const isBatchResult = path.endsWith("/results") || (path.endsWith("/result") && !isRobotsResult && Array.isArray((payload as Record<string, unknown> | null)?.results));
+  const parsed = isRobotsClaim ? NodeRobotsClaimRequestSchema.safeParse(payload) :
+    isRobotsResult ? NodeRobotsResultRequestSchema.safeParse(payload) :
+    isClaim ? ClaimRequestSchema.safeParse(payload) :
     isHeartbeat ? HeartbeatRequestSchema.safeParse(payload) :
     isBatchResult ? BatchResultRequestSchema.safeParse(payload) :
     ResultRequestSchema.safeParse(payload);
@@ -139,6 +166,43 @@ export async function handleNodeRequest(
   }
 
   try {
+    if (isRobotsClaim) {
+      if (!store.claimDueRobotsRefresh) {
+        return failure(501, "not_implemented", "Robots refresh not supported by store");
+      }
+      const due = await store.claimDueRobotsRefresh();
+      if (!due) {
+        return applyRateLimitHeaders(json({
+          schemaVersion: PROTOCOL_VERSION,
+          status: "empty",
+          retryAfterMs: 60000
+        }), rateResult);
+      }
+      workerLogger.info("Node claimed robots refresh", { nodeId: principal.nodeId, origin: due.origin, leaseId: due.leaseId });
+      return applyRateLimitHeaders(json({
+        schemaVersion: PROTOCOL_VERSION,
+        status: "leased",
+        origin: due.origin,
+        leaseId: due.leaseId
+      }), rateResult);
+    }
+    if (isRobotsResult) {
+      if (!store.completeRobotsRefresh) {
+        return failure(501, "not_implemented", "Robots refresh not supported by store");
+      }
+      const data = parsed.data as z.infer<typeof NodeRobotsResultRequestSchema>;
+      const completed = await store.completeRobotsRefresh(data.origin, data.leaseId, data.statusCode, data.body);
+      if (!completed) {
+        workerLogger.warn("Robots refresh completion rejected", { nodeId: principal.nodeId, origin: data.origin, leaseId: data.leaseId });
+        return failure(403, "forbidden", "Robots refresh lease expired or was replaced");
+      }
+      workerLogger.info("Node submitted robots result", { nodeId: principal.nodeId, origin: data.origin, statusCode: data.statusCode });
+      return applyRateLimitHeaders(json({
+        schemaVersion: PROTOCOL_VERSION,
+        status: "accepted",
+        origin: data.origin
+      }), rateResult);
+    }
     if (isClaim) {
       const response = await store.claim(parsed.data as ClaimRequest, principal);
       workerLogger.info("Node claimed job", { nodeId: principal.nodeId, status: response.status });

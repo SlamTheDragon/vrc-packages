@@ -1551,4 +1551,101 @@ describe("local coordinator protocol", () => {
       store.close();
     }
   });
+  describe("delegated node robots preflight protocol (R24-C21)", () => {
+    test("/v1/node/robots/claim: rejects unauthenticated requests and returns empty when no origins due", async () => {
+      let now = Date.parse("2026-10-18T00:00:00.000Z");
+      const store = new LocalCoordinatorStore(":memory:", () => now);
+      const token = store.createNodeCredential("robot-node", ["vpm"]);
+      try {
+        const unauth = await handleNodeRequest(request("/v1/node/robots/claim", {
+          schemaVersion: PROTOCOL_VERSION,
+          nodeId: "robot-node"
+        }, "bad-token"), store);
+        expect(unauth.status).toBe(401);
+
+        const emptyRes = await handleNodeRequest(request("/v1/node/robots/claim", {
+          schemaVersion: PROTOCOL_VERSION,
+          nodeId: "robot-node"
+        }, token), store);
+        expect(emptyRes.status).toBe(200);
+        const emptyBody = await emptyRes.json() as { status: string; retryAfterMs: number };
+        expect(emptyBody.status).toBe("empty");
+        expect(emptyBody.retryAfterMs).toBeGreaterThan(0);
+      } finally {
+        store.close();
+      }
+    });
+
+    test("/v1/node/robots/claim and /v1/node/robots/result: leases robots refresh, stores snapshot, and unblocks crawl jobs", async () => {
+      let now = Date.parse("2026-10-18T00:00:00.000Z");
+      const store = new LocalCoordinatorStore(":memory:", () => now);
+      const token = store.createNodeCredential("robot-node", ["vpm"]);
+      const targetOrigin = "https://unscraped.example.org";
+      try {
+        // Seed an approved job, but do not record a robots snapshot
+        seedApprovedFixtureJob(store, `${targetOrigin}/index.json`, "vpm", 0);
+
+        // Regular claim is empty because robots snapshot is missing
+        const claimBefore = await handleNodeRequest(request("/v1/node/jobs/claim", {
+          schemaVersion: PROTOCOL_VERSION,
+          nodeId: "robot-node",
+          capabilities: ["vpm"]
+        }, token), store);
+        expect(claimBefore.status).toBe(200);
+        expect((await claimBefore.json() as { status: string }).status).toBe("empty");
+
+        // Robots claim leases the due origin
+        const robotsClaimRes = await handleNodeRequest(request("/v1/node/robots/claim", {
+          schemaVersion: PROTOCOL_VERSION,
+          nodeId: "robot-node"
+        }, token), store);
+        expect(robotsClaimRes.status).toBe(200);
+        const robotsClaimBody = await robotsClaimRes.json() as { status: string; origin: string; leaseId: string };
+        expect(robotsClaimBody.status).toBe("leased");
+        expect(robotsClaimBody.origin).toBe(targetOrigin);
+        expect(robotsClaimBody.leaseId).toBeTruthy();
+
+        // Submit the robots preflight result
+        const robotsResultRes = await handleNodeRequest(request("/v1/node/robots/result", {
+          schemaVersion: PROTOCOL_VERSION,
+          nodeId: "robot-node",
+          origin: targetOrigin,
+          leaseId: robotsClaimBody.leaseId,
+          statusCode: 200,
+          body: "User-agent: *\nAllow: /"
+        }, token), store);
+        expect(robotsResultRes.status).toBe(200);
+        const robotsResultBody = await robotsResultRes.json() as { status: string; origin: string };
+        expect(robotsResultBody.status).toBe("accepted");
+        expect(robotsResultBody.origin).toBe(targetOrigin);
+
+        // Replaying submission with consumed/expired lease fails with 403
+        const replayRes = await handleNodeRequest(request("/v1/node/robots/result", {
+          schemaVersion: PROTOCOL_VERSION,
+          nodeId: "robot-node",
+          origin: targetOrigin,
+          leaseId: robotsClaimBody.leaseId,
+          statusCode: 200,
+          body: "User-agent: *\nAllow: /"
+        }, token), store);
+        expect(replayRes.status).toBe(403);
+
+        // Advance time past origin pacing floor (1000ms)
+        now += 1500;
+
+        // Now that robots snapshot exists and allows /, regular claim succeeds!
+        const claimAfter = await handleNodeRequest(request("/v1/node/jobs/claim", {
+          schemaVersion: PROTOCOL_VERSION,
+          nodeId: "robot-node",
+          capabilities: ["vpm"]
+        }, token), store);
+        expect(claimAfter.status).toBe(200);
+        const claimAfterBody = await claimAfter.json() as { status: string; job?: { url: string } };
+        expect(claimAfterBody.status).toBe("leased");
+        expect(claimAfterBody.job?.url).toBe(`${targetOrigin}/index.json`);
+      } finally {
+        store.close();
+      }
+    });
+  });
 });

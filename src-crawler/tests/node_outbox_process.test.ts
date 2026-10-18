@@ -89,6 +89,8 @@ describe("outbox recovery after abrupt process termination over loopback HTTP", 
                 : { status: "accepted", jobId: job.jobId, duplicate, sourceVersionCreated: false }
             ] }));
           }
+          case "/v1/node/robots/claim":
+            return Response.json({ schemaVersion: 1, status: "empty" });
           default: throw new Error("Unexpected protocol route");
         }
       } catch (error) {

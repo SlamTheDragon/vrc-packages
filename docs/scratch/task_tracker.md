@@ -1,23 +1,28 @@
-# Active slice: STAGE-8-PUBLICATION-CLASSES-ENFORCEMENT (2026-10-18, local commit, local-only session per user instructions)
+# Active slice: STAGE-9-DELEGATED-ROBOTS-PREFLIGHT (2026-10-18, local commit, local-only session per user instructions)
 
 - Status: verified
-- Objective: Enforce source access profile publication rights (`publishClasses`) in public catalog projection and delta streaming (`R13-C3` / `Q-PUBLICATION`).
+- Objective: Delegate robots.txt preflight fetching to crawler nodes via coordinator leases (`R24-C21`).
 - Working theory:
-  1. Under `R13-C3` and author decision for `Q-PUBLICATION`, a source access profile's `publishClasses` determines publication authority. If a profile sets `publishClasses: []`, it permits retention of facts/evidence but withholds them from public catalog projection.
-  2. In `buildCatalogPackagesBatch` (in `coordinator.ts` and `local_sqlite.ts`), query `publish_classes_json` from `source_access_profiles` via `source_versions`. Withhold packages from public projection if all accepted links originate from restricted profiles (`publishClasses: []`).
-  3. For packages with mixed authority, filter restricted identity links and package fronts while retaining authorized normalized facts.
-  4. In `listCatalogDeltasPage`, emit an automatic `{ action: "delist", canonicalId, updatedAt }` tombstone when a non-delisted package is withheld from projection.
-  5. In `test/helpers/source_access_fixture.ts`, ensure `approveFixtureSource` grants `publishClasses: ["normalized_facts"]` so offline fixture targets can be verified.
+  1. Safe robots transport using DNS lookup and pinned host validation is non-portable to Cloudflare Workers due to runtime network constraints.
+  2. The coordinator exposes `/v1/node/robots/claim` to lease due robots.txt refreshes under origin pacing and `/v1/node/robots/result` to store returned RFC 9309 snapshots.
+  3. The crawler node daemon attempts a delegated robots preflight claim upon receiving an empty crawl job claim before entering idle backoff.
+  4. The crawler fetches robots.txt using SSRF-safe pinned metadata transport and submits status code and body back to the coordinator.
+  5. Coordinator stores snapshots in D1 `origin_robots`, unblocking dependent crawl jobs.
 - Verification status: verified.
-  - Worker test suite: 303 tests passed (3545 assertions) in `src-worker/test/`.
-  - Public catalog protocol tests: 17 tests passed (170 assertions) in `src-worker/test/public_catalog_protocol.test.ts`.
+  - Worker test suite: 305 tests passed (3562 assertions) in `src-worker/test/`.
   - Worker vitest suite: 3 tests passed in `src-worker/test/worker_runtime.vitest.ts`.
   - Coordinator runtime smoke: 100% passed in `src-worker/test/coordinator_runtime_smoke.mjs`.
-  - Crawler test suite: 181 tests passed (1529 assertions) in `src-crawler/tests/`.
-  - Worker typecheck: `bun run check` clean across 3 tsconfigs.
-  - Crawler typecheck: `bunx tsc --noEmit` clean.
+  - Crawler test suite: 182 tests passed (1636 assertions) in `src-crawler/tests/`.
+  - Worker typecheck: `bun run check` clean across all tsconfigs.
+  - Crawler typecheck: `tsc --noEmit` clean.
 
 # Previous checkpoints
+
+# STAGE-8-PUBLICATION-CLASSES-ENFORCEMENT checkpoint (2026-10-18, local commit 9e27525)
+- Status: verified
+- Objective: Enforce source access profile publication rights (`publishClasses`) in public catalog projection and delta streaming (`R13-C3` / `Q-PUBLICATION`).
+- Implemented: `buildCatalogPackagesBatch` filters packages originating wholly from `publishClasses: []` and filters restricted fronts/links; `listCatalogDeltasPage` emits delist tombstones.
+- Verification: 303 worker tests passed, 3 vitest tests passed, 100% native runtime smoke passed, 181 crawler tests passed, clean typechecks.
 
 # STAGE-7-RATE-LIMIT-VERIFICATION-AND-LEDGER-AUDIT checkpoint (2026-10-18, local commit 525f659)
 - Status: verified

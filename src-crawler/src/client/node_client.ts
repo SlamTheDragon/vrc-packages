@@ -211,6 +211,25 @@ export class CoordinatorClient {
     });
     return BatchResultResponseSchema.parse(await this.post("/v1/node/jobs/results", payload));
   }
+
+  async claimRobotsRefresh(): Promise<{ status: "leased"; origin: string; leaseId: string } | { status: "empty"; retryAfterMs: number }> {
+    const payload = { schemaVersion: PROTOCOL_VERSION, nodeId: this.nodeId };
+    return await this.post("/v1/node/robots/claim", payload) as
+      | { status: "leased"; origin: string; leaseId: string }
+      | { status: "empty"; retryAfterMs: number };
+  }
+
+  async submitRobotsResult(origin: string, leaseId: string, statusCode: number, body = ""): Promise<{ status: "accepted"; origin: string }> {
+    const payload = {
+      schemaVersion: PROTOCOL_VERSION,
+      nodeId: this.nodeId,
+      origin,
+      leaseId,
+      statusCode,
+      body
+    };
+    return await this.post("/v1/node/robots/result", payload) as { status: "accepted"; origin: string };
+  }
 }
 
 /**

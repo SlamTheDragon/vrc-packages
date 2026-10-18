@@ -5,6 +5,8 @@ import { fetchPublicMetadata } from "../client/public_metadata_fetch.ts";
 import type { NodeRuntimeConfig } from "../config/runtime_config.ts";
 import type { LocalNodeStore } from "../storage/local_sqlite.ts";
 import { PROTOCOL_VERSION, MAX_BATCH_RESULTS, type HeartbeatRequest, type CrawlJob } from "vrc-packages-network/node";
+import { retrieveRobotsSnapshot, type RobotsFetcher } from "vrc-packages-network/robots-retrieval";
+import { CRAWLER_USER_AGENT } from "../shared/robots/crawler_identity.ts";
 import { logger } from "../utils/logging/logger.ts";
 
 export interface CrawlerNodeDaemonOptions {
@@ -251,6 +253,35 @@ export class CrawlerNodeDaemon {
       const claim = await this.client.claim(this.options.maxClaimJobs);
       if (this.stopping) return "stopped";
       if (claim.status === "empty") {
+        if (typeof (this.client as any).claimRobotsRefresh === "function") {
+          try {
+            const robotsClaim = await (this.client as any).claimRobotsRefresh();
+            if (robotsClaim && robotsClaim.status === "leased") {
+              const fetchFn = this.options.fetchFn ?? fetchPublicMetadata;
+              const fetcher: RobotsFetcher = (url, init) => fetchFn(url, init);
+              const snapshot = await retrieveRobotsSnapshot(
+                { origin: robotsClaim.origin, userAgent: CRAWLER_USER_AGENT },
+                fetcher,
+                this.stopController.signal
+              );
+              await (this.client as any).submitRobotsResult(
+                snapshot.origin,
+                robotsClaim.leaseId,
+                snapshot.statusCode,
+                snapshot.body
+              );
+              logger.activity(`Completed robots preflight refresh for ${snapshot.origin} (status ${snapshot.statusCode})`, {
+                origin: snapshot.origin,
+                statusCode: snapshot.statusCode
+              });
+              this.consecutiveEmptyClaims = 0;
+              return "claimed";
+            }
+          } catch (robotsErr) {
+            logger.warn("Robots preflight check encountered an error", { error: robotsErr });
+          }
+        }
+
         this.consecutiveEmptyClaims++;
         this.lastRetryAfterMs = claim.retryAfterMs;
         this.lastCalculatedDelayMs = this.calculateIdleDelay(claim.retryAfterMs);

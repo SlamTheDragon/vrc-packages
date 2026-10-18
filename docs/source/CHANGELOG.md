@@ -8,7 +8,7 @@ Here are the latest changelogs of each package and applications. For a full hist
 ## What Changed
 
 <!-- MASTER_SUMMARY -->
-Preserve evidence, settled outbox results and URL resource distinctions. Broadcast crawler activities and findings to the dedicated log file. Isolate provisional storefront fronts from public projection. Emit delist tombstones on package withdrawal. Enforce source access profile publication rights in public catalog and delta feeds. Verify coordinator failure paths and multi-node fleet allocation in native workerd runtime. Bound claim candidate scans with explicit invocation budgets to protect Cloudflare quotas. Remove Watchtower from crawler Docker configuration and require isolated fleet data volumes.
+Delegate robots.txt preflight fetching to crawler nodes under coordinator leases. Preserve evidence, settled outbox results and URL resource distinctions. Broadcast crawler activities and findings to the dedicated log file. Isolate provisional storefront fronts from public projection. Emit delist tombstones on package withdrawal. Enforce source access profile publication rights in public catalog and delta feeds. Verify coordinator failure paths and multi-node fleet allocation in native workerd runtime. Bound claim candidate scans with explicit invocation budgets to protect Cloudflare quotas. Remove Watchtower from crawler Docker configuration and require isolated fleet data volumes.
 <!-- MASTER_SUMMARY -->
 
 ## Table of Contents
@@ -147,9 +147,10 @@ See full history at [docs/changelogs/vrcp-crawler-client/preview](https://github
 ## VRC Packages Crawler - `vrcp-crawler-node-preview`
 
 <!-- vrcp-crawler-node-preview-DESCRIPTION_SUMMARY -->
-Remove Watchtower and host socket mounts from Docker compose. Require pinned image digests and isolate multi-node data volumes. Document environment variables.
+Execute delegated robots.txt preflight refreshes during empty job claims using pinned DNS lookups and SSRF defenses. Remove Watchtower and host socket mounts from Docker compose. Require pinned image digests and isolate multi-node data volumes. Document environment variables.
 <!-- vrcp-crawler-node-preview-DESCRIPTION_SUMMARY -->
 ### Added
+- **Delegated Robots Preflight Ingestion**: Ingest leased robots.txt preflight refresh tasks when job claims return empty (R24-C21). Retrieve snapshots using SSRF-safe pinned metadata transport and submit results to coordinator.
 - **Batch Claim Queueing**: Queue multiple claimed jobs from coordinator responses to prevent abandoned leases in daemon execution.
 - **Clock Offset Calibration**: Calibrate local lease deadlines against coordinator serverTime received in heartbeats and date headers.
 - **Activity and Finding Broadcast**: Broadcast operational activities and discovery findings with dedicated tags to the node log file.
@@ -191,9 +192,10 @@ See full history at [docs/changelogs/vrcp-web/preview](https://github.com/SlamTh
 ## VRC Packages Worker - `vrcp-worker-preview`
 
 <!-- vrcp-worker-preview-DESCRIPTION_SUMMARY -->
-Enforce source access profile publication rights in public catalog and delta feeds. Enforce per-isolate inbound 429 rate limiting. Bound claim candidate scans by an explicit page budget. Verify coordinator failure paths and multi-node fleet allocation in native workerd runtime. Use unique catalog epochs, preserve evidence and URL distinctions, withhold provisional fronts, and emit delist tombstones.
+Delegate robots.txt preflight fetching to crawler nodes under leased origin pacing. Enforce source access profile publication rights in public catalog and delta feeds. Enforce per-isolate inbound 429 rate limiting. Bound claim candidate scans by an explicit page budget. Verify coordinator failure paths and multi-node fleet allocation in native workerd runtime. Use unique catalog epochs, preserve evidence and URL distinctions, withhold provisional fronts, and emit delist tombstones.
 <!-- vrcp-worker-preview-DESCRIPTION_SUMMARY -->
 ### Added
+- **Delegated Robots Preflight Protocol**: Added /v1/node/robots/claim and /v1/node/robots/result endpoints (R24-C21). Worker leases due origin preflights to crawler nodes and ingests RFC 9309 snapshots.
 - **Publication Rights Enforcement**: Enforce source access profile publication classes in catalog projection and delta streaming (R13-C3 / Q-PUBLICATION). Withhold packages whose source profile sets publishClasses: [] and emit delist tombstones.
 - **Inbound Rate Limiting**: Enforce per-isolate inbound 429 rate limiting with RFC-compliant headers across public, node, and downstream routes.
 - **Downstream Permission Enforcement**: Verify application permissions for catalog search and demand feedback, returning 403 on missing permissions.

@@ -97,6 +97,10 @@ async function withWire(
           }))
         }));
       }
+      case "/v1/node/robots/claim":
+        return Response.json({ schemaVersion: 1, status: "empty" });
+      case "/v1/node/robots/result":
+        return Response.json({ schemaVersion: 1, status: "accepted" });
       default: throw new Error("Unexpected node protocol route");
     }
   }) as typeof fetch;
@@ -866,6 +870,55 @@ describe("node-owned daemon lifecycle through serialized contracts", () => {
         const tasks = store.listTasksForRun(daemon.currentRunId);
         expect(tasks.length).toBe(2);
         expect(tasks.map(t => t.jobId)).toEqual(["batch-job-1", "batch-job-2"]);
+      } finally {
+        daemon.stop();
+        store.close();
+      }
+    });
+    test("delegates robots preflight refresh on empty job claim (R24-C21)", async () => {
+      const store = new LocalNodeStore(":memory:");
+      const testClient = client();
+      let robotsClaimCalled = 0;
+      let submittedOrigin = "";
+      let submittedStatus = 0;
+      let submittedBody: string | undefined = undefined;
+
+      testClient.claimRobotsRefresh = async () => {
+        robotsClaimCalled++;
+        return {
+          schemaVersion: 1,
+          status: "leased",
+          origin: "https://robots-test.example.org",
+          leaseId: "test-robots-lease-1"
+        };
+      };
+
+      testClient.submitRobotsResult = async (origin, leaseId, statusCode, body) => {
+        submittedOrigin = origin;
+        submittedStatus = statusCode;
+        submittedBody = body;
+        return { status: "accepted", origin };
+      };
+
+      const mockFetch = async (url: any) => {
+        const u = url.toString();
+        if (u === "https://robots-test.example.org/robots.txt") {
+          return new Response("User-agent: *\nDisallow: /secret\n", { status: 200, headers: { "content-type": "text/plain" } });
+        }
+        return new Response("Not found", { status: 404 });
+      };
+
+      const daemon = new CrawlerNodeDaemon(config, store, testClient, { fetchFn: mockFetch as any });
+
+      try {
+        await withWire(empty, async () => {
+          const outcome = await daemon.step();
+          expect(outcome).toBe("claimed");
+          expect(robotsClaimCalled).toBe(1);
+          expect(submittedOrigin).toBe("https://robots-test.example.org");
+          expect(submittedStatus).toBe(200);
+          expect(submittedBody).toContain("Disallow: /secret");
+        });
       } finally {
         daemon.stop();
         store.close();

@@ -1841,6 +1841,27 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
     return stored.job_id;
   }
 
+  /** Claim one stale/missing snapshot for an already queued, nonblocked origin. */
+  async claimDueRobotsRefresh(): Promise<{ origin: string; leaseId: string } | null> {
+    const nowMs = this.now();
+    const now = new Date(nowMs).toISOString();
+    const delay = approvedRobotsJobDelaySql("o.origin", "?1");
+    const due = await this.db.prepare(`SELECT o.origin FROM origin_leases o
+      LEFT JOIN origin_robots r ON r.origin=o.origin
+      WHERE o.next_allowed_at<=?1 AND (r.origin IS NULL OR r.expires_at IS NULL OR r.expires_at<=?1)
+        AND (r.refresh_lease_expires_at IS NULL OR r.refresh_lease_expires_at<=?1)
+        AND (o.active_job_id IS NULL OR o.lease_expires_at<=?1)
+        AND EXISTS (SELECT 1 FROM crawl_jobs j WHERE j.origin=o.origin
+          AND j.state!='blocked' AND j.next_fetch_at<=?1
+          AND (j.source_rule_id IS NULL OR EXISTS (SELECT 1 FROM lead_autoqueue_rules ar
+            WHERE ar.rule_id=j.source_rule_id AND ar.disabled_at IS NULL AND ar.expires_at>?1)))
+        AND ${delay} IS NOT NULL
+      ORDER BY o.origin ASC LIMIT 1`).bind(now).first<{ origin: string }>();
+    if (!due) return null;
+    const leaseId = await this.reserveRobotsRefresh(due.origin);
+    return leaseId ? { origin: due.origin, leaseId } : null;
+  }
+
   /** Reserve only a due, authorized origin; never grants a node fetch lease. */
   async reserveRobotsRefresh(origin: string): Promise<string | null> {
     OriginRobotsSnapshotSchema.parse({ origin, statusCode: 599, body: "" });

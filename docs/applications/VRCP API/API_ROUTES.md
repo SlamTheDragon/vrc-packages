@@ -65,6 +65,8 @@ Success returns `{ "schemaVersion": 1, "jobId": "<UUID>" }` with status 200 and 
 | `POST` | `/v1/node/heartbeat` | ✅ | Reports idle/fetching state and checks active job authority. | `{ schemaVersion: 1, nodeId, capabilities[], state: "idle" }` or `state: "fetching"` with `activeJobId`, `activeLeaseId` | `200` `{ schemaVersion: 1, status: "alive", serverTime }` |
 | `POST` | `/v1/node/jobs/result` | ✅ | Submits typed facts, leads or access outcomes. | `{ schemaVersion: 1, nodeId, jobId, leaseId, idempotencyKey, outcome }` | `200` `{ schemaVersion: 1, status: "accepted", jobId, duplicate, sourceVersionCreated }` |
 | `POST` | `/v1/node/jobs/results` | ✅ | Submits batched job outcomes with atomic per-item receipts and isolated failure handling. | `{ schemaVersion: 1, nodeId, results: [{ jobId, leaseId, idempotencyKey, outcome }] }` | `200` `{ schemaVersion: 1, receipts: [{ status: "accepted", jobId, duplicate, sourceVersionCreated } | { status: "rejected", jobId, terminal, error, code }] }` |
+| `POST` | `/v1/node/robots/claim` | ✅ | Requests a delegated robots.txt preflight refresh job for an origin due for refresh under pacing. | `{ schemaVersion: 1, nodeId }` | `200` `{ schemaVersion: 1, status: "leased", origin, leaseId }` or `{ schemaVersion: 1, status: "empty" }` |
+| `POST` | `/v1/node/robots/result` | ✅ | Submits fetched robots.txt snapshot with HTTP status and body to refresh cached origin rules. | `{ schemaVersion: 1, nodeId, origin, leaseId, statusCode, body? }` | `200` `{ schemaVersion: 1, status: "accepted", origin }` |
 
 There is no GET `/v1/node/jobs` route. Claim lets the coordinator select authorized work. Nodes must not browse a queue and fetch jobs without a lease. The consumer SDK does not expose node routes.
 
@@ -169,6 +171,8 @@ SDK delta and operator list methods now check strict query schemas before transp
 | `POST /v1/node/heartbeat`                        |       —        |     —     |  —   |       —        |      ✅       |        —         |
 | `POST /v1/node/jobs/result`                      |       —        |     —     |  —   |       —        |      ✅       |        —         |
 | `POST /v1/node/jobs/results`                     |       —        |     —     |  —   |       —        |      ✅       |        —         |
+| `POST /v1/node/robots/claim`                     |       —        |     —     |  —   |       —        |      ✅       |        —         |
+| `POST /v1/node/robots/result`                    |       —        |     —     |  —   |       —        |      ✅       |        —         |
 | `GET /v1/operator/leads`                         |       ✅        |     —     |  —   |       —        |      —       |        —         |
 | `POST /v1/operator/init`                         |       ✅        |     —     |  —   |       —        |      —       |        —         |
 | `POST /v1/operator/jobs`                         |       ✅        |     —     |  —   |       —        |      —       |        —         |
