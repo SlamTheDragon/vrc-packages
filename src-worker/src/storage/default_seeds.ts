@@ -51,5 +51,59 @@ export const DEFAULT_SEED_JOBS: DefaultSeedJob[] = [
     platform: "custom_domain",
     minDelayMs: 2000,
     purpose: "metadata"
+  },
+  {
+    url: "https://ko-fi.com/s/sample-vrc-item",
+    platform: "custom_domain",
+    minDelayMs: 2000,
+    purpose: "metadata"
+  }
+];
+
+export interface DefaultApprovedProfile {
+  platform: Platform;
+  origin: string;
+  pathScope: string;
+  method: "GET";
+  purpose: JobPurpose;
+  minDelayMs: number;
+  expiresInDays: number;
+  reviewReference: string;
+  reason: string;
+  retainClasses: ("normalized_facts" | "creator_prose" | "raw_payload" | "media_metadata")[];
+  publishClasses: ("normalized_facts" | "creator_prose" | "raw_payload" | "media_metadata")[];
+}
+
+/**
+ * Approved open VPM community listing profiles with robots preflight required (FLEET-S2).
+ * These explicit profiles cover approved open community repositories.
+ * Storefront listings remain ungranted candidate discovery leads that require manual operator review.
+ */
+export const DEFAULT_APPROVED_SOURCE_PROFILES: DefaultApprovedProfile[] = [
+  {
+    platform: "vpm",
+    origin: "https://vrchat-community.github.io",
+    pathScope: "/template-package/",
+    method: "GET",
+    purpose: "discovery",
+    minDelayMs: 1000,
+    expiresInDays: 365,
+    reviewReference: "COMMUNITY-VPM-TEMPLATE",
+    reason: "Approved open VPM community template package listing",
+    retainClasses: ["normalized_facts"],
+    publishClasses: ["normalized_facts"]
+  },
+  {
+    platform: "vpm",
+    origin: "https://raw.githubusercontent.com",
+    pathScope: "/vrchat-community/template-package-listing/",
+    method: "GET",
+    purpose: "discovery",
+    minDelayMs: 1000,
+    expiresInDays: 365,
+    reviewReference: "COMMUNITY-VPM-LISTING",
+    reason: "Approved open VPM community template package listing source",
+    retainClasses: ["normalized_facts"],
+    publishClasses: ["normalized_facts"]
   }
 ];

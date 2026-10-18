@@ -1,22 +1,28 @@
-# Active slice: STAGE-10-REPORT-INTAKE-PARTITIONING (2026-10-18, local commit, local-only session per user instructions)
+# Active slice: STAGE-11-INITIAL-SEEDS-AND-STOREFRONT-DISCOVERY (2026-10-18, local commit, local-only session per user instructions)
 
 - Status: verified
-- Objective: Partition application report intake between rating calibration disputes and safety quarantine tickets (`R56-C56C`).
+- Objective: Implement approved initial seed definitions and explicit source access profiles policy for open VPM community listings with robots preflight required, add Ko-fi storefront seed and classification, and support auto-queue rule matching for high-confidence storefront leads while keeping domain/custom-domain storefronts in operator review (`FLEET-S2`).
 - Working theory:
-  1. Content rating disputes (`explicit_false_positive`, `explicit_false_negative`, `misclassified`) represent calibration challenges and belong in `/v1/moderator` inspection.
-  2. Suspected illegal content (`inappropriate`) represents critical safety incidents and must be quarantined in an isolated operator-only queue, preventing exposure to volunteer moderators.
-  3. Metadata issues (`broken_link`, `wrong_metadata`) remain downstream feedback signals without exposing restricted materials.
-  4. In `catalog_tickets`, `ticket_type` includes `'rating_dispute'`, `'safety_quarantine'`, and `'metadata_issue'`.
-  5. In `listModeratorRatingsPage`, `reportCount` counts `removal_report` and `rating_dispute`, while excluding `safety_quarantine`.
-- Verification status: verified.
-  - Worker test suite: 307 tests passed (3592 assertions) in `src-worker/test/`.
-  - Worker vitest suite: 3 tests passed in `src-worker/test/worker_runtime.vitest.ts`.
-  - Coordinator runtime smoke: 100% passed in `src-worker/test/coordinator_runtime_smoke.mjs`.
-  - Crawler test suite: 182 tests passed (1636 assertions) in `src-crawler/tests/`.
-  - Worker typecheck: `bun run check` clean across all tsconfigs.
-  - Crawler typecheck: `tsc --noEmit` clean.
+  1. Candidate jobs in `DEFAULT_SEED_JOBS` include approved open VPM listings and storefronts with Ko-fi added (`https://ko-fi.com/s/sample-vrc-item`).
+  2. `DEFAULT_APPROVED_SOURCE_PROFILES` defines explicit, non-synthetic source access profiles for open VPM community listings (`vrchat-community.github.io/template-package/` and `raw.githubusercontent.com/vrchat-community/template-package-listing/`).
+  3. Coordinator exposes `seedInitialProfiles(actor?: string)` for explicit profile attachment without violating the candidate-only `autoSeed` invariant.
+  4. `classifyOutboundLeadKind` recognizes `ko-fi.com` as a `storefront_product`.
+  5. `activeAutoQueueRuleForLead` supports `storefront_product`, `github_repository`, and `publisher_site` alongside `vpm_listing`, enabling high-confidence auto-queue rules to autopass reviewed storefronts while unreviewed domain-level and custom-domain storefronts stay pending review.
+- Verification status: verified. 310 worker tests passed (3611 assertions), 3 Vitest tests passed, 100% native workerd runtime smoke check passed, 182 crawler tests passed (1636 assertions), worker and crawler typechecks clean.
 
 # Previous checkpoints
+
+# STAGE-11-INITIAL-SEEDS-AND-STOREFRONT-DISCOVERY checkpoint (2026-10-18, local commit)
+- Status: verified
+- Objective: Implement approved initial seed definitions and explicit source access profiles policy for open VPM community listings with robots preflight required, add Ko-fi storefront seed and classification, and partition storefront leads into pending operator review (`FLEET-S2`).
+- Implemented: `DEFAULT_SEED_JOBS` contains Ko-fi sample seed; `DEFAULT_APPROVED_SOURCE_PROFILES` provides pre-configured approved VPM community listings; coordinator `seedInitialProfiles` seeds profiles idempotently; `classifyOutboundLeadKind` recognizes `ko-fi.com` as `storefront_product`; storefront leads stay partitioned in `source_leads` with `pending_review` status.
+- Verification: 310 worker tests passed, 3 Vitest tests passed, 100% native runtime smoke passed, 182 crawler tests passed, clean typechecks across worker and crawler.
+
+# STAGE-10-REPORT-INTAKE-PARTITIONING checkpoint (2026-10-18, local commit 84cb2b3)
+- Status: verified
+- Objective: Partition application report intake between rating calibration disputes and safety quarantine tickets (`R56-C56C`).
+- Implemented: `catalog_tickets` CHECK constraint includes `'rating_dispute'`, `'safety_quarantine'`, and `'metadata_issue'`; `recordIssueReport` partitions incoming safety vs calibration challenges; `listModeratorRatingsPage` counts `rating_dispute` and `removal_report` while excluding `safety_quarantine`.
+- Verification: 307 worker tests passed, 3 vitest tests passed, 100% native runtime smoke passed, 182 crawler tests passed, clean typechecks.
 
 # STAGE-9-DELEGATED-ROBOTS-PREFLIGHT checkpoint (2026-10-18, local commit 7e69552)
 - Status: verified

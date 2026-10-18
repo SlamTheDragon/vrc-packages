@@ -9,7 +9,8 @@ import { join } from "node:path";
 import crypto from "node:crypto";
 import { approveFixtureSource, seedApprovedFixtureJob } from "../helpers/source_access_fixture.ts";
 import { getTestOutputDir } from "../helpers/test_directory.ts";
-import { DEFAULT_SEED_JOBS } from "../../src/storage/default_seeds.ts";
+import { DEFAULT_SEED_JOBS, DEFAULT_APPROVED_SOURCE_PROFILES } from "../../src/storage/default_seeds.ts";
+import { classifyOutboundLeadKind } from "../../src/storage/d1/coordinator.ts";
 
 function allowFixtureOrigin(store: LocalCoordinatorStore, ...origins: string[]): void {
   for (const origin of origins) store.recordRobotsSnapshot(origin, 404);
@@ -1648,4 +1649,127 @@ describe("local coordinator protocol", () => {
       }
     });
   });
+
+  describe("FLEET-S2 Initial Seeds and Storefront Discovery Protocol", () => {
+    test("seedInitialProfiles attaches approved open VPM community listing profiles idempotently", () => {
+      const store = new LocalCoordinatorStore(":memory:", () => Date.parse("2026-10-18T00:00:00.000Z"), true);
+      try {
+        // Initial autoSeed creates candidate jobs only, with 0 profiles
+        expect(store.db.prepare("SELECT COUNT(*) AS count FROM source_access_profiles").get()).toEqual({ count: 0 });
+
+        // Explicitly seed approved initial profiles
+        store.seedInitialProfiles();
+
+        const countRow = store.db.prepare("SELECT COUNT(*) AS count FROM source_access_profiles").get() as { count: number };
+        expect(countRow.count).toBe(DEFAULT_APPROVED_SOURCE_PROFILES.length);
+
+        const profiles = store.db.prepare("SELECT profile_id, platform, origin, path_scope, review_reference FROM source_access_profiles ORDER BY profile_id").all() as {
+          profile_id: string; platform: string; origin: string; path_scope: string; review_reference: string;
+        }[];
+        expect(profiles.some(p => p.review_reference === "COMMUNITY-VPM-TEMPLATE")).toBe(true);
+        expect(profiles.some(p => p.review_reference === "COMMUNITY-VPM-LISTING")).toBe(true);
+
+        // Calling seedInitialProfiles a second time is idempotent
+        store.seedInitialProfiles();
+        const countRow2 = store.db.prepare("SELECT COUNT(*) AS count FROM source_access_profiles").get() as { count: number };
+        expect(countRow2.count).toBe(DEFAULT_APPROVED_SOURCE_PROFILES.length);
+      } finally {
+        store.close();
+      }
+    });
+
+    test("Ko-fi storefront seed is queued and classified as storefront_product", () => {
+      const store = new LocalCoordinatorStore(":memory:", () => Date.parse("2026-10-18T00:00:00.000Z"), true);
+      try {
+        const kofiJob = store.db.prepare("SELECT * FROM crawl_jobs WHERE url='https://ko-fi.com/s/sample-vrc-item'").get() as {
+          url: string; platform: string; job_purpose: string; min_delay_ms: number;
+        } | null;
+        expect(kofiJob).not.toBeNull();
+        expect(kofiJob?.platform).toBe("custom_domain");
+        expect(kofiJob?.job_purpose).toBe("metadata");
+
+        // classifyOutboundLeadKind identifies ko-fi.com
+        expect(classifyOutboundLeadKind("https://ko-fi.com/s/sample-vrc-item")).toBe("storefront_product");
+        expect(classifyOutboundLeadKind("https://ko-fi.com/creator-profile")).toBe("storefront_product");
+
+        // Storefront leads remain separate and cannot become VPM crawl jobs
+        const sampleJob = store.db.prepare("SELECT job_id, url FROM crawl_jobs LIMIT 1").get() as { job_id: string; url: string };
+        store.db.prepare(`INSERT INTO source_leads (lead_key, discovered_from_url, discovered_from_job_id, kind, target_url, status, first_seen_at, last_seen_at)
+          VALUES ('kofi-lead', ?, ?, 'storefront_product', 'https://ko-fi.com/s/sample-vrc-item', 'pending_review', '2026-10-18T00:00:00.000Z', '2026-10-18T00:00:00.000Z')`).run(sampleJob.url, sampleJob.job_id);
+        expect(() => store.approveVpmListingLead("kofi-lead")).toThrow("Only published VPM listing leads can become VPM crawl jobs");
+      } finally {
+        store.close();
+      }
+    });
+
+    test("storefront discovery leads are partitioned into pending_review and cannot become VPM fetch jobs", async () => {
+      let now = Date.parse("2026-10-18T00:00:00.000Z");
+      const store = new LocalCoordinatorStore(":memory:", () => now, false);
+      try {
+        const nodeToken = store.createNodeCredential("crawler-node-leads", ["vpm"]);
+        allowFixtureOrigin(store, "https://vpm.example.org");
+        store.createSourceAccessProfile({
+          schemaVersion: 1,
+          platform: "vpm",
+          origin: "https://vpm.example.org",
+          pathScope: "/index.json",
+          method: "GET",
+          purpose: "discovery",
+          minDelayMs: 1000,
+          expiresAt: "2026-10-19T00:00:00.000Z",
+          reviewReference: "TEST-VPM-DISCOVERY",
+          reason: "Testing lead review policy",
+          retainClasses: ["normalized_facts"],
+          publishClasses: ["normalized_facts"]
+        }, "operator");
+        const jobId = store.seedJob("https://vpm.example.org/index.json", "vpm", 1000, undefined, "discovery");
+
+        // Claim the job
+        const claimRes = await handleNodeRequest(request("/v1/node/jobs/claim", {
+          schemaVersion: PROTOCOL_VERSION,
+          nodeId: "crawler-node-leads",
+          capabilities: ["vpm"]
+        }, nodeToken), store);
+        const claimData = await claimRes.json() as { job?: { jobId: string; leaseId: string } };
+        expect(claimData.job?.jobId).toBe(jobId);
+
+        // Submit discovery result with both a booth.pm lead and a ko-fi lead
+        const submitRes = await handleNodeRequest(request("/v1/node/jobs/result", {
+          schemaVersion: PROTOCOL_VERSION,
+          nodeId: "crawler-node-leads",
+          jobId,
+          leaseId: claimData.job!.leaseId,
+          idempotencyKey: "idempotency-lead-chain-001",
+          outcome: {
+            kind: "discovery",
+            leads: [
+              { kind: "storefront_product", url: "https://booth.pm/ja/items/123456" },
+              { kind: "storefront_product", url: "https://ko-fi.com/s/sample-vrc-item" }
+            ]
+          }
+        }, nodeToken), store);
+        expect(submitRes.status).toBe(200);
+
+        // Both storefront leads are recorded in pending_review
+        const boothLead = store.db.prepare("SELECT * FROM source_leads WHERE target_url='https://booth.pm/ja/items/123456'").get() as {
+          lead_key: string; status: string; kind: string;
+        } | null;
+        expect(boothLead?.status).toBe("pending_review");
+        expect(boothLead?.kind).toBe("storefront_product");
+
+        const kofiLead = store.db.prepare("SELECT * FROM source_leads WHERE target_url='https://ko-fi.com/s/sample-vrc-item'").get() as {
+          lead_key: string; status: string; kind: string;
+        } | null;
+        expect(kofiLead?.status).toBe("pending_review");
+        expect(kofiLead?.kind).toBe("storefront_product");
+
+        // Storefront leads cannot become VPM fetch jobs
+        expect(() => store.approveVpmListingLead(boothLead!.lead_key)).toThrow("Only published VPM listing leads can become VPM crawl jobs");
+        expect(() => store.approveVpmListingLead(kofiLead!.lead_key)).toThrow("Only published VPM listing leads can become VPM crawl jobs");
+      } finally {
+        store.close();
+      }
+    });
+  });
 });
+

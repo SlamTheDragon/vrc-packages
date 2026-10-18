@@ -48,7 +48,7 @@ import { deriveCategoryFromTags, deriveUmbrellaFromTags, classifyDesktopTool, in
 import { extractAvatarCompatibility, type AvatarCompatibility } from "../../domain/classification/avatar_compatibility.ts";
 import { cleanTitle, cleanTrackingParams } from "vrc-packages-network/catalog-hygiene";
 import { STOREFRONT_PLATFORMS } from "vrc-packages-network/node";
-import { DEFAULT_SEED_JOBS } from "../default_seeds.js";
+import { DEFAULT_SEED_JOBS, DEFAULT_APPROVED_SOURCE_PROFILES } from "../default_seeds.js";
 import type {
   D1Database,
   D1PreparedStatement,
@@ -90,7 +90,8 @@ export function classifyOutboundLeadKind(targetUrl: string): DiscoveryLead["kind
     }
     if (url.hostname === "booth.pm" || url.hostname === "gumroad.com" ||
         url.hostname === "jinxxy.com" || url.hostname.endsWith(".itch.io") ||
-        url.hostname === "sellfy.com" || url.hostname === "payhip.com") {
+        url.hostname === "sellfy.com" || url.hostname === "payhip.com" ||
+        url.hostname === "ko-fi.com") {
       return "storefront_product";
     }
     if (!url.hostname.includes("localhost") && !url.hostname.endsWith(".internal") &&
@@ -132,6 +133,32 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
       const existing = await this.db.prepare(`SELECT 1 FROM crawl_jobs WHERE url=?
         UNION ALL SELECT 1 FROM suppressed_urls WHERE url=? LIMIT 1`).bind(job.url, job.url).first();
       if (!existing) await this.seedJob(job.url, job.platform, job.minDelayMs, undefined, job.purpose);
+    }
+  }
+
+  async seedInitialProfiles(actor: string = "system-bootstrap"): Promise<void> {
+    const nowMs = this.now();
+    for (const p of DEFAULT_APPROVED_SOURCE_PROFILES) {
+      const expiresAt = new Date(nowMs + p.expiresInDays * 24 * 60 * 60 * 1000).toISOString();
+      const existing = await this.db.prepare(`SELECT 1 FROM source_access_profiles
+        WHERE platform=? AND origin=? AND path_scope=? AND purpose=? AND disabled_at IS NULL AND expires_at>? LIMIT 1`)
+        .bind(p.platform, p.origin, p.pathScope, p.purpose, new Date(nowMs).toISOString()).first();
+      if (!existing) {
+        await this.createSourceAccessProfile({
+          schemaVersion: 1,
+          platform: p.platform,
+          origin: p.origin,
+          pathScope: p.pathScope,
+          method: p.method,
+          purpose: p.purpose,
+          minDelayMs: p.minDelayMs,
+          expiresAt,
+          reviewReference: p.reviewReference,
+          reason: p.reason,
+          retainClasses: p.retainClasses,
+          publishClasses: p.publishClasses
+        }, actor);
+      }
     }
   }
 
@@ -1253,7 +1280,10 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
       else if (urlObj.hostname === "gumroad.com") platform = "gumroad";
       else if (urlObj.hostname === "jinxxy.com") platform = "jinxxy";
       else if (urlObj.hostname === "sellfy.com") platform = "sellfy";
-      else platform = "custom_domain";
+      else if (urlObj.hostname === "ko-fi.com") {
+        platform = "custom_domain";
+        delay = Math.max(delay, 2000);
+      } else platform = "custom_domain";
       delay = Math.max(delay, 1500);
     } else if (lead.kind === "publisher_site") {
       platform = "custom_domain";

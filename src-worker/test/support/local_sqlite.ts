@@ -50,7 +50,7 @@ import { ROBOTS_RESTRICTION_TOKENS } from "vrc-packages-network/identity";
 import { deriveCategoryFromTags, deriveUmbrellaFromTags, classifyDesktopTool, inferSupportedOS, type DesktopToolEvidence } from "../../src/domain/classification/taxonomy.ts";
 import { extractAvatarCompatibility, type AvatarCompatibility } from "../../src/domain/classification/avatar_compatibility.ts";
 import { cleanTitle, cleanTrackingParams } from "vrc-packages-network/catalog-hygiene";
-import { DEFAULT_SEED_JOBS } from "../../src/storage/default_seeds.ts";
+import { DEFAULT_SEED_JOBS, DEFAULT_APPROVED_SOURCE_PROFILES } from "../../src/storage/default_seeds.ts";
 import { encodeLeadCursor, encodeTakedownCursor, type TakedownCursor, type TakedownRecord,
   encodeDelegatedClaimCursor, type DelegatedClaimCursor, type DelegatedClaimRecord,
   encodeOperatorAppCursor, type OperatorAppCursor, type OperatorAppRecord,
@@ -485,6 +485,34 @@ export class LocalCoordinatorStore implements CoordinatorStore, PublicCatalogSto
         const existing = this.db.prepare(`SELECT 1 FROM crawl_jobs WHERE url=?
           UNION ALL SELECT 1 FROM suppressed_urls WHERE url=? LIMIT 1`).get(job.url, job.url);
         if (!existing) this.seedJob(job.url, job.platform, job.minDelayMs, undefined, job.purpose);
+      }
+    }).immediate();
+  }
+
+  seedInitialProfiles(actor: string = "system-bootstrap"): void {
+    const nowMs = this.now();
+    this.db.transaction(() => {
+      for (const p of DEFAULT_APPROVED_SOURCE_PROFILES) {
+        const expiresAt = new Date(nowMs + p.expiresInDays * 24 * 60 * 60 * 1000).toISOString();
+        const existing = this.db.prepare(`SELECT 1 FROM source_access_profiles
+          WHERE platform=? AND origin=? AND path_scope=? AND purpose=? AND disabled_at IS NULL AND expires_at>? LIMIT 1`)
+          .get(p.platform, p.origin, p.pathScope, p.purpose, new Date(nowMs).toISOString());
+        if (!existing) {
+          this.createSourceAccessProfile({
+            schemaVersion: 1,
+            platform: p.platform,
+            origin: p.origin,
+            pathScope: p.pathScope,
+            method: p.method,
+            purpose: p.purpose,
+            minDelayMs: p.minDelayMs,
+            expiresAt,
+            reviewReference: p.reviewReference,
+            reason: p.reason,
+            retainClasses: p.retainClasses,
+            publishClasses: p.publishClasses
+          }, actor);
+        }
       }
     }).immediate();
   }
