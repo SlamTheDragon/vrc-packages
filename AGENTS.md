@@ -1,45 +1,61 @@
-# Agent entry point — version-0 pre-production
+# VRC Packages (VRCP): Agent Entry Point (Version 0 Pre-Production)
 
-This is the current entry point for agents working in this repository. `DELEGATES.md` is the operational runbook for downstream developers and node operators.
+This is the Level 0 entry point for agents working in the `vrc-packages` monorepo. [`DELEGATES.md`](DELEGATES.md) is the operational runbook for downstream developers and node operators.
 
-## Read before changing code
+## 1. Authoritative Truth Cascade (Read Before Changing Code)
 
-0. Read [`docs/scratch/research/decisions/VISION.md`](docs/scratch/research/decisions/VISION.md) for the owner's terminology (Crawler Node, Crawler Client, Coordinator, SDK, Web), responsibilities and target layout.
-1. Read [`docs/scratch/IMPLEMENTATION_PLAN.md`](docs/scratch/IMPLEMENTATION_PLAN.md) for core architectural covenants, gate orders, delivered baselines, and recovered canonical decisions; read [`LEGAL.md`](LEGAL.md) for legal covenants and platform access boundaries.
-2. Read [`docs/scratch/UNMERGED_IMPLEMENTATION_PLAN.md`](docs/scratch/UNMERGED_IMPLEMENTATION_PLAN.md) for proposed iterations, milestone gates, and accepted owner decisions.
-3. Read [`docs/scratch/task_tracker.md`](docs/scratch/task_tracker.md) for the active bounded vertical slice before making edits.
-4. Follow `.agents/rules/` (`00` through `06`) for authority, bounded slices, review discipline, stop integrity, context preservation, changelog management, self-management, and operational evidence. The owner's correction limits the 2–3-file constraint to `docs/scratch`, not source or test edits.
+Follow this cascade from top to bottom and read only the branch required for your active sector:
 
-## Current target and safety boundaries
+1. **Owner Intent and Terms**: Read `T00` and the task-relevant `Txx` section of [`docs/research/decisions/VISION.md`](docs/research/decisions/VISION.md).
+2. **System Routing and Sector Map**: Read [`docs/source/SYSTEM_MAP.md`](docs/source/SYSTEM_MAP.md) to select the single owning sector, contract owner, and verification commands.
+3. **Legal and Platform Boundaries**: Read [`LEGAL.md`](LEGAL.md) before modifying crawler access, provenance, retention, takedowns, or public API surfaces.
+4. **Sector Control Ledgers**: Read the active 2-file anchored ledger in `docs/scratch-<sector>/` (`IMPLEMENTATION_PLAN.md` and `task_tracker.md`). *(Legacy `docs/scratch/` remains intact strictly for `scripts/delivery.mjs` and `tests/preprod_layout.test.ts` until Sector 4 `PIPELINE-SCRATCH-RETIRE` completes.)*
+5. **Sector Rules and Local Context**: Follow [`.agents/README.md`](.agents/README.md) and `.agents/rules/` (`00` through `09`), then read the owning sector `AGENTS.md` and local `.agents/skills/` before editing code.
 
-- **Topology & Communication**: The API-only Cloudflare Worker coordinator lives in `src-worker/src/` and uses D1 storage. Its entry is `worker_entry.ts`, and its tests live in `src-worker/test/`. The separate crawler node lives in `src-crawler/src/`, with entry `main.ts` and functional subfolders. Nodes and downstream applications communicate with the coordinator through versioned HTTP payloads. The consumer SDK lives in `src-package/` (`vrc-packages-api`). The separate `src-web/` Astro site and `src-crawler-client/` Tauri/Svelte shell are starter applications, not integrated operator or node clients. Local Worker tests use Wrangler/workerd and isolated D1. There is no coordinator binary.
-- **Leased-Only Ingestion**: Crawler nodes fetch strictly under unexpired coordinator leases (`/v1/node/jobs/claim`). Coordinator loss halts all fetching (fails closed).
-- **Source Access Profiles & Robots Preflight**: A queued URL does not authorize fetching. Both manual and automatic jobs require an active, scoped source-access profile and RFC 9309 `robots.txt` compliance before claiming a lease.
-- **Credential Protection**: Node credentials use capability-encoded tokens (`vrcp_<token><capability>`) stored strictly as SHA-256 hashes. GitHub tokens serve only scoped API requests. Never expose secrets or hardcode tokens into fixtures or logs.
-- **Provenance & Zero Binary Downloads**: Third-party directories serve as discovery leads, not authoritative product records. Zero executable or archive binary crawling (`.zip`, `.unitypackage`).
+Treat summaries, filenames, and earlier success reports as leads until verified against live source, tests, or primary legal citations.
 
-## Publishing discipline
+## 2. Five Monorepo Responsibility Sectors
 
-- Write pending changelog notes in `docs/source/CHANGELOG.md`. Root `CHANGELOG.md` is generated at publication preparation. Tooling clears only the selected source product/channel and preserves its skeleton. Do not clear the root snapshot after publication.
+| Sector | Owned Paths | Primary Branch(es) | Sector Scratch Anchor |
+| :--- | :--- | :--- | :--- |
+| **1. Crawler Network** | `src-worker/`, `src-worker/packages/network/`, `src-crawler/` | `preview/crawler-network` | [`docs/scratch-crawler-network/`](docs/scratch-crawler-network/IMPLEMENTATION_PLAN.md) |
+| **2. Crawler Desktop Client** | `src-crawler-client/` | `preview/desktop-client` | [`docs/scratch-desktop-client/`](docs/scratch-desktop-client/IMPLEMENTATION_PLAN.md) |
+| **3. Consumer API and Web** | `src-package/`, `src-web/`, `src-web-search/` | `preview/workers-api`, `preview/web` | [`docs/scratch-api-web/`](docs/scratch-api-web/IMPLEMENTATION_PLAN.md) |
+| **4. Root Distribution Pipeline** | Root `package.json`, `scripts/`, `.github/workflows/`, `config*.versions.json`, `tests/` | `main`, `release/*` | [`docs/scratch-pipeline/`](docs/scratch-pipeline/IMPLEMENTATION_PLAN.md) |
+| **5. Legal Research and Covenants** | `LEGAL.md`, `docs/research/` | Feature / `main` | [`docs/scratch-legal-research/`](docs/scratch-legal-research/IMPLEMENTATION_PLAN.md) |
 
-- Slices mean local commit. Completed gates mean push. Commit each slice locally as a checkpoint. Push to the remote tracking branch only when the capability gate passes all checks.
-- Repository branches: `main` (production), `preview/crawler-network` (`src-worker`, `src-crawler`, `src-worker/packages/network`), `preview/desktop-client` (`src-crawler-client`), `preview/web` (`src-web`, `src-web-search`), `preview/workers-api` (`src-package`), `release/patch/*` (short-lived patch branches), `release/candidate/*` (short-lived candidate PRs on main, can be overridden with `--force`).
-- Preview publishing stays on its current ahead branch, including main; any branch ahead of origin can publish a preview without a PR.
-- Release preparation and finalization require clean main, an owner-reviewed metadata PR, and protected publication approvals. Never merge or approve for the owner.
-- Reruns execute the frozen tagged commit (for transient network/CDN issues only). Code fixes require tag reversion (`bun run recovery:revert-tag <tag> --remote`) or a patch branch (`bun run recovery:patch <product> <version>`), then publishing from the ahead branch.
-- Human operations are in [`docs/source/PUBLISHING.md`](docs/source/PUBLISHING.md). Detailed agent rules are in [`docs/scratch/research/decisions/AGENT_PUBLISHING_PROCEDURE.md`](docs/scratch/research/decisions/AGENT_PUBLISHING_PROCEDURE.md).
-- Do not disable protection, add a bypass, force-push main, or merge a PR on the owner's behalf. A gate pass is not merge approval.
-- After promotion, fetch and inspect merged main before release preparation or finalization.
+Keep **Sector 4 (Root Distribution Pipeline)** and **Sector 5 (Legal Research and Covenants)** strictly distinct from product runtime slices:
+- Never run root-level tests (`bun test ./tests`) unless root tooling (`scripts/`, `tests/`, `package.json`, root configs) changes. Product-scoped work runs only its own domain test and typecheck suite.
+- Maintain the **Three-Domain Documentation Partition**:
+  - **`docs/source/`**: Authoritative truth for system reliability and agreed schemas (`schemas/`, `specifications/`, `reliability/`, `SYSTEM_MAP.md`, `PUBLISHING.md`, `CHANGELOG.md`).
+  - **`docs/applications/`**: Human-readable wiki documentation. **Keep `docs/applications/` untouched**; stage proposed updates in [`docs/source/reliability/proposed_wiki_changes.md`](docs/source/reliability/proposed_wiki_changes.md) until owner approval.
+  - **`docs/research/`** + **`LEGAL.md`**: Investigative legal/market/architecture research corpus. Never present research findings as implemented runtime state or source-access clearance.
 
-- Canonical brand: **VRC Packages**, abbreviated **VRCP**. P means Packages. Use `VRCP*`, `vrcp-`, `vrcp_`, or `vrc-packages*`/`vrc_packages*` for project-owned names. Do not use bare VRC/Vrc component names. Preserve actual upstream names and repository URLs. Exact SDK names are `VRCPackageClient`, `VRCPackageClientOptions`, and `VRCPApiError`, not doubled-P variants. The approved bot target is `VRCPDiscoveryBot/{version}`. Coordinate its robots matching and snapshot transition before claiming that rename complete.
+## 3. Workspace Anchoring and Read-Only Default
 
-- Treat each `src-*` folder as an independent project. Never import sibling source or tests through relative paths, aliases or symlinks. Consume reused code only as declared, distributed package dependencies. A `file:../src-*` link does not prove that boundary.
-- SDK npm publication is conditionally authorized. Do not publish v0.1.0 until thorough package verification and the owner's complete `docs/applications/VRCP API/API_ROUTES.md` review pass. Reconcile each route, method, permission and SDK contract with implementation. This owner-review hold overrides the general deferred-review rule.
-- Owner update, 2026-10-04: pre-0.1 releases starting at v0.0.1 are allowed while API contracts develop. Verify the distributed package before publishing. The v0.1.0 full owner-review hold remains. Do not treat a bootstrap workflow or an unverified local build as release readiness.
-- Owner selects strict lead wire DTOs without convenience aliases or invented audit reasons. Lead rows keep the Worker's snake-case fields. Approval and rejection require an explicit caller reason. This does not authorize a blanket rename of every existing API field.
-- Pick one capability gate and one bounded vertical slice. The 2–3-file constraint applies only to `docs/scratch/`.
-- Owner correction, 2026-10-04: implement a capability gate or related gate group before test verification and checkpoint write-ups. Slices are not gates. This supersedes per-slice failing-test and full-suite requirements in older skills/rules.
-- Owner instruction, 2026-10-08: Never run root level tests (`bun test ./tests`) unless root level tooling (`scripts/`, `tests/`, `package.json`, root configs) is changed. Product-scoped work runs only its own domain test/typecheck suite.
-- Keep changes marked unverified until the gate checkpoint passes. At that checkpoint, run the relevant tests, typechecks and runtime/build checks together. Do not invent smaller gates to justify repeated tests. Keep continuation records concise.
-- Keep scratch footprint minimal: maintain strictly 2–3 files in `docs/scratch/` (`IMPLEMENTATION_PLAN.md`, `UNMERGED_IMPLEMENTATION_PLAN.md`, `task_tracker.md`).
-- At a pause, record evidence, open risks, and next steps in `docs/scratch/task_tracker.md`.
+- **Read-only default**: Without an explicit task scope or sector anchor from the user, agents inspect, search, and answer questions only; do not create, edit, or delete files.
+- **Strict two-file sector ledger footprint**: Each `docs/scratch-<sector>/` directory holds strictly `IMPLEMENTATION_PLAN.md` and `task_tracker.md`. Offload verified product work to `docs/source/CHANGELOG.md` and delete verified rows from active sector scratchpads to prevent bloat.
+
+## 4. Non-Negotiable Architecture and Safety Boundaries
+
+- **Topology**: The API-only Cloudflare Worker coordinator lives in `src-worker/src/` (`worker_entry.ts`, D1 binding `VRCP_D1`, DDL in `src-worker/src/storage/d1/utils.ts`). The headless crawler node lives in `src-crawler/src/` (`main.ts`). There is no coordinator binary. Nodes and apps communicate with the coordinator only via versioned HTTP payloads.
+- **Cross-project isolation**: Treat every `src-*` folder as an independent project. Never import sibling source or tests through relative paths, aliases, or symlinks. Consume reused code only as declared distributed packages (`vrc-packages-api`, `vrc-packages-network`). A `file:../src-*` link does not prove isolation.
+- **Leased-only ingestion**: Crawler nodes fetch strictly under unexpired 120s coordinator leases (`/v1/node/jobs/claim`). Coordinator loss halts all fetching (fail closed).
+- **Source access profiles and RFC 9309 robots**: A queued URL does not authorize fetching. Every job requires an active scoped `SourceAccessProfile` and RFC 9309 `robots.txt` compliance (delegated to nodes under leases).
+- **Credential protection**: Node tokens use `vrcp_<64-hex><4-hex>` stored strictly as SHA-256 hashes. GitHub tokens serve only scoped API requests. Never log or hardcode secrets.
+- **Provenance and zero binary downloads**: Third-party directories are discovery leads, not canonical authority. Zero executable or archive binary crawling (`.zip`, `.unitypackage`, `.vpmz`, `.fbx`).
+- **Canonical brand**: **VRC Packages**, abbreviated **VRCP**. Use `VRCP*`, `vrcp-`, `vrcp_`, `vrc-packages*`, or `vrc_packages*`. Never use bare `VRC`/`Vrc` component names. Exact SDK names: `VRCPackageClient`, `VRCPackageClientOptions`, `VRCPApiError`. Approved bot target: `VRCPDiscoveryBot/{version}`.
+- **Strict wire DTOs and SDK release hold**: Keep Worker snake-case lead fields without convenience aliases or invented audit reasons. Pre-0.1 SDK releases (`v0.0.1+`) are permitted after artifact verification; `v0.1.0` remains held for full owner [`API_ROUTES.md`](docs/applications/VRCP%20API/API_ROUTES.md) review.
+
+## 5. Edit-Guard, Gate Verification, and Standby-Loop Prevention
+
+- **Edit-guard policy (Rule 06)**: Disabled by default for localized edits. Activates when a task edits/creates **10 or more files** OR modifies any **cross-project contract, wire protocol, schema, legal covenant, or root pipeline boundary** (`src-worker/packages/network/`, `src-package/` public wire types, D1/SQLite schemas, `LEGAL.md`, `scripts/`, `.github/workflows/`).
+- **Gate discipline**: Slices mean local commit. Completed capability gates mean push. Implement the capability gate or related gate group before running verification and checkpoints; mark incomplete work `unverified`.
+- **Zero standby loops**: Never busy-poll `manage_task`, `manage_subagents`, empty queues, or dummy shell sleeps. When waiting for asynchronous subagents, background tasks, or user input, end your turn and yield cleanly for reactive wakeup.
+
+## 6. Publishing Discipline
+
+- Record pending product release notes only in [`docs/source/CHANGELOG.md`](docs/source/CHANGELOG.md). Root `CHANGELOG.md` is generated at publication preparation; never edit or clear it manually.
+- Preview publishing stays on its current ahead branch without a PR. Release preparation and finalization require clean `main`, an owner-reviewed metadata PR, and protected approvals. Never disable protection, force-push `main`, or merge/approve for the owner.
+- Reruns execute the frozen tagged commit (transient failures only). Code fixes require tag reversion (`bun run recovery:revert-tag <tag> --remote`) or a patch branch (`bun run recovery:patch <product> <version>`).
+- Human operations: [`docs/source/PUBLISHING.md`](docs/source/PUBLISHING.md). Agent rules: [`docs/research/decisions/AGENT_PUBLISHING_PROCEDURE.md`](docs/research/decisions/AGENT_PUBLISHING_PROCEDURE.md).

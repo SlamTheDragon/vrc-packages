@@ -93,7 +93,7 @@ The route is singular `/v1/app/report`. Removal returns HTTP 202 and a pending r
 
 The coordinator issues node credentials through `/v1/operator/nodes`. A token encodes platform capabilities. Queue entries still need scoped source approval and valid robots evidence before a lease.
 
-The headless node ingests runtime identity, paths and credentials directly from `.env` or process environment variables (including `NODE_TOKEN`). It broadcasts operational activities and discovery findings to `latest.log`. See [the node specification](docs/source/SPECIFICATION_CRAWLER_CLIENT.md) for the current execution boundary.
+The headless node ingests runtime identity, paths and credentials directly from `.env` or process environment variables (including `NODE_TOKEN`). It broadcasts operational activities and discovery findings to `latest.log`. See [the node specification](docs/source/specifications/crawler_node.md) for the current execution boundary.
 
 Docker files live in `src-crawler/`. Inspect the configuration before starting containers:
 
@@ -115,7 +115,7 @@ When you run multiple nodes in a fleet, assign unique `NODE_ID` values. Give eac
 
 Use [API_ROUTES.md](./docs/applications/VRCP API/API_ROUTES.md) with the current handlers and SDK schemas. Planned routes are not runnable endpoints. `/v1/user/delist`, user collection POSTs and `/v1/app/index/random` are absent. Node result submission uses `/v1/node/jobs/result`.
 
-Use [the Cloudflare setup checklist](./docs/scratch/research/CRAWLER_DEPENDENCY_RESEARCH.md#cloudflare-panel-setup-checklist) for the owner-completed folder split. The latest supplied build log confirms the API package `src-worker` ran remotely. `src-web` is the separate static site, not the API build root.
+Use [the Cloudflare setup checklist](./docs/research/architecture/infrastructure_and_quotas.md#cloudflare-panel-setup-checklist) for the owner-completed folder split. The latest supplied build log confirms the API package `src-worker` ran remotely. `src-web` is the separate static site, not the API build root.
 
 LEGAL.md states draft covenants, not measured implementation. Terms headers are not uniformly emitted by every handler. No remote build, deployment, source permission or legal compliance is inferred from this runbook.
 

@@ -1,4 +1,10 @@
-# STAGE-20-DELIVERY-SCRIPT-HARDENING checkpoint (2026-10-18, local commit)
+# STAGE-21-PREDECESSOR-PROOF-AND-ASSETS checkpoint (2026-10-18, local commit)
+- Status: in_progress
+- Objective: Enforce remote GitHub assets verification in all environments including local development (R58-CONFIG-TAMPER), and implement predecessor artifact existence and publication path verification without full binary streaming (DELIVERY-PROOF-SEMANTICS).
+- Scope: In `scripts/delivery-chain.mjs`, check predecessor publication and remote asset presence during `planDelivery` (blockers) and `finalizeRelease` (even when `execute: false`); implement predecessor asset existence and publication path checking (`requirePublicationProof` / `inspectPredecessorAssets`); ensure `trackDeliveryPipeline` notifies completion only on `artifactsVerified === true`; in `scripts/delivery.mjs` `verify`, ensure test failures are not swallowed in preview.
+- Verification: Scoped delivery and delivery-chain tests in `tests/delivery-chain.test.ts` and `tests/delivery.test.ts`.
+
+# STAGE-20-DELIVERY-SCRIPT-HARDENING checkpoint (2026-10-18, local commit 6f531a8)
 - Status: verified
 - Objective: Implement targeted delivery script hardening: add atomic rollback on delivery preparation crash (R60-C60C) and read-only failure diagnosis with publication preconditions on tag deletion (DELIVERY-RECOVERY-GUARDS).
 - Implemented: Added `rollbackPreparation` in `scripts/delivery-chain.mjs` resetting staged files, restoring tracked files, cleaning untracked artifacts (`git clean -fd`), and cleaning temporary release branches upon crash before git commit; guarded `deliveryTroubleshooting` and CLI `diagnose` output against suggesting tag reversion after publication; added partial publication detection in `scripts/delivery-recovery.mjs` `diagnoseFailure` returning strictly read-only reconciliation actions; enforced verified absence of published release assets in `revertDeliveryTag` before tag deletion and blocked local deletion when remote tag exists without explicit `deleteRemote: true`.

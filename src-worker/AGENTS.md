@@ -1,3 +1,13 @@
+# VRCP Sector 1: Coordinator (`src-worker/`)
+
+> **Truth Cascade**: Inherit root [`AGENTS.md`](../AGENTS.md), [`VISION.md`](../docs/research/decisions/VISION.md) (`T00`–`T05`), [`SYSTEM_MAP.md`](../docs/source/SYSTEM_MAP.md), and [`LEGAL.md`](../LEGAL.md). Active sector ledger: [`docs/scratch-crawler-network/`](../docs/scratch-crawler-network/IMPLEMENTATION_PLAN.md). Owning truth docs: [`coordinator_worker.md`](../docs/source/specifications/coordinator_worker.md), [`coordinator_d1.md`](../docs/source/schemas/coordinator_d1.md), [`failure_and_recovery_matrix.md`](../docs/source/reliability/failure_and_recovery_matrix.md).
+>
+> **Boundaries**: API-only Cloudflare Worker (`src/worker_entry.ts`, D1 binding `VRCP_D1`). Zero sibling-project imports; consume `vrc-packages-api` (preview) and `vrc-packages-network` (tarball) as declared dependencies. Schema or `packages/network/` changes trigger the Rule 06 `edit-guard`. Relevant root skills: `cloudflare`, `workers-best-practices`, `wrangler`.
+>
+> **Verification**: `bun run check`, `bun run test`, `bun run test:workers`, `bun run build:preview && bun run test:runtime`.
+
+---
+
 # Cloudflare Workers
 
 STOP. Your knowledge of Cloudflare Workers APIs and limits may be outdated. Always retrieve current documentation before any Workers, KV, R2, D1, Durable Objects, Queues, Vectorize, AI, or Agents SDK task.

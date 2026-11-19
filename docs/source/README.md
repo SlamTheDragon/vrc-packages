@@ -1,29 +1,36 @@
-# Current Source Reference
+# Current Source Documentation Truth (System Reliability and Agreed Schemas)
 
-This directory describes current code capabilities. Candidate details still need comparison with executable source. Owner decisions and open work remain in [the canonical ledger](../scratch/IMPLEMENTATION_PLAN.md).
+Welcome to `docs/source/`. This directory is the **authoritative source of truth for system reliability and agreed schemas for usage** across VRC Packages (VRCP). Every table, column, route, export, and operational bound documented here is verified directly against live executable code.
 
-| Component | Current source | Reference |
-| --- | --- | --- |
-| API coordinator | `src-worker/src/`, entry `worker_entry.ts`, D1 storage | [Crawler network](SPECIFICATION_CRAWLER_NETWORK.md) |
-| Headless node | `src-crawler/src/`, binary `vrcp-crawler-node` | [Node and desktop client](SPECIFICATION_CRAWLER_CLIENT.md) |
-| Desktop starter | `src-crawler-client/`, Tauri/Svelte, no bundled node | [Node and desktop client](SPECIFICATION_CRAWLER_CLIENT.md) |
-| Static website starter | `src-web/`, Astro/Svelte, no panel or SDK integration | [Website](SPECIFICATION_WEBSITE.md) |
-| Consumer contracts | `src-package/`, package `vrc-packages-api` | [API routes](../applications/VRCP%20API/API_ROUTES.md) |
-| Storage and logging | Worker D1, node-local `node.db`, structured logs | [Database schemas](DATABASE_SCHEMAS.md) |
+> [!IMPORTANT]
+> **Three-Domain Documentation Partition**:
+> - **`docs/source/` (this directory)**: System reliability truth, agreed storage/wire schemas, component specifications, system routing, publishing operations, and pending changelog (`CHANGELOG.md`).
+> - **`docs/applications/`**: Human-readable user and API wiki documentation. **Keep `docs/applications/` untouched** during engineering work; stage proposed wiki updates in [`reliability/proposed_wiki_changes.md`](reliability/proposed_wiki_changes.md) until owner approval.
+> - **`docs/research/`**: Investigative legal covenants, platform clearance matrices, exploratory architecture, audits, and retained owner decisions ([`docs/research/README.md`](../research/README.md)). Never present research findings as implemented runtime truth.
 
-API route status separates implemented and planned endpoints. Database tables and broader safeguards still need a field-by-field audit. A candidate specification does not prove deployment, ownership verification or complete recovery.
+## Orthogonal Source Directory Map
 
-Public catalog and delta handlers return a fixed `internal_error` message for storage or output-schema failures. These responses and other catalog errors use `Cache-Control: no-store`. Successful pages retain `public, max-age=60`. Failure logs include the route, not the underlying exception or rejected rows.
+| Folder / File | Owning Scope | Documents |
+| :--- | :--- | :--- |
+| **Root Routing & Operations** | Level 0–4 context cascade, publishing procedures, pending release notes | [SYSTEM_MAP.md](SYSTEM_MAP.md), [PUBLISHING.md](PUBLISHING.md), [CHANGELOG.md](CHANGELOG.md) *(locked)* |
+| **`schemas/`** | Agreed D1, node SQLite, logging, and wire/SDK protocol contracts | [coordinator_d1.md](schemas/coordinator_d1.md), [crawler_node_sqlite.md](schemas/crawler_node_sqlite.md), [logging_and_telemetry.md](schemas/logging_and_telemetry.md), [wire_and_protocol_contracts.md](schemas/wire_and_protocol_contracts.md) |
+| **`specifications/`** | Per-sector executable component specifications (1 owner per component) | [coordinator_worker.md](specifications/coordinator_worker.md), [crawler_node.md](specifications/crawler_node.md), [desktop_client.md](specifications/desktop_client.md), [consumer_sdk_and_web.md](specifications/consumer_sdk_and_web.md) |
+| **`reliability/`** | System reliability failure/recovery bounds and staged wiki proposals | [failure_and_recovery_matrix.md](reliability/failure_and_recovery_matrix.md), [proposed_wiki_changes.md](reliability/proposed_wiki_changes.md) |
 
-## Worker verification
+## Worker and Node Verification Quick Reference
 
-Run these commands from `src-worker/`:
+Run domain verification strictly inside the owning project (never run root `bun test ./tests` unless Sector 4 root tooling changes):
+- **`src-worker/`**: `bun run check`, `bun run test`, `bun run test:workers`, `bun run build:preview && bun run test:runtime`.
+- **`src-crawler/`**: `bun run typecheck`, `bun test`, `bun run build:dev`.
+- **`src-crawler-client/`**: `bun run check`, `bun run build:web` (`bun run build:dev` for Rust/Tauri changes).
+- **`src-package/`**: `bun run typecheck`, `bun test`.
+- **`src-web/`** and **`src-web-search/`**: `bun run build`.
 
-- `bun run check`: regenerate binding declarations and typecheck production source, Cloudflare Vitest fixtures and Bun TypeScript tests/support.
-- `bun run test`: execute Bun unit and protocol fixtures. Their SQLite adapter is not the native D1 runtime.
-- `bun run test:workers`: exercise the configured Worker with isolated local D1 through Cloudflare Vitest.
-- `bun run build:preview`, then `bun run test:runtime`: build the preview bundle and exercise isolated workerd/D1 HTTP fixtures.
+## Navigation
 
-The Bun type project excludes only the separately checked Vitest fixture. JavaScript harnesses and dependency declarations are not fully statically checked.
-The SQLite adapter rejects unsupported sessions, raw queries, dumps and foreign batch statements. Its metadata does not measure D1 billing or performance.
-These checks do not deploy, grant source access, prove ownership or establish complete fleet reliability.
+- [System Map and Context Cascade](SYSTEM_MAP.md)
+- [Owner Truth and Vision](../research/decisions/VISION.md)
+- [Research Corpus Index](../research/README.md)
+- [Legal Notices and Operational Covenants](../../LEGAL.md)
+- [Root Agent Entry Point](../../AGENTS.md)
+- [Agent Workspace Guidance](../../.agents/README.md)

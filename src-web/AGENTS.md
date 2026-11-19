@@ -1,3 +1,15 @@
+# VRCP Sector 3: Website (`src-web/`)
+
+> **Truth Cascade**: Inherit root [`AGENTS.md`](../AGENTS.md), [`VISION.md`](../docs/research/decisions/VISION.md) (`T00`–`T03`, `T05`, `T06`), [`SYSTEM_MAP.md`](../docs/source/SYSTEM_MAP.md), and [`LEGAL.md`](../LEGAL.md). Active sector ledger: [`docs/scratch-api-web/`](../docs/scratch-api-web/IMPLEMENTATION_PLAN.md). Owning truth doc: [`consumer_sdk_and_web.md`](../docs/source/specifications/consumer_sdk_and_web.md).
+>
+> **Boundaries**: Astro 7 + Svelte 5 site (ToS/legal pages, node distribution/registry, app registry, dashboard). Consume `vrc-packages-api` (release) strictly as a declared dependency; zero sibling imports. Follow [`.agents/rules/09-frontend-design-system-invariants.md`](../.agents/rules/09-frontend-design-system-invariants.md).
+>
+> **Skills**: Local [`.agents/skills/`](.agents/skills/svelte5-best-practices/SKILL.md) (`svelte5-best-practices`, `svelte-code-writer`, `svelte-core-bestpractices`) and root `web-perf` / `cloudflare`.
+>
+> **Verification**: `bun run build`.
+
+---
+
 ## Development
 
 When starting the dev server, use background mode:

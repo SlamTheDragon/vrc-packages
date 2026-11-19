@@ -1,27 +1,23 @@
 ---
 trigger: always_on
-description: "Mitigate the 3 pillars of AI failure (quadratic context limits, sparse attention, decoupled RAG) and resist Jevons Paradox code bloat."
+description: "Mitigate the 3 pillars of AI failure (quadratic context limits, sparse attention, decoupled RAG) and resist Jevons Paradox bloat."
 ---
 
-# 04 — Preserve context fidelity, bridge sparse attention, and resist code bloat
+# 04: Preserve Context Fidelity, Bridge Sparse Attention, and Resist Bloat
 
-1. **Pillar 1 Mitigation: Context budgeting & bounded tool exposure ($O(n^2)$ scaling)**:
-   - Do not dump entire files or multi-page command outputs into the context window. Use bounded line ranges (`view_file` with `StartLine`/`EndLine`) and focused searches (`rg -n`, exact symbols).
-   - Indiscriminate context consumption accelerates quadratic token compaction, degrades attention density, and causes catastrophic forgetting of early project constraints.
-
-2. **Pillar 2 Mitigation: Bridge sparse attention & verify cross-module connections**:
-   - Transformer attention is sparse over long contexts; do not assume the model will implicitly track distant callers, shared state lifetimes, or lifecycle boundaries.
+1. **Pillar 1: Context budgeting and bounded tool exposure ($O(n^2)$ scaling)**:
+   - Do not dump entire large files or multi-page command outputs into the context window. Use bounded line ranges (`read_file` with `StartLine`/`EndLine`) and targeted symbol/pattern searches.
+   - Indiscriminate context consumption accelerates quadratic token compaction, degrades attention density, and causes forgetting of early project constraints and owner directives.
+2. **Pillar 2: Bridge sparse attention and verify cross-sector connections**:
+   - Transformer attention weakens across long contexts. Do not assume implicit tracking of distant callers, shared wire types, D1 schema columns, or cross-sector contracts.
    - Trace cross-boundary invariants deterministically: verify inbound callers, outbound dependencies, and shared schema contracts explicitly before modifying shared symbols.
-   - Enforce integration boundaries with executable cross-module tests rather than assuming isolated function correctness implies system coherence.
-
-3. **Pillar 3 Mitigation: Triangulate against decoupled RAG & indexing blind spots**:
+   - Enforce integration boundaries with executable cross-module tests and link audits (`bun .agents/scripts/check_doc_links.ts`) rather than assuming isolated edits keep the monorepo coherent.
+3. **Pillar 3: Triangulate against decoupled RAG and indexing blind spots**:
    - Never treat an isolated search hit, doc summary, or embedding snippet as self-evident truth. A decoupled chunk lacks AST semantics, call hierarchies, and runtime wiring.
-   - Always triangulate retrieved snippets by verifying both directions: caller ↔ callee ↔ live test fixture. Runnable code and tests describe current behavior. Current owner instructions and accepted decisions in the canonical ledgers govern intent. Do not rely on removed orientation documents.
-
-4. **Economic Trap Mitigation: Resist Jevons Paradox & software bloat**:
-   - Cheaper code generation must not result in bloated architectures. Never add synthetic wrappers, duplicate helpers, speculative abstractions, or new files when an existing module or language primitive suffices.
-   - When resolving defects, actively prefer **simplification, refactoring, and code deletion** over adding compensatory layers. Every new symbol adds maintenance and context tax.
-
-5. **Operational Discipline: Externalize state; never trust conversational memory**:
-   - Long conversations inevitably suffer from context compaction and recency bias. Never rely on internal conversational memory across turns for critical decisions, active task ledgers, or dependency maps.
-   - Persist active state, gate boundaries and unresolved questions in the three canonical `docs/scratch/` files. Re-anchor from disk at the beginning of each slice.
+   - Triangulate retrieved snippets in both directions: caller <-> callee <-> live test fixture (or statutory citation <-> `LEGAL.md` <-> runtime enforcement). Runnable code and tests describe current behavior; `VISION.md` and direct user instructions govern intent.
+4. **Economic trap: Resist Jevons Paradox and software/doc bloat**:
+   - Cheap code and text generation must not produce bloated architectures or repetitious prose. Never add synthetic wrappers, duplicate helpers, speculative abstractions, or parallel files when an existing module or single-owner document suffices.
+   - Actively prefer **simplification, refactoring, and deletion** over adding compensatory layers. Every new symbol or duplicated paragraph adds permanent context tax.
+5. **Operational discipline: Externalize state and anchor to prompt lineage**:
+   - Never trust conversational memory across turns for critical decisions, wire schemas, active task ledgers, or dependency maps. Always refer to the original user prompt lineage and disk state.
+   - Re-anchor from disk at the start of each slice (`VISION.md` -> `SYSTEM_MAP.md` -> active scratch ledger). Offload verified rows to `docs/source/CHANGELOG.md` and prune active sector ledgers to prevent context degradation.
