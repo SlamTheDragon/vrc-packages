@@ -239,12 +239,7 @@ See full history at [docs/changelogs/vrcp-worker/preview](https://github.com/Sla
 ## VRC Packages Network `vrcp-packages-network`
 
 <!-- vrcp-packages-network-DESCRIPTION_SUMMARY -->
-Export shared node robots protocol schemas, unified IP validation, and centralized source-target and binary policies.
 <!-- vrcp-packages-network-DESCRIPTION_SUMMARY -->
 ### Added
-- **Node Robots Protocol Schemas**: Export `NodeRobotsClaimRequestSchema`, `NodeRobotsClaimResponseSchema`, `NodeRobotsResultRequestSchema`, and `NodeRobotsResultResponseSchema` from `vrc-packages-network/node` aligned with `OriginRobotsSnapshotSchema`.
-- **IP Literal Helper**: Export `isIp` from `vrc-packages-network/ip-policy` using unified IPv4 and IPv6 validation.
-- **Source-Target and Binary Policies**: Export binary archive guards, GitHub normalization helpers, storefront predicates, outbound lead classification, and discovery lead resolution from `vrc-packages-network/source-targets`.
 ### Changes
-- **Package Documentation**: Update `README.md` commands to Bun and rewrite documentation in ASD-STE100 prose.
 See full history at [docs/changelogs/vrcp-packages-network/](https://github.com/SlamTheDragon/vrc-packages/tree/main/docs/changelogs/vrcp-packages-network/)
