@@ -8,7 +8,7 @@ Here are the latest changelogs of each package and applications. For a full hist
 ## What Changed
 
 <!-- MASTER_SUMMARY -->
-Delegate robots.txt preflight fetching to crawler nodes under coordinator leases. Preserve evidence, settled outbox results and URL resource distinctions. Broadcast crawler activities and findings to the dedicated log file. Auto-link approved high-confidence storefront leads into accepted identity links while isolating heuristic outbound links for operator review. Support distributed Cloudflare KV rate limiting for coordinator endpoints. Calibrate fixed coordinator crawl job leases to 120 seconds. Scale crawler heartbeat pulse intervals dynamically between 5 and 30 seconds based on origin duration. Gate creator takedown submissions on trusted registered application status and route requests into moderator review queues. Emit delist tombstones on package withdrawal. Enforce source access profile publication rights in public catalog and delta feeds. Configure initial approved VPM community seeds and classify Ko-fi storefront leads into operator review. Verify multi-platform crawler fleet ingestion across VPM, GitHub, Booth, and Ko-fi drivers under lease isolation and crash recovery. Verify coordinator failure paths and multi-node fleet allocation in native workerd runtime. Bound claim candidate scans with explicit invocation budgets to protect Cloudflare quotas. Remove Watchtower from crawler Docker configuration and require isolated fleet data volumes. Automate preview D1 schema verification and non-production seed population in Cloudflare Worker preview delivery. Add atomic preparation rollback and enforce publication preconditions before tag deletion in delivery recovery tooling.
+Delegate robots.txt preflight fetching to crawler nodes under coordinator leases. Preserve evidence, settled outbox results and URL resource distinctions. Broadcast crawler activities and findings to the dedicated log file. Auto-link approved high-confidence storefront leads into accepted identity links while isolating heuristic outbound links for operator review. Support distributed Cloudflare KV rate limiting for coordinator endpoints. Calibrate fixed coordinator crawl job leases to 120 seconds. Scale crawler heartbeat pulse intervals dynamically between 5 and 30 seconds based on origin duration. Gate creator takedown submissions on trusted registered application status and route requests into moderator review queues. Emit delist tombstones on package withdrawal. Enforce source access profile publication rights in public catalog and delta feeds. Configure initial approved VPM community seeds and classify Ko-fi storefront leads into operator review. Verify multi-platform crawler fleet ingestion across VPM, GitHub, Booth, and Ko-fi drivers under lease isolation and crash recovery. Verify coordinator failure paths and multi-node fleet allocation in native workerd runtime. Bound claim candidate scans with explicit invocation budgets to protect Cloudflare quotas. Remove Watchtower from crawler Docker configuration and require isolated fleet data volumes. Automate preview D1 schema verification and non-production seed population in Cloudflare Worker preview delivery. Add atomic preparation rollback and enforce publication preconditions before tag deletion in delivery recovery tooling. Support catalog search rating filters and strict credential and path validation in the TypeScript SDK. Consolidate internal SDK protocol schemas and test fixture hygiene.
 <!-- MASTER_SUMMARY -->
 
 ## Table of Contents
@@ -171,10 +171,17 @@ See full history at [docs/changelogs/vrcp-crawler-node/preview](https://github.c
 ## VRC Packages API - `vrcp-packages-api-preview`
 
 <!-- vrcp-packages-api-preview-DESCRIPTION_SUMMARY -->
+Support catalog search rating filters, strict registration credential checks, safe canonical ID paths, explicit JSON error wrapping, and shared protocol schema validation.
 <!-- vrcp-packages-api-preview-DESCRIPTION_SUMMARY -->
 ### Added
+- **Search Rating Filter**: Add optional rating filter support to `CatalogSearchParams` and `client.index.search`.
 ### Bugs Fixed
+- **Registration Credentials**: Validate `RegisterAppRequestSchema` first in `client.app.register`, require explicit `auth` when two tokens exist, and return status 401 when tokens are missing.
+- **Canonical ID Paths**: Reject dot segments and blank-trimmed strings on `canonicalId` in `client.moderator.ratings.adjust`.
+- **Success JSON Parsing**: Wrap invalid `2xx` JSON parse failures inside `VRCPApiError`.
 ### Changes
+- **Schema Consolidation and Validation**: Share internal URL, token, umbrella, and candidate schemas, and enforce `PackageFrontSchema`, `LeadRowSchema`, strict init, and rule origin checks.
+- **Package and Fixture Hygiene**: Remove the unused root stub and compiler flags, clean temporary test folders, and split protocol test files.
 See full history at [docs/changelogs/vrcp-packages-api/preview](https://github.com/SlamTheDragon/vrc-packages/tree/main/docs/changelogs/vrcp-packages-api/preview)
 
 ---

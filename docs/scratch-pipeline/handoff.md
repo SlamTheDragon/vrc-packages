@@ -25,7 +25,8 @@ Sweep all sector `handoff.md` files and stage accepted intake rows here in stric
 
 | intake_id | source_sector | req_id | product_or_scope | channel | prereqs_satisfied | changelog_transferred | rows_cleared | status |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| *(no sector publication requests currently queued)* | | | | | | | | |
+| `INT-001` | `api-web` | `PR-AW-SDK-001` | `package` | `preview` | `yes` | `in_progress` | `no` | `in_progress` |
+| `INT-002` | `crawler-network` | `PR-CN-NET-001` | `network` | `preview` | `no (awaiting package 2026.10.12-pre)` | `no` | `no` | `queued` |
 
 ---
 
