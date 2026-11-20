@@ -46,7 +46,7 @@ This file owns owner intent. [`owner_dispositions.md`](owner_dispositions.md) re
 
 ## T02: Five Monorepo Responsibility Sectors
 
-The monorepo partitions work into five distinct sectors. Agents must anchor work to one sector at a time and keep product runtime edits, legal research corpus work, and root pipeline edits strictly separate. [P13, P14, P15, P16]
+The monorepo partitions work into five distinct sectors. Agents must anchor work to one sector at a time, keep edits contained inside their active control sector, and keep product runtime edits, legal research corpus work, and root pipeline edits strictly separate. Each `docs/scratch-<sector>/` folder holds three files (`IMPLEMENTATION_PLAN.md`, `task_tracker.md`, `handoff.md`), expressing the 5-tier integration cascade (`Tier 1: Truth/Covenants/Legal/Vision` -> `Tier 2: Schemas/Workers/Cloudflare` -> `Tier 3: API/Networking` -> `Tier 4: Crawler Node/Desktop Client` -> `Tier 5: Downstream Web Apps`) as labeled sections inside each `handoff.md`. Downstream sectors read upstream `handoff.md` ledgers to propagate changes; Sector 4 (`pipeline`) oversees all handoffs. [P13, P14, P15, P16, P17]
 
 | Sector | Anchor ID | Owned Paths | Primary Branch(es) | Sector Scratch Anchor |
 | :--- | :--- | :--- | :--- | :--- |
@@ -114,7 +114,8 @@ There must be no build or test artifacts in the repository root. [P01]
 ## T07: Publishing, Branching, and Root Pipeline Separation
 
 - Slices mean local commit. Completed capability gates mean push (unless local-only mode applies). [P07, P08]
-- Write pending release notes only in [`docs/source/CHANGELOG.md`](../../source/CHANGELOG.md). Root `CHANGELOG.md` is generated at publication preparation; never edit or clear it manually. [P08, P09]
+- Product sectors submit written Publication Requests strictly inside their own `docs/scratch-<sector>/handoff.md`. **Product and legal sectors must not edit `docs/source/CHANGELOG.md` and do not have the right to clear `verified` rows from their ledgers.** [P17]
+- Only Sector 4 (`pipeline`) agents transfer verified product release notes into [`docs/source/CHANGELOG.md`](../../source/CHANGELOG.md), clear transferred `verified` rows across sector ledgers (without product version bumps for non-product sectors), and execute root publication scripts. Root `CHANGELOG.md` and `docs/changelogs/` are generated at publication preparation; never edit or clear them manually. [P08, P09, P17]
 - Preview publishing stays on its current ahead branch without a PR. Release preparation and finalization require clean `main`, an owner-reviewed metadata PR, and protected approvals. Never merge or approve for the owner. [P08, P10]
 - Human steps: [`docs/source/PUBLISHING.md`](../../source/PUBLISHING.md). Agent rules: [`AGENT_PUBLISHING_PROCEDURE.md`](AGENT_PUBLISHING_PROCEDURE.md). [P08]
 - Never run root-level tests (`bun test ./tests`) unless root tooling (`scripts/`, `tests/`, `package.json`, root configs) changed. [P07]
@@ -128,7 +129,7 @@ There must be no build or test artifacts in the repository root. [P01]
 | Per-slice full test runs and mandatory per-slice pauses | Implement a capability gate before running verification and checkpoints; run root tests only when root tooling changes. | P07 |
 | Worker-side direct `robots.txt` fetching | Delegate `robots.txt` preflight fetching to crawler nodes under coordinator leases (`R24-C21`). | P11 |
 | Always-on pre-edit guard for every file edit | Thresholded edit-guard: disabled by default; activates at 10+ files OR cross-project contract/wire/schema/legal/pipeline boundary changes. | P14 |
-| Storing research inside `docs/scratch/research/` and monolithic `docs/source/` candidate docs | Standalone orthogonal `docs/research/` corpus (`legal/`, `markets/`, `architecture/`, `audits/`, `decisions/`), orthogonal `docs/source/` reliability/schema truth (`schemas/`, `specifications/`, `reliability/`), untouched `docs/applications/` wiki, and five 2-file `docs/scratch-<sector>/` ledgers. | P13, P15, P16 |
+| Storing research inside `docs/scratch/research/` and monolithic `docs/source/` candidate docs | Standalone orthogonal `docs/research/` corpus (`legal/`, `markets/`, `architecture/`, `audits/`, `decisions/`), orthogonal `docs/source/` reliability/schema truth (`schemas/`, `specifications/`, `reliability/`), untouched `docs/applications/` wiki, and five 3-file `docs/scratch-<sector>/` ledgers (`IMPLEMENTATION_PLAN.md`, `task_tracker.md`, `handoff.md`). | P13, P15, P16, P17 |
 
 ## T09: Targeted Context Retrieval
 
@@ -162,4 +163,5 @@ Select-String -Path docs/source/SYSTEM_MAP.md -Pattern '^## '
 | P13 | Owner Architecture Prompt (2026-11-20) | Extend `VISION.md` and truth sources into a Level 0 to Level 4 cascading context architecture across distinct responsibility sectors. |
 | P14 | Owner Governance Prompt (2026-11-20) | Thresholded edit-guard (10+ files or contract/wire/schema/legal/pipeline boundary), master root rules/skills, diversified sector skills, and distinct root distribution pipeline management. |
 | P15 | Owner Legal Research Addendum (2026-11-20) | Establish Sector 5 (`legal-research`) for legal truth covenants and expansion actions; strictly partition `docs/research/` away from `docs/source/`. |
-| P16 | Owner Restructuring Directives (2026-11-20) | Five 2-file `docs/scratch-<sector>/` ledgers; orthogonal rewrite of `docs/research/` (purging raw transcripts and superseded status snapshots) and `docs/source/` (truth for reliability and agreed schemas); keep `docs/applications/` untouched (staging proposals in `docs/source/`) while migrating broken links; retire legacy `docs/scratch/` via Sector 4 pipeline gate (`PIPELINE-SCRATCH-RETIRE`). |
+| P16 | Owner Restructuring Directives (2026-11-20) | Five `docs/scratch-<sector>/` ledgers; orthogonal rewrite of `docs/research/` (purging raw transcripts and superseded status snapshots) and `docs/source/` (truth for reliability and agreed schemas); keep `docs/applications/` untouched (staging proposals in `docs/source/`) while migrating broken links; retire legacy `docs/scratch/` via Sector 4 pipeline gate (`PIPELINE-SCRATCH-RETIRE`). |
+| P17 | Owner Handoff Cascade Directives (2026-11-20) | Add `handoff.md` to every `docs/scratch-<sector>/` folder (strictly 3 files per folder) with labeled 5-tier cascade sections (`Tier 1 Legal/Vision` -> `Tier 2 Worker/Schemas` -> `Tier 3 API/Network` -> `Tier 4 Crawler/Desktop` -> `Tier 5 Web`); enforce strict sector write containment with read-upstream handoff propagation; require written Publication Requests strictly inside each sector's `handoff.md`; grant Sector 4 Pipeline exclusive authority to oversee all handoffs, maintain `docs/source/CHANGELOG.md`, clear verified ledger rows post-transfer, and run root publication scripts. |

@@ -30,8 +30,10 @@ description: "Portable runtime toolchains, validation scripts, and strict Sector
      - `src-web/` and `src-web-search/`: `bun run build`
    - **Sector 5 (`legal-research`)**:
      - `bun .agents/scripts/check_doc_links.ts` and `python .agents/skills/ste-writing-skill/ste-lint.py <changed-file>`
-4. **Sector 4 (Root Distribution Pipeline) strict isolation**:
+4. **Sector 4 (Root Distribution Pipeline) strict isolation, oversight, and ledger clearing**:
    - Keep root distribution pipeline and monorepo management (`package.json`, `scripts/`, `.github/workflows/`, `config.versions.json`, `config.preview.versions.json`, `tests/`) strictly distinct from product runtime feature work.
+   - **All-sector handoff oversight**: Sector 4 (`pipeline`) agents read and oversee all sector `docs/scratch-<sector>/handoff.md` and `task_tracker.md` ledgers, while ensuring root pipeline scripts stay intact.
+   - **Publication Request intake, changelog stewardship, and exclusive row clearing**: Product sectors submit written Publication Requests strictly inside their own `handoff.md`. Only Sector 4 (`pipeline`) agents pick up those requests, transfer verified product notes into `docs/source/CHANGELOG.md` (keeping it tidy in ASD-STE100), clear transferred `verified` rows from sector ledgers (including clearing non-product Sector 5 `legal-research` verified rows without product version bumps), and execute root publication commands (`bun run publish:*`, `bun run versions:*`, `bun run recovery:*`). Pipeline scripts then snapshot `docs/source/CHANGELOG.md` to root `CHANGELOG.md` and append consumed notes into `docs/changelogs/`.
    - **Never run root-level tests (`bun test ./tests`) unless root-level tooling (`scripts/`, `tests/`, `package.json`, root configs) changed.**
    - Do not hand-edit `config.versions.json`, `config.preview.versions.json`, or root `CHANGELOG.md`; always invoke root scripts (`bun run publish:*`, `bun run versions:*`, `bun run recovery:*`).
    - Sub-project `publish:*` and `prepare:dev` scripts must forward to the root `package.json` executor rather than duplicating delivery logic.

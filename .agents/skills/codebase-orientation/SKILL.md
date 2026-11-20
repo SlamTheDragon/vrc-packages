@@ -16,7 +16,8 @@ description: Maps the five VRCP monorepo sectors, truth-source cascade, active d
 2. **Follow the Level 0 to Level 4 truth cascade**:
    - Read `T00` and the relevant `Txx` segment in [`docs/research/decisions/VISION.md`](../../../docs/research/decisions/VISION.md).
    - Read [`docs/source/SYSTEM_MAP.md`](../../../docs/source/SYSTEM_MAP.md) and [`LEGAL.md`](../../../LEGAL.md) (when touching crawling, platforms, data, or APIs).
-   - Read the active anchored ledger (`docs/scratch-<sector>/IMPLEMENTATION_PLAN.md` and `task_tracker.md`).
+   - Read the active anchored 3-file ledger (`docs/scratch-<sector>/IMPLEMENTATION_PLAN.md`, `task_tracker.md`, `handoff.md`) and any permitted upstream (higher-tier) `handoff.md` ledgers plus `docs/scratch-pipeline/handoff.md` notices.
+   - Respect strict sector write containment: propagate upstream contracts into your own sector without editing upstream code or upstream `handoff.md` files.
    - Separate **owner intent** (`VISION.md`), **research corpus** (`docs/research/` + `LEGAL.md`), **current source truth** (`docs/source/` for reliability & agreed schemas), **untouched human wiki** (`docs/applications/`), and **measured conformance** (executable code and tests).
 3. **Inspect physical repository state**:
    - Run `git status --short` and `git branch --show-current`. Assume uncommitted changes belong to the owner or earlier work. Do not overwrite them.

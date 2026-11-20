@@ -5,8 +5,11 @@ description: "Maintain pending multi-product changelog notes in docs/source/CHAN
 
 # 05: Changelog Appendation and Channel Management
 
-1. **Target file isolation**:
-   - Edit only `docs/source/CHANGELOG.md` when recording pending product release notes.
+1. **Pipeline-exclusive write stewardship and target file isolation**:
+   - **Only Sector 4 (`pipeline`) agents** may edit `docs/source/CHANGELOG.md` and keep it tidy.
+   - Product and legal sectors (`crawler-network`, `desktop-client`, `api-web`, `legal-research`) **must not** directly edit `docs/source/CHANGELOG.md` and **must not** clear or delete `verified` rows from their own `IMPLEMENTATION_PLAN.md`, `task_tracker.md`, or `handoff.md` ledgers.
+   - Instead, product sectors submit a written **Publication Request** (with factual ASD-STE100 draft release notes, target product, channel, producer prerequisites, verification proof, and source slice IDs) strictly inside their own `docs/scratch-<sector>/handoff.md`.
+   - Sector 4 (`pipeline`) agents sweep sector `handoff.md` Publication Requests, transfer verified product notes into `docs/source/CHANGELOG.md`, and **only then** clear the transferred `verified` rows from the originating sector's ledgers. For non-product sectors (such as Sector 5 `legal-research` or doc/governance-only slices), Pipeline clears verified rows without adding product changelog entries or bumping versions.
    - Root `CHANGELOG.md` is the last generated publication snapshot produced by `scripts/changelog.mjs`. Do not edit or clear root `CHANGELOG.md` manually.
    - Do not inspect or modify files in `docs/changelogs/` or product changelog archives; these paths are automated by root delivery tooling.
    - Stop changelog searches after locating the target source section.

@@ -1,6 +1,6 @@
 ---
 name: incremental-delivery
-description: Step-by-step procedural lifecycle for gated, iterative delivery across VRCP's five responsibility sectors using docs/scratch-* control ledgers, task tracker checkpoints, and changelog offloading.
+description: Step-by-step procedural lifecycle for gated, iterative delivery across VRCP's five responsibility sectors using 3-file docs/scratch-* control ledgers (including handoff.md), written Publication Requests, and Pipeline-exclusive changelog transfer and row clearing.
 ---
 
 # Incremental Delivery Procedure
@@ -14,7 +14,7 @@ Execute this 6-step lifecycle on every development, pipeline, or legal-research 
    - `docs/scratch-api-web/` (Sector 3: `src-package/`, `src-web/`, `src-web-search/`)
    - `docs/scratch-pipeline/` (Sector 4: root `package.json`, `scripts/`, `.github/workflows/`, `tests/`)
    - `docs/scratch-legal-research/` (Sector 5: `LEGAL.md`, `docs/research/`)
-2. Read targeted contexts along the Level 0 to Level 4 cascade (`VISION.md` -> `SYSTEM_MAP.md` -> `LEGAL.md` -> sector spec -> live source).
+2. Read targeted contexts along the Level 0 to Level 4 cascade (`VISION.md` -> `SYSTEM_MAP.md` -> `LEGAL.md` -> active 3-file sector ledger including `handoff.md` + permitted upstream `handoff.md` ledgers -> sector spec -> live source).
 3. Keep `docs/applications/` untouched during engineering slices; stage proposed wiki edits in `docs/source/reliability/proposed_wiki_changes.md` for owner review.
 4. Record working hypotheses literally in the active `docs/scratch-<sector>/task_tracker.md`.
 
@@ -24,9 +24,9 @@ Execute this 6-step lifecycle on every development, pipeline, or legal-research 
 
 ## Step 3: Sequential Gated Dissection and Sector Implementation Plan
 1. Dissect the prompt into bounded slices inside one capability gate and its dependency boundary.
-2. **Strict ledger footprint**:
-   - Every sector directory `docs/scratch-<sector>/` must contain **strictly two files**: `IMPLEMENTATION_PLAN.md` and `task_tracker.md` (no unmerged plans or auxiliary notes).
-   - Preserve root `docs/scratch/` (`IMPLEMENTATION_PLAN.md`, `UNMERGED_IMPLEMENTATION_PLAN.md`, `task_tracker.md`, `research/`) intact for `tests/preprod_layout.test.ts` and `scripts/delivery.mjs`.
+2. **Strict three-file ledger footprint**:
+   - Every sector directory `docs/scratch-<sector>/` must contain **strictly three files**: `IMPLEMENTATION_PLAN.md`, `task_tracker.md`, and `handoff.md` (no unmerged plans or auxiliary notes).
+   - Preserve legacy root `docs/scratch/` (`IMPLEMENTATION_PLAN.md`, `UNMERGED_IMPLEMENTATION_PLAN.md`, `task_tracker.md`) intact for `tests/preprod_layout.test.ts` and `scripts/delivery.mjs` until Sector 4 `PIPELINE-SCRATCH-RETIRE` completes.
 3. Maintain the exact two-table format in `docs/scratch-<sector>/IMPLEMENTATION_PLAN.md`:
    **Task Slices**:
    ```markdown
@@ -51,9 +51,9 @@ Execute this 6-step lifecycle on every development, pipeline, or legal-research 
 1. Extract one bounded slice from `docs/scratch-<sector>/IMPLEMENTATION_PLAN.md` and update `docs/scratch-<sector>/task_tracker.md`.
 2. **Slices mean local commit; completed gates mean push** (local-only session rules override pushes). Preserve unrelated edits.
 3. Run the owning sector's domain verification suite at the gate checkpoint (never run root `bun test ./tests` unless Sector 4 root tooling changed).
-4. For product behavior or contract changes, append ASD-STE100 pending release notes to `docs/source/CHANGELOG.md` (never edit root `CHANGELOG.md` manually). Do not bump or publish products for documentation-only, `.agents/`-only, or legal-research-only gates.
+4. For product behavior or contract changes, record outbound tier contracts and a **written Publication Request** (including factual ASD-STE100 draft release notes, target product, channel, producer prerequisites, verification proof, and source slice IDs) strictly inside your own `docs/scratch-<sector>/handoff.md`. Do not edit `docs/source/CHANGELOG.md` directly and do not request product bumps for documentation-only, `.agents/`-only, or legal-research-only gates.
 
-## Step 6: Reconciliation, Offload, and Anti-Bloat Compaction
-1. After a slice or gate passes verification, record product-facing notes in `docs/source/CHANGELOG.md` (if applicable).
-2. **Delete verified rows from active `docs/scratch-<sector>/` ledgers** once recorded so scratchpads stay compact and contain only active, pending, or blocked work.
+## Step 6: Handoff Recording and Pipeline-Exclusive Ledger Clearing
+1. After a slice or gate passes verification, mark the slice `verified` in `docs/scratch-<sector>/IMPLEMENTATION_PLAN.md` and `task_tracker.md`, record outbound tier handoffs and any Publication / Ledger-Clearance Request in `docs/scratch-<sector>/handoff.md`, and keep all edits contained inside your own sector.
+2. **Product and legal sectors do not have the right to clear or delete verified rows from their ledgers.** Only Sector 4 (`pipeline`) agents sweep sector `handoff.md` ledgers, transfer verified product release notes into `docs/source/CHANGELOG.md` (keeping it tidy in ASD-STE100), clear the transferred `verified` rows across sector ledgers (without version bumps for non-product sectors), and run root publication scripts.
 3. Re-read any new `author comments`; treat owner questions as clarification required, not approval.

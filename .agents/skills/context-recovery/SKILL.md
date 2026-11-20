@@ -14,7 +14,7 @@ Execute this procedure whenever conversational context feels degraded, after a c
 2. **Re-anchor from the Level 0 to Level 4 truth cascade**:
    - Read `T00` and the relevant `Txx` segment in [`docs/research/decisions/VISION.md`](../../../docs/research/decisions/VISION.md).
    - Read [`docs/source/SYSTEM_MAP.md`](../../../docs/source/SYSTEM_MAP.md) to verify single-owner contracts and keep **research corpus** (`docs/research/`, `LEGAL.md`), **current source truth** (`docs/source/`), and **untouched human wiki** (`docs/applications/`) strictly separate.
-   - Read the active sector ledger (`docs/scratch-<sector>/IMPLEMENTATION_PLAN.md` and `task_tracker.md`).
+   - Read the active 3-file sector ledger (`docs/scratch-<sector>/IMPLEMENTATION_PLAN.md`, `task_tracker.md`, `handoff.md`) plus permitted upstream `handoff.md` ledgers and `docs/scratch-pipeline/handoff.md` notices.
    - Refer back to the original user prompt lineage; never extrapolate beyond accepted owner intent.
 3. **Triangulate boundaries (live AST/contracts over decoupled RAG)**:
    - Do not rely on isolated text snippets or summaries.

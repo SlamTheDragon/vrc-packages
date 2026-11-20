@@ -9,7 +9,7 @@ Follow this cascade from top to bottom and read only the branch required for you
 1. **Owner Intent and Terms**: Read `T00` and the task-relevant `Txx` section of [`docs/research/decisions/VISION.md`](docs/research/decisions/VISION.md).
 2. **System Routing and Sector Map**: Read [`docs/source/SYSTEM_MAP.md`](docs/source/SYSTEM_MAP.md) to select the single owning sector, contract owner, and verification commands.
 3. **Legal and Platform Boundaries**: Read [`LEGAL.md`](LEGAL.md) before modifying crawler access, provenance, retention, takedowns, or public API surfaces.
-4. **Sector Control Ledgers**: Read the active 2-file anchored ledger in `docs/scratch-<sector>/` (`IMPLEMENTATION_PLAN.md` and `task_tracker.md`). *(Legacy `docs/scratch/` remains intact strictly for `scripts/delivery.mjs` and `tests/preprod_layout.test.ts` until Sector 4 `PIPELINE-SCRATCH-RETIRE` completes.)*
+4. **Sector Control Ledgers and Handoff Cascade**: Read the active 3-file anchored ledger in `docs/scratch-<sector>/` (`IMPLEMENTATION_PLAN.md`, `task_tracker.md`, `handoff.md`) plus permitted upstream `handoff.md` ledgers. *(Legacy `docs/scratch/` remains intact strictly for `scripts/delivery.mjs` and `tests/preprod_layout.test.ts` until Sector 4 `PIPELINE-SCRATCH-RETIRE` completes.)*
 5. **Sector Rules and Local Context**: Follow [`.agents/README.md`](.agents/README.md) and `.agents/rules/` (`00` through `09`), then read the owning sector `AGENTS.md` and local `.agents/skills/` before editing code.
 
 Treat summaries, filenames, and earlier success reports as leads until verified against live source, tests, or primary legal citations.
@@ -31,10 +31,13 @@ Keep **Sector 4 (Root Distribution Pipeline)** and **Sector 5 (Legal Research an
   - **`docs/applications/`**: Human-readable wiki documentation. **Keep `docs/applications/` untouched**; stage proposed updates in [`docs/source/reliability/proposed_wiki_changes.md`](docs/source/reliability/proposed_wiki_changes.md) until owner approval.
   - **`docs/research/`** + **`LEGAL.md`**: Investigative legal/market/architecture research corpus. Never present research findings as implemented runtime state or source-access clearance.
 
-## 3. Workspace Anchoring and Read-Only Default
+## 3. Workspace Anchoring, Departmental Handoff Cascade, and Read-Only Default
 
 - **Read-only default**: Without an explicit task scope or sector anchor from the user, agents inspect, search, and answer questions only; do not create, edit, or delete files.
-- **Strict two-file sector ledger footprint**: Each `docs/scratch-<sector>/` directory holds strictly `IMPLEMENTATION_PLAN.md` and `task_tracker.md`. Offload verified product work to `docs/source/CHANGELOG.md` and delete verified rows from active sector scratchpads to prevent bloat.
+- **Strict three-file sector ledger footprint**: Each `docs/scratch-<sector>/` directory holds strictly `IMPLEMENTATION_PLAN.md`, `task_tracker.md`, and `handoff.md`.
+- **Cascading department hierarchy**: Integration flows strictly downward across labeled tier sections inside each `handoff.md`: `Tier 1 (Truth, Covenants, Legal, Vision)` -> `Tier 2 (Schemas, Workers, Cloudflare)` -> `Tier 3 (API and Networking: 3A Network / 3B SDK)` -> `Tier 4 (4A Crawler Node / 4B Desktop Client)` -> `Tier 5 (Downstream Web Apps)`.
+- **Write containment and read-upstream**: Each sector agent edits strictly inside its own sector and may read upstream `handoff.md` ledgers (plus `docs/scratch-pipeline/handoff.md` notices) to propagate changes into its own system without editing upstream sectors.
+- **Pipeline-exclusive changelog stewardship and ledger clearing**: Product and legal sectors submit written Publication / Ledger-Clearance Requests strictly inside their own `handoff.md`. **Product and legal sectors must not edit `docs/source/CHANGELOG.md` and do not have the right to clear `verified` rows from their ledgers.** Only Sector 4 (`pipeline`) agents oversee all `handoff.md` ledgers, transfer verified product notes into `docs/source/CHANGELOG.md`, clear transferred `verified` rows across sector ledgers (without product version bumps for non-product sectors), and execute root publication routines.
 
 ## 4. Non-Negotiable Architecture and Safety Boundaries
 
@@ -55,7 +58,7 @@ Keep **Sector 4 (Root Distribution Pipeline)** and **Sector 5 (Legal Research an
 
 ## 6. Publishing Discipline
 
-- Record pending product release notes only in [`docs/source/CHANGELOG.md`](docs/source/CHANGELOG.md). Root `CHANGELOG.md` is generated at publication preparation; never edit or clear it manually.
+- Product sectors record verified Publication Requests strictly inside their own `docs/scratch-<sector>/handoff.md`. Only Sector 4 (`pipeline`) agents transfer verified product release notes into [`docs/source/CHANGELOG.md`](docs/source/CHANGELOG.md), clear transferred `verified` ledger rows, and run root publication scripts. Root `CHANGELOG.md` and `docs/changelogs/` are generated at publication preparation; never edit or clear them manually.
 - Preview publishing stays on its current ahead branch without a PR. Release preparation and finalization require clean `main`, an owner-reviewed metadata PR, and protected approvals. Never disable protection, force-push `main`, or merge/approve for the owner.
 - Reruns execute the frozen tagged commit (transient failures only). Code fixes require tag reversion (`bun run recovery:revert-tag <tag> --remote`) or a patch branch (`bun run recovery:patch <product> <version>`).
 - Human operations: [`docs/source/PUBLISHING.md`](docs/source/PUBLISHING.md). Agent rules: [`docs/research/decisions/AGENT_PUBLISHING_PROCEDURE.md`](docs/research/decisions/AGENT_PUBLISHING_PROCEDURE.md).

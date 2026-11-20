@@ -5,9 +5,10 @@ description: "Protect sector and crawler/coordinator boundaries, enforce whole-e
 
 # 02: Review the Whole Effect, Not Just the Edited Function
 
-1. **Process and cross-project isolation**:
+1. **Process, cross-project isolation, and departmental handoff containment**:
    - Keep Crawler Node (`src-crawler/`) and Coordinator (`src-worker/`) as separate runnable processes communicating only through versioned serialized HTTP payloads. Do not bypass leases with direct repository calls.
    - Treat every `src-*` folder as an independent project. Never import sibling source or tests via relative paths, aliases, or symlinks. Consume shared code only through declared distributed dependencies (`vrc-packages-api`, `vrc-packages-network`).
+   - **Containment across the 5-tier cascade**: Keep every edit inside the active control sector. Propagate cross-sector contract, schema, or legal changes strictly by recording outbound entries in the owning sector's `docs/scratch-<sector>/handoff.md` and letting downstream sector agents read upstream `handoff.md` files to integrate into their own code.
 2. **Source access, robots, and legal boundaries**:
    - Source-access profiles authorize only scoped fetching. RFC 9309 `robots.txt` is a second gate (delegated to nodes under leases). Neither grants retention, publication, canonical identity, or binary downloads. Fail closed when the coordinator is unavailable.
    - Keep legal research covenants (`LEGAL.md`, research corpus) strictly separate from executable claims in `docs/source/`.

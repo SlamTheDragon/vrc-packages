@@ -28,10 +28,10 @@ description: "Self-management, resilience, thresholded edit-guard policy, zero d
 5. **No shortcuts or unearned claims**:
    - Compiling cleanly or passing isolated mock tests is screening evidence, not operational qualification.
    - Claim verification only after executing the owning sector's required test, typecheck, and runtime/build checks.
-6. **Strict ledger status parameters and anti-bloat compaction**:
-   - Review active ledgers before advancing to the next task.
+6. **Strict ledger status parameters, handoff containment, and Pipeline-only row clearing**:
+   - Review active ledgers (`IMPLEMENTATION_PLAN.md`, `task_tracker.md`, `handoff.md`) and permitted upstream `handoff.md` ledgers before advancing to the next task.
    - Limit the `status` column strictly to five values: `open`, `in_progress`, `unverified`, `verified`, `blocked`.
-   - Compact active ledgers across cycles: offload verified product work to `docs/source/CHANGELOG.md` and prune verified rows from active sector scratchpads (`docs/scratch-<sector>/`).
+   - **Never clear or delete verified rows outside Sector 4 (`pipeline`)**: Product and legal sectors mark completed rows `verified` and record written Publication / Ledger-Clearance Requests strictly inside their own `docs/scratch-<sector>/handoff.md`. Only Sector 4 (`pipeline`) agents transfer verified product notes into `docs/source/CHANGELOG.md` and clear transferred `verified` rows across sector ledgers.
 7. **Zero tolerance for agentic standby loops**:
    - Never busy-poll `manage_task`, `manage_subagents`, background commands, or empty queues, and never run dummy waits or shell sleeps.
    - When waiting for subagents, background tasks, or user feedback, stop invoking tools and yield cleanly so reactive notifications resume work.

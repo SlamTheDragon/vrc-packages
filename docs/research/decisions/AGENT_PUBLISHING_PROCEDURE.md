@@ -5,11 +5,16 @@ This file defines agent publishing rules and branch invariants for Sector 4 (`pi
 
 ---
 
-## 1. Core Lifecycle Rules
+## 1. Core Lifecycle and Departmental Intake Rules
 
 1. **Slices mean local commit; completed gates mean push** unless the owner requires local-only commits. Commit each implemented slice locally as a checkpoint. Push to the remote tracking branch only when the capability gate passes all checks.
-2. **Start every publication from root `package.json` scripts**. Write pending product release notes only in [`docs/source/CHANGELOG.md`](../../source/CHANGELOG.md). Preparation copies the complete source to root `CHANGELOG.md`, archives selected notes, and clears only the selected product/channel body in the source while preserving its skeleton. Never edit or clear root `CHANGELOG.md` or version config JSON files manually. Publish only products whose delivered behavior changed.
-3. **Publish producers before consumers**:
+2. **Pull-only Publication Request intake from sector `handoff.md` ledgers**:
+   - Product sectors (`crawler-network`, `desktop-client`, `api-web`) submit written Publication Requests strictly inside their own `docs/scratch-<sector>/handoff.md` after passing all domain verification checks.
+   - Product and legal sectors **must not** directly edit [`docs/source/CHANGELOG.md`](../../source/CHANGELOG.md), **must not** run root `bun run publish:*` directly, and **do not have the right to clear `verified` rows** from their ledgers.
+   - **Sector 4 (`pipeline`) agents** sweep all four sector `handoff.md` ledgers (`scratch-legal-research`, `scratch-crawler-network`, `scratch-desktop-client`, `scratch-api-web`), log accepted intake items in [`docs/scratch-pipeline/handoff.md`](../../scratch-pipeline/handoff.md), transfer verified product release notes into [`docs/source/CHANGELOG.md`](../../source/CHANGELOG.md) in strict ASD-STE100 compliance (`ste-lint.py`), and **only after transfer** clear the corresponding `verified` rows from the source sector's `IMPLEMENTATION_PLAN.md`, `task_tracker.md`, and `handoff.md`.
+   - For non-product sectors (such as Sector 5 `legal-research` or doc/governance-only slices), Sector 4 (`pipeline`) audits closure and clears `verified` ledger rows **without** adding product changelog entries or allocating version bumps.
+3. **Start every publication from root `package.json` scripts**: Pipeline preparation copies [`docs/source/CHANGELOG.md`](../../source/CHANGELOG.md) to root `CHANGELOG.md`, archives selected notes into `docs/changelogs/`, and clears only the selected product/channel body in the source while preserving its skeleton. Never edit or clear root `CHANGELOG.md`, `docs/changelogs/`, or version config JSON files manually. Publish only products whose delivered behavior changed.
+4. **Publish producers before consumers**:
    - Publish SDK contracts (`src-package/`) first.
    - Publish network contracts (`src-worker/packages/network/`) next if peer bounds or wire schemas changed.
    - Publish dependent services and applications (`src-worker/`, `src-crawler/`, `src-crawler-client/`, `src-web/`) last.

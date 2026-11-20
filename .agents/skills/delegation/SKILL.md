@@ -11,7 +11,7 @@ description: Execute safe, sequenced, and stratified delegation where an Agent C
 > **Subagents Execute the Delegation Pipeline**:
 > Delegation means invoking subagents via `invoke_subagent`. The invoking agent operates strictly as the **Agent Coordinator**. The coordinator writes role packets, maintains CSV tracking ledgers, dispatches subagents, receives handoffs, and records approvals. The coordinator must not execute delegated research, sandbox drafting, quality audits, or integration directly in the coordinator turn.
 
-All coordination packets and delegate sandboxes live under `delegates/<GOAL_NAME>/` at the repository root. This preserves the strict two-file limit in every `docs/scratch-<sector>/` directory and the layout-checked footprint in `docs/scratch/`.
+All coordination packets and delegate sandboxes live under `delegates/<GOAL_NAME>/` at the repository root. This preserves the strict three-file limit (`IMPLEMENTATION_PLAN.md`, `task_tracker.md`, `handoff.md`) in every `docs/scratch-<sector>/` directory and the layout-checked footprint in `docs/scratch/`.
 
 ### Domain A: Instruction and Governance (`delegates/<GOAL_NAME>/coordinator/`)
 - `coordinator.md`: Root coordinator prompt governing the active goal iteration and its anchored sector (`crawler-network`, `desktop-client`, `api-web`, `pipeline`, or `legal-research`).
@@ -85,7 +85,7 @@ Each packet must define:
    1. **Promotion Proof**: Every row in `integration.csv` is `promoted` or `integrated` in its canonical destination.
    2. **Link Decoupling**: Zero canonical files in `docs/` or `src-*` link into `delegates/<GOAL_NAME>/` (verify with `bun .agents/scripts/check_doc_links.ts`).
    3. **Artifact Migration**: All retained research or schema artifacts live in their permanent sector paths.
-   4. **Changelog and Ledger Record**: Product-facing notes are recorded in `docs/source/CHANGELOG.md` (if runtime/package behavior changed) and active sector ledgers are updated.
+   4. **Handoff and Ledger Record**: Outbound contracts and written Publication / Ledger-Clearance Requests are recorded in the owning sector's `docs/scratch-<sector>/handoff.md` and active sector ledgers are updated (only Sector 4 Pipeline agents edit `docs/source/CHANGELOG.md` and clear `verified` ledger rows).
    Once verified, delete `delegates/<GOAL_NAME>/` so ephemeral sandboxes do not bloat the working tree.
 6. **Anti-Standby-Loop Protocol**:
    Never busy-poll `manage_subagents`, loop over empty queues, or execute dummy wait commands. Stop calling tools and yield cleanly so reactive notifications wake execution when subagents reply.

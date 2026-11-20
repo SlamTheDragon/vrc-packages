@@ -18,6 +18,7 @@ description: "Mitigate the 3 pillars of AI failure (quadratic context limits, sp
 4. **Economic trap: Resist Jevons Paradox and software/doc bloat**:
    - Cheap code and text generation must not produce bloated architectures or repetitious prose. Never add synthetic wrappers, duplicate helpers, speculative abstractions, or parallel files when an existing module or single-owner document suffices.
    - Actively prefer **simplification, refactoring, and deletion** over adding compensatory layers. Every new symbol or duplicated paragraph adds permanent context tax.
-5. **Operational discipline: Externalize state and anchor to prompt lineage**:
+5. **Operational discipline: Externalize state, anchor to prompt lineage, and Pipeline-only ledger clearing**:
    - Never trust conversational memory across turns for critical decisions, wire schemas, active task ledgers, or dependency maps. Always refer to the original user prompt lineage and disk state.
-   - Re-anchor from disk at the start of each slice (`VISION.md` -> `SYSTEM_MAP.md` -> active scratch ledger). Offload verified rows to `docs/source/CHANGELOG.md` and prune active sector ledgers to prevent context degradation.
+   - Re-anchor from disk at the start of each slice (`VISION.md` -> `SYSTEM_MAP.md` -> active sector `IMPLEMENTATION_PLAN.md`, `task_tracker.md`, and `handoff.md` + permitted upstream `handoff.md` files).
+   - Product and legal sectors mark completed work `verified` and record written Publication / Ledger-Clearance Requests in their own `handoff.md`. **Only Sector 4 (`pipeline`) agents transfer verified product notes to `docs/source/CHANGELOG.md` and clear verified rows from sector ledgers** to prevent drift and ledger bloat.
