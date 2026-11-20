@@ -43,6 +43,7 @@ import {
   SetRatingAdjustmentRequestSchema,
   type SetRatingAdjustmentResponse,
   SetRatingAdjustmentResponseSchema,
+  ModeratorAppCursorSchema,
   type ModeratorAppListQuery,
   ModeratorAppListQuerySchema,
   type ModeratorAppListResponse,
@@ -52,7 +53,7 @@ import {
   type ModeratorReviewAppCandidateResponse,
   ModeratorReviewAppCandidateResponseSchema
 } from "./protocol/moderator.ts";
-import { type ContentRating } from "./taxonomy/taxonomy.ts";
+import { type ContentRating, type Umbrella } from "./taxonomy/taxonomy.ts";
 import {
   type LeadStatus,
   type CandidateStatus,
@@ -173,13 +174,19 @@ export interface VRCPackageClientOptions {
 export interface CatalogSearchParams {
   query?: string;
   queryOrigin: QueryOrigin;
-  umbrella?: "tools" | "assets" | "avatars";
+  umbrella?: Umbrella;
   category?: string;
   platform?: Platform;
+  rating?: ContentRating;
   tags?: string[];
   limit?: number;
   cursor?: string | null;
 }
+
+const CanonicalIdPathParamSchema = ModeratorRatingRecordSchema.shape.canonicalId.refine(
+  (value) => value.trim().length > 0 && value.trim() !== "." && value.trim() !== "..",
+  "Canonical package ID cannot be blank, '.', or '..'"
+);
 
 export interface SyncDeltasParams {
   cursor?: string;
@@ -272,7 +279,16 @@ export class VRCPackageClient {
     }
 
     const responseText = await readBoundedText(response, MAX_SDK_SUCCESS_BYTES);
-    return JSON.parse(responseText) as T;
+    try {
+      return JSON.parse(responseText) as T;
+    } catch {
+      throw new VRCPApiError(
+        response.status,
+        `Invalid JSON response received with status ${response.status}`,
+        "invalid_json",
+        responseText
+      );
+    }
   }
 
   /* ------------------------------------------------------------------------ */
@@ -307,6 +323,7 @@ export class VRCPackageClient {
         umbrella: params.umbrella,
         category: params.category,
         platform: params.platform,
+        rating: params.rating,
         tags: params.tags,
         limit: params.limit ?? 50,
         cursor: params.cursor
@@ -340,11 +357,29 @@ export class VRCPackageClient {
      * Registers a downstream application (POST /v1/app/register).
      * Gated by user authentication (userToken) or operator token.
      */
-    register: async (request: RegisterAppRequest): Promise<RegisterAppResponse> => {
-      const auth = this.userToken ? "user" : "operator";
+    register: async (
+      request: RegisterAppRequest,
+      options?: { auth?: "user" | "operator" }
+    ): Promise<RegisterAppResponse> => {
+      const body = RegisterAppRequestSchema.parse(request);
+      let auth: "user" | "operator";
+      if (options?.auth) {
+        auth = options.auth;
+      } else if (this.userToken && this.operatorToken) {
+        throw new VRCPApiError(
+          400,
+          "Ambiguous credentials for app registration: specify auth 'user' or 'operator' when both tokens are configured"
+        );
+      } else if (this.userToken) {
+        auth = "user";
+      } else if (this.operatorToken) {
+        auth = "operator";
+      } else {
+        throw new VRCPApiError(401, "User or operator token required");
+      }
       const res = await this.request<unknown>("/v1/app/register", "POST", {
         auth,
-        body: RegisterAppRequestSchema.parse(request)
+        body
       });
       return RegisterAppResponseSchema.parse(res);
     }
@@ -755,7 +790,7 @@ export class VRCPackageClient {
         canonicalId: string,
         request: { newRating: ContentRating; reason: string }
       ): Promise<SetRatingAdjustmentResponse> => {
-        const id = ModeratorRatingRecordSchema.shape.canonicalId.parse(canonicalId);
+        const id = CanonicalIdPathParamSchema.parse(canonicalId);
         const res = await this.request<unknown>(`/v1/moderator/ratings/${encodeURIComponent(id)}`, "POST", {
           auth: "user",
           body: SetRatingAdjustmentRequestSchema.parse({
@@ -794,7 +829,7 @@ export class VRCPackageClient {
         appId: string,
         request: { candidateStatus: "none" | "reviewed" | "trusted"; grantDelegation?: boolean; notes?: string }
       ): Promise<ModeratorReviewAppCandidateResponse> => {
-        const id = OperatorAppCursorSchema.shape.appId.parse(appId).toLowerCase();
+        const id = ModeratorAppCursorSchema.shape.appId.parse(appId).toLowerCase();
         const res = await this.request<unknown>(`/v1/moderator/apps/${id}/candidate-review`, "POST", {
           auth: "user",
           body: ModeratorReviewAppCandidateRequestSchema.parse({

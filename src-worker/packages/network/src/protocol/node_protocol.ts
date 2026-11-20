@@ -2,6 +2,7 @@
 import { z } from "zod";
 import { IssueNodeCredentialSchema } from "vrc-packages-api";
 import { EvidenceClassSchema } from "../policy/evidence_class.ts";
+import { RobotsBodySchema, RobotsOriginSchema, RobotsStatusCodeSchema } from "../robots/robots_snapshot.ts";
 import { isVpmVersion } from "../taxonomy/vpm_version.ts";
 
 export const PROTOCOL_VERSION = 1 as const;
@@ -197,6 +198,44 @@ export const BatchResultResponseSchema = z.strictObject({
 });
 export type BatchResultResponse = z.infer<typeof BatchResultResponseSchema>;
 
+export const NodeRobotsClaimRequestSchema = z.strictObject({
+  schemaVersion: z.literal(PROTOCOL_VERSION),
+  nodeId: NodeIdSchema
+});
+export type NodeRobotsClaimRequest = z.infer<typeof NodeRobotsClaimRequestSchema>;
+
+export const NodeRobotsClaimResponseSchema = z.discriminatedUnion("status", [
+  z.strictObject({
+    schemaVersion: z.literal(PROTOCOL_VERSION),
+    status: z.literal("leased"),
+    origin: RobotsOriginSchema,
+    leaseId: z.uuid()
+  }),
+  z.strictObject({
+    schemaVersion: z.literal(PROTOCOL_VERSION),
+    status: z.literal("empty"),
+    retryAfterMs: z.number().int().min(0).max(300000)
+  })
+]);
+export type NodeRobotsClaimResponse = z.infer<typeof NodeRobotsClaimResponseSchema>;
+
+export const NodeRobotsResultRequestSchema = z.strictObject({
+  schemaVersion: z.literal(PROTOCOL_VERSION),
+  nodeId: NodeIdSchema,
+  origin: RobotsOriginSchema,
+  leaseId: z.uuid(),
+  statusCode: RobotsStatusCodeSchema,
+  body: RobotsBodySchema.default("")
+});
+export type NodeRobotsResultRequest = z.infer<typeof NodeRobotsResultRequestSchema>;
+
+export const NodeRobotsResultResponseSchema = z.strictObject({
+  schemaVersion: z.literal(PROTOCOL_VERSION),
+  status: z.literal("accepted"),
+  origin: RobotsOriginSchema
+});
+export type NodeRobotsResultResponse = z.infer<typeof NodeRobotsResultResponseSchema>;
+
 export const ProtocolErrorSchema = z.strictObject({
   schemaVersion: z.literal(PROTOCOL_VERSION),
   error: z.string().min(1),
@@ -213,5 +252,9 @@ export const NODE_API_JSON_SCHEMAS = {
   resultResponse: z.toJSONSchema(ResultResponseSchema),
   batchResultRequest: z.toJSONSchema(BatchResultRequestSchema),
   batchResultResponse: z.toJSONSchema(BatchResultResponseSchema),
+  robotsClaimRequest: z.toJSONSchema(NodeRobotsClaimRequestSchema),
+  robotsClaimResponse: z.toJSONSchema(NodeRobotsClaimResponseSchema),
+  robotsResultRequest: z.toJSONSchema(NodeRobotsResultRequestSchema),
+  robotsResultResponse: z.toJSONSchema(NodeRobotsResultResponseSchema),
   error: z.toJSONSchema(ProtocolErrorSchema)
 } as const;

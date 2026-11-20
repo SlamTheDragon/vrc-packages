@@ -1,80 +1,301 @@
+import type { DiscoveryLead, JobPurpose, Platform } from "../protocol/node_protocol.ts";
+import { isIp, isPrivateOrReservedIp } from "./ip_policy.ts";
+import { isItchSearchUrl } from "./source_path_policy.ts";
+
+const GITHUB_OWNER_REGEX = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/;
+const GITHUB_REPO_REGEX = /^[A-Za-z0-9_.-]{1,100}$/;
+const GITHUB_RESERVED_TOP_LEVEL_ROUTES = new Set([
+  "about", "apps", "collections", "enterprise", "events", "explore", "features",
+  "issues", "join", "login", "marketplace", "notifications", "orgs", "pricing",
+  "pulls", "search", "security", "settings", "signup", "site", "sponsors",
+  "topics", "trending", "users"
+]);
+
+/** Prohibited archive, compiled binary, and raw 3D asset extensions excluded by policy (LEGAL.md Section 3.1). */
+export const ARCHIVE_BINARY_EXTENSIONS = [
+  ".zip",
+  ".unitypackage",
+  ".vpmz",
+  ".tar",
+  ".tar.gz",
+  ".gz",
+  ".tgz",
+  ".7z",
+  ".rar",
+  ".iso",
+  ".exe",
+  ".msi",
+  ".bin",
+  ".dll",
+  ".dylib",
+  ".so",
+  ".fbx",
+  ".obj",
+  ".blend",
+  ".prefab",
+  ".asset"
+] as const;
+
+/** Reports whether a URL pathname ends with a prohibited archive or binary extension. */
+export function hasArchiveBinaryExtension(pathname: string): boolean {
+  const lower = pathname.trim().toLowerCase();
+  return ARCHIVE_BINARY_EXTENSIONS.some((ext) => lower.endsWith(ext));
+}
+
+/** Reports whether a URL targets a prohibited archive, executable, or binary asset path. */
+export function isArchiveOrBinaryUrl(value: string): boolean {
+  try {
+    return hasArchiveBinaryExtension(new URL(value).pathname);
+  } catch {
+    return false;
+  }
+}
+
+function parseHttpsUrl(value: string, options: {
+  allowSearch?: boolean;
+  requireExactHref?: boolean;
+} = {}): URL | null {
+  try {
+    const url = new URL(value);
+    if (options.requireExactHref && url.href !== value) return null;
+    if (url.protocol !== "https:" || url.username || url.password || url.port || url.hash) return null;
+    if (!options.allowSearch && url.search) return null;
+    return url;
+  } catch {
+    return null;
+  }
+}
+
+function isDisallowedLeadHost(hostname: string): boolean {
+  const host = hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  if (!host || host === "localhost" || host.endsWith(".localhost") ||
+      host.endsWith(".internal") || host.endsWith(".local") || host.endsWith(".")) {
+    return true;
+  }
+  if (!host.includes(".")) return true;
+  return isIp(host) && isPrivateOrReservedIp(host);
+}
+
+/** Validates an owner/repo pair for GitHub repository identity rules. */
+export function parseGitHubOwnerRepo(owner: string, repo: string, options: {
+  stripGitSuffix?: boolean;
+  rejectReservedRoutes?: boolean;
+} = {}): string | null {
+  if (!GITHUB_OWNER_REGEX.test(owner)) return null;
+  if (options.rejectReservedRoutes && GITHUB_RESERVED_TOP_LEVEL_ROUTES.has(owner.toLowerCase())) return null;
+  const cleanRepo = options.stripGitSuffix && repo.length > 4 && repo.toLowerCase().endsWith(".git")
+    ? repo.slice(0, -4)
+    : repo;
+  if (!GITHUB_REPO_REGEX.test(cleanRepo) || cleanRepo === "." || cleanRepo === "..") return null;
+  return `${owner}/${cleanRepo}`;
+}
+
 /** Supported public GitHub REST target, excluding search, HTML, content and archives. */
 export function githubApiRepositoryIdentity(value: string): string | null {
-  let url: URL;
-  try { url = new URL(value); } catch { return null; }
-  if (url.protocol !== "https:" || url.hostname !== "api.github.com" || url.port || url.search || url.hash ||
-      url.username || url.password) return null;
-  const match = /^\/repos\/([A-Za-z0-9][A-Za-z0-9-]{0,38})\/([A-Za-z0-9_.-]{1,100})$/.exec(url.pathname);
-  if (!match || match[2] === "." || match[2] === "..") return null;
-  return `${match[1]}/${match[2]}`;
+  const url = parseHttpsUrl(value);
+  if (!url || url.hostname !== "api.github.com") return null;
+  const match = /^\/repos\/([^/]+)\/([^/]+)$/.exec(url.pathname);
+  return match ? parseGitHubOwnerRepo(match[1], match[2]) : null;
+}
+
+/** Extracts canonical owner/repo identity from a public github.com repository URL. */
+export function githubRepositoryIdentity(value: string): string | null {
+  const url = parseHttpsUrl(value, { allowSearch: true });
+  if (!url || url.hostname !== "github.com" || hasArchiveBinaryExtension(url.pathname)) return null;
+  const match = /^\/([^/]+)\/([^/]+)(?:\/.*)?$/.exec(url.pathname);
+  return match ? parseGitHubOwnerRepo(match[1], match[2], { stripGitSuffix: true, rejectReservedRoutes: true }) : null;
+}
+
+/** Normalizes a GitHub web or REST repository URL to its canonical HTML repository URL. */
+export function normalizeGitHubRepositoryUrl(value: string): string | null {
+  const identity = githubApiRepositoryIdentity(value) ?? githubRepositoryIdentity(value);
+  return identity ? `https://github.com/${identity}` : null;
+}
+
+/** Normalizes a GitHub web or REST repository URL to its public REST API metadata endpoint. */
+export function normalizeGitHubApiUrl(value: string): string | null {
+  const identity = githubApiRepositoryIdentity(value) ?? githubRepositoryIdentity(value);
+  return identity ? `https://api.github.com/repos/${identity}` : null;
 }
 
 /** Current leased BOOTH discovery endpoint class: a single category page. */
 export function isBoothBrowseTarget(value: string): boolean {
-  try {
-    const url = new URL(value);
-    return url.href === value && url.origin === "https://booth.pm" && !url.username && !url.password &&
-      !url.port && /^\/(?:ja|en)\/browse\/[A-Za-z0-9._~%-]+$/.test(url.pathname) &&
-      /^\?page=[1-9]\d{0,2}$/.test(url.search) && !url.hash;
-  } catch { return false; }
+  const url = parseHttpsUrl(value, { allowSearch: true, requireExactHref: true });
+  return Boolean(url && url.origin === "https://booth.pm" &&
+    /^\/(?:ja|en)\/browse\/[A-Za-z0-9._~%-]+$/.test(url.pathname) &&
+    /^\?page=[1-9]\d{0,2}$/.test(url.search));
 }
 
 /** A canonical BOOTH item URL, with no tracking query or locale ambiguity. */
 export function boothItemIdentity(value: string): string | null {
-  try {
-    const url = new URL(value);
-    if (url.href !== value || url.origin !== "https://booth.pm" || url.username || url.password ||
-        url.port || url.search || url.hash) return null;
-    return /^\/(?:ja\/|en\/)?items\/([1-9]\d{0,17})\/?$/.exec(url.pathname)?.[1] ?? null;
-  } catch { return null; }
+  const url = parseHttpsUrl(value, { requireExactHref: true });
+  if (!url || url.origin !== "https://booth.pm") return null;
+  return /^\/(?:ja\/|en\/)?items\/([1-9]\d{0,17})\/?$/.exec(url.pathname)?.[1] ?? null;
+}
+
+/** Validates a canonical BOOTH product page URL. */
+export function isBoothProductTarget(value: string): boolean {
+  return boothItemIdentity(value) !== null;
+}
+
+/** Validates a canonical Gumroad product page URL. */
+export function isGumroadProductTarget(value: string): boolean {
+  const url = parseHttpsUrl(value);
+  if (!url || url.hostname !== "gumroad.com") return false;
+  const match = /^\/l\/([^/]+)\/?$/.exec(url.pathname);
+  return Boolean(match && match[1] !== "." && match[1] !== "..");
+}
+
+/** Validates a canonical Jinxxy product page URL. */
+export function isJinxxyProductTarget(value: string): boolean {
+  const url = parseHttpsUrl(value);
+  if (!url || url.hostname !== "jinxxy.com") return false;
+  const match = /^\/([^/]+)\/([^/]+)\/?$/.exec(url.pathname);
+  return Boolean(match && match[1] !== "." && match[1] !== ".." && match[2] !== "." && match[2] !== "..");
+}
+
+/** Validates a creator subdomain itch.io product page URL while excluding itch.io/search. */
+export function isItchProductTarget(value: string): boolean {
+  const url = parseHttpsUrl(value);
+  if (!url || !url.hostname.endsWith(".itch.io") || url.hostname === "itch.io") return false;
+  if (isItchSearchUrl(value) || hasArchiveBinaryExtension(url.pathname)) return false;
+  return url.pathname !== "/" && url.pathname.length > 1;
 }
 
 /** An explicitly seeded Shopify product sitemap, never an arbitrary shop page or sitemap index. */
 export function isShopifyProductSitemapTarget(value: string): boolean {
-  try {
-    const url = new URL(value);
-    return url.href === value && url.protocol === "https:" && !url.username && !url.password &&
-      !url.port && !url.hash && /^\/sitemap_products_[1-9]\d*\.xml$/.test(url.pathname) &&
-      (!url.search || /^\?from=[1-9]\d*&to=[1-9]\d*$/.test(url.search));
-  } catch { return false; }
+  const url = parseHttpsUrl(value, { allowSearch: true, requireExactHref: true });
+  return Boolean(url && /^\/sitemap_products_[1-9]\d*\.xml$/.test(url.pathname) &&
+    (!url.search || /^\?from=[1-9]\d*&to=[1-9]\d*$/.test(url.search)));
 }
 
 /** Keep a sitemap lead on the reviewed merchant origin; never infer cross-domain equivalence. */
 export function shopifyProductLead(value: string, origin: string): string | null {
-  try {
-    const url = new URL(value);
-    if (value.length > 1000 || url.href !== value || url.origin !== origin || url.username ||
-        url.password || url.port || url.search || url.hash ||
-        !/^\/(?:[a-z]{2}(?:-[a-z]{2})?\/)?products\/[a-z0-9][a-z0-9-]*$/.test(url.pathname)) return null;
-    return url.href;
-  } catch { return null; }
+  const url = parseHttpsUrl(value, { requireExactHref: true });
+  if (!url || value.length > 1000 || url.origin !== origin ||
+      !/^\/(?:[a-z]{2}(?:-[a-z]{2})?\/)?products\/[a-z0-9][a-z0-9-]*$/.test(url.pathname)) {
+    return null;
+  }
+  return url.href;
+}
+
+/** Validates a canonical Shopify merchant product URL. */
+export function isShopifyProductTarget(value: string): boolean {
+  const url = parseHttpsUrl(value, { requireExactHref: true });
+  return Boolean(url && shopifyProductLead(value, url.origin) !== null);
 }
 
 /** A canonical Sellfy product URL, on sellfy.com or a merchant-branded custom domain. */
 export function isSellfyProductTarget(value: string): boolean {
-  try {
-    const url = new URL(value);
-    if (url.protocol !== "https:" || url.username || url.password || url.port || url.search || url.hash) return false;
-    return /^(?:\/[A-Za-z0-9_.-]+)?\/p\/[A-Za-z0-9_.-]+\/?$/.test(url.pathname);
-  } catch { return false; }
+  const url = parseHttpsUrl(value);
+  return Boolean(url && /^(?:\/[A-Za-z0-9_.-]+)?\/p\/[A-Za-z0-9_.-]+\/?$/.test(url.pathname));
 }
 
 /** A canonical Sellfy product identity key. */
 export function sellfyProductIdentity(value: string): string | null {
-  try {
-    const url = new URL(value);
-    if (!isSellfyProductTarget(value)) return null;
-    const match = /^(?:\/([A-Za-z0-9_.-]+))?\/p\/([A-Za-z0-9_.-]+)\/?$/.exec(url.pathname);
-    if (!match) return null;
-    return match[1] ? `${url.hostname}:${match[1]}:${match[2]}` : `${url.hostname}:${match[2]}`;
-  } catch { return null; }
+  const url = parseHttpsUrl(value);
+  if (!url || !isSellfyProductTarget(value)) return null;
+  const match = /^(?:\/([A-Za-z0-9_.-]+))?\/p\/([A-Za-z0-9_.-]+)\/?$/.exec(url.pathname);
+  if (!match) return null;
+  return match[1] ? `${url.hostname}:${match[1]}:${match[2]}` : `${url.hostname}:${match[2]}`;
 }
 
 /** Validates a custom creator domain product or package target URL. */
 export function isCustomDomainProductTarget(value: string): boolean {
-  try {
-    const url = new URL(value);
-    if (url.protocol !== "https:" || url.username || url.password || url.port || url.search || url.hash) return false;
-    return url.pathname !== "/" && url.pathname.length > 1;
-  } catch { return false; }
+  const url = parseHttpsUrl(value);
+  if (!url || isDisallowedLeadHost(url.hostname) || hasArchiveBinaryExtension(url.pathname)) return false;
+  return url.pathname !== "/" && url.pathname.length > 1;
+}
+
+/** Validates a storefront metadata target URL against its assigned platform contract. */
+export function isStorefrontProductTarget(platform: Platform, value: string): boolean {
+  switch (platform) {
+    case "booth":
+      return isBoothProductTarget(value);
+    case "gumroad":
+      return isGumroadProductTarget(value);
+    case "jinxxy":
+      return isJinxxyProductTarget(value);
+    case "itch":
+      return isItchProductTarget(value);
+    case "shopify":
+      return isShopifyProductTarget(value);
+    case "sellfy":
+      return isSellfyProductTarget(value);
+    case "custom_domain":
+      return isCustomDomainProductTarget(value);
+    default:
+      return false;
+  }
+}
+
+function isItchSubdomainHost(hostname: string): boolean {
+  return hostname.endsWith(".itch.io") && hostname.length > ".itch.io".length;
+}
+
+function storefrontJobMapping(hostname: string, baseMinDelayMs: number): { platform: Platform; minDelayMs: number } {
+  if (hostname === "booth.pm") return { platform: "booth", minDelayMs: Math.max(baseMinDelayMs, 1500) };
+  if (hostname === "gumroad.com") return { platform: "gumroad", minDelayMs: Math.max(baseMinDelayMs, 1500) };
+  if (hostname === "jinxxy.com") return { platform: "jinxxy", minDelayMs: Math.max(baseMinDelayMs, 1500) };
+  if (isItchSubdomainHost(hostname)) return { platform: "itch", minDelayMs: Math.max(baseMinDelayMs, 1500) };
+  if (hostname === "sellfy.com") return { platform: "sellfy", minDelayMs: Math.max(baseMinDelayMs, 1500) };
+  if (hostname === "payhip.com" || hostname === "ko-fi.com") {
+    return { platform: "custom_domain", minDelayMs: Math.max(baseMinDelayMs, 2000) };
+  }
+  return { platform: "custom_domain", minDelayMs: Math.max(baseMinDelayMs, 1500) };
+}
+
+/** Classifies an outbound HTTPS link from an observation into a bounded discovery lead kind. */
+export function classifyOutboundLeadKind(targetUrl: string): DiscoveryLead["kind"] | null {
+  const url = parseHttpsUrl(targetUrl, { allowSearch: true });
+  if (!url || isDisallowedLeadHost(url.hostname) || isItchSearchUrl(url.href) || hasArchiveBinaryExtension(url.pathname)) {
+    return null;
+  }
+  if (url.hostname === "github.com") {
+    return githubRepositoryIdentity(url.href) ? "github_repository" : null;
+  }
+  if (url.hostname === "itch.io") {
+    return null;
+  }
+  if (url.hostname === "booth.pm" || url.hostname === "gumroad.com" || url.hostname === "jinxxy.com" ||
+      isItchSubdomainHost(url.hostname) || url.hostname === "sellfy.com" ||
+      url.hostname === "payhip.com" || url.hostname === "ko-fi.com") {
+    return "storefront_product";
+  }
+  return "publisher_site";
+}
+
+export interface ResolvedDiscoveryLeadTarget {
+  platform: Platform;
+  purpose: JobPurpose;
+  url: string;
+  minDelayMs: number;
+}
+
+/** Maps an approved discovery lead kind and URL to its canonical crawl job target and pacing floor. */
+export function resolveDiscoveryLeadTarget(
+  kind: DiscoveryLead["kind"],
+  targetUrl: string,
+  minDelayMs = 1000
+): ResolvedDiscoveryLeadTarget | null {
+  const url = parseHttpsUrl(targetUrl, { allowSearch: true });
+  if (!url || isDisallowedLeadHost(url.hostname) || isItchSearchUrl(url.href) || hasArchiveBinaryExtension(url.pathname)) {
+    return null;
+  }
+  if (kind === "vpm_listing") {
+    return { platform: "vpm", purpose: "discovery", url: url.href, minDelayMs };
+  }
+  if (kind === "github_repository") {
+    const apiUrl = normalizeGitHubApiUrl(url.href);
+    return apiUrl ? { platform: "github", purpose: "metadata", url: apiUrl, minDelayMs: Math.max(minDelayMs, 60_000) } : null;
+  }
+  if (kind === "storefront_product") {
+    if (url.hostname === "itch.io") return null;
+    const mapping = storefrontJobMapping(url.hostname, minDelayMs);
+    return { platform: mapping.platform, purpose: "metadata", url: url.href, minDelayMs: mapping.minDelayMs };
+  }
+  if (kind === "publisher_site") {
+    return { platform: "custom_domain", purpose: "metadata", url: url.href, minDelayMs: Math.max(minDelayMs, 2000) };
+  }
+  return null;
 }

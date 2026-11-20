@@ -1,10 +1,10 @@
 import { z } from "zod";
+import { APP_TOKEN_REGEX } from "../auth/tokens.ts";
 import { CursorTokenSchema, CursorTimestampSchema } from "../encoding/cursor.ts";
-import { decodeCatalogCursor } from "../types/package.ts";
+import { decodeCatalogCursor, CatalogPackageSchema, type CatalogPackage } from "../types/package.ts";
 import { PlatformSchema, type Platform } from "../types/platform.ts";
-import { CatalogPackageSchema, type CatalogPackage } from "../types/package.ts";
-import { ContentRatingSchema, type ContentRating } from "../taxonomy/taxonomy.ts";
-
+import { HttpsUrlSchema } from "../types/url.ts";
+import { ContentRatingSchema, UmbrellaSchema, type ContentRating, type Umbrella } from "../taxonomy/taxonomy.ts";
 
 export const DOWNSTREAM_PROTOCOL_VERSION = 1 as const;
 
@@ -20,20 +20,20 @@ export const RegisterAppResponseSchema = z.strictObject({
   schemaVersion: z.literal(DOWNSTREAM_PROTOCOL_VERSION),
   appId: z.string().uuid(),
   appName: z.string(),
-  appToken: z.string().regex(/^vrcp_app_[a-f0-9]{64}$/),
+  appToken: z.string().regex(APP_TOKEN_REGEX),
   permissions: z.array(z.string().min(1).max(50))
 });
 export type RegisterAppResponse = z.infer<typeof RegisterAppResponseSchema>;
 
-const HttpsUrlSchema = z.string().url().refine((value) => new URL(value).protocol === "https:", "HTTPS URL required");
+export const DemandSignalKindSchema = z.enum(["search_miss", "refresh_demand", "popularity_signal"]);
+export type DemandSignalKind = z.infer<typeof DemandSignalKindSchema>;
 
-export const FeedbackSignalTypeSchema = z.enum([
-  "search_miss",
-  "refresh_demand",
-  "popularity_signal"
-]);
-export type FeedbackSignalType = z.infer<typeof FeedbackSignalTypeSchema>;
+/** @deprecated Retained until Wave 2 Worker feedback callers migrate to ReportSubmissionRequestSchema. */
+export const FeedbackSignalTypeSchema = DemandSignalKindSchema;
+/** @deprecated Retained until Wave 2 Worker feedback callers migrate to ReportSubmissionRequestSchema. */
+export type FeedbackSignalType = DemandSignalKind;
 
+/** @deprecated Retained until Wave 2 Worker feedback callers migrate to ReportSubmissionRequestSchema. */
 export const DownstreamFeedbackRequestSchema = z.strictObject({
   schemaVersion: z.literal(DOWNSTREAM_PROTOCOL_VERSION),
   signalType: FeedbackSignalTypeSchema,
@@ -44,14 +44,17 @@ export const DownstreamFeedbackRequestSchema = z.strictObject({
   category: z.string().trim().max(100).optional(),
   metadata: z.record(z.string().max(100), z.unknown()).optional()
 });
+/** @deprecated Retained until Wave 2 Worker feedback callers migrate to ReportSubmissionRequestSchema. */
 export type DownstreamFeedbackRequest = z.infer<typeof DownstreamFeedbackRequestSchema>;
 
+/** @deprecated Retained until Wave 2 Worker feedback callers migrate to ReportSubmissionResponseSchema. */
 export const DownstreamFeedbackResponseSchema = z.strictObject({
   schemaVersion: z.literal(DOWNSTREAM_PROTOCOL_VERSION),
   status: z.literal("accepted"),
   signalId: z.string().uuid(),
   recordedAt: CursorTimestampSchema
 });
+/** @deprecated Retained until Wave 2 Worker feedback callers migrate to ReportSubmissionResponseSchema. */
 export type DownstreamFeedbackResponse = z.infer<typeof DownstreamFeedbackResponseSchema>;
 
 export const QueryOriginSchema = z.enum(["user_authored", "app_automated"]);
@@ -61,7 +64,7 @@ export const CatalogSearchRequestSchema = z.strictObject({
   schemaVersion: z.literal(DOWNSTREAM_PROTOCOL_VERSION),
   query: z.string().trim().max(200).optional(),
   queryOrigin: QueryOriginSchema.default("user_authored"),
-  umbrella: z.enum(["tools", "assets", "avatars"]).optional(),
+  umbrella: UmbrellaSchema.optional(),
   category: z.string().trim().max(100).optional(),
   platform: PlatformSchema.optional(),
   rating: ContentRatingSchema.optional(),
@@ -81,12 +84,9 @@ export const CatalogSearchResponseSchema = z.strictObject({
 });
 export type CatalogSearchResponse = z.infer<typeof CatalogSearchResponseSchema>;
 
-/** Consolidated reporting routes per API_ROUTES §2.4 line 90 */
+/** Consolidated reporting contract for POST /v1/app/report. */
 export const ConsolidatedReportTypeSchema = z.enum(["demand_signal", "issue_report", "removal_request"]);
 export type ConsolidatedReportType = z.infer<typeof ConsolidatedReportTypeSchema>;
-
-export const DemandSignalKindSchema = z.enum(["search_miss", "refresh_demand", "popularity_signal"]);
-export type DemandSignalKind = z.infer<typeof DemandSignalKindSchema>;
 
 export const IssueReportKindSchema = z.enum([
   "broken_link",
@@ -98,6 +98,10 @@ export const IssueReportKindSchema = z.enum([
 ]);
 export type IssueReportKind = z.infer<typeof IssueReportKindSchema>;
 
+/**
+ * Consolidated report submission payload.
+ * @deprecated Narrowing to a strict discriminated union waits until Wave 2 Worker routing handles all issue_report kinds cleanly.
+ */
 export const ReportSubmissionRequestSchema = z.strictObject({
   schemaVersion: z.literal(DOWNSTREAM_PROTOCOL_VERSION),
   reportType: ConsolidatedReportTypeSchema,
@@ -124,7 +128,7 @@ export const ReportSubmissionResponseSchema = z.strictObject({
 export type ReportSubmissionResponse = z.infer<typeof ReportSubmissionResponseSchema>;
 
 /* -------------------------------------------------------------------------- */
-/* Delegated Creator Attestation Intake (R54-C38C)                            */
+/* Delegated Creator Attestation Intake                                       */
 /* -------------------------------------------------------------------------- */
 
 export const CreatorDelegationAttestationSchema = z.strictObject({
@@ -155,4 +159,3 @@ export const CreatorClaimIntakeResponseSchema = z.strictObject({
   recordedAt: CursorTimestampSchema
 });
 export type CreatorClaimIntakeResponse = z.infer<typeof CreatorClaimIntakeResponseSchema>;
-

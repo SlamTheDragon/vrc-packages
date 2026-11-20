@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { CursorTimestampSchema, encodeCursor, decodeCursor } from "../encoding/cursor.ts";
 import { PlatformSchema, type Platform } from "./platform.ts";
-import { ContentRatingSchema, type ContentRating } from "../taxonomy/taxonomy.ts";
+import { ContentRatingSchema, UmbrellaSchema, type ContentRating } from "../taxonomy/taxonomy.ts";
 
 /** One accepted identity link embedded in a catalog package response row. */
 export const CatalogIdentityLinkSchema = z.strictObject({
@@ -19,8 +19,8 @@ export const CatalogIdentityLinkSchema = z.strictObject({
 });
 export type CatalogIdentityLink = z.infer<typeof CatalogIdentityLinkSchema>;
 
-export const PackageFrontSchema = z.object({
-  frontId: z.string(),
+export const PackageFrontSchema = z.strictObject({
+  frontId: z.uuid(),
   canonicalId: z.string(),
   sourceKey: z.string(),
   platform: PlatformSchema,
@@ -28,7 +28,7 @@ export const PackageFrontSchema = z.object({
   price: z.number().nullable().optional(),
   currency: z.string().nullable().optional(),
   availability: z.enum(["available", "delisted", "unknown"]).default("available"),
-  observedAt: z.string()
+  observedAt: CursorTimestampSchema
 });
 export type PackageFront = z.infer<typeof PackageFrontSchema>;
 
@@ -38,7 +38,7 @@ export type TimestampConfidence = z.infer<typeof TimestampConfidenceSchema>;
 /** One canonical package item. */
 export const CatalogPackageSchema = z.strictObject({
   canonicalId: z.string().min(1).max(500),
-  umbrella: z.enum(["tools", "assets", "avatars"]),
+  umbrella: UmbrellaSchema,
   category: z.string().min(1).max(200),
   lifecycle: z.enum(["active", "deprecated", "quarantined", "delisted"]),
   displayName: z.string().min(1).max(500),

@@ -2,26 +2,42 @@ import { z } from "zod";
 import { CursorTokenSchema, CursorTimestampSchema, encodeCursor, decodeCursor } from "../encoding/cursor.ts";
 import { PlatformSchema, type Platform } from "../types/platform.ts";
 import { CatalogPackageSchema, decodeCatalogCursor, type CatalogPackage } from "../types/package.ts";
+import { createHttpsUrlSchema } from "../types/url.ts";
+import {
+  CandidateStatusSchema,
+  AppCandidateRecordSchema,
+  AppCandidateCursorSchema,
+  encodeAppCandidateCursor,
+  decodeAppCandidateCursor,
+  AppCandidateListQuerySchema,
+  createAppCandidateListResponseSchema,
+  createReviewAppCandidateRequestSchema,
+  createReviewAppCandidateResponseSchema,
+  type CandidateStatus,
+  type AppCandidateRecord,
+  type AppCandidateCursor,
+  type AppCandidateListQuery
+} from "./app_candidate.ts";
 
 export const OPERATOR_PROTOCOL_VERSION = 1 as const;
 
-export const InitializeCoordinatorRequestSchema = z.object({
+export const InitializeCoordinatorRequestSchema = z.strictObject({
   schemaVersion: z.literal(OPERATOR_PROTOCOL_VERSION),
   autoSeed: z.boolean().optional()
-}).strict();
+});
 export type InitializeCoordinatorRequest = z.infer<typeof InitializeCoordinatorRequestSchema>;
 
-export const InitializeCoordinatorResponseSchema = z.object({
+export const InitializeCoordinatorResponseSchema = z.strictObject({
   schemaVersion: z.literal(OPERATOR_PROTOCOL_VERSION),
   status: z.literal("ok"),
   message: z.literal("Schema initialized"),
   autoSeed: z.boolean()
-}).strict();
+});
 export type InitializeCoordinatorResponse = z.infer<typeof InitializeCoordinatorResponseSchema>;
 
 export const EnqueueJobRequestSchema = z.strictObject({
   schemaVersion: z.literal(OPERATOR_PROTOCOL_VERSION),
-  url: z.url().max(4096).refine(value => new URL(value).protocol === "https:", "HTTPS required"),
+  url: createHttpsUrlSchema(4096, "HTTPS required"),
   platform: PlatformSchema,
   purpose: z.enum(["metadata", "discovery"]),
   minDelayMs: z.number().int().min(0).max(86400000),
@@ -52,7 +68,7 @@ export type LeadKind = z.infer<typeof LeadKindSchema>;
 
 export const LeadRowSchema = z.strictObject({
   lead_key: z.string(),
-  kind: z.string(),
+  kind: LeadKindSchema,
   target_url: z.string(),
   claimed_package_id: z.string().nullable(),
   discovered_from_url: z.string(),
@@ -224,17 +240,13 @@ export type SourceAccessProfileListResponse = z.infer<typeof SourceAccessProfile
 /* Auto-Queue Rules                                                           */
 /* -------------------------------------------------------------------------- */
 
-const RuleOriginSchema = z.url().refine(value => {
-  const url = new URL(value);
-  return url.protocol === "https:" && url.origin === value && !url.username && !url.password;
-}, "Canonical HTTPS origin required");
 const RulePathScopeSchema = z.string().min(1).max(200).regex(/^\/[A-Za-z0-9._~/-]*$/)
   .refine(isCanonicalSourceAccessPath, "Canonical path scope required");
 
 export const AutoQueueRuleSchema = z.strictObject({
   ruleId: z.string().uuid(),
   leadKind: z.literal("vpm_listing"),
-  origin: RuleOriginSchema,
+  origin: SourceProfileOriginSchema,
   pathScope: RulePathScopeSchema,
   minDelayMs: z.number().int().min(1000).max(86_400_000),
   expiresAt: CursorTimestampSchema,
@@ -248,7 +260,7 @@ export type AutoQueueRule = z.infer<typeof AutoQueueRuleSchema>;
 export const CreateAutoQueueRuleSchema = z.strictObject({
   schemaVersion: z.literal(OPERATOR_PROTOCOL_VERSION),
   leadKind: z.literal("vpm_listing"),
-  origin: RuleOriginSchema,
+  origin: SourceProfileOriginSchema,
   pathScope: RulePathScopeSchema,
   minDelayMs: z.number().int().min(1000).max(86_400_000),
   expiresAt: CursorTimestampSchema,
@@ -405,7 +417,7 @@ export const OperatorTakedownListQuerySchema = OperatorPageQuerySchema.extend({
 }).refine(query => query.cursor === undefined || decodeTakedownCursor(query.cursor) !== null, "Invalid takedown cursor");
 
 /* -------------------------------------------------------------------------- */
-/* Delegated Creator Claims Audit (R54-C38C)                                  */
+/* Delegated Creator Claims Audit                                             */
 /* -------------------------------------------------------------------------- */
 
 export const DelegatedClaimRecordSchema = z.strictObject({
@@ -467,54 +479,23 @@ export const OperatorClaimListQuerySchema = OperatorPageQuerySchema.extend({
 }).refine(query => query.cursor === undefined || decodeDelegatedClaimCursor(query.cursor) !== null, "Invalid claim cursor");
 
 /* -------------------------------------------------------------------------- */
-/* Registered Applications & Delegation Management (R54-C38A)                 */
+/* Registered Applications & Delegation Management                            */
 /* -------------------------------------------------------------------------- */
 
-export const CandidateStatusSchema = z.enum(["none", "review_pending", "reviewed", "trusted"]);
-export type CandidateStatus = z.infer<typeof CandidateStatusSchema>;
+export { CandidateStatusSchema, type CandidateStatus };
 
-export const OperatorAppRecordSchema = z.strictObject({
-  appId: z.string().uuid(),
-  appName: z.string().min(1).max(100),
-  contactEmail: z.string().nullable().optional(),
-  permissions: z.array(z.string()),
-  delegationAllowed: z.boolean(),
-  requestCount: z.number().int().min(0).default(0),
-  lastActiveAt: CursorTimestampSchema.nullable().optional(),
-  candidateStatus: CandidateStatusSchema.default("none"),
-  candidateFlags: z.array(z.string()).default([]),
-  createdAt: CursorTimestampSchema,
-  revokedAt: CursorTimestampSchema.nullable()
-});
-export type OperatorAppRecord = z.infer<typeof OperatorAppRecordSchema>;
+export const OperatorAppRecordSchema = AppCandidateRecordSchema;
+export type OperatorAppRecord = AppCandidateRecord;
 
-export const OperatorAppCursorSchema = z.strictObject({
-  createdAt: CursorTimestampSchema,
-  appId: z.string().uuid()
-});
-export type OperatorAppCursor = z.infer<typeof OperatorAppCursorSchema>;
+export const OperatorAppCursorSchema = AppCandidateCursorSchema;
+export type OperatorAppCursor = AppCandidateCursor;
+export const encodeOperatorAppCursor = encodeAppCandidateCursor;
+export const decodeOperatorAppCursor = decodeAppCandidateCursor;
 
-export function encodeOperatorAppCursor(cursor: OperatorAppCursor): string {
-  return encodeCursor(OperatorAppCursorSchema.parse(cursor));
-}
+export const OperatorAppListQuerySchema = AppCandidateListQuerySchema;
+export type OperatorAppListQuery = AppCandidateListQuery;
 
-export function decodeOperatorAppCursor(value: string): OperatorAppCursor | null {
-  return decodeCursor(value, OperatorAppCursorSchema);
-}
-
-export const OperatorAppListQuerySchema = OperatorPageQuerySchema.extend({
-  candidateStatus: CandidateStatusSchema.optional()
-}).refine(
-  query => query.cursor === undefined || decodeOperatorAppCursor(query.cursor) !== null,
-  "Invalid app cursor"
-);
-export type OperatorAppListQuery = z.infer<typeof OperatorAppListQuerySchema>;
-
-export const OperatorAppListResponseSchema = z.strictObject({
-  schemaVersion: z.literal(OPERATOR_PROTOCOL_VERSION),
-  apps: z.array(OperatorAppRecordSchema),
-  nextCursor: CursorTokenSchema.refine(value => decodeOperatorAppCursor(value) !== null, "Invalid OperatorApp cursor").nullable()
-});
+export const OperatorAppListResponseSchema = createAppCandidateListResponseSchema(OPERATOR_PROTOCOL_VERSION);
 export type OperatorAppListResponse = z.infer<typeof OperatorAppListResponseSchema>;
 
 export const SetAppDelegationRequestSchema = z.strictObject({
@@ -533,23 +514,8 @@ export const SetAppDelegationResponseSchema = z.strictObject({
 });
 export type SetAppDelegationResponse = z.infer<typeof SetAppDelegationResponseSchema>;
 
-export const ReviewAppCandidateRequestSchema = z.strictObject({
-  schemaVersion: z.literal(OPERATOR_PROTOCOL_VERSION),
-  candidateStatus: z.enum(["none", "reviewed", "trusted"]),
-  grantDelegation: z.boolean().optional(),
-  notes: z.string().trim().min(1).max(500).optional()
-});
+export const ReviewAppCandidateRequestSchema = createReviewAppCandidateRequestSchema(OPERATOR_PROTOCOL_VERSION);
 export type ReviewAppCandidateRequest = z.infer<typeof ReviewAppCandidateRequestSchema>;
 
-export const ReviewAppCandidateResponseSchema = z.strictObject({
-  schemaVersion: z.literal(OPERATOR_PROTOCOL_VERSION),
-  appId: z.string().uuid(),
-  candidateStatus: CandidateStatusSchema,
-  candidateFlags: z.array(z.string()),
-  delegationAllowed: z.boolean(),
-  permissions: z.array(z.string()),
-  reviewedAt: CursorTimestampSchema
-});
+export const ReviewAppCandidateResponseSchema = createReviewAppCandidateResponseSchema(OPERATOR_PROTOCOL_VERSION);
 export type ReviewAppCandidateResponse = z.infer<typeof ReviewAppCandidateResponseSchema>;
-
-

@@ -17,25 +17,20 @@ Both checks must allow the target. Earlier refusals do not disappear through wil
 
 ## Delivery status
 
-Checked GitHub Release tarballs exist for `0.0.1` and `2026.10.1-pre`. The package has no npm registry publication.
-Version `0.0.0` in a bootstrap manifest does not identify the latest distributed archive.
-A bare install that requests `vrc-packages-network@0.0.0` from npm fails. It does not select a GitHub artifact automatically.
-Install checked packed artifacts into each consumer. Do not link sibling source folders.
+This package publishes as a single-stream GitHub Release tarball. It has no npm registry publication.
+Version `0.0.0` in a bootstrap manifest does not identify a published archive.
+Install checked GitHub Release tarballs into each consumer. Do not link sibling source folders.
 
-The current scripts select one rapid `YYYY.M.Patch` stream, without `-pre` or a separate release path.
-Both consumer channels declare the same GitHub archive URL. Each consumer supplies its selected SDK as a required peer.
-The peer bounds follow both authoritative SDK configs. The development dependency uses the preview SDK alias.
-Network verification checks one archive against both SDKs through npm and Bun installations, declarations and native workerd.
+Root delivery scripts publish one rapid `YYYY.M.Patch` stream without `-pre` labels.
+Both consumer channels declare the same GitHub archive URL. Each consumer supplies its selected SDK as a peer dependency.
+The peer bounds match the release and preview SDK configurations. The development dependency uses the preview SDK alias.
+Distribution checks test one packed tarball against both SDK channels through Node, Bun, TypeScript, and native Worker runtimes.
 Root preparation downloads checked published dependencies instead of building sibling source.
-It checks the remote tag, CI source, receipt, notes and checksums before installation.
-Tagged publication of the new suffix-free stream and live install proof remain open under R57-NETWORK-SINGLE and R57-DEV-INSTALL.
-Existing published tags and receipts stay unchanged.
-The package remains `private: true` because GitHub tarball distribution does not require npm publication.
-The SDK v0.1.0 owner-review hold remains. Neither installation nor artifact publication authorizes live source access.
+It checks the remote tag, CI source, receipt, release notes, and checksums before installation.
+The package stays `private: true` because GitHub tarball distribution does not need npm publication.
+The SDK `v0.1.0` owner-review hold stays active. Neither package installation nor artifact publication authorizes live source access.
 
 Use [the publishing guide](../../../docs/source/PUBLISHING.md) to prepare development artifacts and independent consumers.
-From the repository root, run `npm run prepare:dev -- preview worker` after preview metadata sync and network archive publication.
-The 23-file package passed isolated Node, Bun, declarations and native Worker checks on 2026-10-04.
-Those checks do not select a registry or authorize publication.
-Use `npm run build` to emit compiled development modules after dependencies are available.
-Check the artifact's files, exports, license, declarations and runtime behavior before release.
+From the repository root, run `bun run prepare:dev preview worker` after metadata sync and network archive publication.
+Inside this package directory, run `bun run typecheck`, `bun run build`, `bun run test`, and `bun run test:distribution` to verify changes.
+Check the artifact files, exports, license, declarations, and runtime behavior before release.

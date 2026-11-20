@@ -1,6 +1,19 @@
 import { z } from "zod";
 import { CursorTokenSchema, CursorTimestampSchema, encodeCursor, decodeCursor } from "../encoding/cursor.ts";
-import { ContentRatingSchema, type ContentRating } from "../taxonomy/taxonomy.ts";
+import { ContentRatingSchema, UmbrellaSchema, type ContentRating, type Umbrella } from "../taxonomy/taxonomy.ts";
+import {
+  AppCandidateRecordSchema,
+  AppCandidateCursorSchema,
+  encodeAppCandidateCursor,
+  decodeAppCandidateCursor,
+  createAppCandidateListQuerySchema,
+  createAppCandidateListResponseSchema,
+  createReviewAppCandidateRequestSchema,
+  createReviewAppCandidateResponseSchema,
+  type AppCandidateRecord,
+  type AppCandidateCursor,
+  type AppCandidateListQuery
+} from "./app_candidate.ts";
 
 export const MODERATOR_PROTOCOL_VERSION = 1 as const;
 
@@ -8,7 +21,7 @@ export const ModeratorRatingRecordSchema = z.strictObject({
   canonicalId: z.string().min(1).max(500),
   displayName: z.string(),
   currentRating: ContentRatingSchema,
-  umbrella: z.enum(["assets", "tools", "avatars"]),
+  umbrella: UmbrellaSchema,
   category: z.string(),
   reportCount: z.number().int().min(0),
   updatedAt: CursorTimestampSchema
@@ -29,6 +42,7 @@ export function decodeModeratorRatingCursor(value: string): ModeratorRatingCurso
   return decodeCursor(value, ModeratorRatingCursorSchema);
 }
 
+// Retain z.coerce.number() until Wave 2 Worker parses query integers before validation.
 export const ModeratorRatingListQuerySchema = z.strictObject({
   rating: ContentRatingSchema.optional(),
   limit: z.coerce.number().int().min(1).max(100).default(100),
@@ -64,58 +78,23 @@ export type SetRatingAdjustmentResponse = z.infer<typeof SetRatingAdjustmentResp
 /* Moderator Application Candidate Review                                     */
 /* -------------------------------------------------------------------------- */
 
-import {
-  CandidateStatusSchema,
-  type CandidateStatus,
-  decodeOperatorAppCursor,
-  encodeOperatorAppCursor,
-  type OperatorAppCursor
-} from "./operator.ts";
+export const ModeratorAppRecordSchema = AppCandidateRecordSchema;
+export type ModeratorAppRecord = AppCandidateRecord;
 
-export const ModeratorAppRecordSchema = z.strictObject({
-  appId: z.string().uuid(),
-  appName: z.string().min(1).max(100),
-  contactEmail: z.string().nullable().optional(),
-  permissions: z.array(z.string()),
-  delegationAllowed: z.boolean(),
-  requestCount: z.number().int().min(0).default(0),
-  lastActiveAt: CursorTimestampSchema.nullable().optional(),
-  candidateStatus: CandidateStatusSchema.default("none"),
-  candidateFlags: z.array(z.string()).default([]),
-  createdAt: CursorTimestampSchema,
-  revokedAt: CursorTimestampSchema.nullable()
-});
-export type ModeratorAppRecord = z.infer<typeof ModeratorAppRecordSchema>;
+export const ModeratorAppCursorSchema = AppCandidateCursorSchema;
+export type ModeratorAppCursor = AppCandidateCursor;
+export const encodeModeratorAppCursor = encodeAppCandidateCursor;
+export const decodeModeratorAppCursor = decodeAppCandidateCursor;
 
-export const ModeratorAppListQuerySchema = z.strictObject({
-  limit: z.coerce.number().int().min(1).max(100).default(100),
-  cursor: CursorTokenSchema.optional(),
-  candidateStatus: CandidateStatusSchema.optional()
-}).refine(query => query.cursor === undefined || decodeOperatorAppCursor(query.cursor) !== null, "Invalid app cursor");
-export type ModeratorAppListQuery = z.infer<typeof ModeratorAppListQuerySchema>;
+// Retain z.coerce.number() until Wave 2 Worker parses query integers before validation.
+export const ModeratorAppListQuerySchema = createAppCandidateListQuerySchema(true);
+export type ModeratorAppListQuery = AppCandidateListQuery;
 
-export const ModeratorAppListResponseSchema = z.strictObject({
-  schemaVersion: z.literal(MODERATOR_PROTOCOL_VERSION),
-  apps: z.array(ModeratorAppRecordSchema),
-  nextCursor: CursorTokenSchema.refine(value => decodeOperatorAppCursor(value) !== null, "Invalid app cursor").nullable()
-});
+export const ModeratorAppListResponseSchema = createAppCandidateListResponseSchema(MODERATOR_PROTOCOL_VERSION);
 export type ModeratorAppListResponse = z.infer<typeof ModeratorAppListResponseSchema>;
 
-export const ModeratorReviewAppCandidateRequestSchema = z.strictObject({
-  schemaVersion: z.literal(MODERATOR_PROTOCOL_VERSION),
-  candidateStatus: z.enum(["none", "reviewed", "trusted"]),
-  grantDelegation: z.boolean().optional(),
-  notes: z.string().trim().min(1).max(500).optional()
-});
+export const ModeratorReviewAppCandidateRequestSchema = createReviewAppCandidateRequestSchema(MODERATOR_PROTOCOL_VERSION);
 export type ModeratorReviewAppCandidateRequest = z.infer<typeof ModeratorReviewAppCandidateRequestSchema>;
 
-export const ModeratorReviewAppCandidateResponseSchema = z.strictObject({
-  schemaVersion: z.literal(MODERATOR_PROTOCOL_VERSION),
-  appId: z.string().uuid(),
-  candidateStatus: CandidateStatusSchema,
-  candidateFlags: z.array(z.string()),
-  delegationAllowed: z.boolean(),
-  permissions: z.array(z.string()),
-  reviewedAt: CursorTimestampSchema
-});
+export const ModeratorReviewAppCandidateResponseSchema = createReviewAppCandidateResponseSchema(MODERATOR_PROTOCOL_VERSION);
 export type ModeratorReviewAppCandidateResponse = z.infer<typeof ModeratorReviewAppCandidateResponseSchema>;

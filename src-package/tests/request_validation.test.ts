@@ -1,7 +1,15 @@
 import { expect, test } from "bun:test";
 import { VRCPackageClient, VRCPApiError } from "../src/client.ts";
-import { IssueNodeCredentialSchema } from "../src/protocol/operator.ts";
-import { encodeLeadCursor, encodeProfileCursor, encodeRuleCursor, encodeTakedownCursor } from "../src/protocol/operator.ts";
+import { CURSOR_TOKEN_MAX_LENGTH } from "../src/encoding/cursor.ts";
+import {
+  IssueNodeCredentialSchema,
+  encodeLeadCursor,
+  encodeProfileCursor,
+  encodeRuleCursor,
+  encodeTakedownCursor,
+  encodeDelegatedClaimCursor,
+  encodeOperatorAppCursor
+} from "../src/protocol/operator.ts";
 import { encodeCatalogCursor, encodeCatalogDeltaCursor } from "../src/protocol/catalog.ts";
 
 test("SDK list queries reject invalid bounds, cursors and unknown fields without fetching", async () => {
@@ -9,7 +17,8 @@ test("SDK list queries reject invalid bounds, cursors and unknown fields without
   const client = new VRCPackageClient({ baseUrl: "https://worker.example", operatorToken: "fixture-operator",
     fetch: Object.assign(async () => { calls++; throw new Error("Invalid query reached transport"); }, { preconnect() {} }) });
   const lists = [client.index.syncDeltas, client.operator.leads.list, client.operator.sourceProfiles.list,
-    client.operator.autoQueueRules.list, client.operator.catalog.list, client.operator.takedowns.list];
+    client.operator.autoQueueRules.list, client.operator.catalog.list, client.operator.takedowns.list,
+    client.operator.claims.list, client.operator.apps.list];
   for (const params of [{ limit: 0 }, { limit: 101 }, { limit: NaN }, { limit: 1.5 },
     { cursor: "" }, { cursor: "invalid!" }, { cursor: "YWJj" }, { extra: true }]) {
     for (const list of lists) await expect(list(params as never)).rejects.toThrow();
@@ -19,6 +28,8 @@ test("SDK list queries reject invalid bounds, cursors and unknown fields without
   await expect(client.operator.leads.list({ status: "rejected", cursor })).rejects.toThrow();
   await expect(client.operator.leads.list({ status: "invalid" } as never)).rejects.toThrow();
   await expect(client.operator.takedowns.list({ requesterType: "invalid" } as never)).rejects.toThrow();
+  await expect(client.operator.claims.list({ reviewStatus: "invalid" } as never)).rejects.toThrow();
+  await expect(client.operator.apps.list({ candidateStatus: "invalid" } as never)).rejects.toThrow();
   expect(calls).toBe(0);
 });
 
@@ -35,7 +46,9 @@ test("SDK list queries preserve opaque cursor bytes and route-specific defaults"
     encodeProfileCursor({ createdAt: time, profileId: id }),
     encodeRuleCursor({ createdAt: time, ruleId: id }),
     encodeCatalogCursor({ createdAt: time, canonicalId: "CaseSensitive.Package" }),
-    encodeTakedownCursor({ recordedAt: time, takedownId: id })
+    encodeTakedownCursor({ recordedAt: time, takedownId: id }),
+    encodeDelegatedClaimCursor({ recordedAt: time, claimId: id }),
+    encodeOperatorAppCursor({ createdAt: time, appId: id })
   ];
   const actions = [
     () => client.index.syncDeltas({ cursor: cursors[0] }),
@@ -43,7 +56,9 @@ test("SDK list queries preserve opaque cursor bytes and route-specific defaults"
     () => client.operator.sourceProfiles.list({ cursor: cursors[2] }),
     () => client.operator.autoQueueRules.list({ cursor: cursors[3] }),
     () => client.operator.catalog.list({ cursor: cursors[4] }),
-    () => client.operator.takedowns.list({ requesterType: "user", cursor: cursors[5] })
+    () => client.operator.takedowns.list({ requesterType: "user", cursor: cursors[5] }),
+    () => client.operator.claims.list({ reviewStatus: "pending", cursor: cursors[6] }),
+    () => client.operator.apps.list({ candidateStatus: "review_pending", cursor: cursors[7] })
   ];
   for (const invoke of actions) await expect(invoke()).rejects.toThrow(rejection.message);
   for (const [index, url] of urls.entries()) {
@@ -52,6 +67,8 @@ test("SDK list queries preserve opaque cursor bytes and route-specific defaults"
   }
   expect(urls[1]!.searchParams.get("status")).toBe("approved");
   expect(urls[5]!.searchParams.get("requesterType")).toBe("user");
+  expect(urls[6]!.searchParams.get("reviewStatus")).toBe("pending");
+  expect(urls[7]!.searchParams.get("candidateStatus")).toBe("review_pending");
 });
 
 test("SDK UUID paths and raw app cursors use lowercase without changing node IDs", async () => {
@@ -70,14 +87,23 @@ test("SDK UUID paths and raw app cursors use lowercase without changing node IDs
     () => client.operator.sourceProfiles.disable(id.toUpperCase(), "Reviewed profile"),
     () => client.operator.autoQueueRules.disable(id.toUpperCase(), "Reviewed rule"),
     () => client.operator.takedowns.verify(id.toUpperCase(), { verdict: "accepted" }),
+    () => client.operator.claims.verify(id.toUpperCase(), { verdict: "accepted" }),
+    () => client.operator.apps.setDelegation(id.toUpperCase(), { delegationAllowed: true }),
+    () => client.operator.apps.reviewCandidate(id.toUpperCase(), { candidateStatus: "reviewed" }),
+    () => client.moderator.apps.reviewCandidate(id.toUpperCase(), { candidateStatus: "reviewed" }),
     () => client.operator.nodes.revoke("Node.1", "Reviewed node")
   ];
   for (const invoke of actions) await expect(invoke()).rejects.toThrow(rejection.message);
   expect(urls.map(url => url.pathname)).toEqual([
-    `/v1/user/apps/${id}`, "/v1/user/apps",
+    `/v1/user/apps/${id}`, `/v1/user/apps`,
     `/v1/operator/source-profiles/${id}/disable`,
     `/v1/operator/autoqueue-rules/${id}/disable`,
-    `/v1/operator/takedowns/${id}/verify`, "/v1/operator/nodes/Node.1/revoke"
+    `/v1/operator/takedowns/${id}/verify`,
+    `/v1/operator/claims/${id}/verify`,
+    `/v1/operator/apps/${id}/delegation`,
+    `/v1/operator/apps/${id}/candidate-review`,
+    `/v1/moderator/apps/${id}/candidate-review`,
+    "/v1/operator/nodes/Node.1/revoke"
   ]);
   expect(urls[1]!.searchParams.get("cursor")).toBe(id);
 });
@@ -148,6 +174,8 @@ test("invalid SDK POST inputs fail before invoking fetch", async () => {
   const id = "00000000-0000-4000-8000-000000000001";
   const invalid: Array<() => Promise<unknown>> = [
     () => client.index.search({ queryOrigin: "invalid" } as never),
+    () => client.index.search({ queryOrigin: "user_authored", rating: "invalid" as never }),
+    () => client.index.search({ queryOrigin: "user_authored", umbrella: "invalid" as never }),
     () => client.app.register({ schemaVersion: 1, appName: "Valid app", extra: true } as never),
     () => client.reports.submit({ schemaVersion: 1, reportType: "removal_request", canonicalId: "fixture" } as never),
     () => client.operator.leads.approve(leadKey, { minDelayMs: -1, reason: "Reviewed lead" }),
@@ -162,6 +190,11 @@ test("invalid SDK POST inputs fail before invoking fetch", async () => {
     () => client.operator.autoQueueRules.disable(id, " "),
     () => client.operator.nodes.issue({ schemaVersion: 999 } as never),
     () => client.operator.takedowns.verify(id, { verdict: "invalid" } as never),
+    () => client.operator.claims.verify(id, { verdict: "invalid" } as never),
+    () => client.operator.apps.setDelegation(id, { delegationAllowed: "yes" } as never),
+    () => client.operator.apps.reviewCandidate(id, { candidateStatus: "invalid" } as never),
+    () => client.moderator.apps.reviewCandidate(id, { candidateStatus: "invalid" } as never),
+    () => client.moderator.ratings.adjust("com.example.pkg", { newRating: "general", reason: "  " }),
     () => client.operator.jobs.enqueue({ schemaVersion: 999 } as never),
     () => client.operator.init({ autoSeed: "invalid" } as never),
     () => client.operator.nodes.revoke("fixture-node", " ")
@@ -180,7 +213,7 @@ test("SDK search rejects invalid bounds before transport instead of clamping the
     await expect(client.index.search({ queryOrigin: "user_authored", limit })).rejects.toThrow();
     expect(calls).toBe(0);
   }
-  await expect(client.index.search({ queryOrigin: "app_automated", cursor: "x".repeat(257) })).rejects.toThrow();
+  await expect(client.index.search({ queryOrigin: "app_automated", cursor: "x".repeat(CURSOR_TOKEN_MAX_LENGTH + 1) })).rejects.toThrow();
   expect(calls).toBe(0);
 });
 
@@ -200,6 +233,10 @@ test("SDK path identifiers reject route-changing input before invoking fetch", a
       () => client.operator.sourceProfiles.disable(id, "Reviewed profile"),
       () => client.operator.autoQueueRules.disable(id, "Reviewed rule"),
       () => client.operator.takedowns.verify(id, { verdict: "accepted" }),
+      () => client.operator.claims.verify(id, { verdict: "accepted" }),
+      () => client.operator.apps.setDelegation(id, { delegationAllowed: true }),
+      () => client.operator.apps.reviewCandidate(id, { candidateStatus: "reviewed" }),
+      () => client.moderator.apps.reviewCandidate(id, { candidateStatus: "reviewed" }),
       () => client.operator.nodes.revoke(id, "Reviewed node"),
       () => client.operator.nodes.issue({ schemaVersion: 1, nodeId: id, capabilities: ["vpm"], reason: "Reviewed node" }),
       () => client.user.apps.get(id)
@@ -208,5 +245,38 @@ test("SDK path identifiers reject route-changing input before invoking fetch", a
       await expect(invoke()).rejects.toThrow();
       expect(calls).toBe(0);
     }
+  }
+});
+
+test("moderator.ratings.adjust rejects blank and dot-segment canonical IDs and encodes path segments safely", async () => {
+  let calls = 0;
+  const urls: URL[] = [];
+  const client = new VRCPackageClient({
+    baseUrl: "https://worker.example",
+    userToken: "fixture-user",
+    fetch: Object.assign(async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls++;
+      urls.push(new URL(new Request(input, init).url));
+      throw new Error("Fixture transport stop");
+    }, { preconnect() {} })
+  });
+
+  for (const badId of ["", ".", "..", " ", " . ", " .. ", "x".repeat(501)]) {
+    await expect(client.moderator.ratings.adjust(badId, {
+      newRating: "mature",
+      reason: "Invalid canonical ID check"
+    })).rejects.toThrow();
+    expect(calls).toBe(0);
+  }
+
+  for (const canonicalId of ["booth.pm/ja/items/54321", "pkg?reason=other", "pkg#fragment"]) {
+    await expect(client.moderator.ratings.adjust(canonicalId, {
+      newRating: "mature",
+      reason: "Encoded path segment check"
+    })).rejects.toThrow("Fixture transport stop");
+    const lastUrl = urls.at(-1)!;
+    expect(lastUrl.pathname).toBe(`/v1/moderator/ratings/${encodeURIComponent(canonicalId)}`);
+    expect(lastUrl.search).toBe("");
+    expect(lastUrl.hash).toBe("");
   }
 });

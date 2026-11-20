@@ -1,15 +1,13 @@
 import { describe, it, expect } from "bun:test";
 import {
   CatalogPackageSchema,
-  CatalogCursorSchema,
+  PackageFrontSchema,
   encodeCatalogCursor,
   decodeCatalogCursor
 } from "../src/types/package.ts";
 import {
-  CatalogDeltaCursorSchema,
   encodeCatalogDeltaCursor,
   decodeCatalogDeltaCursor,
-  CatalogDeltaResponseSchema,
   PublicCatalogListQuerySchema,
   PublicCatalogListResponseSchema
 } from "../src/protocol/catalog.ts";
@@ -21,26 +19,23 @@ import {
   CreatorClaimIntakeResponseSchema
 } from "../src/protocol/downstream.ts";
 import {
+  InitializeCoordinatorRequestSchema,
+  InitializeCoordinatorResponseSchema,
   LeadRowSchema,
   LeadCursorSchema,
   encodeLeadCursor,
   decodeLeadCursor,
   ApproveLeadSchema,
   RejectLeadSchema,
-  SourceAccessProfileSchema,
   CreateSourceAccessProfileSchema,
-  ProfileCursorSchema,
   encodeProfileCursor,
   decodeProfileCursor,
   AutoQueueRuleSchema,
   CreateAutoQueueRuleSchema,
-  RuleCursorSchema,
   encodeRuleCursor,
   decodeRuleCursor,
   IssueNodeCredentialSchema,
   NodeCredentialResponseSchema,
-  TakedownRecordSchema,
-  TakedownCursorSchema,
   encodeTakedownCursor,
   decodeTakedownCursor,
   VerifyTakedownRequestSchema,
@@ -62,9 +57,7 @@ import {
   decodeOperatorAppCursor
 } from "../src/protocol/operator.ts";
 import {
-  MODERATOR_PROTOCOL_VERSION,
   ModeratorRatingRecordSchema,
-  ModeratorRatingCursorSchema,
   encodeModeratorRatingCursor,
   decodeModeratorRatingCursor,
   ModeratorRatingListQuerySchema,
@@ -79,7 +72,18 @@ import {
 } from "../src/protocol/moderator.ts";
 
 describe("src-package wire protocols", () => {
-  it("validates CatalogPackage schema and defaults contentRating to general", () => {
+  it("validates CatalogPackage and strict PackageFront schemas with default contentRating", () => {
+    const validFront = {
+      frontId: "123e4567-e89b-12d3-a456-426614174000",
+      canonicalId: "pkg-123",
+      sourceKey: "booth:12345",
+      platform: "booth" as const,
+      storefrontUrl: "https://booth.pm/ja/items/12345",
+      price: 1500,
+      currency: "JPY",
+      availability: "available" as const,
+      observedAt: new Date().toISOString()
+    };
     const validPkg = {
       canonicalId: "pkg-123",
       umbrella: "tools" as const,
@@ -90,19 +94,7 @@ describe("src-package wire protocols", () => {
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
       acceptedLinks: [],
-      fronts: [
-        {
-          frontId: "front-1",
-          canonicalId: "pkg-123",
-          sourceKey: "booth:12345",
-          platform: "booth" as const,
-          storefrontUrl: "https://booth.pm/ja/items/12345",
-          price: 1500,
-          currency: "JPY",
-          availability: "available" as const,
-          observedAt: new Date().toISOString()
-        }
-      ]
+      fronts: [validFront]
     };
     const parsed = CatalogPackageSchema.parse(validPkg);
     expect(parsed.contentRating).toBe("general");
@@ -110,8 +102,11 @@ describe("src-package wire protocols", () => {
 
     const ratedPkg = { ...validPkg, contentRating: "sexual_suggestive" as const };
     expect(CatalogPackageSchema.parse(ratedPkg).contentRating).toBe("sexual_suggestive");
-  });
 
+    expect(PackageFrontSchema.safeParse({ ...validFront, frontId: "front-1" }).success).toBe(false);
+    expect(PackageFrontSchema.safeParse({ ...validFront, observedAt: "not-a-timestamp" }).success).toBe(false);
+    expect(PackageFrontSchema.safeParse({ ...validFront, extra: true }).success).toBe(false);
+  });
 
   it("encodes and decodes catalog delta cursors", () => {
     const cursor = {
@@ -163,8 +158,7 @@ describe("src-package wire protocols", () => {
     expect(parsed.rating).toBe("mature");
   });
 
-
-  it("validates ReportSubmissionRequest for both demand signals and issue reports", () => {
+  it("validates ReportSubmissionRequest for demand signals, issue reports, and removal requests", () => {
     const removal = { schemaVersion: 1, reportType: "removal_request", canonicalId: "pkg-123", reason: "Incorrect attribution" };
     expect(ReportSubmissionRequestSchema.safeParse(removal).success).toBe(true);
     for (const invalid of [{ ...removal, reason: "" }, { ...removal, canonicalId: undefined },
@@ -189,7 +183,7 @@ describe("src-package wire protocols", () => {
     };
     expect(() => ReportSubmissionRequestSchema.parse(issue)).not.toThrow();
 
-    // Explicit content report sub-categories (R56-C56C)
+    // Explicit content report sub-categories
     const falsePositive = {
       schemaVersion: 1,
       reportType: "issue_report" as const,
@@ -259,6 +253,7 @@ describe("src-package wire protocols", () => {
     expect(decodeTakedownCursor(encTakedown)).toEqual(takedownCursor);
     expect(decodeTakedownCursor("invalid-takedown-cursor")).toBeNull();
   });
+
   it("rejects lead cursors that cannot be used by the coordinator", () => {
     const key = "a".repeat(64);
     for (const invalid of [
@@ -304,9 +299,10 @@ describe("src-package wire protocols", () => {
     for (const change of [
       { leadKind: "storefront_product" }, { leadKind: "github_repository" },
       { origin: "http://packages.example.org" }, { origin: "https://packages.example.org/path" },
-      { origin: "https://user@packages.example.org" }, { pathScope: "/vpm/*" },
-      { pathScope: "index.json" }, { pathScope: "/vpm//" }, { pathScope: "/vpm/../" },
-      { pathScope: "/%E3%81%82" }, { pathScope: "/" + "x".repeat(200) }
+      { origin: "https://user@packages.example.org" }, { origin: "https://packages.example.org." },
+      { origin: "https://localhost" }, { origin: "https://packages.example.org:8443" },
+      { pathScope: "/vpm/*" }, { pathScope: "index.json" }, { pathScope: "/vpm//" },
+      { pathScope: "/vpm/../" }, { pathScope: "/%E3%81%82" }, { pathScope: "/" + "x".repeat(200) }
     ]) expect(CreateAutoQueueRuleSchema.safeParse({ ...rule, ...change }).success).toBe(false);
     const stored = { ...rule, ruleId: "123e4567-e89b-12d3-a456-426614174000",
       createdAt: "2026-10-01T00:00:00.000Z", disabledAt: null };
@@ -332,31 +328,47 @@ describe("src-package wire protocols", () => {
     }
   });
 
-  it("validates operator request schemas: leads, profiles, rules, nodes, takedowns", () => {
-    const wireLead = { lead_key: "a".repeat(64), kind: "vpm_listing", target_url: "https://publisher.example/index.json",
+  it("validates coordinator init and operator lead request/row schemas", () => {
+    expect(InitializeCoordinatorRequestSchema.safeParse({ schemaVersion: 1, autoSeed: true }).success).toBe(true);
+    expect(InitializeCoordinatorRequestSchema.safeParse({ schemaVersion: 1, extra: true }).success).toBe(false);
+    expect(InitializeCoordinatorResponseSchema.safeParse({
+      schemaVersion: 1,
+      status: "ok",
+      message: "Schema initialized",
+      autoSeed: false
+    }).success).toBe(true);
+    expect(InitializeCoordinatorResponseSchema.safeParse({
+      schemaVersion: 1,
+      status: "ok",
+      message: "Schema initialized",
+      autoSeed: false,
+      extra: true
+    }).success).toBe(false);
+
+    const wireLead = { lead_key: "a".repeat(64), kind: "vpm_listing" as const, target_url: "https://publisher.example/index.json",
       claimed_package_id: null, discovered_from_url: "https://directory.example/catalog", discovered_from_item_key: null,
       status: "pending_review" as const, first_seen_at: "2026-10-04T00:00:00.000Z", last_seen_at: "2026-10-04T00:00:00.000Z" };
     expect(LeadRowSchema.parse(wireLead)).toEqual(wireLead);
     for (const input of [{ ...wireLead, leadKey: wireLead.lead_key }, { ...wireLead, extra: true },
-      { ...wireLead, discovered_from_url: undefined }, { ...wireLead, discovered_from_url: null }]) {
+      { ...wireLead, kind: "unknown_kind" }, { ...wireLead, discovered_from_url: undefined },
+      { ...wireLead, discovered_from_url: null }]) {
       expect(LeadRowSchema.safeParse(input).success).toBe(false);
     }
     for (const schema of [ApproveLeadSchema, RejectLeadSchema]) {
       expect(schema.safeParse({ schemaVersion: 1 }).success).toBe(false);
     }
-    // Approve / Reject Lead
     expect(() => ApproveLeadSchema.parse({
       schemaVersion: 1,
       minDelayMs: 2000,
       reason: "Valid lead approved"
     })).not.toThrow();
-
     expect(() => RejectLeadSchema.parse({
       schemaVersion: 1,
       reason: "Irrelevant content"
     })).not.toThrow();
+  });
 
-    // Source Access Profile
+  it("validates operator source profile, auto-queue rule, node, and takedown schemas", () => {
     expect(() => CreateSourceAccessProfileSchema.parse({
       schemaVersion: 1,
       platform: "booth",
@@ -372,7 +384,6 @@ describe("src-package wire protocols", () => {
       publishClasses: ["normalized_facts"]
     })).not.toThrow();
 
-    // AutoQueue Rule
     expect(() => CreateAutoQueueRuleSchema.parse({
       schemaVersion: 1,
       leadKind: "vpm_listing",
@@ -384,7 +395,6 @@ describe("src-package wire protocols", () => {
       reason: "Auto-queue trusted listing"
     })).not.toThrow();
 
-    // Issue Node Credential
     expect(() => IssueNodeCredentialSchema.parse({
       schemaVersion: 1,
       nodeId: "primary-node",
@@ -392,7 +402,6 @@ describe("src-package wire protocols", () => {
       reason: "Primary production worker"
     })).not.toThrow();
 
-    // Verify Takedown
     expect(() => VerifyTakedownRequestSchema.parse({
       schemaVersion: 1,
       verdict: "accepted",
@@ -405,8 +414,9 @@ describe("src-package wire protocols", () => {
       status: "accepted",
       updatedAt: "2026-10-01T12:00:00.000Z"
     })).not.toThrow();
+  });
 
-    // Delegated Creator Claim Attestation (R54-C38C)
+  it("validates delegated creator claim attestation and verification schemas", () => {
     const validAttestation = {
       appId: "123e4567-e89b-12d3-a456-426614174000",
       action: "creator_ownership_claim" as const,
@@ -436,7 +446,6 @@ describe("src-package wire protocols", () => {
     };
     expect(() => CreatorClaimIntakeResponseSchema.parse(claimResponse)).not.toThrow();
 
-    // Delegated Claim Record & Cursor
     const claimRecord = {
       claimId: "123e4567-e89b-12d3-a456-426614174001",
       appId: "123e4567-e89b-12d3-a456-426614174000",
@@ -463,7 +472,6 @@ describe("src-package wire protocols", () => {
     expect(decodeDelegatedClaimCursor(encClaimCursor)).toEqual(claimCursor);
     expect(decodeDelegatedClaimCursor("invalid-cursor")).toBeNull();
 
-    // Verify Delegated Claim
     expect(() => VerifyDelegatedClaimRequestSchema.parse({
       schemaVersion: 1,
       verdict: "accepted",
@@ -476,8 +484,9 @@ describe("src-package wire protocols", () => {
       status: "accepted",
       updatedAt: "2026-10-01T12:00:00.000Z"
     })).not.toThrow();
+  });
 
-    // Operator Apps & Delegation (R54-C38A)
+  it("validates operator and moderator app delegation and candidate review schemas", () => {
     const appRecord = {
       appId: "123e4567-e89b-12d3-a456-426614174002",
       appName: "Creator Companion App",
@@ -516,7 +525,82 @@ describe("src-package wire protocols", () => {
       updatedAt: "2026-10-01T12:00:00.000Z"
     })).not.toThrow();
 
-    // Moderator Rating Protocol (R56-C56C1)
+    expect(CandidateStatusSchema.parse("review_pending")).toBe("review_pending");
+    expect(CandidateStatusSchema.parse("trusted")).toBe("trusted");
+    expect(() => CandidateStatusSchema.parse("invalid_status")).toThrow();
+
+    const appWithCandidate = {
+      appId: "123e4567-e89b-12d3-a456-426614174003",
+      appName: "High Traffic Service",
+      permissions: ["catalog:read", "catalog:search"],
+      delegationAllowed: false,
+      requestCount: 150,
+      lastActiveAt: "2026-10-01T15:00:00.000Z",
+      candidateStatus: "review_pending" as const,
+      candidateFlags: ["intensive_usage", "high_frequency_api"],
+      createdAt: "2026-10-01T10:00:00.000Z",
+      revokedAt: null
+    };
+    const parsedApp = OperatorAppRecordSchema.parse(appWithCandidate);
+    expect(parsedApp.requestCount).toBe(150);
+    expect(parsedApp.candidateStatus).toBe("review_pending");
+    expect(parsedApp.candidateFlags).toContain("intensive_usage");
+    expect(ModeratorAppRecordSchema.parse(appWithCandidate)).toEqual(parsedApp);
+
+    // Backward-compatible defaults
+    const legacyApp = {
+      appId: "123e4567-e89b-12d3-a456-426614174004",
+      appName: "Legacy App",
+      permissions: ["catalog:read"],
+      delegationAllowed: false,
+      createdAt: "2026-10-01T10:00:00.000Z",
+      revokedAt: null
+    };
+    const parsedLegacy = OperatorAppRecordSchema.parse(legacyApp);
+    expect(parsedLegacy.requestCount).toBe(0);
+    expect(parsedLegacy.candidateStatus).toBe("none");
+    expect(parsedLegacy.candidateFlags).toEqual([]);
+
+    expect(() => OperatorAppListQuerySchema.parse({
+      candidateStatus: "review_pending",
+      limit: 10
+    })).not.toThrow();
+
+    expect(OperatorAppListQuerySchema.safeParse({ limit: "10" }).success).toBe(false);
+
+    expect(() => ModeratorAppListQuerySchema.parse({
+      candidateStatus: "trusted",
+      limit: 50
+    })).not.toThrow();
+    expect(() => ModeratorAppListResponseSchema.parse({
+      schemaVersion: 1,
+      apps: [appWithCandidate],
+      nextCursor: encAppCursor
+    })).not.toThrow();
+
+    const operatorReviewReq = {
+      schemaVersion: 1,
+      candidateStatus: "trusted" as const,
+      grantDelegation: true,
+      notes: "App has passed high-volume review and verified creator checks"
+    };
+    expect(() => ReviewAppCandidateRequestSchema.parse(operatorReviewReq)).not.toThrow();
+
+    const operatorReviewResp = {
+      schemaVersion: 1,
+      appId: "123e4567-e89b-12d3-a456-426614174003",
+      candidateStatus: "trusted" as const,
+      candidateFlags: ["intensive_usage"],
+      delegationAllowed: true,
+      permissions: ["catalog:read", "catalog:search", "claims:delegate"],
+      reviewedAt: "2026-10-01T16:00:00.000Z"
+    };
+    expect(() => ReviewAppCandidateResponseSchema.parse(operatorReviewResp)).not.toThrow();
+    expect(() => ModeratorReviewAppCandidateRequestSchema.parse(operatorReviewReq)).not.toThrow();
+    expect(() => ModeratorReviewAppCandidateResponseSchema.parse(operatorReviewResp)).not.toThrow();
+  });
+
+  it("validates moderator content rating schemas", () => {
     const ratingRecord = {
       canonicalId: "pkg-12345",
       displayName: "Sample Asset",
@@ -527,6 +611,7 @@ describe("src-package wire protocols", () => {
       updatedAt: "2026-10-01T12:00:00.000Z"
     };
     expect(() => ModeratorRatingRecordSchema.parse(ratingRecord)).not.toThrow();
+    expect(ModeratorRatingRecordSchema.safeParse({ ...ratingRecord, umbrella: "invalid" }).success).toBe(false);
 
     const moderatorCursor = {
       updatedAt: "2026-10-01T12:00:00.000Z",
@@ -562,74 +647,5 @@ describe("src-package wire protocols", () => {
       adjustedBy: "mod-user-1",
       updatedAt: "2026-10-01T12:00:00.000Z"
     })).not.toThrow();
-
-    // Registered App Candidate Classification & Review (R54-C38A2)
-    expect(CandidateStatusSchema.parse("review_pending")).toBe("review_pending");
-    expect(CandidateStatusSchema.parse("trusted")).toBe("trusted");
-    expect(() => CandidateStatusSchema.parse("invalid_status")).toThrow();
-
-    const appWithCandidate = {
-      appId: "123e4567-e89b-12d3-a456-426614174003",
-      appName: "High Traffic Service",
-      permissions: ["catalog:read", "catalog:search"],
-      delegationAllowed: false,
-      requestCount: 150,
-      lastActiveAt: "2026-10-01T15:00:00.000Z",
-      candidateStatus: "review_pending" as const,
-      candidateFlags: ["intensive_usage", "high_frequency_api"],
-      createdAt: "2026-10-01T10:00:00.000Z",
-      revokedAt: null
-    };
-    const parsedApp = OperatorAppRecordSchema.parse(appWithCandidate);
-    expect(parsedApp.requestCount).toBe(150);
-    expect(parsedApp.candidateStatus).toBe("review_pending");
-    expect(parsedApp.candidateFlags).toContain("intensive_usage");
-
-    // Backward-compatible defaults
-    const legacyApp = {
-      appId: "123e4567-e89b-12d3-a456-426614174004",
-      appName: "Legacy App",
-      permissions: ["catalog:read"],
-      delegationAllowed: false,
-      createdAt: "2026-10-01T10:00:00.000Z",
-      revokedAt: null
-    };
-    const parsedLegacy = OperatorAppRecordSchema.parse(legacyApp);
-    expect(parsedLegacy.requestCount).toBe(0);
-    expect(parsedLegacy.candidateStatus).toBe("none");
-    expect(parsedLegacy.candidateFlags).toEqual([]);
-
-    expect(() => OperatorAppListQuerySchema.parse({
-      candidateStatus: "review_pending",
-      limit: 10
-    })).not.toThrow();
-
-    expect(() => ModeratorAppListQuerySchema.parse({
-      candidateStatus: "trusted",
-      limit: 50
-    })).not.toThrow();
-
-    const operatorReviewReq = {
-      schemaVersion: 1,
-      candidateStatus: "trusted" as const,
-      grantDelegation: true,
-      notes: "App has passed high-volume review and verified creator checks"
-    };
-    expect(() => ReviewAppCandidateRequestSchema.parse(operatorReviewReq)).not.toThrow();
-
-    const operatorReviewResp = {
-      schemaVersion: 1,
-      appId: "123e4567-e89b-12d3-a456-426614174003",
-      candidateStatus: "trusted" as const,
-      candidateFlags: ["intensive_usage"],
-      delegationAllowed: true,
-      permissions: ["catalog:read", "catalog:search", "claims:delegate"],
-      reviewedAt: "2026-10-01T16:00:00.000Z"
-    };
-    expect(() => ReviewAppCandidateResponseSchema.parse(operatorReviewResp)).not.toThrow();
-
-    expect(() => ModeratorReviewAppCandidateRequestSchema.parse(operatorReviewReq)).not.toThrow();
-    expect(() => ModeratorReviewAppCandidateResponseSchema.parse(operatorReviewResp)).not.toThrow();
   });
 });
-
