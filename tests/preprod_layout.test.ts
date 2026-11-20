@@ -68,35 +68,46 @@ describe("Pre-production directory layout and configuration conformance", () => 
       "src-crawler-client",
       "src-package",
       "docs",
-      "docs/scratch",
+      "docs/research",
       "docs/source",
+      "docs/scratch-crawler-network",
+      "docs/scratch-desktop-client",
+      "docs/scratch-api-web",
+      "docs/scratch-pipeline",
+      "docs/scratch-legal-research",
     ];
 
     for (const dir of requiredDirs) {
       expect(existsSync(join(rootDir, dir))).toBe(true);
     }
-    expect(existsSync(join(rootDir, "docs/scratch/research")) || existsSync(join(rootDir, "docs/research"))).toBe(true);
+    expect(existsSync(join(rootDir, "docs/scratch"))).toBe(false);
   });
 
-  test("contains required governance and operator documents with minimal scratch footprint", () => {
+  test("contains required governance and operator documents with three-file sector scratch footprints", () => {
     const requiredFiles = [
       "AGENTS.md",
       "DELEGATES.md",
       "LEGAL.md",
       "LICENSE.md",
       "README.md",
-      "docs/scratch/IMPLEMENTATION_PLAN.md",
-      "docs/scratch/UNMERGED_IMPLEMENTATION_PLAN.md",
-      "docs/scratch/task_tracker.md",
+    ];
+    const sectorScratchDirs = [
+      "docs/scratch-crawler-network",
+      "docs/scratch-desktop-client",
+      "docs/scratch-api-web",
+      "docs/scratch-pipeline",
+      "docs/scratch-legal-research",
     ];
 
     for (const file of requiredFiles) {
       expect(existsSync(join(rootDir, file))).toBe(true);
     }
-    const scratchFiles = readdirSync(join(rootDir, "docs/scratch")).filter(f => f !== "research").sort();
-    expect(scratchFiles).toEqual([
-      "IMPLEMENTATION_PLAN.md", "UNMERGED_IMPLEMENTATION_PLAN.md", "task_tracker.md"
-    ]);
+    for (const dir of sectorScratchDirs) {
+      const scratchFiles = readdirSync(join(rootDir, dir)).sort();
+      expect(scratchFiles).toEqual([
+        "IMPLEMENTATION_PLAN.md", "handoff.md", "task_tracker.md"
+      ]);
+    }
   });
 
   test("crawler and Worker scripts use their own runtime entry points, not coordinator binaries or scaffolds", () => {

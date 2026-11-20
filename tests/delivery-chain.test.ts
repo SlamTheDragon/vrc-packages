@@ -196,8 +196,8 @@ async function reviewedFixture(workspace: string, git: (cwd: string, ...args: st
   git(workspace, "checkout", "main");
   let trackerParent: string | undefined;
   if (method === "tracker") {
-    await writeFile(resolve(workspace, "docs/scratch/task_tracker.md"), "Synthetic owner tracker checkpoint\n");
-    git(workspace, "add", "--", "docs/scratch/task_tracker.md");
+    await writeFile(resolve(workspace, "docs/scratch-pipeline/task_tracker.md"), "Synthetic owner tracker checkpoint\n");
+    git(workspace, "add", "--", "docs/scratch-pipeline/task_tracker.md");
     git(workspace, "commit", "-m", "Synthetic tracker-only main advancement");
     trackerParent = git(workspace, "rev-parse", "HEAD");
   }
@@ -230,7 +230,7 @@ async function reviewedFixture(workspace: string, git: (cwd: string, ...args: st
       base_commit: { sha: preparation.base }, merge_base_commit: { sha: preparation.base }, total_commits: 1,
       commits: [{ sha: trackerParent }] };
     responses[`${prefix}/commits/${trackerParent}`] = { sha: trackerParent,
-      files: [{ filename: "docs/scratch/task_tracker.md", status: "modified" }] };
+      files: [{ filename: "docs/scratch-pipeline/task_tracker.md", status: "modified" }] };
   }
   const calls: string[] = [];
   const api = async (path: string) => {
@@ -245,9 +245,9 @@ async function reviewedFixture(workspace: string, git: (cwd: string, ...args: st
 
 test("tracker-only owner merge finalizes exact metadata but rejects any additional merged-tree changes", async () => {
   await fixture(async (workspace, git) => {
-    await mkdir(resolve(workspace, "docs/scratch"), { recursive: true });
-    await writeFile(resolve(workspace, "docs/scratch/task_tracker.md"), "Synthetic original tracker\n");
-    git(workspace, "add", "--", "docs/scratch/task_tracker.md");
+    await mkdir(resolve(workspace, "docs/scratch-pipeline"), { recursive: true });
+    await writeFile(resolve(workspace, "docs/scratch-pipeline/task_tracker.md"), "Synthetic original tracker\n");
+    git(workspace, "add", "--", "docs/scratch-pipeline/task_tracker.md");
     git(workspace, "commit", "-m", "Synthetic tracker baseline");
     git(workspace, "push", "origin", "main");
     const reviewed = await reviewedFixture(workspace, git, "worker", "tracker");

@@ -11,7 +11,7 @@ description: Execute safe, sequenced, and stratified delegation where an Agent C
 > **Subagents Execute the Delegation Pipeline**:
 > Delegation means invoking subagents via `invoke_subagent`. The invoking agent operates strictly as the **Agent Coordinator**. The coordinator writes role packets, maintains CSV tracking ledgers, dispatches subagents, receives handoffs, and records approvals. The coordinator must not execute delegated research, sandbox drafting, quality audits, or integration directly in the coordinator turn.
 
-All coordination packets and delegate sandboxes live under `delegates/<GOAL_NAME>/` at the repository root. This preserves the strict three-file limit (`IMPLEMENTATION_PLAN.md`, `task_tracker.md`, `handoff.md`) in every `docs/scratch-<sector>/` directory and the layout-checked footprint in `docs/scratch/`.
+All coordination packets and delegate sandboxes live under `delegates/<GOAL_NAME>/` at the repository root. This preserves the strict three-file limit (`IMPLEMENTATION_PLAN.md`, `task_tracker.md`, `handoff.md`) in every `docs/scratch-<sector>/` directory.
 
 ### Domain A: Instruction and Governance (`delegates/<GOAL_NAME>/coordinator/`)
 - `coordinator.md`: Root coordinator prompt governing the active goal iteration and its anchored sector (`crawler-network`, `desktop-client`, `api-web`, `pipeline`, or `legal-research`).

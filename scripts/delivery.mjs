@@ -20,6 +20,14 @@ if (!process.env.GH_TOKEN && !process.env.GITHUB_TOKEN && typeof process.loadEnv
 }
 const artifacts = { "vrc-packages-api": "package", "vrc-packages-network": "network" };
 const releaseWorkflows = { package: "vrc-packages-api", crawler: "node-docker", "crawler-client": "node-client", worker: "cloudflare-worker" };
+const approvedTaskTrackers = new Set([
+  "docs/scratch-crawler-network/task_tracker.md",
+  "docs/scratch-desktop-client/task_tracker.md",
+  "docs/scratch-api-web/task_tracker.md",
+  "docs/scratch-pipeline/task_tracker.md",
+  "docs/scratch-legal-research/task_tracker.md",
+]);
+const isApprovedTaskTracker = (filename) => typeof filename === "string" && approvedTaskTrackers.has(filename);
 const readGit = (cwd, ...args) => execFileSync("git", args, { cwd, encoding: "utf8", timeout: 30_000, stdio: "pipe" });
 
 export function checkSDKPublicationVersion(version, channel = "release", name = sdkPackageNames.release) {
@@ -127,7 +135,7 @@ export async function checkReviewedRelease(selected, proof, api = readGitHubAPI(
       if (!sha(entry?.sha)) throw new Error("Invalid tracker advancement commit");
       const changed = await api(`${prefix}/commits/${entry.sha}`);
       if (changed?.sha !== entry.sha || !Array.isArray(changed.files) || changed.files.length !== 1 ||
-          changed.files[0]?.filename !== "docs/scratch/task_tracker.md" || changed.files[0]?.status !== "modified") {
+          !isApprovedTaskTracker(changed.files[0]?.filename) || changed.files[0]?.status !== "modified") {
         throw new Error("Main advancement changed more than the approved task tracker");
       }
     }
@@ -242,10 +250,12 @@ export async function checkReleaseMetadata(selected, proof, workspace = root, gi
       if (text(head, path) !== expected.get(path)) throw new Error("Release preparation differs from generated metadata");
     }
     if (git(workspace, "rev-parse", `${head}^{tree}`).trim() !== git(workspace, "rev-parse", `${commit}^{tree}`).trim()) {
-      const tracker = "docs/scratch/task_tracker.md";
+      const diffLines = git(workspace, "diff", "--name-status", "--no-renames", head, commit, "--").trim().split(/\r?\n/).filter(Boolean);
+      const trackerEntries = diffLines.map(line => line.split("\t"));
       if (!/^[a-f0-9]{40}$/.test(proof.trackerParent ?? "") ||
-          git(workspace, "diff", "--name-status", "--no-renames", head, commit, "--").trim() !== `M\t${tracker}` ||
-          text(proof.trackerParent, tracker) !== text(commit, tracker)) {
+          trackerEntries.length === 0 ||
+          trackerEntries.some(parts => parts.length !== 2 || parts[0] !== "M" || !isApprovedTaskTracker(parts[1])) ||
+          trackerEntries.some(([, file]) => text(proof.trackerParent, file) !== text(commit, file))) {
         throw new Error("Merged release tree differs from the reviewed preparation");
       }
     }

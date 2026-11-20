@@ -26,7 +26,6 @@ Execute this 6-step lifecycle on every development, pipeline, or legal-research 
 1. Dissect the prompt into bounded slices inside one capability gate and its dependency boundary.
 2. **Strict three-file ledger footprint**:
    - Every sector directory `docs/scratch-<sector>/` must contain **strictly three files**: `IMPLEMENTATION_PLAN.md`, `task_tracker.md`, and `handoff.md` (no unmerged plans or auxiliary notes).
-   - Preserve legacy root `docs/scratch/` (`IMPLEMENTATION_PLAN.md`, `UNMERGED_IMPLEMENTATION_PLAN.md`, `task_tracker.md`) intact for `tests/preprod_layout.test.ts` and `scripts/delivery.mjs` until Sector 4 `PIPELINE-SCRATCH-RETIRE` completes.
 3. Maintain the exact two-table format in `docs/scratch-<sector>/IMPLEMENTATION_PLAN.md`:
    **Task Slices**:
    ```markdown

@@ -19,7 +19,6 @@ description: "Enforce the 5-sector slice and gating iterative lifecycle, ledger 
    - **Three-file scratch footprint (`handoff.md` integration ledger)**:
      - Every sector-anchored `docs/scratch-<sector>/` directory (`crawler-network`, `desktop-client`, `api-web`, `pipeline`, `legal-research`) must contain strictly three files: `IMPLEMENTATION_PLAN.md`, `task_tracker.md`, and `handoff.md`.
      - Express the 5-tier handoff cascade as labeled tier sections inside each `handoff.md`. Downstream sectors read upstream `handoff.md` files to propagate changes without editing upstream sectors.
-     - Legacy root `docs/scratch/` remains intact strictly for `scripts/delivery.mjs` and `tests/preprod_layout.test.ts` until Sector 4 `PIPELINE-SCRATCH-RETIRE` completes.
 4. **Pause policy and owner holds**:
    - Defer routine review pauses within granted lifecycle authority, but strictly preserve explicit owner holds (including SDK `v0.1.0` API review, protected release approvals, and unresolved legal/security contracts).
 5. **Execute slices and gate checkpoints**:

@@ -89,14 +89,24 @@ test("owner-approved main advancement accepts only bounded tracker-only commits"
   f.responses[comparison] = { status: "ahead", base_commit: { sha: f.base }, merge_base_commit: { sha: f.base },
     total_commits: 1, commits: [{ sha: parent }] };
   f.responses[`${f.prefix}/commits/${parent}`] = { sha: parent,
-    files: [{ filename: "docs/scratch/task_tracker.md", status: "modified" }] };
-  expect((await checkReviewedRelease(f.selected, f.proof, f.api)).trackerParent).toBe(parent);
-  for (const filename of ["config.versions.json", "scripts/delivery.mjs", ".github/workflows/node-docker.yml",
+    files: [{ filename: "docs/scratch-pipeline/task_tracker.md", status: "modified" }] };
+  for (const approved of [
+    "docs/scratch-crawler-network/task_tracker.md",
+    "docs/scratch-desktop-client/task_tracker.md",
+    "docs/scratch-api-web/task_tracker.md",
+    "docs/scratch-pipeline/task_tracker.md",
+    "docs/scratch-legal-research/task_tracker.md",
+  ]) {
+    f.responses[`${f.prefix}/commits/${parent}`].files[0].filename = approved;
+    expect((await checkReviewedRelease(f.selected, f.proof, f.api)).trackerParent).toBe(parent);
+  }
+  for (const filename of ["docs/scratch/task_tracker.md", "docs/scratch-unknown/task_tracker.md",
+    "config.versions.json", "scripts/delivery.mjs", ".github/workflows/node-docker.yml",
     "src-worker/src/worker_entry.ts", "docs/source/PUBLISHING.md"]) {
     f.responses[`${f.prefix}/commits/${parent}`].files[0].filename = filename;
     await expect(checkReviewedRelease(f.selected, f.proof, f.api)).rejects.toThrow("approved task tracker");
   }
-  f.responses[`${f.prefix}/commits/${parent}`].files[0].filename = "docs/scratch/task_tracker.md";
+  f.responses[`${f.prefix}/commits/${parent}`].files[0].filename = "docs/scratch-pipeline/task_tracker.md";
   for (const status of ["added", "removed", "renamed"]) {
     f.responses[`${f.prefix}/commits/${parent}`].files[0].status = status;
     await expect(checkReviewedRelease(f.selected, f.proof, f.api)).rejects.toThrow("approved task tracker");

@@ -9,7 +9,7 @@ Follow this cascade from top to bottom and read only the branch required for you
 1. **Owner Intent and Terms**: Read `T00` and the task-relevant `Txx` section of [`docs/research/decisions/VISION.md`](docs/research/decisions/VISION.md).
 2. **System Routing and Sector Map**: Read [`docs/source/SYSTEM_MAP.md`](docs/source/SYSTEM_MAP.md) to select the single owning sector, contract owner, and verification commands.
 3. **Legal and Platform Boundaries**: Read [`LEGAL.md`](LEGAL.md) before modifying crawler access, provenance, retention, takedowns, or public API surfaces.
-4. **Sector Control Ledgers and Handoff Cascade**: Read the active 3-file anchored ledger in `docs/scratch-<sector>/` (`IMPLEMENTATION_PLAN.md`, `task_tracker.md`, `handoff.md`) plus permitted upstream `handoff.md` ledgers. *(Legacy `docs/scratch/` remains intact strictly for `scripts/delivery.mjs` and `tests/preprod_layout.test.ts` until Sector 4 `PIPELINE-SCRATCH-RETIRE` completes.)*
+4. **Sector Control Ledgers and Handoff Cascade**: Read the active 3-file anchored ledger in `docs/scratch-<sector>/` (`IMPLEMENTATION_PLAN.md`, `task_tracker.md`, `handoff.md`) plus permitted upstream `handoff.md` ledgers.
 5. **Sector Rules and Local Context**: Follow [`.agents/README.md`](.agents/README.md) and `.agents/rules/` (`00` through `09`), then read the owning sector `AGENTS.md` and local `.agents/skills/` before editing code.
 
 Treat summaries, filenames, and earlier success reports as leads until verified against live source, tests, or primary legal citations.
