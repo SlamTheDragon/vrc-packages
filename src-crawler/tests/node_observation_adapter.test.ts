@@ -276,7 +276,24 @@ describe("standalone node observation adapter", () => {
     expect(observation?.summary).toContain("Detailed description of the asset.");
     expect(observation?.outboundLinks).toContain("https://github.com/creativestudio/accessory");
     expect(observation?.outboundLinks).toContain("https://example.com/docs");
-    expect(observation?.originUpdatedAt).toBe("2026-05-01T12:00:00.000Z");
+    expect(observation?.originUpdatedAt).toBeNull();
+  });
+
+  test.each([
+    { modified: undefined, meta: "", expected: null },
+    { modified: "not-a-date", meta: "", expected: null },
+    { modified: "2025-02-03T04:05:06+02:00", meta: "2024-01-01T00:00:00Z", expected: "2025-02-03T02:05:06.000Z" },
+    { modified: "not-a-date", meta: "2024-01-01T00:00:00Z", expected: "2024-01-01T00:00:00.000Z" }
+  ])("keeps storefront creation/publication distinct from modification: %j", ({ modified, meta, expected }) => {
+    const storefront = { ...job, platform: "booth" as const, url: "https://booth.pm/ja/items/456789", origin: "https://booth.pm" };
+    const html = `<h1>Timestamp fixture</h1><div class="item-created-date">2020-01-01T00:00:00Z</div>
+      <meta property="article:modified_time" content="${meta}">
+      <script type="application/ld+json">${JSON.stringify({ "@type": "Product", name: "Timestamp fixture",
+        dateCreated: "2020-01-01T00:00:00Z", datePublished: "2021-01-01T00:00:00Z", dateModified: modified })}</script>`;
+    const observation = parseObservation(storefront, html, "text/html");
+    expect(observation?.originUpdatedAt).toBe(expected);
+    expect(ResultRequestSchema.safeParse({ schemaVersion: 1, nodeId: "test", jobId: storefront.jobId,
+      leaseId: storefront.leaseId, idempotencyKey: "timestamp-fixture-0001", outcome: { kind: "changed", observation } }).success).toBe(true);
   });
 
   test("classifies rate limits and unparseable responses without submitting product data", async () => {

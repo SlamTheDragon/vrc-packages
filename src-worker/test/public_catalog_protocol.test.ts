@@ -1,16 +1,17 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { LocalCoordinatorStore } from "./support/local_sqlite.js";
 import { handlePublicCatalogRequest } from "../src/api/public_handler.ts";
 import {
   CATALOG_PROTOCOL_VERSION,
   PublicCatalogListResponseSchema,
   CatalogDeltaResponseSchema,
-  decodeCatalogDeltaCursor,
+  decodeCatalogDeltaCursor, encodeCatalogDeltaCursor,
   type CatalogDelta,
   decodeCatalogCursor, encodeCatalogCursor, VRCPackageClient
 } from "vrc-packages-api";
 import { PROTOCOL_VERSION } from "vrc-packages-network/node";
 import { seedApprovedFixtureJob } from "./helpers/source_access_fixture.js";
+import { InMemoryRateLimiter } from "../src/api/rate_limiter.ts";
 
 function publicGet(path: string): Request {
   return new Request(`http://localhost${path}`, {
@@ -54,6 +55,43 @@ function seedVpmAndCatalogItem(
 }
 
 describe("Public Consumer Catalog Protocol (/v1/app/index & /v1/app/index/delta)", () => {
+  test("storage failures disclose no exception details and cannot be cached", async () => {
+    const privateDetail = "private-storage-detail-not-for-http-or-logs";
+    const captured: unknown[][] = [];
+    const log = spyOn(console, "error").mockImplementation((...args) => { captured.push(args); });
+    const store = new LocalCoordinatorStore();
+    const limiter = new InMemoryRateLimiter();
+    try {
+      for (const cause of [new Error(privateDetail), privateDetail, { privateDetail }]) {
+        store.listCanonicalPackagesPage = () => { throw cause; };
+        store.listCatalogDeltasPage = () => { throw cause; };
+        for (const path of ["/v1/app/index", "/v1/app/index/delta"]) {
+          const response = await handlePublicCatalogRequest(publicGet(path), store, limiter);
+          expect(response.status).toBe(500);
+          expect(response.headers.get("cache-control")).toBe("no-store");
+          expect(response.headers.get("access-control-allow-origin")).toBe("*");
+          expect(await response.json()).toEqual({ schemaVersion: 1, code: "internal_error", error: "Public catalog query failed" });
+        }
+      }
+      expect(captured).toHaveLength(6);
+      expect(JSON.stringify(captured)).not.toContain(privateDetail);
+      expect(JSON.stringify(captured)).toContain("Public catalog request failed");
+    } finally { log.mockRestore(); store.close(); }
+  });
+
+  test("invalid queries and unsupported methods cannot cache an error response", async () => {
+    const store = new LocalCoordinatorStore();
+    try {
+      for (const path of ["/v1/app/index?limit=0", "/v1/app/index/delta?cursor=invalid!"]) {
+        const response = await handlePublicCatalogRequest(publicGet(path), store, new InMemoryRateLimiter());
+        expect(response.status).toBe(400);
+        expect(response.headers.get("cache-control")).toBe("no-store");
+      }
+      const response = await handlePublicCatalogRequest(new Request("https://coordinator.invalid/v1/app/index", { method: "POST" }), store);
+      expect(response.status).toBe(404);
+      expect(response.headers.get("cache-control")).toBe("no-store");
+    } finally { store.close(); }
+  });
   test("SDK public index sends limit 100 and cursor unchanged through the real handler", async () => {
     const store = new LocalCoordinatorStore();
     const cursor = encodeCatalogCursor({ createdAt: "2026-10-03T00:00:00.000Z", canonicalId: "page-boundary" });
@@ -313,5 +351,389 @@ describe("Public Consumer Catalog Protocol (/v1/app/index & /v1/app/index/delta)
     } finally {
       store.close();
     }
+  });
+
+  test("public catalog and delta endpoints never serve age-rated or prohibited content", async () => {
+    const store = new LocalCoordinatorStore();
+    const now = new Date(store["now"]()).toISOString();
+    try {
+      // Seed packages with different ratings
+      const packages = [
+        { id: "pkg-gen", rating: "general", name: "General Package" },
+        { id: "pkg-mat", rating: "mature", name: "Mature Package" },
+        { id: "pkg-adu", rating: "adult_restricted", name: "Adult Restricted Package" },
+        { id: "pkg-pro", rating: "prohibited", name: "Prohibited Package" }
+      ];
+
+      for (const p of packages) {
+        store.db.prepare(`
+          INSERT INTO canonical_packages (canonical_id, umbrella, category, lifecycle, display_name, vpm_id, created_at, updated_at, content_rating)
+          VALUES (?, 'tools', 'tool', 'active', ?, ?, ?, ?, ?)
+        `).run(p.id, p.name, p.id, now, now, p.rating);
+      }
+
+      // 1. GET /v1/app/index only returns general package
+      const catalogRes = await handlePublicCatalogRequest(publicGet("/v1/app/index"), store);
+      expect(catalogRes.status).toBe(200);
+      const catalogBody = PublicCatalogListResponseSchema.parse(await catalogRes.json());
+      expect(catalogBody.packages).toHaveLength(1);
+      expect(catalogBody.packages[0].canonicalId).toBe("pkg-gen");
+      expect(catalogBody.packages[0].contentRating).toBe("general");
+
+      // 2. GET /v1/app/index/delta only returns deltas for general package
+      const deltaRes = await handlePublicCatalogRequest(publicGet("/v1/app/index/delta"), store);
+      expect(deltaRes.status).toBe(200);
+      const deltaBody = CatalogDeltaResponseSchema.parse(await deltaRes.json());
+      expect(deltaBody.deltas).toHaveLength(1);
+      expect(deltaBody.deltas[0].canonicalId).toBe("pkg-gen");
+      if (deltaBody.deltas[0].action === "upsert") {
+        expect(deltaBody.deltas[0].package?.contentRating).toBe("general");
+      }
+    } finally {
+      store.close();
+    }
+  });
+
+  test("public delta endpoint emits delist tombstones on rating withdrawal and hard deletion", async () => {
+    let mockTime = 1000000;
+    const store = new LocalCoordinatorStore(":memory:", () => mockTime);
+    try {
+      mockTime = 1001000;
+      seedVpmAndCatalogItem(store, "pkg.gen1", "com.example.pkg1", "Package 1", "active");
+      mockTime = 1002000;
+      seedVpmAndCatalogItem(store, "pkg.gen2", "com.example.pkg2", "Package 2", "active");
+      mockTime = 1003000;
+      seedVpmAndCatalogItem(store, "pkg.gen3", "com.example.pkg3", "Package 3", "active");
+
+      const initialDeltas = await handlePublicCatalogRequest(publicGet("/v1/app/index/delta"), store);
+      expect(initialDeltas.status).toBe(200);
+      const initialBody = CatalogDeltaResponseSchema.parse(await initialDeltas.json());
+      expect(initialBody.deltas).toHaveLength(3);
+      expect(initialBody.deltas.every(d => d.action === "upsert")).toBe(true);
+
+      mockTime = 1004000;
+      const adjustRes = store.adjustPackageRating("com.example.pkg1", "adult_restricted", "moderator-1", "Restricted content");
+      expect(adjustRes).not.toBeNull();
+      expect(adjustRes?.previousRating).toBe("general");
+      expect(adjustRes?.newRating).toBe("adult_restricted");
+
+      mockTime = 1005000;
+      const deleteRes = store.deleteCanonicalPackage("com.example.pkg2");
+      expect(deleteRes).toBe(true);
+
+      const afterMutationDeltas = await handlePublicCatalogRequest(publicGet("/v1/app/index/delta"), store);
+      expect(afterMutationDeltas.status).toBe(200);
+      const afterMutationBody = CatalogDeltaResponseSchema.parse(await afterMutationDeltas.json());
+      expect(afterMutationBody.deltas).toHaveLength(3);
+
+      const pkg3Delta = afterMutationBody.deltas.find(d => d.canonicalId === "com.example.pkg3");
+      expect(pkg3Delta?.action).toBe("upsert");
+      expect(pkg3Delta?.package?.displayName).toBe("Package 3");
+
+      const pkg1Delta = afterMutationBody.deltas.find(d => d.canonicalId === "com.example.pkg1");
+      expect(pkg1Delta?.action).toBe("delist");
+      expect(pkg1Delta?.package).toBeUndefined();
+
+      const pkg2Delta = afterMutationBody.deltas.find(d => d.canonicalId === "com.example.pkg2");
+      expect(pkg2Delta?.action).toBe("delist");
+      expect(pkg2Delta?.package).toBeUndefined();
+
+      const pkg3Cursor = encodeCatalogDeltaCursor({
+        updatedAt: pkg3Delta!.updatedAt,
+        canonicalId: pkg3Delta!.canonicalId
+      });
+      const cursorDeltas = await handlePublicCatalogRequest(publicGet(`/v1/app/index/delta?cursor=${pkg3Cursor}`), store);
+      expect(cursorDeltas.status).toBe(200);
+      const cursorBody = CatalogDeltaResponseSchema.parse(await cursorDeltas.json());
+      expect(cursorBody.deltas).toHaveLength(2);
+      expect(cursorBody.deltas.map(d => d.canonicalId)).toEqual(["com.example.pkg1", "com.example.pkg2"]);
+      expect(cursorBody.deltas.every(d => d.action === "delist")).toBe(true);
+
+      mockTime = 1006000;
+      const delistReq = store.submitDelistRequest({
+        canonicalId: "com.example.pkg3",
+        requesterId: "owner",
+        reason: "Delisted by request",
+        requesterType: "admin_operator"
+      });
+      expect(delistReq.status).toBe("accepted");
+
+      const finalDeltas = await handlePublicCatalogRequest(publicGet("/v1/app/index/delta"), store);
+      const finalBody = CatalogDeltaResponseSchema.parse(await finalDeltas.json());
+      expect(finalBody.deltas).toHaveLength(3);
+      expect(finalBody.deltas.every(d => d.action === "delist")).toBe(true);
+      expect(finalBody.deltas.map(d => d.canonicalId)).toEqual(["com.example.pkg1", "com.example.pkg2", "com.example.pkg3"]);
+    } finally {
+      store.close();
+    }
+  });
+
+  describe("Publication Classes Enforcement (R13-C3 / Q-PUBLICATION)", () => {
+    test("withholds packages whose source profile sets publishClasses: [] from public catalog listing", async () => {
+      const store = new LocalCoordinatorStore();
+      const limiter = new InMemoryRateLimiter();
+      try {
+        const nodeId = "pub-test-node";
+        const token = store.createNodeCredential(nodeId, ["vpm"]);
+        const principal = store.authenticate(nodeId, token)!;
+
+        // Profile with publishClasses: [] (no publication authority)
+        store.createSourceAccessProfile({
+          schemaVersion: 1,
+          platform: "vpm",
+          origin: "https://restricted.example.com",
+          pathScope: "/index.json",
+          method: "GET",
+          purpose: "metadata",
+          minDelayMs: 1000,
+          expiresAt: "2099-01-01T00:00:00Z",
+          reviewReference: "REV-RESTRICTED-01",
+          reason: "No publication authority testing",
+          retainClasses: ["normalized_facts", "creator_prose"],
+          publishClasses: []
+        }, "operator-admin");
+
+        store.recordRobotsSnapshot("https://restricted.example.com", 200, "User-agent: *\nAllow: /");
+        store.seedJob("https://restricted.example.com/index.json", "vpm", 1000, undefined, "metadata");
+
+        const claim = store.claim({ schemaVersion: PROTOCOL_VERSION, nodeId, capabilities: ["vpm"] }, principal);
+        expect(claim.status).toBe("leased");
+        if (claim.status !== "leased") return;
+
+        const pkgId = "com.restricted.hidden-tool";
+        const submitRes = store.submit({
+          schemaVersion: 1,
+          nodeId,
+          jobId: claim.job.jobId,
+          leaseId: claim.job.leaseId,
+          idempotencyKey: "submit-restricted-01",
+          outcome: {
+            kind: "changed",
+            observation: {
+              sourceItemKey: pkgId,
+              title: "Restricted Tool (Should Not Publish)",
+              summary: "A private tool without publication authority",
+              author: "Internal Team",
+              outboundLinks: [],
+              originUpdatedAt: null
+            }
+          }
+        }, principal);
+        expect(submitRes.status).toBe("accepted");
+
+        // Public index must NOT contain the package
+        const publicRes = await handlePublicCatalogRequest(publicGet("/v1/app/index"), store, limiter);
+        expect(publicRes.status).toBe(200);
+        const catalog = PublicCatalogListResponseSchema.parse(await publicRes.json());
+        expect(catalog.packages.find(p => p.canonicalId === pkgId)).toBeUndefined();
+
+        // Delta feed must emit a delist action tombstone for the withheld package
+        const deltaRes = await handlePublicCatalogRequest(publicGet("/v1/app/index/delta"), store, limiter);
+        expect(deltaRes.status).toBe(200);
+        const deltas = CatalogDeltaResponseSchema.parse(await deltaRes.json());
+        const deltaItem = deltas.deltas.find(d => d.canonicalId === pkgId);
+        expect(deltaItem).toBeDefined();
+        expect(deltaItem?.action).toBe("delist");
+        expect(deltaItem?.package).toBeUndefined();
+      } finally {
+        store.close();
+      }
+    });
+
+    test("publishes authorized package normally when profile sets publishClasses: [normalized_facts]", async () => {
+      const store = new LocalCoordinatorStore();
+      const limiter = new InMemoryRateLimiter();
+      try {
+        const nodeId = "pub-test-node-2";
+        const token = store.createNodeCredential(nodeId, ["vpm"]);
+        const principal = store.authenticate(nodeId, token)!;
+
+        // Profile with publishClasses: ["normalized_facts"]
+        store.createSourceAccessProfile({
+          schemaVersion: 1,
+          platform: "vpm",
+          origin: "https://authorized.example.com",
+          pathScope: "/index.json",
+          method: "GET",
+          purpose: "metadata",
+          minDelayMs: 1000,
+          expiresAt: "2099-01-01T00:00:00Z",
+          reviewReference: "REV-AUTHORIZED-01",
+          reason: "Approved metadata publication",
+          retainClasses: ["normalized_facts", "creator_prose"],
+          publishClasses: ["normalized_facts"]
+        }, "operator-admin");
+
+        store.recordRobotsSnapshot("https://authorized.example.com", 200, "User-agent: *\nAllow: /");
+        store.seedJob("https://authorized.example.com/index.json", "vpm", 1000, undefined, "metadata");
+
+        const claim = store.claim({ schemaVersion: PROTOCOL_VERSION, nodeId, capabilities: ["vpm"] }, principal);
+        expect(claim.status).toBe("leased");
+        if (claim.status !== "leased") return;
+
+        const pkgId = "com.authorized.public-tool";
+        const submitRes = store.submit({
+          schemaVersion: 1,
+          nodeId,
+          jobId: claim.job.jobId,
+          leaseId: claim.job.leaseId,
+          idempotencyKey: "submit-authorized-01",
+          outcome: {
+            kind: "changed",
+            observation: {
+              sourceItemKey: pkgId,
+              title: "Authorized Public Tool",
+              summary: "A public tool with normalized_facts publication rights",
+              author: "Community Dev",
+              outboundLinks: [],
+              originUpdatedAt: null
+            }
+          }
+        }, principal);
+        expect(submitRes.status).toBe("accepted");
+
+        // Public index MUST contain the package
+        const publicRes = await handlePublicCatalogRequest(publicGet("/v1/app/index"), store, limiter);
+        expect(publicRes.status).toBe(200);
+        const catalog = PublicCatalogListResponseSchema.parse(await publicRes.json());
+        const pkg = catalog.packages.find(p => p.canonicalId === pkgId);
+        expect(pkg).toBeDefined();
+        expect(pkg?.displayName).toBe("Authorized Public Tool");
+        expect(pkg?.acceptedLinks).toHaveLength(1);
+
+        // Delta feed must emit upsert with full package
+        const deltaRes = await handlePublicCatalogRequest(publicGet("/v1/app/index/delta"), store, limiter);
+        expect(deltaRes.status).toBe(200);
+        const deltas = CatalogDeltaResponseSchema.parse(await deltaRes.json());
+        const deltaItem = deltas.deltas.find(d => d.canonicalId === pkgId);
+        expect(deltaItem).toBeDefined();
+        expect(deltaItem?.action).toBe("upsert");
+        expect(deltaItem?.package?.displayName).toBe("Authorized Public Tool");
+      } finally {
+        store.close();
+      }
+    });
+
+    test("filters restricted fronts and links when package has mixed publication authority", async () => {
+      const store = new LocalCoordinatorStore();
+      const limiter = new InMemoryRateLimiter();
+      try {
+        const nodeId = "pub-test-node-3";
+        const token = store.createNodeCredential(nodeId, ["vpm", "booth"]);
+        const principal = store.authenticate(nodeId, token)!;
+
+        // VPM profile allows normalized_facts
+        store.createSourceAccessProfile({
+          schemaVersion: 1,
+          platform: "vpm",
+          origin: "https://vpm.mixed.example.com",
+          pathScope: "/index.json",
+          method: "GET",
+          purpose: "metadata",
+          minDelayMs: 1000,
+          expiresAt: "2099-01-01T00:00:00Z",
+          reviewReference: "REV-VPM-AUTHORIZED",
+          reason: "Approved VPM",
+          retainClasses: ["normalized_facts", "creator_prose"],
+          publishClasses: ["normalized_facts"]
+        }, "operator-admin");
+
+        // Booth profile has publishClasses: [] (restricted / internal only)
+        store.createSourceAccessProfile({
+          schemaVersion: 1,
+          platform: "booth",
+          origin: "https://booth.pm",
+          pathScope: "/ja/items/99999",
+          method: "GET",
+          purpose: "metadata",
+          minDelayMs: 1000,
+          expiresAt: "2099-01-01T00:00:00Z",
+          reviewReference: "REV-BOOTH-RESTRICTED",
+          reason: "Private booth probe without storefront publication",
+          retainClasses: ["normalized_facts", "creator_prose"],
+          publishClasses: []
+        }, "operator-admin");
+
+        store.recordRobotsSnapshot("https://vpm.mixed.example.com", 200, "User-agent: *\nAllow: /");
+        store.recordRobotsSnapshot("https://booth.pm", 200, "User-agent: *\nAllow: /");
+
+        // 1. Ingest VPM package
+        store.seedJob("https://vpm.mixed.example.com/index.json", "vpm", 1000, undefined, "metadata");
+        const claimVpm = store.claim({ schemaVersion: PROTOCOL_VERSION, nodeId, capabilities: ["vpm"] }, principal);
+        expect(claimVpm.status).toBe("leased");
+        if (claimVpm.status !== "leased") return;
+
+        const canonicalId = "com.mixed.pkg";
+        store.submit({
+          schemaVersion: 1,
+          nodeId,
+          jobId: claimVpm.job.jobId,
+          leaseId: claimVpm.job.leaseId,
+          idempotencyKey: "submit-mixed-vpm",
+          outcome: {
+            kind: "changed",
+            observation: {
+              sourceItemKey: canonicalId,
+              title: "Mixed Authority Package",
+              summary: "A package with mixed source profiles",
+              author: "Dev",
+              outboundLinks: ["https://booth.pm/ja/items/99999"],
+              originUpdatedAt: null
+            }
+          }
+        }, principal);
+
+        // 2. Ingest Booth item under restricted profile
+        store.seedJob("https://booth.pm/ja/items/99999", "booth", 1000, undefined, "metadata");
+        const claimBooth = store.claim({ schemaVersion: PROTOCOL_VERSION, nodeId, capabilities: ["booth"] }, principal);
+        expect(claimBooth.status).toBe("leased");
+        if (claimBooth.status !== "leased") return;
+
+        store.submit({
+          schemaVersion: 1,
+          nodeId,
+          jobId: claimBooth.job.jobId,
+          leaseId: claimBooth.job.leaseId,
+          idempotencyKey: "submit-mixed-booth",
+          outcome: {
+            kind: "changed",
+            observation: {
+              sourceItemKey: "booth:99999",
+              title: "Booth Storefront Listing",
+              author: "Dev",
+              summary: "Storefront description",
+              outboundLinks: [],
+              originUpdatedAt: null
+            }
+          }
+        }, principal);
+
+        // Accept identity link for the booth item to this canonical package
+        const boothSourceKey = "booth:https://booth.pm/ja/items/99999:booth:99999";
+        store.createIdentityLink({
+          sourceKey: boothSourceKey,
+          canonicalId,
+          evidenceKind: "cross_storefront_link",
+          confidence: 1.0,
+          reviewState: "accepted"
+        });
+
+        // 3. Query public catalog
+        const publicRes = await handlePublicCatalogRequest(publicGet("/v1/app/index"), store, limiter);
+        expect(publicRes.status).toBe(200);
+        const catalog = PublicCatalogListResponseSchema.parse(await publicRes.json());
+        const pkg = catalog.packages.find(p => p.canonicalId === canonicalId);
+        expect(pkg).toBeDefined();
+
+        // The accepted links should include VPM (authorized), but NOT Booth (restricted publishClasses: [])
+        expect(pkg?.acceptedLinks).toHaveLength(1);
+        expect(pkg?.acceptedLinks[0].sourceKey).toContain("vpm");
+
+        // The fronts should not expose the restricted Booth storefront
+        expect(pkg?.fronts.find(f => f.platform === "booth")).toBeUndefined();
+      } finally {
+        store.close();
+      }
+    });
   });
 });

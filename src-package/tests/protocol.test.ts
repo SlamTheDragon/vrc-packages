@@ -15,7 +15,10 @@ import {
 } from "../src/protocol/catalog.ts";
 import {
   CatalogSearchRequestSchema,
-  ReportSubmissionRequestSchema
+  ReportSubmissionRequestSchema,
+  CreatorDelegationAttestationSchema,
+  CreatorClaimIntakeRequestSchema,
+  CreatorClaimIntakeResponseSchema
 } from "../src/protocol/downstream.ts";
 import {
   LeadRowSchema,
@@ -41,11 +44,42 @@ import {
   encodeTakedownCursor,
   decodeTakedownCursor,
   VerifyTakedownRequestSchema,
-  VerifyTakedownResponseSchema
+  VerifyTakedownResponseSchema,
+  DelegatedClaimRecordSchema,
+  encodeDelegatedClaimCursor,
+  decodeDelegatedClaimCursor,
+  VerifyDelegatedClaimRequestSchema,
+  VerifyDelegatedClaimResponseSchema,
+  OperatorAppRecordSchema,
+  OperatorAppListResponseSchema,
+  OperatorAppListQuerySchema,
+  SetAppDelegationRequestSchema,
+  SetAppDelegationResponseSchema,
+  CandidateStatusSchema,
+  ReviewAppCandidateRequestSchema,
+  ReviewAppCandidateResponseSchema,
+  encodeOperatorAppCursor,
+  decodeOperatorAppCursor
 } from "../src/protocol/operator.ts";
+import {
+  MODERATOR_PROTOCOL_VERSION,
+  ModeratorRatingRecordSchema,
+  ModeratorRatingCursorSchema,
+  encodeModeratorRatingCursor,
+  decodeModeratorRatingCursor,
+  ModeratorRatingListQuerySchema,
+  ModeratorRatingListResponseSchema,
+  SetRatingAdjustmentRequestSchema,
+  SetRatingAdjustmentResponseSchema,
+  ModeratorAppRecordSchema,
+  ModeratorAppListQuerySchema,
+  ModeratorAppListResponseSchema,
+  ModeratorReviewAppCandidateRequestSchema,
+  ModeratorReviewAppCandidateResponseSchema
+} from "../src/protocol/moderator.ts";
 
 describe("src-package wire protocols", () => {
-  it("validates CatalogPackage schema", () => {
+  it("validates CatalogPackage schema and defaults contentRating to general", () => {
     const validPkg = {
       canonicalId: "pkg-123",
       umbrella: "tools" as const,
@@ -70,8 +104,14 @@ describe("src-package wire protocols", () => {
         }
       ]
     };
-    expect(CatalogPackageSchema.parse(validPkg)).toEqual(validPkg);
+    const parsed = CatalogPackageSchema.parse(validPkg);
+    expect(parsed.contentRating).toBe("general");
+    expect(parsed).toEqual({ ...validPkg, contentRating: "general" });
+
+    const ratedPkg = { ...validPkg, contentRating: "sexual_suggestive" as const };
+    expect(CatalogPackageSchema.parse(ratedPkg).contentRating).toBe("sexual_suggestive");
   });
+
 
   it("encodes and decodes catalog delta cursors", () => {
     const cursor = {
@@ -110,16 +150,19 @@ describe("src-package wire protocols", () => {
     }
   });
 
-  it("validates CatalogSearchRequest and enforces queryOrigin", () => {
+  it("validates CatalogSearchRequest and enforces queryOrigin with optional rating", () => {
     const req = {
       schemaVersion: 1,
       query: "avatar clothes",
       queryOrigin: "user_authored" as const,
+      rating: "mature" as const,
       limit: 20
     };
     const parsed = CatalogSearchRequestSchema.parse(req);
     expect(parsed.queryOrigin).toBe("user_authored");
+    expect(parsed.rating).toBe("mature");
   });
+
 
   it("validates ReportSubmissionRequest for both demand signals and issue reports", () => {
     const removal = { schemaVersion: 1, reportType: "removal_request", canonicalId: "pkg-123", reason: "Incorrect attribution" };
@@ -145,6 +188,31 @@ describe("src-package wire protocols", () => {
       canonicalId: "pkg-123"
     };
     expect(() => ReportSubmissionRequestSchema.parse(issue)).not.toThrow();
+
+    // Explicit content report sub-categories (R56-C56C)
+    const falsePositive = {
+      schemaVersion: 1,
+      reportType: "issue_report" as const,
+      reportKind: "explicit_false_positive" as const,
+      canonicalId: "pkg-safe-model",
+      reason: "Safe avatar asset flagged incorrectly as explicit"
+    };
+    expect(() => ReportSubmissionRequestSchema.parse(falsePositive)).not.toThrow();
+
+    const falseNegative = {
+      schemaVersion: 1,
+      reportType: "issue_report" as const,
+      reportKind: "explicit_false_negative" as const,
+      targetUrl: "https://booth.pm/ja/items/999999",
+      reason: "Unrated asset contains unflagged explicit adult content"
+    };
+    expect(() => ReportSubmissionRequestSchema.parse(falseNegative)).not.toThrow();
+
+    // Unknown report kinds are rejected
+    expect(ReportSubmissionRequestSchema.safeParse({
+      ...issue,
+      reportKind: "unauthorized_kind" as any
+    }).success).toBe(false);
   });
 
   it("encodes, decodes, and validates operator cursors", () => {
@@ -337,5 +405,231 @@ describe("src-package wire protocols", () => {
       status: "accepted",
       updatedAt: "2026-10-01T12:00:00.000Z"
     })).not.toThrow();
+
+    // Delegated Creator Claim Attestation (R54-C38C)
+    const validAttestation = {
+      appId: "123e4567-e89b-12d3-a456-426614174000",
+      action: "creator_ownership_claim" as const,
+      frontUrl: "https://creator.booth.pm",
+      creatorId: "booth_creator_123",
+      challengeToken: "vrcp_chal_0123456789abcdef",
+      expiresAt: Math.floor(Date.now() / 1000) + 3600,
+      nonce: "nonce_abcdef0123456789"
+    };
+    expect(() => CreatorDelegationAttestationSchema.parse(validAttestation)).not.toThrow();
+
+    const claimRequest = {
+      schemaVersion: 1,
+      attestation: validAttestation,
+      signature: "sig_abc123456789",
+      reason: "Creator requested storefront claim",
+      contactEmail: "creator@example.com"
+    };
+    expect(() => CreatorClaimIntakeRequestSchema.parse(claimRequest)).not.toThrow();
+
+    const claimResponse = {
+      schemaVersion: 1,
+      status: "accepted" as const,
+      claimId: "123e4567-e89b-12d3-a456-426614174001",
+      reviewStatus: "pending" as const,
+      recordedAt: new Date().toISOString()
+    };
+    expect(() => CreatorClaimIntakeResponseSchema.parse(claimResponse)).not.toThrow();
+
+    // Delegated Claim Record & Cursor
+    const claimRecord = {
+      claimId: "123e4567-e89b-12d3-a456-426614174001",
+      appId: "123e4567-e89b-12d3-a456-426614174000",
+      action: "creator_ownership_claim" as const,
+      frontUrl: "https://creator.booth.pm",
+      creatorId: "booth_creator_123",
+      challengeToken: "vrcp_chal_0123456789abcdef",
+      expiresAt: Math.floor(Date.now() / 1000) + 3600,
+      nonce: "nonce_abcdef0123456789",
+      signature: "sig_abc123456789",
+      reason: "Creator requested storefront claim",
+      contactEmail: "creator@example.com",
+      reviewStatus: "pending" as const,
+      reviewNotes: null,
+      recordedAt: "2026-10-01T12:00:00.000Z"
+    };
+    expect(() => DelegatedClaimRecordSchema.parse(claimRecord)).not.toThrow();
+
+    const claimCursor = {
+      recordedAt: "2026-10-01T12:00:00.000Z",
+      claimId: "123e4567-e89b-12d3-a456-426614174001"
+    };
+    const encClaimCursor = encodeDelegatedClaimCursor(claimCursor);
+    expect(decodeDelegatedClaimCursor(encClaimCursor)).toEqual(claimCursor);
+    expect(decodeDelegatedClaimCursor("invalid-cursor")).toBeNull();
+
+    // Verify Delegated Claim
+    expect(() => VerifyDelegatedClaimRequestSchema.parse({
+      schemaVersion: 1,
+      verdict: "accepted",
+      notes: "Attestation signature and storefront check verified"
+    })).not.toThrow();
+
+    expect(() => VerifyDelegatedClaimResponseSchema.parse({
+      schemaVersion: 1,
+      claimId: "123e4567-e89b-12d3-a456-426614174001",
+      status: "accepted",
+      updatedAt: "2026-10-01T12:00:00.000Z"
+    })).not.toThrow();
+
+    // Operator Apps & Delegation (R54-C38A)
+    const appRecord = {
+      appId: "123e4567-e89b-12d3-a456-426614174002",
+      appName: "Creator Companion App",
+      contactEmail: "contact@companion.test",
+      permissions: ["catalog:read", "catalog:search", "demand:feedback"],
+      delegationAllowed: false,
+      createdAt: "2026-10-01T12:00:00.000Z",
+      revokedAt: null
+    };
+    expect(() => OperatorAppRecordSchema.parse(appRecord)).not.toThrow();
+    expect(() => OperatorAppListResponseSchema.parse({
+      schemaVersion: 1,
+      apps: [appRecord],
+      nextCursor: null
+    })).not.toThrow();
+
+    const appCursor = {
+      createdAt: "2026-10-01T12:00:00.000Z",
+      appId: "123e4567-e89b-12d3-a456-426614174002"
+    };
+    const encAppCursor = encodeOperatorAppCursor(appCursor);
+    expect(decodeOperatorAppCursor(encAppCursor)).toEqual(appCursor);
+    expect(decodeOperatorAppCursor("invalid-cursor")).toBeNull();
+
+    expect(() => SetAppDelegationRequestSchema.parse({
+      schemaVersion: 1,
+      delegationAllowed: true,
+      reason: "Approved trusted app"
+    })).not.toThrow();
+
+    expect(() => SetAppDelegationResponseSchema.parse({
+      schemaVersion: 1,
+      appId: "123e4567-e89b-12d3-a456-426614174002",
+      delegationAllowed: true,
+      permissions: ["catalog:read", "catalog:search", "demand:feedback", "claims:delegate"],
+      updatedAt: "2026-10-01T12:00:00.000Z"
+    })).not.toThrow();
+
+    // Moderator Rating Protocol (R56-C56C1)
+    const ratingRecord = {
+      canonicalId: "pkg-12345",
+      displayName: "Sample Asset",
+      currentRating: "mature" as const,
+      umbrella: "assets" as const,
+      category: "props",
+      reportCount: 2,
+      updatedAt: "2026-10-01T12:00:00.000Z"
+    };
+    expect(() => ModeratorRatingRecordSchema.parse(ratingRecord)).not.toThrow();
+
+    const moderatorCursor = {
+      updatedAt: "2026-10-01T12:00:00.000Z",
+      canonicalId: "pkg-12345"
+    };
+    const encModCursor = encodeModeratorRatingCursor(moderatorCursor);
+    expect(decodeModeratorRatingCursor(encModCursor)).toEqual(moderatorCursor);
+    expect(decodeModeratorRatingCursor("invalid-mod-cursor")).toBeNull();
+
+    expect(() => ModeratorRatingListQuerySchema.parse({
+      rating: "mature",
+      limit: 20,
+      cursor: encModCursor
+    })).not.toThrow();
+
+    expect(() => ModeratorRatingListResponseSchema.parse({
+      schemaVersion: 1,
+      ratings: [ratingRecord],
+      nextCursor: encModCursor
+    })).not.toThrow();
+
+    expect(() => SetRatingAdjustmentRequestSchema.parse({
+      schemaVersion: 1,
+      newRating: "adult_restricted",
+      reason: "Verified adult content elements"
+    })).not.toThrow();
+
+    expect(() => SetRatingAdjustmentResponseSchema.parse({
+      schemaVersion: 1,
+      canonicalId: "pkg-12345",
+      previousRating: "mature",
+      newRating: "adult_restricted",
+      adjustedBy: "mod-user-1",
+      updatedAt: "2026-10-01T12:00:00.000Z"
+    })).not.toThrow();
+
+    // Registered App Candidate Classification & Review (R54-C38A2)
+    expect(CandidateStatusSchema.parse("review_pending")).toBe("review_pending");
+    expect(CandidateStatusSchema.parse("trusted")).toBe("trusted");
+    expect(() => CandidateStatusSchema.parse("invalid_status")).toThrow();
+
+    const appWithCandidate = {
+      appId: "123e4567-e89b-12d3-a456-426614174003",
+      appName: "High Traffic Service",
+      permissions: ["catalog:read", "catalog:search"],
+      delegationAllowed: false,
+      requestCount: 150,
+      lastActiveAt: "2026-10-01T15:00:00.000Z",
+      candidateStatus: "review_pending" as const,
+      candidateFlags: ["intensive_usage", "high_frequency_api"],
+      createdAt: "2026-10-01T10:00:00.000Z",
+      revokedAt: null
+    };
+    const parsedApp = OperatorAppRecordSchema.parse(appWithCandidate);
+    expect(parsedApp.requestCount).toBe(150);
+    expect(parsedApp.candidateStatus).toBe("review_pending");
+    expect(parsedApp.candidateFlags).toContain("intensive_usage");
+
+    // Backward-compatible defaults
+    const legacyApp = {
+      appId: "123e4567-e89b-12d3-a456-426614174004",
+      appName: "Legacy App",
+      permissions: ["catalog:read"],
+      delegationAllowed: false,
+      createdAt: "2026-10-01T10:00:00.000Z",
+      revokedAt: null
+    };
+    const parsedLegacy = OperatorAppRecordSchema.parse(legacyApp);
+    expect(parsedLegacy.requestCount).toBe(0);
+    expect(parsedLegacy.candidateStatus).toBe("none");
+    expect(parsedLegacy.candidateFlags).toEqual([]);
+
+    expect(() => OperatorAppListQuerySchema.parse({
+      candidateStatus: "review_pending",
+      limit: 10
+    })).not.toThrow();
+
+    expect(() => ModeratorAppListQuerySchema.parse({
+      candidateStatus: "trusted",
+      limit: 50
+    })).not.toThrow();
+
+    const operatorReviewReq = {
+      schemaVersion: 1,
+      candidateStatus: "trusted" as const,
+      grantDelegation: true,
+      notes: "App has passed high-volume review and verified creator checks"
+    };
+    expect(() => ReviewAppCandidateRequestSchema.parse(operatorReviewReq)).not.toThrow();
+
+    const operatorReviewResp = {
+      schemaVersion: 1,
+      appId: "123e4567-e89b-12d3-a456-426614174003",
+      candidateStatus: "trusted" as const,
+      candidateFlags: ["intensive_usage"],
+      delegationAllowed: true,
+      permissions: ["catalog:read", "catalog:search", "claims:delegate"],
+      reviewedAt: "2026-10-01T16:00:00.000Z"
+    };
+    expect(() => ReviewAppCandidateResponseSchema.parse(operatorReviewResp)).not.toThrow();
+
+    expect(() => ModeratorReviewAppCandidateRequestSchema.parse(operatorReviewReq)).not.toThrow();
+    expect(() => ModeratorReviewAppCandidateResponseSchema.parse(operatorReviewResp)).not.toThrow();
   });
 });
+

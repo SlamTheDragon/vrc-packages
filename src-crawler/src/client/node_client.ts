@@ -1,8 +1,9 @@
 import {
   ClaimRequestSchema, ClaimResponseSchema, HeartbeatRequestSchema, HeartbeatResponseSchema,
-  ResultRequestSchema, ResultResponseSchema, PROTOCOL_VERSION,
+  ResultRequestSchema, ResultResponseSchema, BatchResultRequestSchema, BatchResultResponseSchema,
+  PROTOCOL_VERSION, MAX_COORDINATOR_RESPONSE_BYTES,
   type Platform, type ClaimResponse, type HeartbeatRequest, type HeartbeatResponse,
-  type ResultRequest, type ResultResponse
+  type ResultRequest, type ResultResponse, type BatchResultItem, type BatchResultResponse
 } from "vrc-packages-network/node";
 
 import { logger } from "../utils/logging/logger.ts";
@@ -41,6 +42,11 @@ export interface CoordinatorClientOptions {
 export class CoordinatorClient {
   private readonly maxRetries: number;
   private readonly retryBaseDelayMs: number;
+  private clockOffsetMs: number = 0;
+
+  public getClockOffset(): number {
+    return this.clockOffsetMs;
+  }
 
   constructor(
     private readonly baseUrl: string,
@@ -84,7 +90,55 @@ export class CoordinatorClient {
         });
 
         if (response.ok) {
-          return await response.json();
+          const dateHeader = response.headers.get("date");
+          if (dateHeader) {
+            const serverMs = new Date(dateHeader).getTime();
+            if (Number.isFinite(serverMs)) {
+              this.clockOffsetMs = serverMs - Date.now();
+            }
+          }
+          const contentLengthHeader = response.headers.get("content-length");
+          if (contentLengthHeader !== null) {
+            const parsedLength = parseInt(contentLengthHeader, 10);
+            if (Number.isFinite(parsedLength) && parsedLength > MAX_COORDINATOR_RESPONSE_BYTES) {
+              await response.body?.cancel().catch(() => {});
+              throw new Error(`Coordinator response exceeds maximum byte limit of ${MAX_COORDINATOR_RESPONSE_BYTES} bytes`);
+            }
+          }
+
+          if (response.body && typeof response.body.getReader === "function") {
+            const reader = response.body.getReader();
+            const chunks: Uint8Array[] = [];
+            let totalBytes = 0;
+            try {
+              while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                totalBytes += value.byteLength;
+                if (totalBytes > MAX_COORDINATOR_RESPONSE_BYTES) {
+                  await reader.cancel();
+                  throw new Error(`Coordinator response exceeds maximum byte limit of ${MAX_COORDINATOR_RESPONSE_BYTES} bytes`);
+                }
+                chunks.push(value);
+              }
+            } finally {
+              reader.releaseLock();
+            }
+            const merged = new Uint8Array(totalBytes);
+            let offset = 0;
+            for (const chunk of chunks) {
+              merged.set(chunk, offset);
+              offset += chunk.byteLength;
+            }
+            const text = new TextDecoder().decode(merged);
+            return JSON.parse(text);
+          }
+
+          const text = await response.text();
+          if (new TextEncoder().encode(text).byteLength > MAX_COORDINATOR_RESPONSE_BYTES) {
+            throw new Error(`Coordinator response exceeds maximum byte limit of ${MAX_COORDINATOR_RESPONSE_BYTES} bytes`);
+          }
+          return JSON.parse(text);
         }
 
         await response.body?.cancel().catch(() => {});
@@ -120,17 +174,26 @@ export class CoordinatorClient {
     }
   }
 
-  async claim(): Promise<ClaimResponse> {
-    return ClaimResponseSchema.parse(await this.post("/v1/node/jobs/claim", {
-      schemaVersion: PROTOCOL_VERSION, nodeId: this.nodeId, capabilities: this.capabilities
-    }));
+  async claim(maxJobs?: number): Promise<ClaimResponse> {
+    const payload = ClaimRequestSchema.parse({
+      schemaVersion: PROTOCOL_VERSION,
+      nodeId: this.nodeId,
+      capabilities: this.capabilities,
+      ...(maxJobs !== undefined ? { maxJobs } : {})
+    });
+    return ClaimResponseSchema.parse(await this.post("/v1/node/jobs/claim", payload));
   }
 
   async heartbeat(state: HeartbeatRequest["state"], activeJobId?: string, activeLeaseId?: string): Promise<HeartbeatResponse> {
     const payload = HeartbeatRequestSchema.parse({ schemaVersion: PROTOCOL_VERSION,
       nodeId: this.nodeId, capabilities: this.capabilities, state,
       ...(activeJobId ? { activeJobId } : {}), ...(activeLeaseId ? { activeLeaseId } : {}) });
-    return HeartbeatResponseSchema.parse(await this.post("/v1/node/heartbeat", payload, 5_000));
+    const response = HeartbeatResponseSchema.parse(await this.post("/v1/node/heartbeat", payload, 5_000));
+    const serverMs = new Date(response.serverTime).getTime();
+    if (Number.isFinite(serverMs)) {
+      this.clockOffsetMs = serverMs - Date.now();
+    }
+    return response;
   }
 
   async submit(request: Omit<ResultRequest, "schemaVersion" | "nodeId">): Promise<ResultResponse> {
@@ -138,6 +201,34 @@ export class CoordinatorClient {
     const response = ResultResponseSchema.parse(await this.post("/v1/node/jobs/result", payload));
     if (response.jobId !== payload.jobId) throw new Error("Result receipt does not match submitted job");
     return response;
+  }
+
+  async submitBatch(results: Array<Omit<BatchResultItem, "schemaVersion" | "nodeId">>): Promise<BatchResultResponse> {
+    const payload = BatchResultRequestSchema.parse({
+      schemaVersion: PROTOCOL_VERSION,
+      nodeId: this.nodeId,
+      results
+    });
+    return BatchResultResponseSchema.parse(await this.post("/v1/node/jobs/results", payload));
+  }
+
+  async claimRobotsRefresh(): Promise<{ status: "leased"; origin: string; leaseId: string } | { status: "empty"; retryAfterMs: number }> {
+    const payload = { schemaVersion: PROTOCOL_VERSION, nodeId: this.nodeId };
+    return await this.post("/v1/node/robots/claim", payload) as
+      | { status: "leased"; origin: string; leaseId: string }
+      | { status: "empty"; retryAfterMs: number };
+  }
+
+  async submitRobotsResult(origin: string, leaseId: string, statusCode: number, body = ""): Promise<{ status: "accepted"; origin: string }> {
+    const payload = {
+      schemaVersion: PROTOCOL_VERSION,
+      nodeId: this.nodeId,
+      origin,
+      leaseId,
+      statusCode,
+      body
+    };
+    return await this.post("/v1/node/robots/result", payload) as { status: "accepted"; origin: string };
   }
 }
 

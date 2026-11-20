@@ -5,10 +5,21 @@ import { createOperatorHandler } from "./api/operator_handler.ts";
 import { createPublicCatalogHandler } from "./api/public_handler.ts";
 import { createDownstreamHandler } from "./api/downstream_handler.ts";
 import { createUserHandler } from "./api/user_handler.ts";
+import { createModeratorHandler } from "./api/moderator_handler.ts";
 import { timingSafeEqual } from "./storage/d1/utils.ts";
 import { workerLogger } from "./worker_logger.ts";
+import {
+  extractClientIp,
+  RATE_LIMIT_POLICIES,
+  rateLimitResponse,
+  createRateLimiter,
+  type IKVNamespace,
+  type CloudflareRateLimiterBinding
+} from "./api/rate_limiter.ts";
 
-export type Env = Cloudflare.Env;
+export type Env = Omit<Cloudflare.Env, "RATE_LIMIT_KV"> & {
+  RATE_LIMIT_KV?: Cloudflare.Env["RATE_LIMIT_KV"];
+};
 
 function isOperatorAuthorized(request: Request, configuredToken: string): boolean {
   if (!configuredToken || !/^[a-fA-F0-9]{64}$/.test(configuredToken)) return false;
@@ -21,9 +32,19 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     try {
       const store = new Coordinator(env.VRCP_D1);
+      const rateLimiter = createRateLimiter(env as unknown as {
+        RATE_LIMIT_KV?: IKVNamespace;
+        VRCP_KV?: IKVNamespace;
+        RATE_LIMITER?: CloudflareRateLimiterBinding;
+      });
       const url = new URL(request.url);
 
       if (request.method === "POST" && url.pathname === "/v1/operator/init") {
+        const clientIp = extractClientIp(request);
+        const initRate = await rateLimiter.check(`operator:init:${clientIp}`, RATE_LIMIT_POLICIES.OPERATOR_ROUTES);
+        if (!initRate.allowed) {
+          return rateLimitResponse(initRate, 1, "Rate limit exceeded for operator init.");
+        }
         if (!isOperatorAuthorized(request, env.OPERATOR_TOKEN)) {
           return new Response(JSON.stringify({ error: "Unauthorized" }), {
             status: 401,
@@ -55,25 +76,28 @@ export default {
         });
       }
 
-      const publicHandler = createPublicCatalogHandler(store);
-      const downstreamHandler = createDownstreamHandler(store, env.OPERATOR_TOKEN);
-      const userHandler = createUserHandler(store);
-      const nodeHandler = createCoordinatorHandler(store);
-      const operatorHandler = createOperatorHandler(store, env.OPERATOR_TOKEN);
+      const publicHandler = createPublicCatalogHandler(store, rateLimiter);
+      const downstreamHandler = createDownstreamHandler(store, env.OPERATOR_TOKEN, rateLimiter);
+      const userHandler = createUserHandler(store, rateLimiter);
+      const moderatorHandler = createModeratorHandler(store, rateLimiter);
+      const nodeHandler = createCoordinatorHandler(store, rateLimiter);
+      const operatorHandler = createOperatorHandler(store, env.OPERATOR_TOKEN, rateLimiter);
       const handled = (await publicHandler(request)) ??
         (await downstreamHandler(request)) ??
         (await userHandler(request)) ??
+        (await moderatorHandler(request)) ??
         (await nodeHandler(request)) ??
         (await operatorHandler(request));
       if (handled) return handled;
 
-      workerLogger.warn("Route not found in worker fetch", { url: request.url, method: request.method });
+      workerLogger.warn("Route not found in worker fetch", { path: url.pathname, method: request.method });
       return new Response(JSON.stringify({ error: "Not Found" }), {
         status: 404,
         headers: { "Content-Type": "application/json" }
       });
     } catch (error) {
-      workerLogger.error("Unhandled exception in worker fetch", error, { url: request.url });
+      const path = new URL(request.url).pathname;
+      workerLogger.error("Unhandled exception in worker fetch", error, { path });
       return new Response(JSON.stringify({ error: "Internal Server Error" }), {
         status: 500,
         headers: { "Content-Type": "application/json" }

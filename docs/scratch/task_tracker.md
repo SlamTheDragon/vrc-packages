@@ -1,75 +1,128 @@
-# Active checkpoint — Consolidated Delivery Lifecycle & Architecture (Milestone M-R64)
+# STAGE-21-PREDECESSOR-PROOF-AND-ASSETS checkpoint (2026-10-18, local commit)
+- Status: in_progress
+- Objective: Enforce remote GitHub assets verification in all environments including local development (R58-CONFIG-TAMPER), and implement predecessor artifact existence and publication path verification without full binary streaming (DELIVERY-PROOF-SEMANTICS).
+- Scope: In `scripts/delivery-chain.mjs`, check predecessor publication and remote asset presence during `planDelivery` (blockers) and `finalizeRelease` (even when `execute: false`); implement predecessor asset existence and publication path checking (`requirePublicationProof` / `inspectPredecessorAssets`); ensure `trackDeliveryPipeline` notifies completion only on `artifactsVerified === true`; in `scripts/delivery.mjs` `verify`, ensure test failures are not swallowed in preview.
+- Verification: Scoped delivery and delivery-chain tests in `tests/delivery-chain.test.ts` and `tests/delivery.test.ts`.
 
-## Active Objective & Bounded Vertical Slice
+# STAGE-20-DELIVERY-SCRIPT-HARDENING checkpoint (2026-10-18, local commit 6f531a8)
+- Status: verified
+- Objective: Implement targeted delivery script hardening: add atomic rollback on delivery preparation crash (R60-C60C) and read-only failure diagnosis with publication preconditions on tag deletion (DELIVERY-RECOVERY-GUARDS).
+- Implemented: Added `rollbackPreparation` in `scripts/delivery-chain.mjs` resetting staged files, restoring tracked files, cleaning untracked artifacts (`git clean -fd`), and cleaning temporary release branches upon crash before git commit; guarded `deliveryTroubleshooting` and CLI `diagnose` output against suggesting tag reversion after publication; added partial publication detection in `scripts/delivery-recovery.mjs` `diagnoseFailure` returning strictly read-only reconciliation actions; enforced verified absence of published release assets in `revertDeliveryTag` before tag deletion and blocked local deletion when remote tag exists without explicit `deleteRemote: true`.
+- Verification: 27/27 tests pass in `tests/delivery-recovery.test.ts` (212 assertions); 56/56 tests pass in `tests/delivery-chain.test.ts` (491 assertions); 50/50 delivery workflow tests pass in `tests/delivery.test.ts` (1081 assertions).
 
-- Active Goal: Task ledger compaction, rule/guideline conformance, and establishing the root-level test execution policy.
-- Owner Instruction (2026-10-08): Never run root level tests (`bun test ./tests`) unless root level tooling (`scripts/`, `tests/`, `package.json`, root configs) is modified. Product-scoped work runs only its own domain test/typecheck suite.
-- Milestone Status: Milestone `M-R64` (Unified Delivery Pipeline, Guided Interactive CLI, Onboarding, Recovery, Policy Hardening, and Rolling Help Pager) is fully implemented, verified, and merged into the canonical ledger.
-- Next Capability Horizon: Milestone `M-R64` is complete. Next tasks in the unmerged queue relate to `G15` (SDK contract & route review) or `G16` (fleet budget & crawler architecture).
+# STAGE-19-PREVIEW-D1-INIT-AUTOMATION checkpoint (2026-10-18, local commit)
+- Status: verified
+- Objective: Implement automated preview D1 schema verification and non-production seed population script (`R58-PREVIEW-INIT` / `Q-WORKER-PREVIEW`).
+- Implemented: Added `isAutomatedPreviewDelivery` in `scripts/worker-preview-init.mjs` authorizing `cloudflare-worker.yml` on preview tags; added `--seed` / `--auto-seed` supporting `autoSeed: true` with 64 KiB limits and operator token validation; added steps in `.github/workflows/cloudflare-worker.yml` to prepare dependencies and initialize preview D1 schema with seeds; verified R13-C2 invariant that `autoSeed` creates candidate jobs only with 0 profiles.
+- Verification: 9/9 unit tests pass in `tests/worker-preview-init.test.ts` (58 assertions); 50/50 workflow delivery tests pass in `tests/delivery.test.ts` (1081 assertions); 321/321 worker tests pass (3675 assertions); 100% native workerd runtime smoke check passes (24/24 steps); 189/189 crawler tests pass (1700 assertions); all typechecks clean.
 
-## Milestone M-R64 Verification Evidence & Delivered Baselines
+# STAGE-18-TRUSTED-APP-TAKEDOWN-INTAKE checkpoint (2026-10-18, local commit 5c97ad2)
+- Status: verified
+- Objective: Route trusted application creator takedown submissions directly into `catalog_tickets` as `'removal_report'` tickets with `'app'` requester type, gated by trusted registered app status (`R54-C38A / R54-C38R / R54-C38B` / `G15`). Reject untrusted applications with 403 Forbidden.
+- Implemented: `DownstreamAppPrincipal` with `candidateStatus` and `isTrusted` in `downstream_handler.ts`; gated `removal_request` on trusted app status; populated `catalog_tickets` with `requester_type = 'app'` and `reason` in `coordinator.ts` and `local_sqlite.ts`; added `"takedowns:submit"` in `reviewAppCandidate`; verified in `downstream_client_protocol.test.ts`.
+- Verification: 321/321 worker tests pass, 100% native workerd runtime smoke passes, 189/189 crawler tests pass, clean typechecks.
 
-- `R71-HELP-ROLLING-PAGER`: Implemented, verified & committed locally (`cca70bb`). Implemented interactive terminal pager `pageLines` in `scripts/help.mjs` with rolling Enter key (Enter rolls 1 line, Space advances page, q quits, Down arrow rolls 1 line, Ctrl+C exits cleanly), terminal row auto-detection, `--pager`/`--no-pager` CLI flags, non-TTY fallback, and unit tests in `tests/help.test.ts`.
-- `R70-CLEANUP-CI-TEST-POLICY`: Implemented, verified & committed locally (`4154ac9`). Cleaned up `VRCP_SKIP_TESTS` from 4 workflows, resolved language server warning, enforced native `continue-on-error: ${{ channel == 'preview' }}` policy.
-- `R64-INTERACTIVE-DELIVERY-ENTRY`: Implemented, verified & committed locally (`ff9fef4`). Added interactive terminal prompts in `scripts/delivery-chain.mjs` for product/channel/bump selection, PAT admin/owner authority verification, dirty worktree check, changelog preparedness self-check, and unit tests (43/43 pass).
-- `R65-FAILURE-RECOVERY-WORKFLOW`: Implemented, verified & committed locally (`623f9bf`). Added categorized failure diagnosis (`diagnoseFailure`), workflow rerun (`rerunWorkflowRun`), delivery tag rollback (`revertDeliveryTag`), automated temporary patch branch lifecycle (`createPatchBranch`, `mergeAndCleanupPatchBranch` for `release/patch/<product>/v<version>`), and interactive terminal recovery menu (`promptInteractiveRecovery`). 21/21 tests passing.
-- `R66-INTERACTIVE-SETUP-ONBOARDING`: Implemented, verified & committed locally (`8d685b0`). Added interactive onboarding wizard (`interactiveSetup`) in `scripts/setup.mjs` verifying GitHub PAT against `/user` endpoint, prompting for missing optional developer tokens, managing `.env`, selecting project targets, and orchestrating full-repo dependency installation. 8/8 tests passing.
-- `R67-LOCAL-BUILD-ORCHESTRATION`: Implemented, verified & committed locally (`b952f67`). Implemented unified root build orchestrator (`scripts/build.mjs`, `bun run build <product> [channel]`) dispatching directly to subproject build scripts across all 7 targets in dependency order. 4/4 tests passing.
-- `R68-INDEPENDENT-SYNC-CHECK`: Implemented, verified & committed locally (`73ed922`). Implemented standalone sync check diagnostic (`checkSync`, `bun run sync:check`) evaluating branch ahead/behind status against origin, comparing local version configs with remote, and reporting drift cleanly. 4/4 tests passing.
-- `R69-INTERNAL-DEPENDENCY-SYNC`: Implemented, verified & committed locally (`73ed922`). Implemented internal dependency synchronizer (`syncInternalDependencies`, `bun run sync:deps`) updating `vrc-packages-network` across sibling consumers (`src-crawler`, `src-worker`) to match authoritative preview network version manifests. 4/4 tests passing.
-- `PACKAGE-SCRIPTS-REWRITE`: Implemented, verified & committed locally (`331e51c`). Completely rewrote root `package.json` scripts section to remove obsolete dev triggers and standardize on `publish:*`, `setup:*`, `build`, `sync`, and `recovery`.
-- `REMEDIATION-GUIDANCE-AND-ISOLATION-HARDENING`: Implemented, verified & committed locally (`311f860`). Differentiated transient retry (frozen tag) vs code patch fix (tag revert + ahead branch tag), fixed diagnose exit code, hardened dynamic imports.
-- `WORKFLOW-FIXME-ASSESSMENT-AND-FIX`: Implemented, verified & committed locally (`12880e4`). Addressed `repository-tests.yml` checkout fetch depth (`fetch-depth: 0`) and recursive submodules (`submodules: recursive`).
-- `PUBLISHING-DISCIPLINE-AND-DOCS-UNIVERSALIZATION`: Implemented, verified & committed locally (`4097561`). Converted operational documentation to canonical publishing terminology, universalized `docs/source/PUBLISHING.md` and agent rules under ASD-STE100 guidelines.
-- `M-R64 Verification Pass`: Full monorepo governance test suite verified (219/219 passing across 18 files, 1,417 assertions in targeted suites).
+# STAGE-17-DYNAMIC-HEARTBEAT-AND-LEASE-CALIBRATION checkpoint (2026-10-18, local commit)
+- Status: verified
+- Objective: Standardize coordinator crawl lease durations to fixed 120s and implement dynamic crawler heartbeat scaling (5s to 30s) based on origin fetch duration, adhering to Cloudflare free subrequest quotas (`R54-C39A / R54-C39B`).
+- Implemented: `CRAWL_JOB_LEASE_MS = 120 * 1000` in `coordinator.ts` and `local_sqlite.ts`; `originDurations` tracking map and `computeDynamicHeartbeatInterval` (5s-30s) in `daemon.ts`; dynamic pulse timer rescheduling in `lease_runner.ts`; verified in `node_daemon.test.ts`, `node_lease_runner.test.ts`, and `d1_coordinator_store.test.ts`.
+- Verification: 189/189 crawler tests pass, 320/320 worker tests pass, 100% native workerd runtime smoke passes, clean typechecks.
 
-## Active Working Theories & Architectural Covenants
+# STAGE-16-DISTRIBUTED-KV-RATE-LIMITING checkpoint (2026-10-18, local commit 393571b)
+- Status: verified
+- Objective: Implement distributed Cloudflare KV and native Rate Limiting bindings for coordinator rate limiting per author requirement (`R54-C39C-RATE-LIMIT`: "Require distributed Cloudflare KV or Rate Limiting bindings before considering rate limiting verified").
+- Implemented: Expanded `IRateLimiter` to support async checks; implemented `KvRateLimiter` with bucket keying (`rl:${key}:${bucket}`) and expirationTtl; implemented `CloudflareBindingRateLimiter`; implemented `createRateLimiter(env)` factory; wired KV binding into `wrangler.toml` and awaited checks in all route handlers.
+- Verification: 320/320 worker unit tests passed across 23 files; 3/3 Cloudflare Vitest tests passed; 100% native workerd runtime smoke check passed; clean typechecks.
 
-1. **Root-Level Test Execution Policy (Owner Instruction 2026-10-08)**:
-   - Never run root level tests (`bun test ./tests`) unless root level tooling (`scripts/`, `tests/`, `package.json`, root configs) is modified.
-   - Product-scoped work runs only its own domain test/typecheck suite (`src-<product>`).
-2. **Unified Delivery Entry Point (R64)**:
-   - Interactive terminal prompts (`scripts/delivery-chain.mjs`) answering product and channel selection.
-   - Authority verification: check executor owner/admin authority via GitHub PAT (`GET /user`).
-   - Clean tree checkpoints: prompt to commit dirty worktree before proceeding.
-   - Changelog preparedness self-check: verify summary, new features, bug fixes, and changes before bump.
-   - Version parity: evaluate local vs remote version configs; prompt for bump type (patch, minor, major for release; CalVer patch for preview).
-   - Atomic commit, tag, and push with CI progress streaming.
-3. **Failure Points & Guided Recovery (R65)**:
-   - Differentiate frozen tag rerun (`recovery rerun <runId>`) for transient failures from code fixes (`recovery revert-tag <tag> --remote` or patch branch).
-   - Automated temporary patch branch lifecycle: `release/patch/<product>/v<version>`, auto-merge back to work branch, auto-delete patch branch.
-4. **Developer Onboarding & Repository Setup (R66)**:
-   - Interactive onboarding wizard (`scripts/setup.mjs`) inspecting `.env`, prompting for missing tokens, verifying PAT against GitHub API, selecting project targets.
-   - Non-destructive dependency installation (`--no-save --ignore-scripts`) and automatic submodule initialization.
-5. **Local Build Orchestration (R67)**:
-   - Unified root runner (`scripts/build.mjs`, `bun run build <product> [channel]`) dispatching to subproject build definitions in dependency order (`buildOrder`).
-6. **Independent Sync & Dependency Parity (R68 / R69)**:
-   - Standalone sync check (`bun run sync:check`) evaluating branch ahead/behind status and version config drift.
-   - Internal dependency synchronizer (`bun run sync:deps`) keeping `vrc-packages-network` references aligned across `src-crawler` and `src-worker`.
-7. **Native CI Test Policy (R70)**:
-   - Eliminate redundant `VRCP_SKIP_TESTS` variables. Enforce native GitHub Actions `continue-on-error: ${{ channel == 'preview' }}` (release fails closed; preview non-blocking).
-8. **Interactive Rolling Terminal Pager (R71)**:
-   - `pageLines` in `scripts/help.mjs`: rolling Enter key (1 line), Space (1 page), q (quit), Down arrow (1 line), Ctrl+C (clean exit), non-TTY continuous output fallback.
-9. **Branch Layout & Publishing Discipline**:
-   - Production `main`, preview feature branches (`preview/*`), temporary patch branches (`release/patch/*`), candidate PRs (`release/candidate/*`).
-   - Slices mean local commit, completed gates mean push.
-   - Any branch ahead of origin can publish previews without a PR.
 
-## Retained Checked Baselines
+# STAGE-15-AUTHOR-ROULETTE-AND-LEDGER-COMPACTION checkpoint (2026-10-18, local commit)
+- Status: verified
+- Objective: Reconcile unmerged implementation plan rows by conducting question roulette to gather author comments for pending unmerged rows (`R50-C31-RECOVERY`, `R60-C60C`, `R54-C39C-RATE-LIMIT`, `R58-CONFIG-TAMPER`), and compact scratch ledgers.
+- Implemented: Question roulette collected 4 author decisions. Recorded author comment cells in `UNMERGED_IMPLEMENTATION_PLAN.md` and appended author comment dispositions to `IMPLEMENTATION_PLAN.md`.
+- Verification: Clean double-entry ledgers aligned with author instructions.
 
-Nine delivered paths retain independent artifact, registry, and link proof:
 
-| Product | Preview / single stream: version and run | Release: version and run |
-| :--- | :--- | :--- |
-| SDK | 2026.10.9-pre / 37719073408 | 0.0.8 / 00474f5; npm latest 0.0.7 |
-| Crawler | 2026.10.8-pre / 37619601351 | 0.0.13 / 328198f |
-| Desktop | 26.10.7-pre / 37620460845 | 0.0.7 / c95945e |
-| Worker | 2026.10.9-pre / 37621951240 | 0.0.7 / 37624730435, build only |
-| Network | 2026.10.6 / 37619026716 | No release stream |
+# STAGE-14-HIGH-CONFIDENCE-STOREFRONT-AUTO-LINK checkpoint (2026-10-18, local commit)
+- Status: verified
+- Objective: Revise `R13-C9-IDENTITY` per author direction to allow high-confidence storefront leads to auto-link with accepted review state without operator review, while keeping unverified heuristic outbound links as provisional.
+- Implemented: Updated `Coordinator.submit` and `LocalCoordinatorStore` to track `highConfidenceCanonicalIds` from approved leads (`sl.status === 'approved'`), inserting `identity_links` with `review_state = 'accepted'`, `confidence = 0.95`, and `reviewed_at = now`. Added unit tests in `src-worker/test/identity_links.test.ts` verifying approved storefront leads auto-link and project package fronts while heuristic links remain provisional. Updated `docs/source/CHANGELOG.md`.
+- Verification: 312 worker tests pass (3626 assertions) across 23 files; 3 Vitest tests pass; 100% native workerd runtime smoke passes; 187 crawler tests pass (1686 assertions) across 28 files; clean typechecks across worker and crawler.
 
-## Open Risks & Next Actions
 
-1. **SDK v0.1.0 Hold**: Release v0.1.0 remains held for full owner API review (`docs/source/API_ROUTES.md`). Pre-0.1 releases are authorized with package verification.
-2. **Website Delivery**: Astro website delivery remains disabled.
-3. **Worker Production Deployment**: Worker release delivery remains build-only (no unverified production deployment).
-4. **Next Steps**: Await author direction on next milestone capability gate (e.g. G15 SDK contracts or G16 fleet ingestion lifecycle).
+# STAGE-13-AUTHOR-LEDGER-RECONCILIATION checkpoint (2026-10-18, local commit)
+- Status: verified
+- Objective: Reconcile unmerged implementation plan rows by conducting question roulette to gather author comments for verified R13-C9 slices (`R13-C9-LEASE-DEADLINE`, `R13-C9-IDENTITY`, `R13-C9-TEST-TYPES`, `R13-C9-DELTA`), and prepare ledger compaction.
+- Implemented: Question roulette collected author decisions. Pruned accepted rows `R13-C9-LEASE-DEADLINE`, `R13-C9-TEST-TYPES`, and `R13-C9-DELTA` from `UNMERGED_IMPLEMENTATION_PLAN.md` and merged into `IMPLEMENTATION_PLAN.md`. Recorded author revision disposition for `R13-C9-IDENTITY` (`Revise: Allow high-confidence storefront leads to auto-link without operator review`). Added 2026-10-18 dispositions section.
+- Verification: 310 worker tests pass (3611 assertions); 3 Vitest tests pass; 100% native runtime smoke passes; 187 crawler tests pass (1686 assertions); clean typechecks across worker and crawler.
+
+# STAGE-12-MULTI-PLATFORM-FLEET-INGESTION checkpoint (2026-10-18, local commit)
+- Status: verified
+- Objective: Implement multi-platform end-to-end fleet crawl simulation (`FLEET-S4`) in `src-crawler/tests/fleet_crawl_simulation.test.ts`, exercising concurrent coordinator leases, multi-driver fetching (VPM community listing, GitHub release, Booth/Ko-fi storefront product leads), schema-valid receipt ingestion, outbox replay, and backoff handling without cross-project imports.
+- Implemented: `src-crawler/tests/fleet_crawl_simulation.test.ts` with 5 operational tests covering multi-node lease isolation, multi-driver ingestion (VPM, GitHub, Booth, Ko-fi), outbox edge retry under 522 Origin Timeout, crash-restart recovery with SQLite outbox draining, and delegated robots preflight ingestion.
+- Verification: 5/5 fleet simulation tests pass (50 assertions); 187/187 crawler tests pass (1686 assertions); 310/310 worker tests pass (3611 assertions); 3 Vitest tests pass; 100% native workerd runtime smoke passes; clean typechecks across crawler and worker.
+
+# STAGE-11-INITIAL-SEEDS-AND-STOREFRONT-DISCOVERY checkpoint (2026-10-18, local commit 818744e)
+- Status: verified
+- Objective: Implement approved initial seed definitions and explicit source access profiles policy for open VPM community listings with robots preflight required, add Ko-fi storefront seed and classification, and partition storefront leads into pending operator review (`FLEET-S2`).
+- Implemented: `DEFAULT_SEED_JOBS` contains Ko-fi sample seed; `DEFAULT_APPROVED_SOURCE_PROFILES` provides pre-configured approved VPM community listings; coordinator `seedInitialProfiles` seeds profiles idempotently; `classifyOutboundLeadKind` recognizes `ko-fi.com` as `storefront_product`; storefront leads stay partitioned in `source_leads` with `pending_review` status.
+- Verification: 310 worker tests passed, 3 Vitest tests passed, 100% native runtime smoke passed, 182 crawler tests passed, clean typechecks across worker and crawler.
+
+# STAGE-10-REPORT-INTAKE-PARTITIONING checkpoint (2026-10-18, local commit 84cb2b3)
+- Status: verified
+- Objective: Partition application report intake between rating calibration disputes and safety quarantine tickets (`R56-C56C`).
+- Implemented: `catalog_tickets` CHECK constraint includes `'rating_dispute'`, `'safety_quarantine'`, and `'metadata_issue'`; `recordIssueReport` partitions incoming safety vs calibration challenges; `listModeratorRatingsPage` counts `rating_dispute` and `removal_report` while excluding `safety_quarantine`.
+- Verification: 307 worker tests passed, 3 vitest tests passed, 100% native runtime smoke passed, 182 crawler tests passed, clean typechecks.
+
+# STAGE-9-DELEGATED-ROBOTS-PREFLIGHT checkpoint (2026-10-18, local commit 7e69552)
+- Status: verified
+- Objective: Delegate robots.txt preflight fetching to crawler nodes via coordinator leases (`R24-C21`).
+- Implemented: Coordinator exposes `/v1/node/robots/claim` and `/v1/node/robots/result`; crawler daemon executes robots preflight checks on empty job claim using SSRF-safe pinned metadata transport; D1 stores origin snapshots.
+- Verification: 305 worker tests passed, 3 vitest tests passed, 100% native runtime smoke passed, 182 crawler tests passed, clean typechecks.
+
+# STAGE-8-PUBLICATION-CLASSES-ENFORCEMENT checkpoint (2026-10-18, local commit 9e27525)
+- Status: verified
+- Objective: Enforce source access profile publication rights (`publishClasses`) in public catalog projection and delta streaming (`R13-C3` / `Q-PUBLICATION`).
+- Implemented: `buildCatalogPackagesBatch` filters packages originating wholly from `publishClasses: []` and filters restricted fronts/links; `listCatalogDeltasPage` emits delist tombstones.
+- Verification: 303 worker tests passed, 3 vitest tests passed, 100% native runtime smoke passed, 181 crawler tests passed, clean typechecks.
+
+# STAGE-7-RATE-LIMIT-VERIFICATION-AND-LEDGER-AUDIT checkpoint (2026-10-18, local commit 525f659)
+- Status: verified
+- Objective: Audit inbound rate limiting implementation across coordinator routes, verify test suite baselines, and audit unmerged ledger saturation for author review.
+- Implemented: Reconciled `UNMERGED_IMPLEMENTATION_PLAN.md` advancing `R54-C39C-RATE-LIMIT` to `verified`, updated `docs/source/CHANGELOG.md` under `vrcp-worker-preview`.
+- Verification: 300 worker tests pass, 181 crawler tests pass, 74 package tests pass, all typechecks clean.
+
+# STAGE-6-RULES-ADAPTATION-AND-SCHEMA-RECONCILIATION checkpoint (2026-10-18, local commit f66ccb9)
+- Status: verified
+- Objective: Adapt Rule 06 into repository rules and reconcile database schema documentation with executable D1 and SQLite implementations.
+- Implemented: Adapted `.agents/rules/06-self-management-and-guard-edits.md`, updated `AGENTS.md` range to `00-06`, reconciled `DATABASE_SCHEMAS.md` (tables, views, indexes, outbox), updated `docs/source/CHANGELOG.md`.
+- Verification: Clean doc link checks, 300 worker tests pass, 181 crawler tests pass, all typechecks clean.
+
+# STAGE-5-DOCS-AND-SDK-ALIGNMENT checkpoint (2026-10-18, local commit fe5f25b, pushed to origin)
+- Status: verified
+- Objective: Align API route documentation with actual coordinator routes and enforce downstream application permissions.
+- Implemented: Corrected route path in `AGENTS.md`; documented missing routes `POST /v1/node/jobs/results` and `POST /v1/operator/apps/{appId}/delegation` in `API_ROUTES.md`; enforced `catalog:search` and `demand:feedback` in `downstream_handler.ts`.
+- Verification: 300 worker tests pass, 100% native workerd runtime smoke pass, all typechecks clean.
+
+# STAGE-4-CRAWLER-CONCURRENCY-TIMING checkpoint (2026-10-18, local commit 6d7ef39)
+- Status: verified
+- Objective: Handle batched job claims and calibrate lease expiration deadlines via coordinator serverTime clock offset.
+- Implemented: `claimedJobsQueue` buffer in `daemon.ts`, `getClockOffset()` tracking in `node_client.ts`, `nowServerMs()` calibration in `lease_runner.ts`, and unit tests in `node_daemon.test.ts` and `node_lease_runner.test.ts`.
+- Verification: 181 crawler tests pass, crawler typecheck clean.
+
+# STAGE-3-COORDINATOR-SCALING checkpoint (2026-10-18, local commit 3573ef5)
+- Status: verified
+- Objective: Scale coordinator queries and protect Cloudflare Worker D1 subrequest limits with high-frequency indexes, batch statement chunking, and source-access profile lookup memoization.
+- Implemented: 10 targeted D1 query indexes, 50-statement batch chunking helper, profileCache memoization, and safe upgrade test ordering.
+- Verification: 299 worker tests pass, 3 Vitest tests pass, all typechecks clean, 100% native runtime smoke checks pass.
+
+# STAGE-2-SECURITY-POLICY checkpoint (2026-10-18, local commit 2d26f30)
+- Status: verified
+- Objective: Enforce strict capability token format in Coordinator.authenticate() and block binary URLs/content types in crawler fetchPublicMetadata().
+- Implemented: Fail-closed capability authentication in Worker/SQLite, pre-fetch extension blocking and post-header content-type streaming abort in crawler.
+- Verification: 179 crawler tests pass, 299 worker tests pass, all typechecks clean.
+
+# STAGE-1-OPERATIONAL-SYNC checkpoint (2026-10-18, local commit 7fbfb6e, pushed to origin)
+- Status: verified
+- Objective: Reconcile double-entry scratch ledgers and synchronize branch `preview/crawler-network` with origin.
+- Implemented: Pruned duplicated rows from `docs/scratch/UNMERGED_IMPLEMENTATION_PLAN.md`; committed status audit doc `2026-10-18_STATUS.md`; pushed 16 commits to `origin/preview/crawler-network`.
+- Verification: Clean origin tracking, zero duplicate tracking rows, scratch footprint invariant preserved.

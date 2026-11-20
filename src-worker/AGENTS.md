@@ -1,3 +1,13 @@
+# VRCP Sector 1: Coordinator (`src-worker/`)
+
+> **Truth Cascade**: Inherit root [`AGENTS.md`](../AGENTS.md), [`VISION.md`](../docs/research/decisions/VISION.md) (`T00`–`T05`), [`SYSTEM_MAP.md`](../docs/source/SYSTEM_MAP.md), and [`LEGAL.md`](../LEGAL.md). Active 3-file sector ledger: [`docs/scratch-crawler-network/`](../docs/scratch-crawler-network/IMPLEMENTATION_PLAN.md) (`handoff.md` owns **Tier 2** Workers/Schemas and **Tier 3A** `packages/network/`). Permitted upstream reads: [`scratch-legal-research/handoff.md`](../docs/scratch-legal-research/handoff.md) (Tier 1), [`scratch-api-web/handoff.md`](../docs/scratch-api-web/handoff.md) (Tier 3B for `vrc-packages-api-preview`), and [`scratch-pipeline/handoff.md`](../docs/scratch-pipeline/handoff.md). Owning truth docs: [`coordinator_worker.md`](../docs/source/specifications/coordinator_worker.md), [`coordinator_d1.md`](../docs/source/schemas/coordinator_d1.md), [`failure_and_recovery_matrix.md`](../docs/source/reliability/failure_and_recovery_matrix.md). Submit Publication Requests strictly in [`docs/scratch-crawler-network/handoff.md`](../docs/scratch-crawler-network/handoff.md); only Sector 4 Pipeline edits `docs/source/CHANGELOG.md` and clears `verified` rows.
+>
+> **Boundaries**: API-only Cloudflare Worker (`src/worker_entry.ts`, D1 binding `VRCP_D1`). Zero sibling-project imports; consume `vrc-packages-api` (preview) and `vrc-packages-network` (tarball) as declared dependencies. Schema or `packages/network/` changes trigger the Rule 06 `edit-guard`. Relevant root skills: `cloudflare`, `workers-best-practices`, `wrangler`.
+>
+> **Verification**: `bun run check`, `bun run test`, `bun run test:workers`, `bun run build:preview && bun run test:runtime`.
+
+---
+
 # Cloudflare Workers
 
 STOP. Your knowledge of Cloudflare Workers APIs and limits may be outdated. Always retrieve current documentation before any Workers, KV, R2, D1, Durable Objects, Queues, Vectorize, AI, or Agents SDK task.

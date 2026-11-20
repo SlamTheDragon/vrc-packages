@@ -1,14 +1,16 @@
 import { describe, expect, test } from "bun:test";
 import { handleNodeRequest } from "../../src/api/handler.ts";
 import { LocalCoordinatorStore } from "../support/local_sqlite.ts";
-import { ClaimResponseSchema, NODE_API_JSON_SCHEMAS, PROTOCOL_VERSION, ResultResponseSchema, PlatformSchema } from "vrc-packages-network/node";
+import { ClaimResponseSchema, NODE_API_JSON_SCHEMAS, PROTOCOL_VERSION, ResultResponseSchema, PlatformSchema,
+  BatchResultRequestSchema, BatchResultResponseSchema } from "vrc-packages-network/node";
 import { Database } from "bun:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import crypto from "node:crypto";
 import { approveFixtureSource, seedApprovedFixtureJob } from "../helpers/source_access_fixture.ts";
 import { getTestOutputDir } from "../helpers/test_directory.ts";
-import { DEFAULT_SEED_JOBS } from "../../src/storage/default_seeds.ts";
+import { DEFAULT_SEED_JOBS, DEFAULT_APPROVED_SOURCE_PROFILES } from "../../src/storage/default_seeds.ts";
+import { classifyOutboundLeadKind } from "../../src/storage/d1/coordinator.ts";
 
 function allowFixtureOrigin(store: LocalCoordinatorStore, ...origins: string[]): void {
   for (const origin of origins) store.recordRobotsSnapshot(origin, 404);
@@ -558,6 +560,12 @@ describe("local coordinator protocol", () => {
       return { status: response.status, body: await response.json() as any };
     };
     try {
+      const unauthMalformed = new Request("http://127.0.0.1/v1/node/jobs/claim", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "invalid json {{{"
+      });
+      expect((await handleNodeRequest(unauthMalformed, store)).status).toBe(401);
       expect((await post("/v1/node/jobs/claim", claimBody("node-a"), "bad-token")).status).toBe(401);
       expect((await post("/v1/node/jobs/claim", { ...claimBody("node-a"), capabilities: ["booth"] }, aToken)).status).toBe(403);
       const first = await post("/v1/node/jobs/claim", claimBody("node-a"), aToken);
@@ -1215,4 +1223,553 @@ describe("local coordinator protocol", () => {
       expect(store.db.query("SELECT * FROM crawl_jobs ORDER BY url").all()).toEqual(jobs);
     } finally { store.close(); }
   });
+
+  test("batched claim with maxJobs enforces per-origin reservations and anti-contention", async () => {
+    const store = new LocalCoordinatorStore();
+    try {
+      // Seed 2 jobs on origin 1, and 1 job each on origin 2 and 3
+      seedApprovedFixtureJob(store, "https://origin1.example.org/item1", "vpm", 1000);
+      seedApprovedFixtureJob(store, "https://origin1.example.org/item2", "vpm", 1000);
+      seedApprovedFixtureJob(store, "https://origin2.example.org/item1", "vpm", 1000);
+      seedApprovedFixtureJob(store, "https://origin3.example.org/item1", "vpm", 1000);
+      allowFixtureOrigin(store, "https://origin1.example.org", "https://origin2.example.org", "https://origin3.example.org");
+
+      const token = store.createNodeCredential("batch-node", ["vpm"]);
+      const res = await handleNodeRequest(request("/v1/node/jobs/claim", {
+        schemaVersion: PROTOCOL_VERSION,
+        nodeId: "batch-node",
+        capabilities: ["vpm"],
+        maxJobs: 5
+      }, token), store);
+
+      expect(res.status).toBe(200);
+      const parsed = ClaimResponseSchema.parse(await res.json());
+      expect(parsed.status).toBe("leased");
+      if (parsed.status !== "leased") throw new Error("Expected leased status");
+
+      // We expect 3 leased jobs: 1 from origin1, 1 from origin2, 1 from origin3.
+      // The second job from origin1 must NOT be leased in the same batch (origin reservation fairness).
+      expect(parsed.jobs?.length).toBe(3);
+      expect(parsed.job).toEqual(parsed.jobs![0]!);
+      const origins = parsed.jobs!.map((j) => j.origin);
+      expect(new Set(origins).size).toBe(3);
+      expect(origins).toContain("https://origin1.example.org");
+      expect(origins).toContain("https://origin2.example.org");
+      expect(origins).toContain("https://origin3.example.org");
+    } finally {
+      store.close();
+    }
+  });
+
+  test("batched result submission delivers atomic per-item receipts and isolates partial failures", async () => {
+    const store = new LocalCoordinatorStore();
+    try {
+      seedApprovedFixtureJob(store, "https://batch-sub1.example.org/index.json", "vpm", 1000);
+      seedApprovedFixtureJob(store, "https://batch-sub2.example.org/index.json", "vpm", 1000);
+      allowFixtureOrigin(store, "https://batch-sub1.example.org", "https://batch-sub2.example.org");
+
+      const token = store.createNodeCredential("batch-sub-node", ["vpm"]);
+      const claimRes = await handleNodeRequest(request("/v1/node/jobs/claim", {
+        schemaVersion: PROTOCOL_VERSION,
+        nodeId: "batch-sub-node",
+        capabilities: ["vpm"],
+        maxJobs: 2
+      }, token), store);
+      const claim = ClaimResponseSchema.parse(await claimRes.json());
+      if (claim.status !== "leased" || !claim.jobs || claim.jobs.length !== 2) {
+        throw new Error("Expected 2 leased jobs");
+      }
+
+      const job1 = claim.jobs[0]!;
+      const job2 = claim.jobs[1]!;
+      const key1 = "idemp-" + crypto.randomUUID();
+      const key2 = "idemp-" + crypto.randomUUID();
+
+      // Submit both in a single batch
+      const batchRes = await handleNodeRequest(request("/v1/node/jobs/results", {
+        schemaVersion: PROTOCOL_VERSION,
+        nodeId: "batch-sub-node",
+        results: [
+          {
+            jobId: job1.jobId,
+            leaseId: job1.leaseId,
+            idempotencyKey: key1,
+            outcome: {
+              kind: "changed",
+              observation: {
+                sourceItemKey: "pkg1",
+                title: "Package One",
+                author: "Author One",
+                summary: "Summary One",
+                outboundLinks: [],
+                originUpdatedAt: null
+              }
+            }
+          },
+          {
+            jobId: job2.jobId,
+            leaseId: job2.leaseId,
+            idempotencyKey: key2,
+            outcome: {
+              kind: "changed",
+              observation: {
+                sourceItemKey: "pkg2",
+                title: "Package Two",
+                author: "Author Two",
+                summary: "Summary Two",
+                outboundLinks: [],
+                originUpdatedAt: null
+              }
+            }
+          }
+        ]
+      }, token), store);
+
+      expect(batchRes.status).toBe(200);
+      const batchParsed = BatchResultResponseSchema.parse(await batchRes.json());
+      expect(batchParsed.receipts.length).toBe(2);
+      expect(batchParsed.receipts[0]).toMatchObject({ status: "accepted", jobId: job1.jobId, duplicate: false });
+      expect(batchParsed.receipts[1]).toMatchObject({ status: "accepted", jobId: job2.jobId, duplicate: false });
+
+      // Duplicate replay of the same batch returns accepted receipts with duplicate: true
+      const replayRes = await handleNodeRequest(request("/v1/node/jobs/results", {
+        schemaVersion: PROTOCOL_VERSION,
+        nodeId: "batch-sub-node",
+        results: [
+          {
+            jobId: job1.jobId,
+            leaseId: job1.leaseId,
+            idempotencyKey: key1,
+            outcome: {
+              kind: "changed",
+              observation: {
+                sourceItemKey: "pkg1",
+                title: "Package One",
+                author: "Author One",
+                summary: "Summary One",
+                outboundLinks: [],
+                originUpdatedAt: null
+              }
+            }
+          }
+        ]
+      }, token), store);
+      const replayParsed = BatchResultResponseSchema.parse(await replayRes.json());
+      expect(replayParsed.receipts[0]).toMatchObject({ status: "accepted", jobId: job1.jobId, duplicate: true });
+
+      // Mixed batch with invalid/expired lease and valid new job
+      seedApprovedFixtureJob(store, "https://batch-sub3.example.org/index.json", "vpm", 1000);
+      allowFixtureOrigin(store, "https://batch-sub3.example.org");
+      const claim3Res = await handleNodeRequest(request("/v1/node/jobs/claim", {
+        schemaVersion: PROTOCOL_VERSION,
+        nodeId: "batch-sub-node",
+        capabilities: ["vpm"],
+        maxJobs: 1
+      }, token), store);
+      const claim3 = ClaimResponseSchema.parse(await claim3Res.json());
+      if (claim3.status !== "leased") throw new Error("Expected job 3 leased");
+      const job3 = claim3.job;
+
+      const mixedRes = await handleNodeRequest(request("/v1/node/jobs/results", {
+        schemaVersion: PROTOCOL_VERSION,
+        nodeId: "batch-sub-node",
+        results: [
+          {
+            jobId: crypto.randomUUID(),
+            leaseId: crypto.randomUUID(),
+            idempotencyKey: "bad-lease-key-" + crypto.randomUUID(),
+            outcome: { kind: "rate_limited", retryAfterSeconds: 60 }
+          },
+          {
+            jobId: job3.jobId,
+            leaseId: job3.leaseId,
+            idempotencyKey: "valid-key-" + crypto.randomUUID(),
+            outcome: {
+              kind: "changed",
+              observation: {
+                sourceItemKey: "pkg3",
+                title: "Package Three",
+                author: "Author Three",
+                summary: "Summary Three",
+                outboundLinks: [],
+                originUpdatedAt: null
+              }
+            }
+          }
+        ]
+      }, token), store);
+
+      expect(mixedRes.status).toBe(200);
+      const mixedParsed = BatchResultResponseSchema.parse(await mixedRes.json());
+      expect(mixedParsed.receipts.length).toBe(2);
+      expect(mixedParsed.receipts[0]).toMatchObject({ status: "rejected", terminal: true, code: "not_found" });
+      expect(mixedParsed.receipts[1]).toMatchObject({ status: "accepted", jobId: job3.jobId });
+    } finally {
+      store.close();
+    }
+  });
+
+  test("prior receipt replay post-lease-expiry vs first late-result rejection (R54-C39D)", async () => {
+    let now = Date.parse("2026-09-27T00:00:00.000Z");
+    const store = new LocalCoordinatorStore(":memory:", () => now);
+    try {
+      const token = store.createNodeCredential("late-node", ["vpm"]);
+      seedApprovedFixtureJob(store, "https://late-test1.example.org/pkg1.json", "vpm", 1000);
+      seedApprovedFixtureJob(store, "https://late-test2.example.org/pkg2.json", "vpm", 1000);
+      allowFixtureOrigin(store, "https://late-test1.example.org");
+      allowFixtureOrigin(store, "https://late-test2.example.org");
+
+      // Claim job 1
+      const claim1Res = await handleNodeRequest(request("/v1/node/jobs/claim", {
+        schemaVersion: PROTOCOL_VERSION,
+        nodeId: "late-node",
+        capabilities: ["vpm"]
+      }, token), store);
+      const claim1 = ClaimResponseSchema.parse(await claim1Res.json());
+      if (claim1.status !== "leased") throw new Error("Expected job 1 leased");
+      const job1 = claim1.job;
+
+      // Submit job 1 while lease is still live (valid submission)
+      const idKey1 = "idemp-key-ontime-" + crypto.randomUUID();
+      const sub1Res = await handleNodeRequest(request("/v1/node/jobs/results", {
+        schemaVersion: PROTOCOL_VERSION,
+        nodeId: "late-node",
+        results: [{
+          jobId: job1.jobId,
+          leaseId: job1.leaseId,
+          idempotencyKey: idKey1,
+          outcome: {
+            kind: "changed",
+            observation: {
+              sourceItemKey: "ontime-pkg",
+              title: "On Time Package",
+              author: "Author",
+              summary: "Summary",
+              outboundLinks: [],
+              originUpdatedAt: null
+            }
+          }
+        }]
+      }, token), store);
+      expect(sub1Res.status).toBe(200);
+      const sub1Parsed = BatchResultResponseSchema.parse(await sub1Res.json());
+      expect(sub1Parsed.receipts[0]).toMatchObject({ status: "accepted", jobId: job1.jobId, duplicate: false });
+
+      // Claim job 2
+      const claim2Res = await handleNodeRequest(request("/v1/node/jobs/claim", {
+        schemaVersion: PROTOCOL_VERSION,
+        nodeId: "late-node",
+        capabilities: ["vpm"]
+      }, token), store);
+      const claim2 = ClaimResponseSchema.parse(await claim2Res.json());
+      if (claim2.status !== "leased") throw new Error("Expected job 2 leased");
+      const job2 = claim2.job;
+
+      // Advance clock past lease expiration (both leases are now expired)
+      now += 600_000; // 10 minutes later
+
+      // Test Case A: Prior receipt replay post-lease-expiry succeeds (exact idempotency preserved)
+      const replayRes = await handleNodeRequest(request("/v1/node/jobs/results", {
+        schemaVersion: PROTOCOL_VERSION,
+        nodeId: "late-node",
+        results: [{
+          jobId: job1.jobId,
+          leaseId: job1.leaseId,
+          idempotencyKey: idKey1,
+          outcome: {
+            kind: "changed",
+            observation: {
+              sourceItemKey: "ontime-pkg",
+              title: "On Time Package",
+              author: "Author",
+              summary: "Summary",
+              outboundLinks: [],
+              originUpdatedAt: null
+            }
+          }
+        }]
+      }, token), store);
+      expect(replayRes.status).toBe(200);
+      const replayParsed = BatchResultResponseSchema.parse(await replayRes.json());
+      expect(replayParsed.receipts[0]).toMatchObject({
+        status: "accepted",
+        jobId: job1.jobId,
+        duplicate: true
+      });
+
+      // Test Case B: First late submission for job 2 (no prior submission) is rejected with lease_expired
+      const idKey2 = "idemp-key-late-" + crypto.randomUUID();
+      const lateRes = await handleNodeRequest(request("/v1/node/jobs/results", {
+        schemaVersion: PROTOCOL_VERSION,
+        nodeId: "late-node",
+        results: [{
+          jobId: job2.jobId,
+          leaseId: job2.leaseId,
+          idempotencyKey: idKey2,
+          outcome: {
+            kind: "changed",
+            observation: {
+              sourceItemKey: "late-pkg",
+              title: "Late Package",
+              author: "Author",
+              summary: "Summary",
+              outboundLinks: [],
+              originUpdatedAt: null
+            }
+          }
+        }]
+      }, token), store);
+      expect(lateRes.status).toBe(200);
+      const lateParsed = BatchResultResponseSchema.parse(await lateRes.json());
+      expect(lateParsed.receipts[0]).toMatchObject({
+        status: "rejected",
+        jobId: job2.jobId,
+        terminal: true,
+        code: "lease_expired"
+      });
+
+      // Test Case C: Single endpoint /v1/node/jobs/result also rejects first late submission with 403
+      const singleLateRes = await handleNodeRequest(request("/v1/node/jobs/result", {
+        schemaVersion: PROTOCOL_VERSION,
+        nodeId: "late-node",
+        jobId: job2.jobId,
+        leaseId: job2.leaseId,
+        idempotencyKey: "single-late-" + crypto.randomUUID(),
+        outcome: {
+          kind: "changed",
+          observation: {
+            sourceItemKey: "late-pkg-2",
+            title: "Late Package 2",
+            author: "Author",
+            summary: "Summary",
+            outboundLinks: [],
+            originUpdatedAt: null
+          }
+        }
+      }, token), store);
+      expect(singleLateRes.status).toBe(403);
+    } finally {
+      store.close();
+    }
+  });
+  describe("delegated node robots preflight protocol (R24-C21)", () => {
+    test("/v1/node/robots/claim: rejects unauthenticated requests and returns empty when no origins due", async () => {
+      let now = Date.parse("2026-10-18T00:00:00.000Z");
+      const store = new LocalCoordinatorStore(":memory:", () => now);
+      const token = store.createNodeCredential("robot-node", ["vpm"]);
+      try {
+        const unauth = await handleNodeRequest(request("/v1/node/robots/claim", {
+          schemaVersion: PROTOCOL_VERSION,
+          nodeId: "robot-node"
+        }, "bad-token"), store);
+        expect(unauth.status).toBe(401);
+
+        const emptyRes = await handleNodeRequest(request("/v1/node/robots/claim", {
+          schemaVersion: PROTOCOL_VERSION,
+          nodeId: "robot-node"
+        }, token), store);
+        expect(emptyRes.status).toBe(200);
+        const emptyBody = await emptyRes.json() as { status: string; retryAfterMs: number };
+        expect(emptyBody.status).toBe("empty");
+        expect(emptyBody.retryAfterMs).toBeGreaterThan(0);
+      } finally {
+        store.close();
+      }
+    });
+
+    test("/v1/node/robots/claim and /v1/node/robots/result: leases robots refresh, stores snapshot, and unblocks crawl jobs", async () => {
+      let now = Date.parse("2026-10-18T00:00:00.000Z");
+      const store = new LocalCoordinatorStore(":memory:", () => now);
+      const token = store.createNodeCredential("robot-node", ["vpm"]);
+      const targetOrigin = "https://unscraped.example.org";
+      try {
+        // Seed an approved job, but do not record a robots snapshot
+        seedApprovedFixtureJob(store, `${targetOrigin}/index.json`, "vpm", 0);
+
+        // Regular claim is empty because robots snapshot is missing
+        const claimBefore = await handleNodeRequest(request("/v1/node/jobs/claim", {
+          schemaVersion: PROTOCOL_VERSION,
+          nodeId: "robot-node",
+          capabilities: ["vpm"]
+        }, token), store);
+        expect(claimBefore.status).toBe(200);
+        expect((await claimBefore.json() as { status: string }).status).toBe("empty");
+
+        // Robots claim leases the due origin
+        const robotsClaimRes = await handleNodeRequest(request("/v1/node/robots/claim", {
+          schemaVersion: PROTOCOL_VERSION,
+          nodeId: "robot-node"
+        }, token), store);
+        expect(robotsClaimRes.status).toBe(200);
+        const robotsClaimBody = await robotsClaimRes.json() as { status: string; origin: string; leaseId: string };
+        expect(robotsClaimBody.status).toBe("leased");
+        expect(robotsClaimBody.origin).toBe(targetOrigin);
+        expect(robotsClaimBody.leaseId).toBeTruthy();
+
+        // Submit the robots preflight result
+        const robotsResultRes = await handleNodeRequest(request("/v1/node/robots/result", {
+          schemaVersion: PROTOCOL_VERSION,
+          nodeId: "robot-node",
+          origin: targetOrigin,
+          leaseId: robotsClaimBody.leaseId,
+          statusCode: 200,
+          body: "User-agent: *\nAllow: /"
+        }, token), store);
+        expect(robotsResultRes.status).toBe(200);
+        const robotsResultBody = await robotsResultRes.json() as { status: string; origin: string };
+        expect(robotsResultBody.status).toBe("accepted");
+        expect(robotsResultBody.origin).toBe(targetOrigin);
+
+        // Replaying submission with consumed/expired lease fails with 403
+        const replayRes = await handleNodeRequest(request("/v1/node/robots/result", {
+          schemaVersion: PROTOCOL_VERSION,
+          nodeId: "robot-node",
+          origin: targetOrigin,
+          leaseId: robotsClaimBody.leaseId,
+          statusCode: 200,
+          body: "User-agent: *\nAllow: /"
+        }, token), store);
+        expect(replayRes.status).toBe(403);
+
+        // Advance time past origin pacing floor (1000ms)
+        now += 1500;
+
+        // Now that robots snapshot exists and allows /, regular claim succeeds!
+        const claimAfter = await handleNodeRequest(request("/v1/node/jobs/claim", {
+          schemaVersion: PROTOCOL_VERSION,
+          nodeId: "robot-node",
+          capabilities: ["vpm"]
+        }, token), store);
+        expect(claimAfter.status).toBe(200);
+        const claimAfterBody = await claimAfter.json() as { status: string; job?: { url: string } };
+        expect(claimAfterBody.status).toBe("leased");
+        expect(claimAfterBody.job?.url).toBe(`${targetOrigin}/index.json`);
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  describe("FLEET-S2 Initial Seeds and Storefront Discovery Protocol", () => {
+    test("seedInitialProfiles attaches approved open VPM community listing profiles idempotently", () => {
+      const store = new LocalCoordinatorStore(":memory:", () => Date.parse("2026-10-18T00:00:00.000Z"), true);
+      try {
+        // Initial autoSeed creates candidate jobs only, with 0 profiles
+        expect(store.db.prepare("SELECT COUNT(*) AS count FROM source_access_profiles").get()).toEqual({ count: 0 });
+
+        // Explicitly seed approved initial profiles
+        store.seedInitialProfiles();
+
+        const countRow = store.db.prepare("SELECT COUNT(*) AS count FROM source_access_profiles").get() as { count: number };
+        expect(countRow.count).toBe(DEFAULT_APPROVED_SOURCE_PROFILES.length);
+
+        const profiles = store.db.prepare("SELECT profile_id, platform, origin, path_scope, review_reference FROM source_access_profiles ORDER BY profile_id").all() as {
+          profile_id: string; platform: string; origin: string; path_scope: string; review_reference: string;
+        }[];
+        expect(profiles.some(p => p.review_reference === "COMMUNITY-VPM-TEMPLATE")).toBe(true);
+        expect(profiles.some(p => p.review_reference === "COMMUNITY-VPM-LISTING")).toBe(true);
+
+        // Calling seedInitialProfiles a second time is idempotent
+        store.seedInitialProfiles();
+        const countRow2 = store.db.prepare("SELECT COUNT(*) AS count FROM source_access_profiles").get() as { count: number };
+        expect(countRow2.count).toBe(DEFAULT_APPROVED_SOURCE_PROFILES.length);
+      } finally {
+        store.close();
+      }
+    });
+
+    test("Ko-fi storefront seed is queued and classified as storefront_product", () => {
+      const store = new LocalCoordinatorStore(":memory:", () => Date.parse("2026-10-18T00:00:00.000Z"), true);
+      try {
+        const kofiJob = store.db.prepare("SELECT * FROM crawl_jobs WHERE url='https://ko-fi.com/s/sample-vrc-item'").get() as {
+          url: string; platform: string; job_purpose: string; min_delay_ms: number;
+        } | null;
+        expect(kofiJob).not.toBeNull();
+        expect(kofiJob?.platform).toBe("custom_domain");
+        expect(kofiJob?.job_purpose).toBe("metadata");
+
+        // classifyOutboundLeadKind identifies ko-fi.com
+        expect(classifyOutboundLeadKind("https://ko-fi.com/s/sample-vrc-item")).toBe("storefront_product");
+        expect(classifyOutboundLeadKind("https://ko-fi.com/creator-profile")).toBe("storefront_product");
+
+        // Storefront leads remain separate and cannot become VPM crawl jobs
+        const sampleJob = store.db.prepare("SELECT job_id, url FROM crawl_jobs LIMIT 1").get() as { job_id: string; url: string };
+        store.db.prepare(`INSERT INTO source_leads (lead_key, discovered_from_url, discovered_from_job_id, kind, target_url, status, first_seen_at, last_seen_at)
+          VALUES ('kofi-lead', ?, ?, 'storefront_product', 'https://ko-fi.com/s/sample-vrc-item', 'pending_review', '2026-10-18T00:00:00.000Z', '2026-10-18T00:00:00.000Z')`).run(sampleJob.url, sampleJob.job_id);
+        expect(() => store.approveVpmListingLead("kofi-lead")).toThrow("Only published VPM listing leads can become VPM crawl jobs");
+      } finally {
+        store.close();
+      }
+    });
+
+    test("storefront discovery leads are partitioned into pending_review and cannot become VPM fetch jobs", async () => {
+      let now = Date.parse("2026-10-18T00:00:00.000Z");
+      const store = new LocalCoordinatorStore(":memory:", () => now, false);
+      try {
+        const nodeToken = store.createNodeCredential("crawler-node-leads", ["vpm"]);
+        allowFixtureOrigin(store, "https://vpm.example.org");
+        store.createSourceAccessProfile({
+          schemaVersion: 1,
+          platform: "vpm",
+          origin: "https://vpm.example.org",
+          pathScope: "/index.json",
+          method: "GET",
+          purpose: "discovery",
+          minDelayMs: 1000,
+          expiresAt: "2026-10-19T00:00:00.000Z",
+          reviewReference: "TEST-VPM-DISCOVERY",
+          reason: "Testing lead review policy",
+          retainClasses: ["normalized_facts"],
+          publishClasses: ["normalized_facts"]
+        }, "operator");
+        const jobId = store.seedJob("https://vpm.example.org/index.json", "vpm", 1000, undefined, "discovery");
+
+        // Claim the job
+        const claimRes = await handleNodeRequest(request("/v1/node/jobs/claim", {
+          schemaVersion: PROTOCOL_VERSION,
+          nodeId: "crawler-node-leads",
+          capabilities: ["vpm"]
+        }, nodeToken), store);
+        const claimData = await claimRes.json() as { job?: { jobId: string; leaseId: string } };
+        expect(claimData.job?.jobId).toBe(jobId);
+
+        // Submit discovery result with both a booth.pm lead and a ko-fi lead
+        const submitRes = await handleNodeRequest(request("/v1/node/jobs/result", {
+          schemaVersion: PROTOCOL_VERSION,
+          nodeId: "crawler-node-leads",
+          jobId,
+          leaseId: claimData.job!.leaseId,
+          idempotencyKey: "idempotency-lead-chain-001",
+          outcome: {
+            kind: "discovery",
+            leads: [
+              { kind: "storefront_product", url: "https://booth.pm/ja/items/123456" },
+              { kind: "storefront_product", url: "https://ko-fi.com/s/sample-vrc-item" }
+            ]
+          }
+        }, nodeToken), store);
+        expect(submitRes.status).toBe(200);
+
+        // Both storefront leads are recorded in pending_review
+        const boothLead = store.db.prepare("SELECT * FROM source_leads WHERE target_url='https://booth.pm/ja/items/123456'").get() as {
+          lead_key: string; status: string; kind: string;
+        } | null;
+        expect(boothLead?.status).toBe("pending_review");
+        expect(boothLead?.kind).toBe("storefront_product");
+
+        const kofiLead = store.db.prepare("SELECT * FROM source_leads WHERE target_url='https://ko-fi.com/s/sample-vrc-item'").get() as {
+          lead_key: string; status: string; kind: string;
+        } | null;
+        expect(kofiLead?.status).toBe("pending_review");
+        expect(kofiLead?.kind).toBe("storefront_product");
+
+        // Storefront leads cannot become VPM fetch jobs
+        expect(() => store.approveVpmListingLead(boothLead!.lead_key)).toThrow("Only published VPM listing leads can become VPM crawl jobs");
+        expect(() => store.approveVpmListingLead(kofiLead!.lead_key)).toThrow("Only published VPM listing leads can become VPM crawl jobs");
+      } finally {
+        store.close();
+      }
+    });
+  });
 });
+

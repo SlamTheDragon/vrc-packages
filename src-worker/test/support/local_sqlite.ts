@@ -4,15 +4,17 @@ import { EnqueueJobRequestSchema, type EnqueueJobRequest,
   AutoQueueRuleSchema, CreateAutoQueueRuleSchema, IssueNodeCredentialSchema, type IssueNodeCredential,
   encodeRuleCursor, encodeCatalogCursor, decodeCatalogCursor, type AutoQueueRule, type CreateAutoQueueRule,
   type CatalogCursor, type CatalogPackage, type CatalogIdentityLink, PackageFrontSchema, type PackageFront,
-  type RuleCursor, type CatalogDelta, type CatalogDeltaCursor, encodeCatalogDeltaCursor } from "vrc-packages-api";
+  type RuleCursor, type CatalogDelta, type CatalogDeltaCursor, encodeCatalogDeltaCursor,
+  type ContentRating, encodeModeratorRatingCursor, type ModeratorRatingRecord, type ModeratorRatingCursor } from "vrc-packages-api";
 import crypto from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { isIP } from "node:net";
 import { dirname, resolve } from "node:path";
 import {
   ClaimRequestSchema, ObservationSchema, PlatformSchema, PROTOCOL_VERSION, STOREFRONT_PLATFORMS, observationMatchesPlatform,
-  type ClaimRequest, type ClaimResponse, type HeartbeatRequest, type HeartbeatResponse,
-  type Observation, type Platform, type ResultRequest, type ResultResponse
+  type ClaimRequest, type ClaimResponse, type CrawlJob, type HeartbeatRequest, type HeartbeatResponse,
+  type Observation, type Platform, type ResultRequest, type ResultResponse,
+  type BatchResultRequest, type BatchResultResponse, type BatchResultReceipt
 } from "vrc-packages-network/node";
 import { CoordinatorConflict, type CoordinatorStore, type NodePrincipal } from "../../src/api/handler.ts";
 import { type PublicCatalogStore } from "../../src/api/public_handler.ts";
@@ -31,9 +33,13 @@ import {
   type DownstreamFeedbackRequest,
   type DownstreamFeedbackResponse,
   type CatalogSearchRequest,
-  type CatalogSearchResponse
+  type CatalogSearchResponse,
+  CreatorClaimIntakeRequestSchema,
+  type CreatorClaimIntakeRequest,
+  type CreatorClaimIntakeResponse
 } from "vrc-packages-api";
 import { type UserStore, type UserPrincipal } from "../../src/api/user_handler.ts";
+import { type ModeratorStore } from "../../src/api/moderator_handler.ts";
 import { isPrivateOrReservedIp } from "vrc-packages-network/ip-policy";
 import { githubApiRepositoryIdentity, isBoothBrowseTarget, boothItemIdentity,
   isShopifyProductSitemapTarget, shopifyProductLead, isSellfyProductTarget } from "vrc-packages-network/source-targets";
@@ -44,8 +50,10 @@ import { ROBOTS_RESTRICTION_TOKENS } from "vrc-packages-network/identity";
 import { deriveCategoryFromTags, deriveUmbrellaFromTags, classifyDesktopTool, inferSupportedOS, type DesktopToolEvidence } from "../../src/domain/classification/taxonomy.ts";
 import { extractAvatarCompatibility, type AvatarCompatibility } from "../../src/domain/classification/avatar_compatibility.ts";
 import { cleanTitle, cleanTrackingParams } from "vrc-packages-network/catalog-hygiene";
-import { DEFAULT_SEED_JOBS } from "../../src/storage/default_seeds.ts";
+import { DEFAULT_SEED_JOBS, DEFAULT_APPROVED_SOURCE_PROFILES } from "../../src/storage/default_seeds.ts";
 import { encodeLeadCursor, encodeTakedownCursor, type TakedownCursor, type TakedownRecord,
+  encodeDelegatedClaimCursor, type DelegatedClaimCursor, type DelegatedClaimRecord,
+  encodeOperatorAppCursor, type OperatorAppCursor, type OperatorAppRecord,
   type LeadCursor, type LeadRow } from "../../src/api/protocol/operator_protocol.ts";
 import { CreateSourceAccessProfileSchema, SourceAccessProfileSchema, encodeProfileCursor,
   type CreateSourceAccessProfile, type SourceAccessProfile, type ProfileCursor,
@@ -96,7 +104,7 @@ export type IdentityLink = {
   reviewedAt: string | null;
 };
 
-export class LocalCoordinatorStore implements CoordinatorStore, PublicCatalogStore, UserStore {
+export class LocalCoordinatorStore implements CoordinatorStore, PublicCatalogStore, UserStore, ModeratorStore {
   readonly db: Database;
   private readonly now: () => number;
   private readonly robotsMatchers = new Map<string, { snapshotId: string; matchers: readonly CrawlerRules[] }>();
@@ -115,12 +123,18 @@ export class LocalCoordinatorStore implements CoordinatorStore, PublicCatalogSto
         node_id TEXT PRIMARY KEY, token_hash TEXT NOT NULL, capabilities_json TEXT NOT NULL,
         revoked_at TEXT
       );
-      CREATE TABLE IF NOT EXISTS node_credential_actions (
-        action_id INTEGER PRIMARY KEY AUTOINCREMENT, node_id TEXT NOT NULL,
-        actor TEXT NOT NULL, action TEXT NOT NULL, reason TEXT NOT NULL,
-        occurred_at TEXT NOT NULL,
-        FOREIGN KEY(node_id) REFERENCES node_credentials(node_id)
+      CREATE TABLE IF NOT EXISTS operator_audit_log (
+        action_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        entity_type TEXT NOT NULL CHECK(entity_type IN ('node','lead','job','rule','profile')),
+        entity_id TEXT NOT NULL,
+        actor TEXT NOT NULL,
+        action TEXT NOT NULL,
+        reason TEXT NOT NULL,
+        occurred_at TEXT NOT NULL
       );
+      CREATE INDEX IF NOT EXISTS idx_operator_audit_log_entity ON operator_audit_log(entity_type,entity_id,occurred_at);
+      CREATE INDEX IF NOT EXISTS idx_operator_audit_log_occurred ON operator_audit_log(occurred_at DESC,action_id DESC);
+      CREATE VIEW IF NOT EXISTS node_credential_actions AS SELECT action_id, entity_id AS node_id, actor, action, reason, occurred_at FROM operator_audit_log WHERE entity_type='node';
       CREATE TABLE IF NOT EXISTS node_heartbeats (
         node_id TEXT PRIMARY KEY, last_seen_at TEXT NOT NULL,
         state TEXT NOT NULL CHECK(state IN ('idle','fetching')), active_job_id TEXT,
@@ -143,12 +157,14 @@ export class LocalCoordinatorStore implements CoordinatorStore, PublicCatalogSto
         FOREIGN KEY(active_job_id) REFERENCES crawl_jobs(job_id)
       );
       CREATE TABLE IF NOT EXISTS origin_robots (
-        origin TEXT PRIMARY KEY, snapshot_id TEXT NOT NULL, status_code INTEGER NOT NULL,
-        body TEXT NOT NULL, fetched_at TEXT NOT NULL, expires_at TEXT NOT NULL
+        origin TEXT PRIMARY KEY, snapshot_id TEXT, status_code INTEGER,
+        body TEXT, fetched_at TEXT, expires_at TEXT,
+        refresh_lease_id TEXT, refresh_lease_expires_at TEXT
       );
-      CREATE TABLE IF NOT EXISTS origin_robots_refresh_leases (
-        origin TEXT PRIMARY KEY, lease_id TEXT NOT NULL, lease_expires_at TEXT NOT NULL
-      );
+      CREATE INDEX IF NOT EXISTS idx_origin_robots_refresh ON origin_robots(origin, refresh_lease_expires_at);
+      CREATE VIEW IF NOT EXISTS origin_robots_refresh_leases AS
+        SELECT origin, refresh_lease_id AS lease_id, refresh_lease_expires_at AS lease_expires_at
+        FROM origin_robots WHERE refresh_lease_id IS NOT NULL;
       CREATE TABLE IF NOT EXISTS suppressed_urls (
         url TEXT PRIMARY KEY, reason TEXT NOT NULL, suppressed_at TEXT NOT NULL
       );
@@ -187,31 +203,19 @@ export class LocalCoordinatorStore implements CoordinatorStore, PublicCatalogSto
       );
       CREATE INDEX IF NOT EXISTS idx_source_leads_status ON source_leads(status,kind);
       CREATE INDEX IF NOT EXISTS idx_source_leads_page ON source_leads(status,first_seen_at,lead_key);
-      CREATE TABLE IF NOT EXISTS operator_actions (
-        action_id INTEGER PRIMARY KEY AUTOINCREMENT, actor TEXT NOT NULL, action TEXT NOT NULL,
-        lead_key TEXT NOT NULL, reason TEXT NOT NULL, occurred_at TEXT NOT NULL,
-        FOREIGN KEY(lead_key) REFERENCES source_leads(lead_key)
-      );
+      CREATE VIEW IF NOT EXISTS operator_actions AS SELECT action_id, actor, action, entity_id AS lead_key, reason, occurred_at FROM operator_audit_log WHERE entity_type='lead';
       CREATE TABLE IF NOT EXISTS lead_autoqueue_rules (
         rule_id TEXT PRIMARY KEY, lead_kind TEXT NOT NULL, origin TEXT NOT NULL,
         path_scope TEXT NOT NULL, min_delay_ms INTEGER NOT NULL,
         expires_at TEXT NOT NULL, review_reference TEXT NOT NULL, reason TEXT NOT NULL,
         created_at TEXT NOT NULL, disabled_at TEXT
       );
-      CREATE TABLE IF NOT EXISTS job_seed_actions (
-        action_id TEXT PRIMARY KEY, job_id TEXT NOT NULL, actor TEXT NOT NULL,
-        reason TEXT NOT NULL, occurred_at TEXT NOT NULL,
-        FOREIGN KEY(job_id) REFERENCES crawl_jobs(job_id)
-      );
+      CREATE VIEW IF NOT EXISTS job_seed_actions AS SELECT cast(action_id as text) AS action_id, entity_id AS job_id, actor, reason, occurred_at FROM operator_audit_log WHERE entity_type='job';
       CREATE INDEX IF NOT EXISTS idx_lead_autoqueue_rules_scope
         ON lead_autoqueue_rules(lead_kind,origin,disabled_at,expires_at);
       CREATE INDEX IF NOT EXISTS idx_lead_autoqueue_rules_page
         ON lead_autoqueue_rules(created_at DESC,rule_id DESC);
-      CREATE TABLE IF NOT EXISTS operator_rule_actions (
-        action_id INTEGER PRIMARY KEY AUTOINCREMENT, rule_id TEXT NOT NULL,
-        actor TEXT NOT NULL, action TEXT NOT NULL, reason TEXT NOT NULL, occurred_at TEXT NOT NULL,
-        FOREIGN KEY(rule_id) REFERENCES lead_autoqueue_rules(rule_id)
-      );
+      CREATE VIEW IF NOT EXISTS operator_rule_actions AS SELECT action_id, entity_id AS rule_id, actor, action, reason, occurred_at FROM operator_audit_log WHERE entity_type='rule';
       CREATE TABLE IF NOT EXISTS source_access_profiles (
         profile_id TEXT PRIMARY KEY, platform TEXT NOT NULL, origin TEXT NOT NULL,
         path_scope TEXT NOT NULL, query_scope TEXT, method TEXT NOT NULL CHECK(method='GET'),
@@ -225,12 +229,7 @@ export class LocalCoordinatorStore implements CoordinatorStore, PublicCatalogSto
         ON source_access_profiles(platform,origin,purpose,disabled_at,expires_at);
       CREATE INDEX IF NOT EXISTS idx_source_access_profiles_page
         ON source_access_profiles(created_at DESC,profile_id DESC);
-      CREATE TABLE IF NOT EXISTS source_access_profile_actions (
-        action_id INTEGER PRIMARY KEY AUTOINCREMENT, profile_id TEXT NOT NULL,
-        actor TEXT NOT NULL, action TEXT NOT NULL, reason TEXT NOT NULL,
-        occurred_at TEXT NOT NULL,
-        FOREIGN KEY(profile_id) REFERENCES source_access_profiles(profile_id)
-      );
+      CREATE VIEW IF NOT EXISTS source_access_profile_actions AS SELECT action_id, entity_id AS profile_id, actor, action, reason, occurred_at FROM operator_audit_log WHERE entity_type='profile';
       CREATE TABLE IF NOT EXISTS job_results (
         lease_id TEXT PRIMARY KEY, job_id TEXT NOT NULL, node_id TEXT NOT NULL, idempotency_key TEXT NOT NULL,
         request_digest TEXT NOT NULL, response_json TEXT NOT NULL, submitted_at TEXT NOT NULL,
@@ -244,7 +243,10 @@ export class LocalCoordinatorStore implements CoordinatorStore, PublicCatalogSto
         display_name TEXT NOT NULL,
         vpm_id TEXT,
         created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
+        updated_at TEXT NOT NULL,
+        published_at TEXT,
+        timestamp_confidence TEXT,
+        content_rating TEXT NOT NULL DEFAULT 'general'
       );
       CREATE TABLE IF NOT EXISTS identity_links (
         link_id TEXT PRIMARY KEY,
@@ -302,6 +304,17 @@ export class LocalCoordinatorStore implements CoordinatorStore, PublicCatalogSto
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS registered_users (
+        user_id TEXT PRIMARY KEY,
+        user_name TEXT NOT NULL,
+        token_hash TEXT NOT NULL,
+        contact_email TEXT,
+        created_at TEXT NOT NULL,
+        revoked_at TEXT,
+        age_verified INTEGER NOT NULL DEFAULT 0,
+        is_moderator INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE INDEX IF NOT EXISTS idx_registered_users_token ON registered_users(token_hash);
       CREATE TABLE IF NOT EXISTS registered_apps (
         app_id TEXT PRIMARY KEY,
         app_name TEXT NOT NULL,
@@ -309,16 +322,17 @@ export class LocalCoordinatorStore implements CoordinatorStore, PublicCatalogSto
         contact_email TEXT,
         permissions_json TEXT NOT NULL,
         created_at TEXT NOT NULL,
-        revoked_at TEXT
+        revoked_at TEXT,
+        request_count INTEGER NOT NULL DEFAULT 0,
+        last_active_at TEXT,
+        candidate_status TEXT NOT NULL DEFAULT 'none' CHECK(candidate_status IN ('none','review_pending','reviewed','trusted')),
+        candidate_flags_json TEXT NOT NULL DEFAULT '[]',
+        owner_user_id TEXT REFERENCES registered_users(user_id)
       );
       CREATE INDEX IF NOT EXISTS idx_registered_apps_token_hash ON registered_apps(token_hash);
-      CREATE TABLE IF NOT EXISTS catalog_reports (
-        report_id TEXT PRIMARY KEY, app_id TEXT NOT NULL REFERENCES registered_apps(app_id),
-        report_type TEXT NOT NULL CHECK(report_type='removal_request'), payload_json TEXT NOT NULL,
-        review_status TEXT NOT NULL DEFAULT 'pending' CHECK(review_status IN ('pending','accepted','rejected')),
-        recorded_at TEXT NOT NULL
-      );
-      CREATE INDEX IF NOT EXISTS idx_catalog_reports_review ON catalog_reports(review_status,recorded_at,report_id);
+      CREATE INDEX IF NOT EXISTS idx_registered_apps_candidate ON registered_apps(candidate_status, request_count);
+      CREATE INDEX IF NOT EXISTS idx_registered_apps_owner ON registered_apps(owner_user_id);
+      CREATE VIEW IF NOT EXISTS user_app_ownership AS SELECT app_id, owner_user_id AS user_id FROM registered_apps WHERE owner_user_id IS NOT NULL;
       CREATE TABLE IF NOT EXISTS downstream_demand_signals (
         signal_id TEXT PRIMARY KEY,
         app_id TEXT NOT NULL,
@@ -334,38 +348,52 @@ export class LocalCoordinatorStore implements CoordinatorStore, PublicCatalogSto
         FOREIGN KEY (app_id) REFERENCES registered_apps(app_id)
       );
       CREATE INDEX IF NOT EXISTS idx_downstream_demand_platform ON downstream_demand_signals(requested_platform, resolved_at);
-      CREATE TABLE IF NOT EXISTS registered_users (
-        user_id TEXT PRIMARY KEY,
-        user_name TEXT NOT NULL,
-        token_hash TEXT NOT NULL,
-        contact_email TEXT,
-        created_at TEXT NOT NULL,
-        revoked_at TEXT
-      );
-      CREATE INDEX IF NOT EXISTS idx_registered_users_token ON registered_users(token_hash);
-      CREATE TABLE IF NOT EXISTS user_app_ownership (
-        app_id TEXT PRIMARY KEY REFERENCES registered_apps(app_id),
-        user_id TEXT NOT NULL REFERENCES registered_users(user_id)
-      );
-      CREATE INDEX IF NOT EXISTS idx_user_app_ownership_user ON user_app_ownership(user_id,app_id);
-      CREATE TABLE IF NOT EXISTS creator_opt_outs (
-        takedown_id TEXT PRIMARY KEY,
+      CREATE TABLE IF NOT EXISTS catalog_tickets (
+        ticket_id TEXT PRIMARY KEY,
+        ticket_type TEXT NOT NULL CHECK(ticket_type IN ('opt_out','delegated_claim','removal_report','rating_dispute','safety_quarantine','metadata_issue')),
+        app_id TEXT REFERENCES registered_apps(app_id),
         target_url TEXT,
         canonical_id TEXT,
-        requester_type TEXT NOT NULL CHECK(requester_type IN ('unauthenticated_creator','user','admin_operator')),
+        requester_type TEXT CHECK(requester_type IN ('unauthenticated_creator','user','admin_operator','app')),
         requester_id TEXT,
-        reason TEXT NOT NULL,
-        proof_kind TEXT CHECK(proof_kind IN ('storefront_bio_token','dns_txt','manual_notice')),
+        creator_id TEXT,
+        reason TEXT,
+        proof_kind TEXT CHECK(proof_kind IN ('storefront_bio_token','dns_txt','manual_notice','delegated_signature')),
         proof_value TEXT,
         contact_email TEXT,
-        recorded_at TEXT NOT NULL,
-        review_status TEXT NOT NULL DEFAULT 'accepted' CHECK(review_status IN ('pending','accepted','rejected')),
-        review_notes TEXT
+        challenge_token TEXT,
+        expires_at INTEGER,
+        nonce TEXT,
+        signature TEXT,
+        payload_json TEXT,
+        review_status TEXT NOT NULL DEFAULT 'pending' CHECK(review_status IN ('pending','accepted','rejected')),
+        review_notes TEXT,
+        recorded_at TEXT NOT NULL
       );
-      CREATE INDEX IF NOT EXISTS idx_opt_outs_target_url ON creator_opt_outs(target_url);
-      CREATE INDEX IF NOT EXISTS idx_opt_outs_canonical_id ON creator_opt_outs(canonical_id);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_catalog_tickets_nonce ON catalog_tickets(app_id, nonce) WHERE nonce IS NOT NULL;
+      CREATE INDEX IF NOT EXISTS idx_catalog_tickets_review ON catalog_tickets(ticket_type, review_status, recorded_at, ticket_id);
+      CREATE INDEX IF NOT EXISTS idx_catalog_tickets_canonical ON catalog_tickets(canonical_id);
+      CREATE INDEX IF NOT EXISTS idx_catalog_tickets_target_url ON catalog_tickets(target_url);
+      CREATE VIEW IF NOT EXISTS creator_opt_outs AS SELECT ticket_id AS takedown_id, target_url, canonical_id, requester_type, requester_id, reason, proof_kind, proof_value, contact_email, recorded_at, review_status, review_notes FROM catalog_tickets WHERE ticket_type = 'opt_out';
+      CREATE VIEW IF NOT EXISTS delegated_creator_claims AS SELECT ticket_id AS claim_id, app_id, 'creator_ownership_claim' AS action, target_url AS front_url, creator_id, challenge_token, expires_at, nonce, signature, payload_json, reason, contact_email, review_status, review_notes, recorded_at FROM catalog_tickets WHERE ticket_type = 'delegated_claim';
+      CREATE VIEW IF NOT EXISTS catalog_reports AS SELECT ticket_id AS report_id, app_id, ticket_type AS report_type, payload_json, review_status, recorded_at FROM catalog_tickets WHERE ticket_type IN ('removal_report','rating_dispute','safety_quarantine','metadata_issue');
       CREATE INDEX IF NOT EXISTS idx_canonical_packages_updated ON canonical_packages(updated_at ASC, canonical_id ASC);
       CREATE INDEX IF NOT EXISTS idx_canonical_packages_created ON canonical_packages(created_at DESC, canonical_id DESC);
+      CREATE TABLE IF NOT EXISTS catalog_tombstones (
+        canonical_id TEXT NOT NULL,
+        reason TEXT NOT NULL CHECK(reason IN ('rating_withdrawn','deleted','delisted')),
+        recorded_at TEXT NOT NULL,
+        PRIMARY KEY(canonical_id, recorded_at)
+      );
+      CREATE INDEX IF NOT EXISTS idx_catalog_tombstones_cursor ON catalog_tombstones(recorded_at ASC, canonical_id ASC);
+      CREATE INDEX IF NOT EXISTS idx_source_items_url ON source_items(source_url);
+      CREATE INDEX IF NOT EXISTS idx_source_leads_target ON source_leads(target_url);
+      CREATE INDEX IF NOT EXISTS idx_source_leads_discovered_url ON source_leads(discovered_from_url);
+      CREATE INDEX IF NOT EXISTS idx_crawl_jobs_claimed_state ON crawl_jobs(claimed_by, state);
+      CREATE INDEX IF NOT EXISTS idx_package_fronts_storefront ON package_fronts(storefront_url);
+      CREATE INDEX IF NOT EXISTS idx_registered_apps_page ON registered_apps(created_at DESC, app_id DESC);
+      CREATE INDEX IF NOT EXISTS idx_canonical_packages_rating_updated ON canonical_packages(content_rating, updated_at DESC, canonical_id ASC);
+      CREATE INDEX IF NOT EXISTS idx_canonical_packages_category_rating ON canonical_packages(category, content_rating);
     `);
     // Existing local coordinator databases predate these local-only markers.
     this.db.transaction(() => {
@@ -392,9 +420,26 @@ export class LocalCoordinatorStore implements CoordinatorStore, PublicCatalogSto
       addColumnIfMissing("source_leads", "first_seen_profile_id");
       addColumnIfMissing("source_leads", "last_seen_profile_id");
       addColumnIfMissing("source_leads", "discovered_from_item_key");
-      addColumnIfMissing("creator_opt_outs", "review_status");
-      addColumnIfMissing("creator_opt_outs", "review_notes");
-      this.db.run("UPDATE creator_opt_outs SET review_status = 'accepted' WHERE review_status IS NULL");
+      const existingTables = new Set((this.db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as { name: string }[]).map(t => t.name));
+      if (existingTables.has("creator_opt_outs")) {
+        this.db.run(`INSERT OR IGNORE INTO catalog_tickets (ticket_id, ticket_type, target_url, canonical_id, requester_type, requester_id, reason, proof_kind, proof_value, contact_email, recorded_at, review_status, review_notes)
+          SELECT takedown_id, 'opt_out', target_url, canonical_id, requester_type, requester_id, reason, proof_kind, proof_value, contact_email, recorded_at, COALESCE(review_status, 'accepted'), review_notes FROM creator_opt_outs`);
+        this.db.run("DROP TABLE creator_opt_outs");
+        this.db.run("CREATE VIEW IF NOT EXISTS creator_opt_outs AS SELECT ticket_id AS takedown_id, target_url, canonical_id, requester_type, requester_id, reason, proof_kind, proof_value, contact_email, recorded_at, review_status, review_notes FROM catalog_tickets WHERE ticket_type = 'opt_out'");
+      }
+      if (existingTables.has("delegated_creator_claims")) {
+        this.db.run(`INSERT OR IGNORE INTO catalog_tickets (ticket_id, ticket_type, app_id, target_url, creator_id, challenge_token, expires_at, nonce, signature, payload_json, reason, contact_email, review_status, review_notes, recorded_at)
+          SELECT claim_id, 'delegated_claim', app_id, front_url, creator_id, challenge_token, expires_at, nonce, signature, payload_json, reason, contact_email, review_status, review_notes, recorded_at FROM delegated_creator_claims`);
+        this.db.run("DROP TABLE delegated_creator_claims");
+        this.db.run("CREATE VIEW IF NOT EXISTS delegated_creator_claims AS SELECT ticket_id AS claim_id, app_id, 'creator_ownership_claim' AS action, target_url AS front_url, creator_id, challenge_token, expires_at, nonce, signature, payload_json, reason, contact_email, review_status, review_notes, recorded_at FROM catalog_tickets WHERE ticket_type = 'delegated_claim'");
+      }
+      if (existingTables.has("catalog_reports")) {
+        this.db.run(`INSERT OR IGNORE INTO catalog_tickets (ticket_id, ticket_type, app_id, payload_json, review_status, recorded_at)
+          SELECT report_id, 'removal_report', app_id, payload_json, review_status, recorded_at FROM catalog_reports`);
+        this.db.run("DROP TABLE catalog_reports");
+        this.db.run("CREATE VIEW IF NOT EXISTS catalog_reports AS SELECT ticket_id AS report_id, app_id, ticket_type AS report_type, payload_json, review_status, recorded_at FROM catalog_tickets WHERE ticket_type IN ('removal_report','rating_dispute','safety_quarantine','metadata_issue')");
+      }
+      this.db.run("UPDATE catalog_tickets SET review_status = 'accepted' WHERE review_status IS NULL");
       const jobColumns = this.db.prepare("PRAGMA table_info(crawl_jobs)").all() as { name: string }[];
       if (!jobColumns.some((column) => column.name === "robots_deferred_until")) {
         this.db.run("ALTER TABLE crawl_jobs ADD COLUMN robots_deferred_until TEXT");
@@ -427,6 +472,8 @@ export class LocalCoordinatorStore implements CoordinatorStore, PublicCatalogSto
       ON source_leads(first_seen_node_id,first_seen_at DESC,lead_key DESC)`);
     this.db.run(`CREATE INDEX IF NOT EXISTS idx_source_leads_last_node
       ON source_leads(last_seen_node_id,last_seen_at DESC,lead_key DESC)`);
+    this.db.run("CREATE INDEX IF NOT EXISTS idx_crawl_jobs_lease_profile ON crawl_jobs(lease_profile_id)");
+    this.db.run("CREATE INDEX IF NOT EXISTS idx_crawl_jobs_source_rule ON crawl_jobs(source_rule_id)");
     if (autoSeed) {
       this.seedInitialJobs();
     }
@@ -442,15 +489,43 @@ export class LocalCoordinatorStore implements CoordinatorStore, PublicCatalogSto
     }).immediate();
   }
 
+  seedInitialProfiles(actor: string = "system-bootstrap"): void {
+    const nowMs = this.now();
+    this.db.transaction(() => {
+      for (const p of DEFAULT_APPROVED_SOURCE_PROFILES) {
+        const expiresAt = new Date(nowMs + p.expiresInDays * 24 * 60 * 60 * 1000).toISOString();
+        const existing = this.db.prepare(`SELECT 1 FROM source_access_profiles
+          WHERE platform=? AND origin=? AND path_scope=? AND purpose=? AND disabled_at IS NULL AND expires_at>? LIMIT 1`)
+          .get(p.platform, p.origin, p.pathScope, p.purpose, new Date(nowMs).toISOString());
+        if (!existing) {
+          this.createSourceAccessProfile({
+            schemaVersion: 1,
+            platform: p.platform,
+            origin: p.origin,
+            pathScope: p.pathScope,
+            method: p.method,
+            purpose: p.purpose,
+            minDelayMs: p.minDelayMs,
+            expiresAt,
+            reviewReference: p.reviewReference,
+            reason: p.reason,
+            retainClasses: p.retainClasses,
+            publishClasses: p.publishClasses
+          }, actor);
+        }
+      }
+    }).immediate();
+  }
+
   close(): void { this.db.close(true); }
 
   private reserveRobotsRefreshInTransaction(origin: string, now: string, expires: string,
     profileDelayMs: number): string | null {
     const leaseId = crypto.randomUUID();
-    const result = this.db.prepare(`INSERT INTO origin_robots_refresh_leases(origin,lease_id,lease_expires_at)
+    const result = this.db.prepare(`INSERT INTO origin_robots(origin,refresh_lease_id,refresh_lease_expires_at)
       VALUES (?,?,?) ON CONFLICT(origin) DO UPDATE SET
-        lease_id=excluded.lease_id,lease_expires_at=excluded.lease_expires_at
-      WHERE origin_robots_refresh_leases.lease_expires_at<=?`).run(origin, leaseId, expires, now);
+        refresh_lease_id=excluded.refresh_lease_id,refresh_lease_expires_at=excluded.refresh_lease_expires_at
+      WHERE origin_robots.refresh_lease_expires_at IS NULL OR origin_robots.refresh_lease_expires_at<=?`).run(origin, leaseId, expires, now);
     if (result.changes !== 1) return null;
     const floor = this.db.prepare("SELECT min_delay_ms FROM origin_leases WHERE origin=?")
       .get(origin) as { min_delay_ms: number };
@@ -500,9 +575,8 @@ export class LocalCoordinatorStore implements CoordinatorStore, PublicCatalogSto
       for (;;) {
         const due = this.db.prepare(`SELECT o.origin FROM origin_leases o
           LEFT JOIN origin_robots r ON r.origin=o.origin
-          LEFT JOIN origin_robots_refresh_leases l ON l.origin=o.origin
-          WHERE o.origin>? AND o.next_allowed_at<=? AND (r.origin IS NULL OR r.expires_at<=?)
-            AND (l.origin IS NULL OR l.lease_expires_at<=?)
+          WHERE o.origin>? AND o.next_allowed_at<=? AND (r.origin IS NULL OR r.expires_at IS NULL OR r.expires_at<=?)
+            AND (r.refresh_lease_expires_at IS NULL OR r.refresh_lease_expires_at<=?)
             AND (o.active_job_id IS NULL OR o.lease_expires_at<=?)
             AND EXISTS (SELECT 1 FROM crawl_jobs j WHERE j.origin=o.origin
               AND j.state!='blocked' AND j.next_fetch_at<=?
@@ -522,20 +596,24 @@ export class LocalCoordinatorStore implements CoordinatorStore, PublicCatalogSto
   }
 
   releaseRobotsRefresh(origin: string, leaseId: string): boolean {
-    const result = this.db.prepare("DELETE FROM origin_robots_refresh_leases WHERE origin=? AND lease_id=?")
+    const deleted = this.db.prepare("DELETE FROM origin_robots WHERE origin=? AND refresh_lease_id=? AND snapshot_id IS NULL")
+      .run(origin, leaseId);
+    if (deleted.changes === 1) return true;
+    const result = this.db.prepare("UPDATE origin_robots SET refresh_lease_id=NULL, refresh_lease_expires_at=NULL WHERE origin=? AND refresh_lease_id=?")
       .run(origin, leaseId);
     return result.changes === 1;
   }
 
-  private writeRobotsSnapshotInTransaction(parsed: OriginRobotsSnapshot, nowMs: number): void {
+  private writeRobotsSnapshotInTransaction(parsed: OriginRobotsSnapshot, nowMs: number, clearLease = false): void {
     const fetchedAt = new Date(nowMs).toISOString();
     const ttlMs = (parsed.statusCode >= 200 && parsed.statusCode < 300) ||
       robotsResultAllowsMissingFile(parsed.statusCode) ? 24 * 60 * 60 * 1000 : 60 * 60 * 1000;
     const expiresAt = new Date(nowMs + ttlMs).toISOString();
+    const leaseUpdate = clearLease ? ",refresh_lease_id=NULL,refresh_lease_expires_at=NULL" : "";
     this.db.prepare(`INSERT INTO origin_robots(origin,snapshot_id,status_code,body,fetched_at,expires_at)
       VALUES (?,?,?,?,?,?) ON CONFLICT(origin) DO UPDATE SET
       snapshot_id=excluded.snapshot_id,status_code=excluded.status_code,body=excluded.body,
-      fetched_at=excluded.fetched_at,expires_at=excluded.expires_at`)
+      fetched_at=excluded.fetched_at,expires_at=excluded.expires_at${leaseUpdate}`)
       .run(parsed.origin, crypto.randomUUID(), parsed.statusCode, parsed.body, fetchedAt, expiresAt);
     // Reconsider only jobs previously deferred by robots; normal revisit times stay intact.
     this.db.prepare(`UPDATE crawl_jobs SET next_fetch_at=?,robots_deferred_until=NULL
@@ -549,11 +627,10 @@ export class LocalCoordinatorStore implements CoordinatorStore, PublicCatalogSto
     const nowMs = this.now();
     const now = new Date(nowMs).toISOString();
     const completed = this.db.transaction(() => {
-      const held = this.db.prepare(`SELECT 1 FROM origin_robots_refresh_leases
-        WHERE origin=? AND lease_id=? AND lease_expires_at>?`).get(origin, leaseId, now);
+      const held = this.db.prepare(`SELECT 1 FROM origin_robots
+        WHERE origin=? AND refresh_lease_id=? AND refresh_lease_expires_at>?`).get(origin, leaseId, now);
       if (!held || this.approvedDueProfileDelayForOrigin(origin, now) === null) return false;
-      this.writeRobotsSnapshotInTransaction(parsed, nowMs);
-      this.db.prepare("DELETE FROM origin_robots_refresh_leases WHERE origin=? AND lease_id=?").run(origin, leaseId);
+      this.writeRobotsSnapshotInTransaction(parsed, nowMs, true);
       return true;
     }).immediate();
     if (completed) this.robotsMatchers.delete(origin);
@@ -658,7 +735,7 @@ export class LocalCoordinatorStore implements CoordinatorStore, PublicCatalogSto
       ? [...new Set(candidateCapabilities)]
       : [...PlatformSchema.options];
     const now = new Date(this.now()).toISOString();
-    const activeCutoff = new Date(this.now() - 15 * 60 * 1000).toISOString();
+    const activeCutoff = new Date(this.now() - 5 * 60 * 1000).toISOString();
 
     const jobsByPlatform = new Map<string, number>();
     const jobRows = this.db.prepare(`
@@ -723,8 +800,8 @@ export class LocalCoordinatorStore implements CoordinatorStore, PublicCatalogSto
       : this.evaluateWorkforceDistribution();
     return this.db.transaction(() => {
       const token = this.createNodeCredential(parsed.nodeId, capabilities);
-      this.db.prepare(`INSERT INTO node_credential_actions(node_id,actor,action,reason,occurred_at)
-        VALUES (?,?,'issue',?,?)`).run(parsed.nodeId, actor, parsed.reason, new Date(this.now()).toISOString());
+      this.db.prepare(`INSERT INTO operator_audit_log(entity_type,entity_id,actor,action,reason,occurred_at)
+        VALUES ('node',?,?, 'issue', ?, ?)`).run(parsed.nodeId, actor, parsed.reason, new Date(this.now()).toISOString());
       return token;
     }).immediate();
   }
@@ -735,8 +812,8 @@ export class LocalCoordinatorStore implements CoordinatorStore, PublicCatalogSto
     if (!actor.trim() || actor.length > 100) throw new Error("Operator actor required");
     const now = new Date(this.now()).toISOString();
     this.db.transaction(() => {
-      const audit = this.db.prepare(`INSERT INTO node_credential_actions(node_id,actor,action,reason,occurred_at)
-        SELECT node_id,?,'revoke',?,? FROM node_credentials WHERE node_id=?`).run(actor, parsed.reason, now, nodeId);
+      const audit = this.db.prepare(`INSERT INTO operator_audit_log(entity_type,entity_id,actor,action,reason,occurred_at)
+        SELECT 'node',node_id,?,'revoke',?,? FROM node_credentials WHERE node_id=?`).run(actor, parsed.reason, now, nodeId);
       if (audit.changes !== 1) throw new Error("Node not found");
       this.db.prepare("UPDATE node_credentials SET revoked_at=COALESCE(revoked_at,?) WHERE node_id=?").run(now, nodeId);
     }).immediate();
@@ -771,7 +848,7 @@ export class LocalCoordinatorStore implements CoordinatorStore, PublicCatalogSto
     if (supplied.length !== expected.length || !crypto.timingSafeEqual(supplied, expected)) return null;
 
     const storedCapabilities = JSON.parse(row.capabilities_json) as Platform[];
-    if (isCapabilityToken(bearer)) {
+    if (!isCapabilityToken(bearer)) return null;
       const parsed = parseCapabilityToken(bearer);
       if (!parsed) return null;
       const parsedSet = new Set(parsed.capabilities);
@@ -779,7 +856,7 @@ export class LocalCoordinatorStore implements CoordinatorStore, PublicCatalogSto
       if (parsedSet.size !== storedSet.size || [...parsedSet].some((c) => !storedSet.has(c))) {
         return null;
       }
-    }
+
     return { nodeId, capabilities: storedCapabilities, credentialVersion: row.token_hash };
   }
 
@@ -883,8 +960,8 @@ export class LocalCoordinatorStore implements CoordinatorStore, PublicCatalogSto
         .get(parsed.href) as { job_id: string; platform: Platform; job_purpose: SourcePurpose };
       if (stored.platform !== platform) throw new Error("Existing job has a different reviewed platform");
       if (stored.job_purpose !== purpose) throw new Error("Existing job has a different reviewed purpose");
-      if (audit) this.db.prepare(`INSERT INTO job_seed_actions(action_id,job_id,actor,reason,occurred_at)
-        VALUES (?,?,?,?,?)`).run(crypto.randomUUID(), stored.job_id, audit.actor, audit.reason.trim(), now);
+      if (audit) this.db.prepare(`INSERT INTO operator_audit_log(entity_type,entity_id,actor,action,reason,occurred_at)
+        VALUES ('job',?,?, 'seed', ?, ?)`).run(stored.job_id, audit.actor, audit.reason.trim(), now);
       return stored.job_id;
     }).immediate();
   }
@@ -1014,9 +1091,8 @@ export class LocalCoordinatorStore implements CoordinatorStore, PublicCatalogSto
         parsed.pathScope, parsed.exactQuery ?? null, parsed.method, parsed.purpose, parsed.minDelayMs, parsed.expiresAt,
         parsed.reviewReference, parsed.reason, JSON.stringify(parsed.retainClasses),
         JSON.stringify(parsed.publishClasses), now);
-      this.db.prepare(`INSERT INTO source_access_profile_actions
-        (profile_id,actor,action,reason,occurred_at) VALUES (?,?,'create',?,?)`)
-        .run(profileId, actor, parsed.reason, now);
+      this.db.prepare(`INSERT INTO operator_audit_log(entity_type,entity_id,actor,action,reason,occurred_at)
+        VALUES ('profile',?,?, 'create', ?, ?)`).run(profileId, actor, parsed.reason, now);
       return this.sourceAccessProfileFromRow(this.db.prepare("SELECT * FROM source_access_profiles WHERE profile_id=?")
         .get(profileId) as SourceAccessProfileRow);
     }).immediate();
@@ -1041,11 +1117,10 @@ export class LocalCoordinatorStore implements CoordinatorStore, PublicCatalogSto
           WHERE origin=? AND active_job_id=?`).run(job.origin, job.job_id);
       }
       if (this.approvedDueProfileDelayForOrigin(row.origin, now) === null) {
-        this.db.prepare("DELETE FROM origin_robots_refresh_leases WHERE origin=?").run(row.origin);
+        this.db.prepare("UPDATE origin_robots SET refresh_lease_id=NULL, refresh_lease_expires_at=NULL WHERE origin=?").run(row.origin);
       }
-      this.db.prepare(`INSERT INTO source_access_profile_actions
-        (profile_id,actor,action,reason,occurred_at) VALUES (?,?,'disable',?,?)`)
-        .run(profileId, actor, reason.trim(), now);
+      this.db.prepare(`INSERT INTO operator_audit_log(entity_type,entity_id,actor,action,reason,occurred_at)
+        VALUES ('profile',?,?, 'disable', ?, ?)`).run(profileId, actor, reason.trim(), now);
       return this.sourceAccessProfileFromRow(this.db.prepare("SELECT * FROM source_access_profiles WHERE profile_id=?")
         .get(profileId) as SourceAccessProfileRow);
     }).immediate();
@@ -1065,8 +1140,8 @@ export class LocalCoordinatorStore implements CoordinatorStore, PublicCatalogSto
         (rule_id,lead_kind,origin,path_scope,min_delay_ms,expires_at,review_reference,reason,created_at)
         VALUES (?,?,?,?,?,?,?,?,?)`).run(ruleId, parsed.leadKind, parsed.origin, parsed.pathScope,
           parsed.minDelayMs, parsed.expiresAt, parsed.reviewReference, parsed.reason, now);
-      this.db.prepare(`INSERT INTO operator_rule_actions(rule_id,actor,action,reason,occurred_at)
-        VALUES (?,?,'create',?,?)`).run(ruleId, actor, parsed.reason, now);
+      this.db.prepare(`INSERT INTO operator_audit_log(entity_type,entity_id,actor,action,reason,occurred_at)
+        VALUES ('rule',?,?, 'create', ?, ?)`).run(ruleId, actor, parsed.reason, now);
       return this.autoQueueRuleFromRow(this.db.prepare("SELECT * FROM lead_autoqueue_rules WHERE rule_id=?")
         .get(ruleId) as AutoQueueRuleRow);
     }).immediate();
@@ -1089,8 +1164,8 @@ export class LocalCoordinatorStore implements CoordinatorStore, PublicCatalogSto
           this.db.prepare(`UPDATE origin_leases SET active_job_id=NULL,lease_expires_at=NULL
             WHERE origin=? AND active_job_id=?`).run(job.origin, job.job_id);
         }
-        this.db.prepare(`INSERT INTO operator_rule_actions(rule_id,actor,action,reason,occurred_at)
-          VALUES (?,?,'disable',?,?)`).run(ruleId, actor, reason.trim(), now);
+        this.db.prepare(`INSERT INTO operator_audit_log(entity_type,entity_id,actor,action,reason,occurred_at)
+          VALUES ('rule',?,?, 'disable', ?, ?)`).run(ruleId, actor, reason.trim(), now);
         row.disabled_at = now;
       }
       return this.autoQueueRuleFromRow(row);
@@ -1125,8 +1200,8 @@ export class LocalCoordinatorStore implements CoordinatorStore, PublicCatalogSto
       const jobId = this.seedJob(lead.target_url, "vpm", minDelayMs, sourceRuleId, "discovery");
       if (lead.status !== "approved") {
         this.db.prepare("UPDATE source_leads SET status='approved' WHERE lead_key=?").run(leadKey);
-        this.db.prepare(`INSERT INTO operator_actions(actor,action,lead_key,reason,occurred_at)
-          VALUES (?,'approve_lead',?,?,?)`).run(actor, leadKey, reason.trim(), new Date(this.now()).toISOString());
+        this.db.prepare(`INSERT INTO operator_audit_log(entity_type,entity_id,actor,action,reason,occurred_at)
+          VALUES ('lead',?,?,'approve_lead',?,?)`).run(leadKey, actor, reason.trim(), new Date(this.now()).toISOString());
       }
       return jobId;
     }).immediate();
@@ -1141,9 +1216,34 @@ export class LocalCoordinatorStore implements CoordinatorStore, PublicCatalogSto
       if (lead.status === "approved") throw new Error("Approved lead cannot be rejected without revoking its job");
       if (lead.status === "rejected") return;
       this.db.prepare("UPDATE source_leads SET status='rejected' WHERE lead_key=?").run(leadKey);
-      this.db.prepare(`INSERT INTO operator_actions(actor,action,lead_key,reason,occurred_at)
-        VALUES (?,'reject_lead',?,?,?)`).run(actor, leadKey, reason.trim(), new Date(this.now()).toISOString());
+      this.db.prepare(`INSERT INTO operator_audit_log(entity_type,entity_id,actor,action,reason,occurred_at)
+        VALUES ('lead',?,?,'reject_lead',?,?)`).run(leadKey, actor, reason.trim(), new Date(this.now()).toISOString());
     }).immediate();
+  }
+
+  listAuditLogs(options?: {
+    entityType?: "node" | "lead" | "job" | "rule" | "profile";
+    entityId?: string;
+    limit?: number;
+  }): Array<{ action_id: number; entity_type: string; entity_id: string; actor: string; action: string; reason: string; occurred_at: string }> {
+    const limit = Math.min(Math.max(options?.limit ?? 50, 1), 100);
+    let sql = "SELECT * FROM operator_audit_log";
+    const conditions: string[] = [];
+    const params: SQLQueryBindings[] = [];
+    if (options?.entityType) {
+      conditions.push("entity_type = ?");
+      params.push(options.entityType);
+    }
+    if (options?.entityId) {
+      conditions.push("entity_id = ?");
+      params.push(options.entityId);
+    }
+    if (conditions.length > 0) {
+      sql += ` WHERE ${conditions.join(" AND ")}`;
+    }
+    sql += " ORDER BY occurred_at DESC, action_id DESC LIMIT ?";
+    params.push(limit);
+    return this.db.prepare(sql).all(...params) as Array<{ action_id: number; entity_type: string; entity_id: string; actor: string; action: string; reason: string; occurred_at: string }>;
   }
 
   claim(request: ClaimRequest, principal: NodePrincipal): ClaimResponse {
@@ -1151,6 +1251,7 @@ export class LocalCoordinatorStore implements CoordinatorStore, PublicCatalogSto
     if (request.capabilities.some((capability) => !principal.capabilities.includes(capability))) {
       throw new CoordinatorConflict("Capability not granted to node", 403);
     }
+    const maxJobs = Math.min(Math.max(request.maxJobs ?? 1, 1), 10);
     const nowMs = this.now();
     const now = new Date(nowMs).toISOString();
     return this.db.transaction(() => {
@@ -1160,9 +1261,8 @@ export class LocalCoordinatorStore implements CoordinatorStore, PublicCatalogSto
           r.body AS robots_body,r.expires_at AS robots_expires_at FROM crawl_jobs j
         JOIN origin_leases o ON o.origin = j.origin
         JOIN origin_robots r ON r.origin = j.origin AND r.expires_at > ?
-        LEFT JOIN origin_robots_refresh_leases rl ON rl.origin=j.origin AND rl.lease_expires_at>?
+          AND (r.refresh_lease_expires_at IS NULL OR r.refresh_lease_expires_at <= ?)
         WHERE j.platform IN (${request.capabilities.map(() => "?").join(",")})
-          AND rl.origin IS NULL
           AND j.next_fetch_at <= ?
           AND (j.state IN ('pending','done','backoff') OR (j.state='leased' AND j.lease_expires_at <= ?))
           AND o.next_allowed_at <= ?
@@ -1183,8 +1283,13 @@ export class LocalCoordinatorStore implements CoordinatorStore, PublicCatalogSto
       `);
       // Disallowed ready rows are deferred in bounded batches so they cannot hide
       // a later allowed origin behind the first 100 rows.
+      const leasedJobs: CrawlJob[] = [];
+      const reservedOrigins = new Set<string>();
+      const MAX_CLAIM_SCAN_PAGES = 3;
+      let pagesScanned = 0;
       let offset = 0;
       for (;;) {
+        if (pagesScanned++ >= MAX_CLAIM_SCAN_PAGES) break;
         const candidates = selectCandidates.all(now, now, ...request.capabilities, now, now, now, now, now,
           now, offset) as (JobRow & {
           robots_snapshot_id: string; robots_status_code: number; robots_body: string; robots_expires_at: string
@@ -1192,6 +1297,7 @@ export class LocalCoordinatorStore implements CoordinatorStore, PublicCatalogSto
         if (candidates.length === 0) break;
         let deferred = false;
         for (const job of candidates) {
+          if (reservedOrigins.has(job.origin)) continue;
           const profile = this.activeSourceAccessProfileForTarget(job.platform, job.url, job.job_purpose);
           if (!profile) continue;
           if (!this.robotsAllows(job)) {
@@ -1207,7 +1313,7 @@ export class LocalCoordinatorStore implements CoordinatorStore, PublicCatalogSto
             next_allowed_at: string; min_delay_ms: number;
           };
           if (lease.next_allowed_at > now || (lease.active_job_id && lease.lease_expires_at && lease.lease_expires_at > now)) continue;
-          const expires = new Date(nowMs + 5 * 60 * 1000).toISOString();
+          const expires = new Date(nowMs + 120 * 1000).toISOString();
           const leaseId = crypto.randomUUID();
           const nextAllowed = new Date(nowMs + Math.max(lease.min_delay_ms, profile.minDelayMs)).toISOString();
           this.db.prepare(`UPDATE crawl_jobs SET state='leased',claimed_by=?,lease_id=?,
@@ -1215,18 +1321,32 @@ export class LocalCoordinatorStore implements CoordinatorStore, PublicCatalogSto
             .run(principal.nodeId, leaseId, expires, profile.profileId, job.job_id);
           this.db.prepare("UPDATE origin_leases SET active_job_id=?,lease_expires_at=?,next_allowed_at=? WHERE origin=?")
             .run(job.job_id, expires, nextAllowed, job.origin);
-          return {
-            schemaVersion: PROTOCOL_VERSION, status: "leased" as const,
-            job: { jobId: job.job_id, leaseId, platform: job.platform, purpose: job.job_purpose,
-              url: job.url, origin: job.origin,
-              leaseExpiresAt: expires, retainClasses: profile.retainClasses,
-              etag: job.etag, lastModified: job.last_modified }
-          };
+          reservedOrigins.add(job.origin);
+          leasedJobs.push({
+            jobId: job.job_id, leaseId, platform: job.platform, purpose: job.job_purpose,
+            url: job.url, origin: job.origin,
+            leaseExpiresAt: expires, retainClasses: profile.retainClasses,
+            etag: job.etag, lastModified: job.last_modified
+          });
+          if (leasedJobs.length >= maxJobs) {
+            return {
+              schemaVersion: PROTOCOL_VERSION, status: "leased" as const,
+              job: leasedJobs[0],
+              jobs: leasedJobs
+            };
+          }
         }
         if (deferred) offset = 0;
         else offset += candidates.length;
       }
-      return { schemaVersion: PROTOCOL_VERSION, status: "empty" as const, retryAfterMs: 1000 };
+      if (leasedJobs.length > 0) {
+        return {
+          schemaVersion: PROTOCOL_VERSION, status: "leased" as const,
+          job: leasedJobs[0],
+          jobs: leasedJobs
+        };
+      }
+      return { schemaVersion: PROTOCOL_VERSION, status: "empty" as const, retryAfterMs: 5000 };
     }).immediate();
   }
 
@@ -1438,6 +1558,7 @@ export class LocalCoordinatorStore implements CoordinatorStore, PublicCatalogSto
         // When an observation has an accepted or provisional identity link to a canonical package
         // (or if it is a storefront platform with an outbound match), upsert a row into package_fronts.
         const linkedCanonicalIds = new Set<string>();
+        const highConfidenceCanonicalIds = new Set<string>();
         const existingLinks = this.db.prepare(`
           SELECT canonical_id FROM identity_links
           WHERE source_key = ? AND review_state IN ('accepted', 'provisional')
@@ -1499,7 +1620,7 @@ export class LocalCoordinatorStore implements CoordinatorStore, PublicCatalogSto
           // Outbound match 2: source leads where target_url matches this job URL (e.g. storefront discovered from VPM)
           const normalizedJobUrl = job.url.toLowerCase().replace(/\/+$/, "");
           const jobLeadMatches = this.db.prepare(`
-            SELECT DISTINCT il.canonical_id
+            SELECT DISTINCT il.canonical_id, sl.discovered_from_item_key, sl.claimed_package_id, sl.status as lead_status
             FROM source_leads sl
             JOIN identity_links il ON (
               (sl.discovered_from_item_key IS NOT NULL AND (
@@ -1511,9 +1632,18 @@ export class LocalCoordinatorStore implements CoordinatorStore, PublicCatalogSto
             )
             WHERE LOWER(RTRIM(sl.target_url, '/')) = ?
               AND il.review_state IN ('accepted', 'provisional')
-          `).all(normalizedJobUrl) as { canonical_id: string }[];
-          for (const { canonical_id } of jobLeadMatches) {
-            linkedCanonicalIds.add(canonical_id);
+          `).all(normalizedJobUrl) as {
+            canonical_id: string;
+            discovered_from_item_key: string | null;
+            claimed_package_id: string | null;
+            lead_status: string;
+          }[];
+          for (const r of jobLeadMatches) {
+            linkedCanonicalIds.add(r.canonical_id);
+            // High-confidence: approved lead (operator approved or high-confidence auto-pass) -> auto-link as accepted
+            if (r.lead_status === "approved") {
+              highConfidenceCanonicalIds.add(r.canonical_id);
+            }
           }
         }
 
@@ -1551,12 +1681,23 @@ export class LocalCoordinatorStore implements CoordinatorStore, PublicCatalogSto
 
         for (const canonicalId of linkedCanonicalIds) {
           if (isStorefront) {
+            const isHighConfidence = highConfidenceCanonicalIds.has(canonicalId);
             const hasLink = this.db.prepare(`SELECT 1 FROM identity_links WHERE source_key=? AND canonical_id=?`).get(sourceKey, canonicalId);
             if (!hasLink) {
               this.db.prepare(`INSERT INTO identity_links
-                (link_id,source_key,canonical_id,evidence_kind,confidence,review_state,created_at)
-                VALUES (?,?,?,'cross_storefront_link',0.8,'provisional',?)`).run(
-                  crypto.randomUUID(), sourceKey, canonicalId, now);
+                (link_id,source_key,canonical_id,evidence_kind,confidence,review_state,created_at,reviewed_at)
+                VALUES (?,?,?,'cross_storefront_link',?,?,?,?)`).run(
+                  crypto.randomUUID(), sourceKey, canonicalId,
+                  isHighConfidence ? 0.95 : 0.8,
+                  isHighConfidence ? "accepted" : "provisional",
+                  now,
+                  isHighConfidence ? now : null);
+            } else if (isHighConfidence) {
+              this.db.prepare(`UPDATE identity_links
+                SET review_state='accepted', confidence=0.95, reviewed_at=?
+                WHERE source_key=? AND canonical_id=? AND review_state='provisional'`).run(
+                now, sourceKey, canonicalId
+              );
             }
 
             const rawStorefrontUrl = (observation as any).storefrontUrl || job.url;
@@ -1653,8 +1794,8 @@ export class LocalCoordinatorStore implements CoordinatorStore, PublicCatalogSto
                 this.approveVpmListingLead(leadKey, rule.minDelayMs, `auto-rule:${rule.ruleId}`,
                   "Matched reviewed auto-queue rule", rule.ruleId);
               } catch (cause) {
-                this.db.prepare(`INSERT INTO operator_rule_actions(rule_id,actor,action,reason,occurred_at)
-                  VALUES (?,'coordinator','promotion_failed',?,?)`)
+                this.db.prepare(`INSERT INTO operator_audit_log(entity_type,entity_id,actor,action,reason,occurred_at)
+                  VALUES ('rule',?,'coordinator','promotion_failed',?,?)`)
                   .run(rule.ruleId, cause instanceof Error ? cause.message.slice(0, 300) : "Unknown promotion failure", now);
               }
             }
@@ -1706,6 +1847,55 @@ export class LocalCoordinatorStore implements CoordinatorStore, PublicCatalogSto
         .run(request.leaseId, job.job_id, principal.nodeId, request.idempotencyKey, requestDigest, JSON.stringify(response), now);
       return response;
     }).immediate();
+  }
+
+  submitBatch(request: BatchResultRequest, principal: NodePrincipal): BatchResultResponse {
+    if (request.nodeId !== principal.nodeId) throw new CoordinatorConflict("Node identity mismatch", 403);
+    const receipts: BatchResultReceipt[] = [];
+    for (const item of request.results) {
+      try {
+        const res = this.submit({
+          schemaVersion: request.schemaVersion,
+          nodeId: request.nodeId,
+          jobId: item.jobId,
+          leaseId: item.leaseId,
+          idempotencyKey: item.idempotencyKey,
+          outcome: item.outcome
+        }, principal);
+        receipts.push({
+          status: "accepted",
+          jobId: item.jobId,
+          duplicate: res.duplicate,
+          sourceVersionCreated: res.sourceVersionCreated
+        });
+      } catch (error) {
+        if (error instanceof CoordinatorConflict) {
+          const isLeaseExpired = error.message.includes("lease") || error.message.includes("live lease");
+          const isTerminal = error.status === 403 || error.status === 404 ||
+            isLeaseExpired || error.message.includes("not found");
+          const code = isLeaseExpired ? "lease_expired" : error.status === 403 ? "forbidden" : error.status === 404 ? "not_found" : "conflict";
+          receipts.push({
+            status: "rejected",
+            jobId: item.jobId,
+            terminal: isTerminal,
+            error: error.message,
+            code
+          });
+        } else {
+          receipts.push({
+            status: "rejected",
+            jobId: item.jobId,
+            terminal: false,
+            error: error instanceof Error ? error.message : "Internal error",
+            code: "internal_error"
+          });
+        }
+      }
+    }
+    return {
+      schemaVersion: PROTOCOL_VERSION,
+      receipts
+    };
   }
 
   upsertSourceItem(item: {
@@ -2099,8 +2289,20 @@ export class LocalCoordinatorStore implements CoordinatorStore, PublicCatalogSto
   }
 
   deleteCanonicalPackage(canonicalId: string): boolean {
+    const existing = this.db.prepare(
+      "SELECT canonical_id, content_rating FROM canonical_packages WHERE canonical_id = ?"
+    ).get(canonicalId) as { canonical_id: string; content_rating: string } | undefined;
+
+    this.db.prepare("DELETE FROM identity_links WHERE canonical_id = ?").run(canonicalId);
     const res = this.db.prepare("DELETE FROM canonical_packages WHERE canonical_id = ?").run(canonicalId);
-    return res.changes > 0;
+    const deleted = res.changes > 0;
+    if (deleted && existing && existing.content_rating === "general") {
+      const now = new Date(this.now()).toISOString();
+      this.db.prepare(
+        "INSERT OR IGNORE INTO catalog_tombstones (canonical_id, reason, recorded_at) VALUES (?, 'deleted', ?)"
+      ).run(canonicalId, now);
+    }
+    return deleted;
   }
 
   private syncPackageFrontFromSourceItem(canonicalId: string, sourceKey: string): void {
@@ -2162,69 +2364,170 @@ export class LocalCoordinatorStore implements CoordinatorStore, PublicCatalogSto
     return next;
   }
 
+  private buildCatalogPackagesBatch(pkgRows: Array<{
+    canonical_id: string; umbrella: string; category: string; lifecycle: string;
+    display_name: string; vpm_id: string | null; created_at: string; updated_at: string;
+    published_at?: string | null; timestamp_confidence?: string | null;
+    content_rating?: string | null;
+  }>): CatalogPackage[] {
+    if (pkgRows.length === 0) return [];
+    const canonicalIds = pkgRows.map((p) => p.canonical_id);
+    const placeholders = canonicalIds.map(() => "?").join(",");
+
+    const linkRows = this.db.prepare(`SELECT il.link_id, il.canonical_id, il.source_key, il.evidence_kind, il.confidence, il.created_at,
+        sap.publish_classes_json
+      FROM identity_links il
+      LEFT JOIN (
+        SELECT sv.source_key, sap_inner.publish_classes_json
+        FROM source_versions sv
+        JOIN source_access_profiles sap_inner ON sv.source_profile_id = sap_inner.profile_id
+        WHERE sv.version_no = (
+          SELECT MAX(sv2.version_no) FROM source_versions sv2 WHERE sv2.source_key = sv.source_key
+        )
+      ) sap ON il.source_key = sap.source_key
+      WHERE il.canonical_id IN (${placeholders}) AND il.review_state='accepted'
+      ORDER BY il.created_at ASC`).all(...canonicalIds) as Array<{
+      link_id: string; canonical_id: string; source_key: string; evidence_kind: string;
+      confidence: number; created_at: string; publish_classes_json: string | null;
+    }>;
+    const linksByCanonical = new Map<string, CatalogIdentityLink[]>();
+    const canonicalHasLinks = new Set<string>();
+    const canonicalHasPublishableLink = new Set<string>();
+    for (const l of linkRows) {
+      canonicalHasLinks.add(l.canonical_id);
+      let canPublish = true;
+      if (l.publish_classes_json !== null && l.publish_classes_json !== undefined) {
+        try {
+          const parsed = JSON.parse(l.publish_classes_json);
+          canPublish = Array.isArray(parsed) && parsed.length > 0 && parsed.includes("normalized_facts");
+        } catch {
+          canPublish = false;
+        }
+      }
+      if (canPublish) {
+        canonicalHasPublishableLink.add(l.canonical_id);
+        const list = linksByCanonical.get(l.canonical_id) || [];
+        list.push({
+          linkId: l.link_id, sourceKey: l.source_key,
+          evidenceKind: l.evidence_kind as CatalogIdentityLink["evidenceKind"],
+          confidence: l.confidence, createdAt: l.created_at
+        });
+        linksByCanonical.set(l.canonical_id, list);
+      }
+    }
+
+    const frontRows = this.db.prepare(`SELECT pf.front_id, pf.canonical_id, pf.source_key, pf.platform, pf.storefront_url, pf.price, pf.currency, pf.availability, pf.observed_at,
+        sap.publish_classes_json
+      FROM package_fronts pf
+      LEFT JOIN (
+        SELECT sv.source_key, sap_inner.publish_classes_json
+        FROM source_versions sv
+        JOIN source_access_profiles sap_inner ON sv.source_profile_id = sap_inner.profile_id
+        WHERE sv.version_no = (
+          SELECT MAX(sv2.version_no) FROM source_versions sv2 WHERE sv2.source_key = sv.source_key
+        )
+      ) sap ON pf.source_key = sap.source_key
+      WHERE pf.canonical_id IN (${placeholders})
+        AND EXISTS (
+          SELECT 1 FROM identity_links il
+          WHERE il.canonical_id = pf.canonical_id
+            AND il.source_key = pf.source_key
+            AND il.review_state = 'accepted'
+        )
+      ORDER BY observed_at ASC, front_id ASC`).all(...canonicalIds) as Array<{
+      front_id: string; canonical_id: string; source_key: string; platform: Platform;
+      storefront_url: string; price: number | null; currency: string | null;
+      availability: "available" | "delisted" | "unknown"; observed_at: string;
+      publish_classes_json: string | null;
+    }>;
+    const frontsByCanonical = new Map<string, PackageFront[]>();
+    for (const f of frontRows) {
+      let canPublish = true;
+      if (f.publish_classes_json !== null && f.publish_classes_json !== undefined) {
+        try {
+          const parsed = JSON.parse(f.publish_classes_json);
+          canPublish = Array.isArray(parsed) && parsed.length > 0 && parsed.includes("normalized_facts");
+        } catch {
+          canPublish = false;
+        }
+      }
+      if (canPublish) {
+        const list = frontsByCanonical.get(f.canonical_id) || [];
+        list.push({
+          frontId: f.front_id,
+          canonicalId: f.canonical_id,
+          sourceKey: f.source_key,
+          platform: f.platform,
+          storefrontUrl: f.storefront_url,
+          price: f.price,
+          currency: f.currency,
+          availability: f.availability,
+          observedAt: f.observed_at
+        });
+        frontsByCanonical.set(f.canonical_id, list);
+      }
+    }
+
+    return pkgRows
+      .filter((pkg) => !canonicalHasLinks.has(pkg.canonical_id) || canonicalHasPublishableLink.has(pkg.canonical_id))
+      .map((pkg) => ({
+        canonicalId: pkg.canonical_id,
+        umbrella: pkg.umbrella as CatalogPackage["umbrella"],
+        category: pkg.category,
+        lifecycle: pkg.lifecycle as CatalogPackage["lifecycle"],
+        displayName: pkg.display_name,
+        vpmId: pkg.vpm_id,
+        createdAt: pkg.created_at,
+        updatedAt: pkg.updated_at,
+        publishedAt: pkg.published_at ?? null,
+        timestampConfidence: (pkg.timestamp_confidence as CatalogPackage["timestampConfidence"]) ?? null,
+        contentRating: (pkg.content_rating as CatalogPackage["contentRating"]) || "general",
+        acceptedLinks: linksByCanonical.get(pkg.canonical_id) || [],
+        fronts: frontsByCanonical.get(pkg.canonical_id) || []
+      }));
+  }
+
   private buildCatalogPackage(pkg: {
     canonical_id: string; umbrella: string; category: string; lifecycle: string;
     display_name: string; vpm_id: string | null; created_at: string; updated_at: string;
+    published_at?: string | null; timestamp_confidence?: string | null;
+    content_rating?: string | null;
   }): CatalogPackage {
-    const linkRows = this.db.prepare(`SELECT link_id,source_key,evidence_kind,confidence,created_at
-      FROM identity_links WHERE canonical_id=? AND review_state='accepted'
-      ORDER BY created_at ASC`).all(pkg.canonical_id) as {
-        link_id: string; source_key: string; evidence_kind: string;
-        confidence: number; created_at: string;
-      }[];
-    const acceptedLinks: CatalogIdentityLink[] = linkRows.map((l) => ({
-      linkId: l.link_id, sourceKey: l.source_key,
-      evidenceKind: l.evidence_kind as CatalogIdentityLink["evidenceKind"],
-      confidence: l.confidence, createdAt: l.created_at
-    }));
-    const frontRows = this.db.prepare(`SELECT front_id, canonical_id, source_key, platform, storefront_url, price, currency, availability, observed_at
-      FROM package_fronts WHERE canonical_id=?
-      ORDER BY observed_at ASC, front_id ASC`).all(pkg.canonical_id) as {
-        front_id: string; canonical_id: string; source_key: string; platform: Platform;
-        storefront_url: string; price: number | null; currency: string | null;
-        availability: "available" | "delisted" | "unknown"; observed_at: string;
-      }[];
-    const fronts: PackageFront[] = frontRows.map((f) => ({
-      frontId: f.front_id,
-      canonicalId: f.canonical_id,
-      sourceKey: f.source_key,
-      platform: f.platform,
-      storefrontUrl: f.storefront_url,
-      price: f.price,
-      currency: f.currency,
-      availability: f.availability,
-      observedAt: f.observed_at
-    }));
-    return {
-      canonicalId: pkg.canonical_id,
-      umbrella: pkg.umbrella as CatalogPackage["umbrella"],
-      category: pkg.category,
-      lifecycle: pkg.lifecycle as CatalogPackage["lifecycle"],
-      displayName: pkg.display_name,
-      vpmId: pkg.vpm_id,
-      createdAt: pkg.created_at,
-      updatedAt: pkg.updated_at,
-      acceptedLinks,
-      fronts
-    };
+    const [result] = this.buildCatalogPackagesBatch([pkg]);
+    return result;
   }
 
-  /** Paginated operator read of the canonical catalog (newest first).
+  /** Paginated operator or public read of the canonical catalog (newest first).
    *  Each page embeds only accepted identity links; provisional/rejected links
    *  remain internal review state and are not surfaced here. */
-  listCanonicalPackagesPage(limit: number, cursor: CatalogCursor | null):
-      { packages: CatalogPackage[]; nextCursor: string | null } {
+  listCanonicalPackagesPage(
+    limit: number,
+    cursor: CatalogCursor | null,
+    options: { includeAllRatings?: boolean } = {}
+  ): { packages: CatalogPackage[]; nextCursor: string | null } {
     if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error("Catalog limit must be 1..100");
-    const before = cursor ? "WHERE (p.created_at,p.canonical_id)<(?,?)" : "";
-    const pkgRows = this.db.prepare(`SELECT * FROM canonical_packages p ${before}
+    const conditions: string[] = ["p.content_rating != 'prohibited'"];
+    const params: SQLQueryBindings[] = [];
+    if (!options.includeAllRatings) {
+      conditions.push("p.content_rating = 'general'");
+    }
+    if (cursor) {
+      conditions.push("(p.created_at, p.canonical_id) < (?, ?)");
+      params.push(cursor.createdAt, cursor.canonicalId);
+    }
+    const where = `WHERE ${conditions.join(" AND ")}`;
+    params.push(limit + 1);
+    const pkgRows = this.db.prepare(`SELECT p.canonical_id, p.umbrella, p.category, p.lifecycle, p.display_name, p.vpm_id, p.created_at, p.updated_at, p.published_at, p.timestamp_confidence, p.content_rating FROM canonical_packages p ${where}
       ORDER BY p.created_at DESC, p.canonical_id DESC LIMIT ?`)
-      .all(...(cursor ? [cursor.createdAt, cursor.canonicalId, limit + 1] : [limit + 1])) as {
+      .all(...params) as {
         canonical_id: string; umbrella: string; category: string; lifecycle: string;
         display_name: string; vpm_id: string | null; created_at: string; updated_at: string;
+        published_at?: string | null; timestamp_confidence?: string | null;
+        content_rating?: string | null;
       }[];
     const visible = pkgRows.slice(0, limit);
     const last = visible.at(-1);
-    const packages: CatalogPackage[] = visible.map((pkg) => this.buildCatalogPackage(pkg));
+    const packages: CatalogPackage[] = this.buildCatalogPackagesBatch(visible);
     return {
       packages,
       nextCursor: pkgRows.length > limit && last
@@ -2238,30 +2541,68 @@ export class LocalCoordinatorStore implements CoordinatorStore, PublicCatalogSto
       { epoch: string; deltas: CatalogDelta[]; nextCursor: string | null } {
     if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error("Catalog limit must be 1..100");
     const epoch = this.getCatalogEpoch();
-    const after = cursor ? "WHERE (p.updated_at,p.canonical_id)>(?,?)" : "";
-    const pkgRows = this.db.prepare(`SELECT * FROM canonical_packages p ${after}
-      ORDER BY p.updated_at ASC, p.canonical_id ASC LIMIT ?`)
-      .all(...(cursor ? [cursor.updatedAt, cursor.canonicalId, limit + 1] : [limit + 1])) as {
-        canonical_id: string; umbrella: string; category: string; lifecycle: string;
+    const conditions: string[] = [];
+    const params: SQLQueryBindings[] = [];
+    if (cursor) {
+      conditions.push("(d.updated_at, d.canonical_id) > (?, ?)");
+      params.push(cursor.updatedAt, cursor.canonicalId);
+    }
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+    params.push(limit + 1);
+    const query = `SELECT d.canonical_id, d.umbrella, d.category, d.lifecycle, d.display_name, d.vpm_id, d.created_at, d.updated_at, d.published_at, d.timestamp_confidence, d.content_rating, d.delta_action FROM (
+      SELECT p.canonical_id, p.umbrella, p.category, p.lifecycle, p.display_name, p.vpm_id, p.created_at, p.updated_at, p.published_at, p.timestamp_confidence, p.content_rating,
+        CASE WHEN p.lifecycle = 'delisted' THEN 'delist' ELSE 'upsert' END AS delta_action
+      FROM canonical_packages p WHERE p.content_rating = 'general'
+      UNION ALL
+      SELECT t.canonical_id, NULL AS umbrella, NULL AS category, 'delisted' AS lifecycle, '' AS display_name, NULL AS vpm_id, '' AS created_at, t.recorded_at AS updated_at, NULL AS published_at, NULL AS timestamp_confidence, 'general' AS content_rating, 'delist' AS delta_action
+      FROM catalog_tombstones t
+      WHERE NOT EXISTS (
+        SELECT 1 FROM canonical_packages p
+        WHERE p.canonical_id = t.canonical_id
+          AND p.updated_at = t.recorded_at
+          AND p.lifecycle = 'delisted'
+          AND p.content_rating = 'general'
+      )
+    ) d ${where}
+    ORDER BY d.updated_at ASC, d.canonical_id ASC LIMIT ?`;
+    const pkgRows = this.db.prepare(query)
+      .all(...params) as {
+        canonical_id: string; umbrella: string | null; category: string | null; lifecycle: string;
         display_name: string; vpm_id: string | null; created_at: string; updated_at: string;
+        published_at?: string | null; timestamp_confidence?: string | null;
+        content_rating?: string | null; delta_action: "upsert" | "delist";
       }[];
     const visible = pkgRows.slice(0, limit);
     const last = visible.at(-1);
-    const deltas: CatalogDelta[] = visible.map((pkg) => {
-      if (pkg.lifecycle === "delisted") {
-        return {
+    const nonDelisted = visible.filter((p) => p.delta_action !== "delist");
+    const builtPackages = this.buildCatalogPackagesBatch(nonDelisted as any);
+    const packageMap = new Map(builtPackages.map((p) => [p.canonicalId, p]));
+    const deltas: CatalogDelta[] = [];
+    for (const pkg of visible) {
+      if (pkg.delta_action === "delist") {
+        deltas.push({
           action: "delist",
           canonicalId: pkg.canonical_id,
           updatedAt: pkg.updated_at
-        };
+        });
+      } else {
+        const item = packageMap.get(pkg.canonical_id);
+        if (item) {
+          deltas.push({
+            action: "upsert",
+            canonicalId: pkg.canonical_id,
+            updatedAt: pkg.updated_at,
+            package: item
+          });
+        } else {
+          deltas.push({
+            action: "delist",
+            canonicalId: pkg.canonical_id,
+            updatedAt: pkg.updated_at
+          });
+        }
       }
-      return {
-        action: "upsert",
-        canonicalId: pkg.canonical_id,
-        updatedAt: pkg.updated_at,
-        package: this.buildCatalogPackage(pkg)
-      };
-    });
+    }
     return {
       epoch,
       deltas,
@@ -2276,9 +2617,34 @@ export class LocalCoordinatorStore implements CoordinatorStore, PublicCatalogSto
     if (parsed.reportType !== "removal_request") throw new CoordinatorConflict("Removal report required", 403);
     const reportId = crypto.randomUUID();
     const recordedAt = new Date(this.now()).toISOString();
-    const result = this.db.prepare(`INSERT INTO catalog_reports(report_id,app_id,report_type,payload_json,review_status,recorded_at)
-      SELECT ?,app_id,'removal_request',?,'pending',? FROM registered_apps WHERE app_id=? AND revoked_at IS NULL`)
-      .run(reportId, JSON.stringify(parsed), recordedAt, appId);
+    const targetUrl = parsed.targetUrl ?? null;
+    const canonicalId = parsed.canonicalId ?? null;
+    const reason = parsed.reason ?? "Creator takedown requested by trusted app";
+    const result = this.db.prepare(`INSERT INTO catalog_tickets(ticket_id,ticket_type,app_id,target_url,canonical_id,requester_type,reason,payload_json,review_status,recorded_at)
+      SELECT ?,'removal_report',app_id,?,?,'app',?,?, 'pending',? FROM registered_apps WHERE app_id=? AND revoked_at IS NULL`)
+      .run(reportId, targetUrl, canonicalId, reason, JSON.stringify(parsed), recordedAt, appId);
+    if (result.changes !== 1) throw new CoordinatorConflict("Invalid application credential", 403);
+    return { schemaVersion: 1, status: "accepted", reportId, recordedAt };
+  }
+
+  recordIssueReport(appId: string, input: unknown): ReportSubmissionResponse {
+    const parsed = ReportSubmissionRequestSchema.parse(input);
+    if (parsed.reportType !== "issue_report") throw new CoordinatorConflict("Issue report required", 400);
+    const reportId = crypto.randomUUID();
+    const recordedAt = new Date(this.now()).toISOString();
+    const targetUrl = parsed.targetUrl ? new URL(parsed.targetUrl).href : null;
+    const canonicalId = parsed.canonicalId ?? null;
+
+    let ticketType = "metadata_issue";
+    if (parsed.reportKind === "explicit_false_positive" || parsed.reportKind === "explicit_false_negative" || parsed.reportKind === "misclassified") {
+      ticketType = "rating_dispute";
+    } else if (parsed.reportKind === "inappropriate") {
+      ticketType = "safety_quarantine";
+    }
+
+    const result = this.db.prepare(`INSERT INTO catalog_tickets(ticket_id,ticket_type,app_id,target_url,canonical_id,reason,payload_json,review_status,recorded_at)
+      SELECT ?,?,app_id,?,?,?,?, 'pending',? FROM registered_apps WHERE app_id=? AND revoked_at IS NULL`)
+      .run(reportId, ticketType, targetUrl, canonicalId, parsed.reason ?? parsed.reportKind ?? null, JSON.stringify(parsed), recordedAt, appId);
     if (result.changes !== 1) throw new CoordinatorConflict("Invalid application credential", 403);
     return { schemaVersion: 1, status: "accepted", reportId, recordedAt };
   }
@@ -2287,9 +2653,9 @@ export class LocalCoordinatorStore implements CoordinatorStore, PublicCatalogSto
   listUserApps(userId: string, limit: number, cursor: string | null, appId?: string): UserAppListResponse {
     const query = UserAppListQuerySchema.parse({ limit, cursor: cursor ?? undefined });
     const items = this.db.prepare(`SELECT a.app_id,a.app_name,a.permissions_json,a.created_at,a.revoked_at
-      FROM registered_apps a JOIN user_app_ownership o ON o.app_id=a.app_id
-      JOIN registered_users u ON u.user_id=o.user_id
-      WHERE o.user_id=? AND u.revoked_at IS NULL AND (? IS NULL OR a.app_id>?) AND (? IS NULL OR a.app_id=?)
+      FROM registered_apps a
+      JOIN registered_users u ON u.user_id=a.owner_user_id
+      WHERE a.owner_user_id=? AND u.revoked_at IS NULL AND (? IS NULL OR a.app_id>?) AND (? IS NULL OR a.app_id=?)
       ORDER BY a.app_id LIMIT ?`).all(userId, query.cursor ?? null, query.cursor ?? null, appId ?? null, appId ?? null, query.limit + 1) as
       { app_id: string; app_name: string; permissions_json: string; created_at: string; revoked_at: string | null }[];
     const apps = items.slice(0, query.limit).map(row => UserAppSchema.parse({ appId: row.app_id, appName: row.app_name,
@@ -2311,10 +2677,9 @@ export class LocalCoordinatorStore implements CoordinatorStore, PublicCatalogSto
       throw new CoordinatorConflict("Invalid user owner", 403);
     }
     this.db.prepare(`
-      INSERT INTO registered_apps (app_id, app_name, token_hash, contact_email, permissions_json, created_at, revoked_at)
-      VALUES (?, ?, ?, ?, ?, ?, NULL)
-    `).run(appId, parsed.appName, tokenHash, parsed.contactEmail || null, JSON.stringify(permissions), now);
-    if (ownerUserId !== undefined) this.db.prepare("INSERT INTO user_app_ownership(app_id,user_id) VALUES (?,?)").run(appId, ownerUserId);
+      INSERT INTO registered_apps (app_id, app_name, token_hash, contact_email, permissions_json, created_at, revoked_at, owner_user_id)
+      VALUES (?, ?, ?, ?, ?, ?, NULL, ?)
+    `).run(appId, parsed.appName, tokenHash, parsed.contactEmail || null, JSON.stringify(permissions), now, ownerUserId ?? null);
     })();
 
     return {
@@ -2327,19 +2692,27 @@ export class LocalCoordinatorStore implements CoordinatorStore, PublicCatalogSto
   }
 
   /** Authenticates a downstream application bearer token. */
-  authenticateApp(appToken: string): { appId: string; appName: string; permissions: string[] } | null {
+  authenticateApp(appToken: string): { appId: string; appName: string; permissions: string[]; candidateStatus?: "none" | "review_pending" | "reviewed" | "trusted"; isTrusted?: boolean; isAgeVerified?: boolean } | null {
     if (!/^vrcp_app_[a-f0-9]{64}$/.test(appToken)) return null;
     const tokenHash = crypto.createHash("sha256").update(appToken).digest("hex");
     const row = this.db.prepare(`
-      SELECT app_id, app_name, permissions_json, revoked_at
-      FROM registered_apps
-      WHERE token_hash = ?
-    `).get(tokenHash) as { app_id: string; app_name: string; permissions_json: string; revoked_at: string | null } | null;
+      SELECT a.app_id, a.app_name, a.permissions_json, a.revoked_at, a.candidate_status,
+             COALESCE(MAX(u.age_verified), 0) AS age_verified
+      FROM registered_apps a
+      LEFT JOIN registered_users u ON u.user_id = a.owner_user_id AND u.revoked_at IS NULL
+      WHERE a.token_hash = ?
+      GROUP BY a.app_id
+    `).get(tokenHash) as { app_id: string; app_name: string; permissions_json: string; revoked_at: string | null; candidate_status: string; age_verified: number } | null;
     if (!row || row.revoked_at) return null;
+    const permissions = JSON.parse(row.permissions_json) as string[];
+    const candidateStatus = (row.candidate_status || "none") as "none" | "review_pending" | "reviewed" | "trusted";
     return {
       appId: row.app_id,
       appName: row.app_name,
-      permissions: JSON.parse(row.permissions_json) as string[]
+      permissions,
+      candidateStatus,
+      isTrusted: candidateStatus === "trusted" || permissions.includes("takedowns:submit") || permissions.includes("claims:delegate"),
+      isAgeVerified: Boolean(row.age_verified)
     };
   }
 
@@ -2376,11 +2749,29 @@ export class LocalCoordinatorStore implements CoordinatorStore, PublicCatalogSto
   }
 
   /** Configurable search across canonical packages for registered downstream applications. */
-  searchCatalogPackages(input: CatalogSearchRequest): CatalogSearchResponse {
+  searchCatalogPackages(input: CatalogSearchRequest, options: { isAgeVerified?: boolean } = {}): CatalogSearchResponse {
     const parsed = CatalogSearchRequestSchema.parse(input);
     const limit = Math.min(Math.max(parsed.limit ?? 50, 1), 100);
     const conditions = ["p.lifecycle != 'delisted'"];
     const params: SQLQueryBindings[] = [];
+
+    if (!options.isAgeVerified) {
+      conditions.push("p.content_rating = 'general'");
+    } else {
+      conditions.push("p.content_rating != 'prohibited'");
+      if (parsed.rating) {
+        if (parsed.rating === "prohibited") {
+          return {
+            schemaVersion: 1,
+            items: [],
+            nextCursor: null,
+            totalEstimated: 0
+          };
+        }
+        conditions.push("p.content_rating = ?");
+        params.push(parsed.rating);
+      }
+    }
 
     if (parsed.umbrella) {
       conditions.push("p.umbrella = ?");
@@ -2414,7 +2805,7 @@ export class LocalCoordinatorStore implements CoordinatorStore, PublicCatalogSto
     `).get(...params) as { total: number };
 
     const rows = this.db.prepare(`
-      SELECT p.canonical_id, p.umbrella, p.category, p.lifecycle, p.display_name, p.vpm_id, p.created_at, p.updated_at
+      SELECT p.canonical_id, p.umbrella, p.category, p.lifecycle, p.display_name, p.vpm_id, p.created_at, p.updated_at, p.published_at, p.timestamp_confidence, p.content_rating
       FROM canonical_packages p
       WHERE ${whereClause}
       ORDER BY p.created_at DESC, p.canonical_id DESC
@@ -2422,13 +2813,15 @@ export class LocalCoordinatorStore implements CoordinatorStore, PublicCatalogSto
     `).all(...params, limit + 1) as {
       canonical_id: string; umbrella: string; category: string; lifecycle: string;
       display_name: string; vpm_id: string | null; created_at: string; updated_at: string;
+      published_at?: string | null; timestamp_confidence?: string | null;
+      content_rating?: string | null;
     }[];
 
     const hasMore = rows.length > limit;
     const visible = hasMore ? rows.slice(0, limit) : rows;
     const last = visible.at(-1);
 
-    const items = visible.map((row) => this.buildCatalogPackage(row));
+    const items = this.buildCatalogPackagesBatch(visible);
     const nextCursor = hasMore && last
       ? encodeCatalogCursor({ createdAt: last.created_at, canonicalId: last.canonical_id })
       : null;
@@ -2442,8 +2835,8 @@ export class LocalCoordinatorStore implements CoordinatorStore, PublicCatalogSto
   }
 
   /** Issues a `vrcp_usr_` token for a new or returning user. */
-  issueUserToken(userName: string, contactEmail?: string): {
-    userId: string; userName: string; token: string;
+  issueUserToken(userName: string, contactEmail?: string, ageVerified: boolean = false, isModerator: boolean = false): {
+    userId: string; userName: string; token: string; ageVerified: boolean; isModerator: boolean;
   } {
     if (!userName.trim()) throw new Error("User name required");
     const userId = crypto.randomUUID();
@@ -2452,21 +2845,21 @@ export class LocalCoordinatorStore implements CoordinatorStore, PublicCatalogSto
     const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
     const now = new Date(this.now()).toISOString();
     this.db.prepare(`
-      INSERT INTO registered_users (user_id, user_name, token_hash, contact_email, created_at, revoked_at)
-      VALUES (?, ?, ?, ?, ?, NULL)
-    `).run(userId, userName.trim(), tokenHash, contactEmail || null, now);
-    return { userId, userName: userName.trim(), token };
+      INSERT INTO registered_users (user_id, user_name, token_hash, contact_email, created_at, revoked_at, age_verified, is_moderator)
+      VALUES (?, ?, ?, ?, ?, NULL, ?, ?)
+    `).run(userId, userName.trim(), tokenHash, contactEmail || null, now, ageVerified ? 1 : 0, isModerator ? 1 : 0);
+    return { userId, userName: userName.trim(), token, ageVerified, isModerator };
   }
 
   /** Authenticates a user bearer token. */
-  authenticateUser(token: string): { userId: string; userName: string } | null {
+  authenticateUser(token: string): { userId: string; userName: string; ageVerified?: boolean; isModerator?: boolean } | null {
     if (!/^vrcp_usr_[a-f0-9]{64}$/.test(token)) return null;
     const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
     const row = this.db.prepare(`
-      SELECT user_id, user_name, revoked_at FROM registered_users WHERE token_hash = ?
-    `).get(tokenHash) as { user_id: string; user_name: string; revoked_at: string | null } | null;
+      SELECT user_id, user_name, revoked_at, age_verified, is_moderator FROM registered_users WHERE token_hash = ?
+    `).get(tokenHash) as { user_id: string; user_name: string; revoked_at: string | null; age_verified: number; is_moderator: number } | null;
     if (!row || row.revoked_at) return null;
-    return { userId: row.user_id, userName: row.user_name };
+    return { userId: row.user_id, userName: row.user_name, ageVerified: Boolean(row.age_verified), isModerator: Boolean(row.is_moderator) };
   }
 
   /**
@@ -2494,10 +2887,10 @@ export class LocalCoordinatorStore implements CoordinatorStore, PublicCatalogSto
 
     this.db.transaction(() => {
       this.db.prepare(`
-        INSERT INTO creator_opt_outs (
-          takedown_id, target_url, canonical_id, requester_type, requester_id,
+        INSERT INTO catalog_tickets (
+          ticket_id, ticket_type, target_url, canonical_id, requester_type, requester_id,
           reason, proof_kind, proof_value, contact_email, recorded_at, review_status, review_notes
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+        ) VALUES (?, 'opt_out', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
       `).run(
         takedownId,
         input.targetUrl || null,
@@ -2525,6 +2918,10 @@ export class LocalCoordinatorStore implements CoordinatorStore, PublicCatalogSto
           UPDATE canonical_packages SET lifecycle = 'delisted', updated_at = ?
           WHERE canonical_id = ? AND lifecycle != 'delisted'
         `).run(recordedAt, input.canonicalId);
+        this.db.prepare(`
+          INSERT OR IGNORE INTO catalog_tombstones (canonical_id, reason, recorded_at)
+          VALUES (?, 'delisted', ?)
+        `).run(input.canonicalId, recordedAt);
       }
       if (input.targetUrl) {
         // Delist all packages whose fronts point to this URL
@@ -2534,6 +2931,15 @@ export class LocalCoordinatorStore implements CoordinatorStore, PublicCatalogSto
             SELECT DISTINCT pf.canonical_id FROM package_fronts pf WHERE pf.storefront_url = ?
           ) AND lifecycle != 'delisted'
         `).run(recordedAt, input.targetUrl);
+        const matching = this.db.prepare(
+          "SELECT DISTINCT pf.canonical_id FROM package_fronts pf WHERE pf.storefront_url = ?"
+        ).all(input.targetUrl) as { canonical_id: string }[];
+        for (const row of matching) {
+          this.db.prepare(`
+            INSERT OR IGNORE INTO catalog_tombstones (canonical_id, reason, recorded_at)
+            VALUES (?, 'delisted', ?)
+          `).run(row.canonical_id, recordedAt);
+        }
       }
     }).immediate();
 
@@ -2563,18 +2969,18 @@ export class LocalCoordinatorStore implements CoordinatorStore, PublicCatalogSto
       params.push(requesterType);
     }
     if (cursor) {
-      conditions.push("(recorded_at, takedown_id) < (?, ?)");
+      conditions.push("(recorded_at, ticket_id) < (?, ?)");
       params.push(cursor.recordedAt, cursor.takedownId);
     }
-    const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+    const where = conditions.length > 0 ? `AND ${conditions.join(" AND ")}` : "";
     params.push(limit + 1);
 
     const rows = this.db.prepare(`
-      SELECT takedown_id, target_url, canonical_id, requester_type, requester_id,
+      SELECT ticket_id AS takedown_id, target_url, canonical_id, requester_type, requester_id,
              reason, proof_kind, proof_value, contact_email, review_status, review_notes, recorded_at
-      FROM creator_opt_outs
-      ${where}
-      ORDER BY recorded_at DESC, takedown_id DESC
+      FROM catalog_tickets
+      WHERE ticket_type = 'opt_out' ${where}
+      ORDER BY recorded_at DESC, ticket_id DESC
       LIMIT ?
     `).all(...params) as {
       takedown_id: string;
@@ -2626,9 +3032,9 @@ export class LocalCoordinatorStore implements CoordinatorStore, PublicCatalogSto
     notes?: string
   ): { takedownId: string; status: "accepted" | "rejected"; updatedAt: string } {
     const row = this.db.prepare(`
-      SELECT takedown_id, target_url, canonical_id, requester_type, review_status
-      FROM creator_opt_outs
-      WHERE takedown_id = ?
+      SELECT ticket_id AS takedown_id, target_url, canonical_id, requester_type, review_status
+      FROM catalog_tickets
+      WHERE ticket_id = ? AND ticket_type = 'opt_out'
     `).get(takedownId) as {
       takedown_id: string;
       target_url: string | null;
@@ -2645,9 +3051,9 @@ export class LocalCoordinatorStore implements CoordinatorStore, PublicCatalogSto
 
     this.db.transaction(() => {
       this.db.prepare(`
-        UPDATE creator_opt_outs
+        UPDATE catalog_tickets
         SET review_status = ?, review_notes = ?
-        WHERE takedown_id = ?
+        WHERE ticket_id = ? AND ticket_type = 'opt_out'
       `).run(verdict, notes || null, takedownId);
 
       if (verdict === "rejected") {
@@ -2679,6 +3085,508 @@ export class LocalCoordinatorStore implements CoordinatorStore, PublicCatalogSto
     return {
       takedownId,
       status: verdict,
+      updatedAt
+    };
+  }
+
+  /**
+   * Ingests delegated creator ownership claims from downstream applications.
+   * Performs signature/payload verification, expiration checks, and atomic replay protection on (app_id, nonce).
+   */
+  recordCreatorClaimIntake(appId: string, input: CreatorClaimIntakeRequest): CreatorClaimIntakeResponse {
+    const parsed = CreatorClaimIntakeRequestSchema.parse(input);
+    if (parsed.attestation.appId !== appId) {
+      throw new CoordinatorConflict("Attestation appId does not match caller", 403);
+    }
+
+    const nowSec = Math.floor(this.now() / 1000);
+    if (parsed.attestation.expiresAt < nowSec) {
+      throw new CoordinatorConflict("Attestation has expired", 400);
+    }
+
+    const recordedAt = new Date(this.now()).toISOString();
+    const payloadJson = JSON.stringify(parsed);
+
+    // Atomic replay protection on (app_id, nonce)
+    const existing = this.db.prepare(`
+      SELECT ticket_id AS claim_id, payload_json, signature, review_status, recorded_at
+      FROM catalog_tickets
+      WHERE ticket_type = 'delegated_claim' AND app_id = ? AND nonce = ?
+    `).get(appId, parsed.attestation.nonce) as {
+      claim_id: string;
+      payload_json: string;
+      signature: string;
+      review_status: "pending" | "accepted" | "rejected";
+      recorded_at: string;
+    } | null;
+
+    if (existing) {
+      if (existing.signature !== parsed.signature || existing.payload_json !== payloadJson) {
+        throw new CoordinatorConflict("Nonce already used with different payload or signature", 409);
+      }
+      return {
+        schemaVersion: 1,
+        status: "accepted",
+        claimId: existing.claim_id,
+        reviewStatus: "pending",
+        recordedAt: existing.recorded_at
+      };
+    }
+
+    const claimId = crypto.randomUUID();
+    const result = this.db.prepare(`
+      INSERT INTO catalog_tickets (
+        ticket_id, ticket_type, app_id, target_url, creator_id, challenge_token,
+        expires_at, nonce, signature, payload_json, reason, contact_email,
+        review_status, review_notes, recorded_at
+      )
+      SELECT ?, 'delegated_claim', app_id, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, ?
+      FROM registered_apps
+      WHERE app_id = ? AND revoked_at IS NULL
+    `).run(
+      claimId,
+      parsed.attestation.frontUrl,
+      parsed.attestation.creatorId,
+      parsed.attestation.challengeToken,
+      parsed.attestation.expiresAt,
+      parsed.attestation.nonce,
+      parsed.signature,
+      payloadJson,
+      parsed.reason || null,
+      parsed.contactEmail || null,
+      recordedAt,
+      appId
+    );
+
+    if (result.changes !== 1) {
+      throw new CoordinatorConflict("Invalid application credential", 403);
+    }
+
+    return {
+      schemaVersion: 1,
+      status: "accepted",
+      claimId,
+      reviewStatus: "pending",
+      recordedAt
+    };
+  }
+
+  listDelegatedClaimsPage(
+    reviewStatus?: string,
+    limit = 100,
+    cursor: DelegatedClaimCursor | null = null
+  ): { records: DelegatedClaimRecord[]; nextCursor: string | null } {
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error("Claim limit must be 1..100");
+    const conditions: string[] = [];
+    const params: (string | number)[] = [];
+
+    if (reviewStatus) {
+      conditions.push("review_status = ?");
+      params.push(reviewStatus);
+    }
+    if (cursor) {
+      conditions.push("(recorded_at, ticket_id) < (?, ?)");
+      params.push(cursor.recordedAt, cursor.claimId);
+    }
+    const where = conditions.length > 0 ? `AND ${conditions.join(" AND ")}` : "";
+    params.push(limit + 1);
+
+    const rows = this.db.prepare(`
+      SELECT ticket_id AS claim_id, app_id, 'creator_ownership_claim' AS action, target_url AS front_url, creator_id, challenge_token,
+             expires_at, nonce, signature, reason, contact_email, review_status, review_notes, recorded_at
+      FROM catalog_tickets
+      WHERE ticket_type = 'delegated_claim' ${where}
+      ORDER BY recorded_at DESC, ticket_id DESC
+      LIMIT ?
+    `).all(...params) as {
+      claim_id: string;
+      app_id: string;
+      action: "creator_ownership_claim";
+      front_url: string;
+      creator_id: string;
+      challenge_token: string;
+      expires_at: number;
+      nonce: string;
+      signature: string;
+      reason: string | null;
+      contact_email: string | null;
+      review_status: "pending" | "accepted" | "rejected";
+      review_notes: string | null;
+      recorded_at: string;
+    }[];
+
+    const visible = rows.slice(0, limit);
+    const last = visible.at(-1);
+
+    const records: DelegatedClaimRecord[] = visible.map((row) => ({
+      claimId: row.claim_id,
+      appId: row.app_id,
+      action: row.action,
+      frontUrl: row.front_url,
+      creatorId: row.creator_id,
+      challengeToken: row.challenge_token,
+      expiresAt: row.expires_at,
+      nonce: row.nonce,
+      signature: row.signature,
+      reason: row.reason,
+      contactEmail: row.contact_email,
+      reviewStatus: row.review_status,
+      reviewNotes: row.review_notes,
+      recordedAt: row.recorded_at
+    }));
+
+    return {
+      records,
+      nextCursor: rows.length > limit && last ? encodeDelegatedClaimCursor({
+        recordedAt: last.recorded_at,
+        claimId: last.claim_id
+      }) : null
+    };
+  }
+
+  verifyDelegatedClaim(
+    claimId: string,
+    verdict: "accepted" | "rejected",
+    actor: string,
+    notes?: string
+  ): { claimId: string; status: "accepted" | "rejected"; updatedAt: string } {
+    const row = this.db.prepare(`
+      SELECT ticket_id AS claim_id, review_status
+      FROM catalog_tickets
+      WHERE ticket_id = ? AND ticket_type = 'delegated_claim'
+    `).get(claimId) as {
+      claim_id: string;
+      review_status: string;
+    } | null;
+
+    if (!row) {
+      throw new Error("Claim not found");
+    }
+
+    const updatedAt = new Date(this.now()).toISOString();
+    this.db.prepare(`
+      UPDATE catalog_tickets
+      SET review_status = ?, review_notes = ?
+      WHERE ticket_id = ? AND ticket_type = 'delegated_claim'
+    `).run(verdict, notes || null, claimId);
+
+    return {
+      claimId,
+      status: verdict,
+      updatedAt
+    };
+  }
+
+  recordAppActivity(appId: string): void {
+    const row = this.db.prepare(`
+      SELECT app_id, request_count, candidate_status, candidate_flags_json
+      FROM registered_apps
+      WHERE app_id = ?
+    `).get(appId) as {
+      app_id: string;
+      request_count: number;
+      candidate_status: string;
+      candidate_flags_json: string;
+    } | undefined;
+    if (!row) return;
+
+    const newCount = (row.request_count || 0) + 1;
+    const now = new Date(this.now()).toISOString();
+    let status = row.candidate_status || "none";
+    let flags: string[] = [];
+    try {
+      flags = JSON.parse(row.candidate_flags_json || "[]");
+    } catch {}
+
+    if (newCount >= 50) {
+      if (status === "none") {
+        status = "review_pending";
+      }
+      if (!flags.includes("intensive_usage")) {
+        flags.push("intensive_usage");
+      }
+      if (!flags.includes("high_frequency_api")) {
+        flags.push("high_frequency_api");
+      }
+    }
+
+    this.db.prepare(`
+      UPDATE registered_apps
+      SET request_count = ?, last_active_at = ?, candidate_status = ?, candidate_flags_json = ?
+      WHERE app_id = ?
+    `).run(newCount, now, status, JSON.stringify(flags), appId);
+  }
+
+  listOperatorAppsPage(
+    limit = 100,
+    cursor: OperatorAppCursor | null = null,
+    candidateStatus?: string
+  ): { apps: OperatorAppRecord[]; nextCursor: string | null } {
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error("App limit must be 1..100");
+    const conditions: string[] = [];
+    const params: (string | number)[] = [];
+
+    if (candidateStatus) {
+      conditions.push("candidate_status = ?");
+      params.push(candidateStatus);
+    }
+
+    if (cursor) {
+      conditions.push("(created_at, app_id) < (?, ?)");
+      params.push(cursor.createdAt, cursor.appId);
+    }
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+    params.push(limit + 1);
+
+    const rows = this.db.prepare(`
+      SELECT app_id, app_name, contact_email, permissions_json, created_at, revoked_at,
+             request_count, last_active_at, candidate_status, candidate_flags_json
+      FROM registered_apps
+      ${where}
+      ORDER BY created_at DESC, app_id DESC
+      LIMIT ?
+    `).all(...params) as {
+      app_id: string;
+      app_name: string;
+      contact_email: string | null;
+      permissions_json: string;
+      created_at: string;
+      revoked_at: string | null;
+      request_count: number;
+      last_active_at: string | null;
+      candidate_status: string;
+      candidate_flags_json: string;
+    }[];
+
+    const visible = rows.slice(0, limit);
+    const last = visible.at(-1);
+
+    const apps: OperatorAppRecord[] = visible.map((row) => {
+      const perms: string[] = JSON.parse(row.permissions_json);
+      let flags: string[] = [];
+      try { flags = JSON.parse(row.candidate_flags_json); } catch {}
+      return {
+        appId: row.app_id,
+        appName: row.app_name,
+        contactEmail: row.contact_email ?? null,
+        permissions: perms,
+        delegationAllowed: perms.includes("claims:delegate"),
+        requestCount: row.request_count ?? 0,
+        lastActiveAt: row.last_active_at ?? null,
+        candidateStatus: (row.candidate_status as any) || "none",
+        candidateFlags: flags,
+        createdAt: row.created_at,
+        revokedAt: row.revoked_at ?? null
+      };
+    });
+
+    return {
+      apps,
+      nextCursor: rows.length > limit && last ? encodeOperatorAppCursor({
+        createdAt: last.created_at,
+        appId: last.app_id
+      }) : null
+    };
+  }
+
+  reviewAppCandidate(
+    appId: string,
+    input: { candidateStatus: "none" | "reviewed" | "trusted"; grantDelegation?: boolean; notes?: string },
+    actor: string
+  ): {
+    appId: string;
+    candidateStatus: "none" | "review_pending" | "reviewed" | "trusted";
+    candidateFlags: string[];
+    delegationAllowed: boolean;
+    permissions: string[];
+    reviewedAt: string;
+  } {
+    const row = this.db.prepare(`
+      SELECT app_id, permissions_json, revoked_at, candidate_flags_json
+      FROM registered_apps
+      WHERE app_id = ?
+    `).get(appId) as {
+      app_id: string;
+      permissions_json: string;
+      revoked_at: string | null;
+      candidate_flags_json: string;
+    } | undefined;
+
+    if (!row) {
+      throw new Error("App not found");
+    }
+    if (row.revoked_at) {
+      throw new Error("App is revoked");
+    }
+
+    const currentPerms = new Set<string>(JSON.parse(row.permissions_json));
+    if (input.grantDelegation === true || input.candidateStatus === "trusted") {
+      currentPerms.add("claims:delegate");
+      currentPerms.add("takedowns:submit");
+    } else if (input.grantDelegation === false) {
+      currentPerms.delete("claims:delegate");
+      currentPerms.delete("takedowns:submit");
+    }
+    const newPerms = Array.from(currentPerms);
+
+    let flags: string[] = [];
+    try { flags = JSON.parse(row.candidate_flags_json); } catch {}
+    const reviewedAt = new Date(this.now()).toISOString();
+
+    this.db.prepare(`
+      UPDATE registered_apps
+      SET candidate_status = ?, permissions_json = ?
+      WHERE app_id = ?
+    `).run(input.candidateStatus, JSON.stringify(newPerms), appId);
+
+    return {
+      appId,
+      candidateStatus: input.candidateStatus,
+      candidateFlags: flags,
+      delegationAllowed: newPerms.includes("claims:delegate"),
+      permissions: newPerms,
+      reviewedAt
+    };
+  }
+
+  setAppDelegation(
+    appId: string,
+    allowed: boolean,
+    actor: string,
+    reason?: string
+  ): { appId: string; delegationAllowed: boolean; permissions: string[]; updatedAt: string } {
+    const row = this.db.prepare(`
+      SELECT app_id, permissions_json, revoked_at
+      FROM registered_apps
+      WHERE app_id = ?
+    `).get(appId) as { app_id: string; permissions_json: string; revoked_at: string | null } | undefined;
+
+    if (!row) {
+      throw new Error("App not found");
+    }
+    if (row.revoked_at) {
+      throw new Error("App is revoked");
+    }
+
+    const currentPerms = new Set<string>(JSON.parse(row.permissions_json));
+    if (allowed) {
+      currentPerms.add("claims:delegate");
+    } else {
+      currentPerms.delete("claims:delegate");
+    }
+    const newPerms = Array.from(currentPerms);
+    const updatedAt = new Date(this.now()).toISOString();
+
+    this.db.prepare(`
+      UPDATE registered_apps
+      SET permissions_json = ?
+      WHERE app_id = ?
+    `).run(JSON.stringify(newPerms), appId);
+
+    return {
+      appId,
+      delegationAllowed: allowed,
+      permissions: newPerms,
+      updatedAt
+    };
+  }
+
+  listModeratorRatingsPage(
+    rating?: ContentRating,
+    limit = 100,
+    cursor: { updatedAt: string; canonicalId: string } | null = null
+  ): { ratings: ModeratorRatingRecord[]; nextCursor: string | null } {
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error("Rating limit must be 1..100");
+    const conditions: string[] = [];
+    const params: (string | number)[] = [];
+
+    if (rating) {
+      conditions.push("c.content_rating = ?");
+      params.push(rating);
+    }
+    if (cursor) {
+      conditions.push("(c.updated_at, c.canonical_id) < (?, ?)");
+      params.push(cursor.updatedAt, cursor.canonicalId);
+    }
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+    params.push(limit + 1);
+
+    const rows = this.db.prepare(`
+      SELECT c.canonical_id, c.display_name, c.content_rating, c.umbrella, c.category, c.updated_at,
+             (SELECT COUNT(*) FROM catalog_tickets r WHERE r.ticket_type IN ('removal_report', 'rating_dispute') AND (r.canonical_id = c.canonical_id OR json_extract(r.payload_json, '$.canonicalId') = c.canonical_id)) AS report_count
+      FROM canonical_packages c
+      ${where}
+      ORDER BY c.updated_at DESC, c.canonical_id DESC
+      LIMIT ?
+    `).all(...params) as {
+      canonical_id: string;
+      display_name: string;
+      content_rating: string;
+      umbrella: "assets" | "tools" | "avatars";
+      category: string;
+      updated_at: string;
+      report_count: number;
+    }[];
+
+    const visible = rows.slice(0, limit);
+    const last = visible.at(-1);
+
+    const ratings: ModeratorRatingRecord[] = visible.map((row) => ({
+      canonicalId: row.canonical_id,
+      displayName: row.display_name,
+      currentRating: row.content_rating as ContentRating,
+      umbrella: row.umbrella,
+      category: row.category,
+      reportCount: row.report_count ?? 0,
+      updatedAt: row.updated_at
+    }));
+
+    return {
+      ratings,
+      nextCursor: rows.length > limit && last ? encodeModeratorRatingCursor({ updatedAt: last.updated_at, canonicalId: last.canonical_id }) : null
+    };
+  }
+
+  adjustPackageRating(
+    canonicalId: string,
+    newRating: ContentRating,
+    adjustedBy: string,
+    reason: string
+  ): { canonicalId: string; previousRating: ContentRating; newRating: ContentRating; adjustedBy: string; updatedAt: string } | null {
+    const row = this.db.prepare(`
+      SELECT canonical_id, content_rating
+      FROM canonical_packages
+      WHERE canonical_id = ?
+    `).get(canonicalId) as {
+      canonical_id: string;
+      content_rating: string;
+    } | null;
+
+    if (!row) {
+      return null;
+    }
+
+    const previousRating = row.content_rating as ContentRating;
+    const updatedAt = new Date(this.now()).toISOString();
+
+    this.db.prepare(`
+      UPDATE canonical_packages
+      SET content_rating = ?, updated_at = ?
+      WHERE canonical_id = ?
+    `).run(newRating, updatedAt, canonicalId);
+
+    if (previousRating === "general" && newRating !== "general") {
+      this.db.prepare(`
+        INSERT OR IGNORE INTO catalog_tombstones (canonical_id, reason, recorded_at)
+        VALUES (?, 'rating_withdrawn', ?)
+      `).run(canonicalId, updatedAt);
+    }
+
+    return {
+      canonicalId,
+      previousRating,
+      newRating,
+      adjustedBy,
       updatedAt
     };
   }

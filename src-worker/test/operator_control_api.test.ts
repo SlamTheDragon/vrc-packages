@@ -2,7 +2,10 @@ import { describe, expect, test } from "bun:test";
 import { LocalCoordinatorStore } from "./support/local_sqlite.js";
 import { handleOperatorRequest } from "../src/api/operator_handler.ts";
 import { handleNodeRequest } from "../src/api/handler.ts";
-import { OPERATOR_API_JSON_SCHEMAS, TakedownListResponseSchema, VerifyTakedownResponseSchema } from "../src/api/protocol/operator_protocol.js";
+import { OPERATOR_API_JSON_SCHEMAS, TakedownListResponseSchema, VerifyTakedownResponseSchema,
+  DelegatedClaimListResponseSchema, VerifyDelegatedClaimResponseSchema,
+  OperatorAppListResponseSchema, SetAppDelegationResponseSchema,
+  ReviewAppCandidateResponseSchema } from "../src/api/protocol/operator_protocol.js";
 import { approveFixtureSource, seedApprovedFixtureJob } from "./helpers/source_access_fixture.js";
 
 const operatorToken = "a".repeat(64);
@@ -22,11 +25,15 @@ describe("separate operator control API", () => {
     store.listAutoQueueRulesPage = (_limit, cursor) => { calls.push(cursor); return { rules: [], nextCursor: null }; };
     store.listSourceAccessProfilesPage = (_limit, cursor) => { calls.push(cursor); return { profiles: [], nextCursor: null }; };
     store.listTakedownsPage = (_type, _limit, cursor) => { calls.push(cursor); return { records: [], nextCursor: null }; };
+    store.listDelegatedClaimsPage = (_status, _limit, cursor) => { calls.push(cursor); return { records: [], nextCursor: null }; };
+    store.listOperatorAppsPage = (_limit, cursor) => { calls.push(cursor); return { apps: [], nextCursor: null }; };
     try {
       for (const [route, timeField, idField] of [
         ["autoqueue-rules", "createdAt", "ruleId"],
         ["source-profiles", "createdAt", "profileId"],
-        ["takedowns", "recordedAt", "takedownId"]
+        ["takedowns", "recordedAt", "takedownId"],
+        ["claims", "recordedAt", "claimId"],
+        ["apps", "createdAt", "appId"]
       ] as const) {
         for (const value of [id, id.toUpperCase(), id.replace("abcdefab", "AbCdEfAb")]) {
           const encoded = btoa(JSON.stringify({ [timeField]: timestamp, [idField]: value }))
@@ -50,11 +57,15 @@ describe("separate operator control API", () => {
     store.disableSourceAccessProfile = (value) => { calls.push(value); throw new Error("Source profile not found"); };
     store.disableAutoQueueRule = (value) => { calls.push(value); throw new Error("Rule not found"); };
     store.verifyTakedown = (value) => { calls.push(value); throw new Error("Takedown not found"); };
+    store.verifyDelegatedClaim = (value) => { calls.push(value); throw new Error("Claim not found"); };
+    store.setAppDelegation = (value) => { calls.push(value); throw new Error("App not found"); };
     try {
       for (const [route, action, body] of [
         ["source-profiles", "disable", { schemaVersion: 1, reason: "Reviewed profile" }],
         ["autoqueue-rules", "disable", { schemaVersion: 1, reason: "Reviewed rule" }],
-        ["takedowns", "verify", { schemaVersion: 1, verdict: "accepted" }]
+        ["takedowns", "verify", { schemaVersion: 1, verdict: "accepted" }],
+        ["claims", "verify", { schemaVersion: 1, verdict: "accepted" }],
+        ["apps", "delegation", { schemaVersion: 1, delegationAllowed: true }]
       ] as const) {
         const path = `/v1/operator/${route}/${id.toUpperCase()}/${action}`;
         expect((await handleOperatorRequest(operatorRequest(path, "POST", body, "b".repeat(64)), store, operatorToken)).status).toBe(401);
@@ -82,7 +93,7 @@ describe("separate operator control API", () => {
       expect((await second.json() as { jobId: string }).jobId).toBe(body.jobId);
       expect(store.db.query("SELECT state FROM crawl_jobs").get()).toEqual({ state: "done" });
       expect(store.db.query("SELECT COUNT(*) AS count FROM job_seed_actions").get()).toEqual({ count: 2 });
-      store.db.run("CREATE TRIGGER reject_seed_audit BEFORE INSERT ON job_seed_actions BEGIN SELECT RAISE(ABORT,'fixture audit failure'); END;");
+      store.db.run("CREATE TRIGGER reject_seed_audit BEFORE INSERT ON operator_audit_log WHEN NEW.entity_type='job' BEGIN SELECT RAISE(ABORT,'fixture audit failure'); END;");
       const failed = await handleOperatorRequest(operatorRequest("/v1/operator/jobs", "POST", { ...input, minDelayMs: 50000 }), store, operatorToken);
       expect(failed.status).toBe(409);
       expect(store.db.query("SELECT min_delay_ms FROM origin_leases").get()).toEqual({ min_delay_ms: 1000 });
@@ -101,6 +112,12 @@ describe("separate operator control API", () => {
     expect(OPERATOR_API_JSON_SCHEMAS.takedownListResponse.type).toBe("object");
     expect(OPERATOR_API_JSON_SCHEMAS.verifyTakedownRequest.type).toBe("object");
     expect(OPERATOR_API_JSON_SCHEMAS.verifyTakedownResponse.type).toBe("object");
+    expect(OPERATOR_API_JSON_SCHEMAS.delegatedClaimListResponse.type).toBe("object");
+    expect(OPERATOR_API_JSON_SCHEMAS.verifyDelegatedClaimRequest.type).toBe("object");
+    expect(OPERATOR_API_JSON_SCHEMAS.verifyDelegatedClaimResponse.type).toBe("object");
+    expect(OPERATOR_API_JSON_SCHEMAS.operatorAppListResponse.type).toBe("object");
+    expect(OPERATOR_API_JSON_SCHEMAS.setAppDelegationRequest.type).toBe("object");
+    expect(OPERATOR_API_JSON_SCHEMAS.setAppDelegationResponse.type).toBe("object");
   });
 
   test("only the operator can issue an audited node key; rotation invalidates the old key", async () => {
@@ -658,6 +675,299 @@ describe("separate operator control API", () => {
       // Package remains delisted
       const pkgRow2 = store.db.prepare("SELECT lifecycle FROM canonical_packages WHERE canonical_id = ?").get(canonicalId2) as any;
       expect(pkgRow2.lifecycle).toBe("delisted");
+    } finally {
+      store.close();
+    }
+  });
+
+  test("operator audits, paginates, and verifies delegated creator claims", async () => {
+    let fixtureNow = 1700000000000;
+    const store = new LocalCoordinatorStore(":memory:", () => fixtureNow);
+    try {
+      const app = store.registerApp({ schemaVersion: 1, appName: "Claims Audit App" });
+
+      const nowSec = 1700000000;
+      const claim1 = store.recordCreatorClaimIntake(app.appId, {
+        schemaVersion: 1,
+        attestation: {
+          appId: app.appId,
+          action: "creator_ownership_claim",
+          frontUrl: "https://creator.booth.pm/items/12345",
+          creatorId: "creator_abc",
+          challengeToken: "chal_token_1_123456",
+          expiresAt: nowSec + 3600,
+          nonce: "nonce_claim_1_123456"
+        },
+        signature: "sig_claim_1_123456",
+        reason: "Primary ownership claim"
+      });
+
+      fixtureNow = 1700000001000;
+      const claim2 = store.recordCreatorClaimIntake(app.appId, {
+        schemaVersion: 1,
+        attestation: {
+          appId: app.appId,
+          action: "creator_ownership_claim",
+          frontUrl: "https://creator2.booth.pm/items/67890",
+          creatorId: "creator_def",
+          challengeToken: "chal_token_2_123456",
+          expiresAt: nowSec + 3600,
+          nonce: "nonce_claim_2_123456"
+        },
+        signature: "sig_claim_2_123456",
+        reason: "Secondary ownership claim"
+      });
+
+      // 1. Operator lists all pending claims
+      const listReq = operatorRequest("/v1/operator/claims");
+      const listRes = await handleOperatorRequest(listReq, store, operatorToken);
+      expect(listRes.status).toBe(200);
+      const listData = await listRes.json() as any;
+      expect(() => DelegatedClaimListResponseSchema.parse(listData)).not.toThrow();
+      expect(listData.records.length).toBe(2);
+      expect(listData.records[0].claimId).toBe(claim2.claimId);
+      expect(listData.records[1].claimId).toBe(claim1.claimId);
+
+      // 2. Pagination with limit = 1
+      const page1Req = operatorRequest("/v1/operator/claims?limit=1");
+      const page1Res = await handleOperatorRequest(page1Req, store, operatorToken);
+      expect(page1Res.status).toBe(200);
+      const page1Data = await page1Res.json() as any;
+      expect(page1Data.records.length).toBe(1);
+      expect(page1Data.nextCursor).toBeDefined();
+
+      const page2Req = operatorRequest(`/v1/operator/claims?limit=1&cursor=${page1Data.nextCursor}`);
+      const page2Res = await handleOperatorRequest(page2Req, store, operatorToken);
+      expect(page2Res.status).toBe(200);
+      const page2Data = await page2Res.json() as any;
+      expect(page2Data.records.length).toBe(1);
+      expect(page2Data.records[0].claimId).toBe(claim1.claimId);
+
+      // 3. Reject claim 1
+      const rejectReq = operatorRequest(`/v1/operator/claims/${claim1.claimId}/verify`, "POST", {
+        schemaVersion: 1,
+        verdict: "rejected",
+        notes: "Unverified storefront account"
+      });
+      const rejectRes = await handleOperatorRequest(rejectReq, store, operatorToken);
+      expect(rejectRes.status).toBe(200);
+      const rejectData = await rejectRes.json() as any;
+      expect(() => VerifyDelegatedClaimResponseSchema.parse(rejectData)).not.toThrow();
+      expect(rejectData.claimId).toBe(claim1.claimId);
+      expect(rejectData.status).toBe("rejected");
+
+      // Verify DB record updated
+      const row1 = store.db.prepare("SELECT review_status, review_notes FROM delegated_creator_claims WHERE claim_id = ?")
+        .get(claim1.claimId) as any;
+      expect(row1.review_status).toBe("rejected");
+      expect(row1.review_notes).toBe("Unverified storefront account");
+
+      // 4. Accept claim 2
+      const acceptReq = operatorRequest(`/v1/operator/claims/${claim2.claimId}/verify`, "POST", {
+        schemaVersion: 1,
+        verdict: "accepted",
+        notes: "Verified signature matches registered creator"
+      });
+      const acceptRes = await handleOperatorRequest(acceptReq, store, operatorToken);
+      expect(acceptRes.status).toBe(200);
+      const acceptData = await acceptRes.json() as any;
+      expect(acceptData.claimId).toBe(claim2.claimId);
+      expect(acceptData.status).toBe("accepted");
+
+      const row2 = store.db.prepare("SELECT review_status, review_notes FROM delegated_creator_claims WHERE claim_id = ?")
+        .get(claim2.claimId) as any;
+      expect(row2.review_status).toBe("accepted");
+      expect(row2.review_notes).toBe("Verified signature matches registered creator");
+
+      // 5. Query by reviewStatus filter
+      const filterReq = operatorRequest("/v1/operator/claims?reviewStatus=accepted");
+      const filterRes = await handleOperatorRequest(filterReq, store, operatorToken);
+      expect(filterRes.status).toBe(200);
+      const filterData = await filterRes.json() as any;
+      expect(filterData.records.length).toBe(1);
+      expect(filterData.records[0].claimId).toBe(claim2.claimId);
+
+      // 6. 404 for unknown claim verification
+      const unknownReq = operatorRequest("/v1/operator/claims/00000000-0000-4000-8000-000000000000/verify", "POST", {
+        schemaVersion: 1,
+        verdict: "accepted"
+      });
+      const unknownRes = await handleOperatorRequest(unknownReq, store, operatorToken);
+      expect(unknownRes.status).toBe(404);
+    } finally {
+      store.close();
+    }
+  });
+
+  test("operator audits, paginates, and mutates application delegation authority", async () => {
+    const store = new LocalCoordinatorStore();
+    try {
+      // 1. Register two applications
+      const app1 = store.registerApp({ schemaVersion: 1, appName: "App One", contactEmail: "one@example.com" });
+      const app2 = store.registerApp({ schemaVersion: 1, appName: "App Two" });
+
+      // 2. List apps as operator
+      const listReq = operatorRequest("/v1/operator/apps");
+      const listRes = await handleOperatorRequest(listReq, store, operatorToken);
+      expect(listRes.status).toBe(200);
+      const listData = await listRes.json() as any;
+      expect(() => OperatorAppListResponseSchema.parse(listData)).not.toThrow();
+      expect(listData.apps.length).toBe(2);
+      expect(listData.apps.every((a: any) => a.delegationAllowed === false)).toBe(true);
+      expect(listData.apps.every((a: any) => !a.permissions.includes("claims:delegate"))).toBe(true);
+
+      // 3. Test pagination limit=1
+      const page1Req = operatorRequest("/v1/operator/apps?limit=1");
+      const page1Res = await handleOperatorRequest(page1Req, store, operatorToken);
+      expect(page1Res.status).toBe(200);
+      const page1Data = await page1Res.json() as any;
+      expect(page1Data.apps.length).toBe(1);
+      expect(page1Data.nextCursor).toBeTruthy();
+
+      const page2Req = operatorRequest(`/v1/operator/apps?limit=1&cursor=${page1Data.nextCursor}`);
+      const page2Res = await handleOperatorRequest(page2Req, store, operatorToken);
+      expect(page2Res.status).toBe(200);
+      const page2Data = await page2Res.json() as any;
+      expect(page2Data.apps.length).toBe(1);
+      expect(page2Data.apps[0].appId).not.toBe(page1Data.apps[0].appId);
+
+      // 4. Grant delegation to app1
+      const grantReq = operatorRequest(`/v1/operator/apps/${app1.appId}/delegation`, "POST", {
+        schemaVersion: 1,
+        delegationAllowed: true,
+        reason: "Verified partner application"
+      });
+      const grantRes = await handleOperatorRequest(grantReq, store, operatorToken);
+      expect(grantRes.status).toBe(200);
+      const grantData = await grantRes.json() as any;
+      expect(() => SetAppDelegationResponseSchema.parse(grantData)).not.toThrow();
+      expect(grantData.appId).toBe(app1.appId);
+      expect(grantData.delegationAllowed).toBe(true);
+      expect(grantData.permissions).toContain("claims:delegate");
+
+      // Verify DB row
+      const row1 = store.db.prepare("SELECT permissions_json FROM registered_apps WHERE app_id = ?").get(app1.appId) as any;
+      const perms1 = JSON.parse(row1.permissions_json);
+      expect(perms1).toContain("claims:delegate");
+
+      // Verify operator list reflects updated delegation status
+      const updatedListRes = await handleOperatorRequest(operatorRequest("/v1/operator/apps"), store, operatorToken);
+      const updatedListData = await updatedListRes.json() as any;
+      const updatedApp1 = updatedListData.apps.find((a: any) => a.appId === app1.appId);
+      const updatedApp2 = updatedListData.apps.find((a: any) => a.appId === app2.appId);
+      expect(updatedApp1.delegationAllowed).toBe(true);
+      expect(updatedApp1.permissions).toContain("claims:delegate");
+      expect(updatedApp2.delegationAllowed).toBe(false);
+      expect(updatedApp2.permissions).not.toContain("claims:delegate");
+
+      // 5. Revoke delegation from app1
+      const revokeReq = operatorRequest(`/v1/operator/apps/${app1.appId}/delegation`, "POST", {
+        schemaVersion: 1,
+        delegationAllowed: false,
+        reason: "Partner status revoked"
+      });
+      const revokeRes = await handleOperatorRequest(revokeReq, store, operatorToken);
+      expect(revokeRes.status).toBe(200);
+      const revokeData = await revokeRes.json() as any;
+      expect(revokeData.delegationAllowed).toBe(false);
+      expect(revokeData.permissions).not.toContain("claims:delegate");
+
+      // 6. 404 for unknown app delegation mutation
+      const unknownReq = operatorRequest("/v1/operator/apps/00000000-0000-4000-8000-000000000000/delegation", "POST", {
+        schemaVersion: 1,
+        delegationAllowed: true
+      });
+      const unknownRes = await handleOperatorRequest(unknownReq, store, operatorToken);
+      expect(unknownRes.status).toBe(404);
+    } finally {
+      store.close();
+    }
+  });
+
+  test("allows operator to list candidates and review intensive-use apps (R54-C38A2)", async () => {
+    const store = new LocalCoordinatorStore();
+    try {
+      const user = store.issueUserToken("operator-test-user");
+      const app1 = store.registerApp({ schemaVersion: 1, appName: "Candidate App 1" }, user.userId);
+      const app2 = store.registerApp({ schemaVersion: 1, appName: "Candidate App 2" }, user.userId);
+
+      // Simulate app1 reaching intensive usage
+      for (let i = 0; i < 50; i++) {
+        store.recordAppActivity(app1.appId);
+      }
+
+      // 1. List apps with candidateStatus filter
+      const pendingRes = await handleOperatorRequest(
+        operatorRequest("/v1/operator/apps?candidateStatus=review_pending"),
+        store,
+        operatorToken
+      );
+      expect(pendingRes.status).toBe(200);
+      const pendingData = await pendingRes.json() as any;
+      expect(pendingData.apps).toHaveLength(1);
+      expect(pendingData.apps[0].appId).toBe(app1.appId);
+      expect(pendingData.apps[0].candidateStatus).toBe("review_pending");
+      expect(pendingData.apps[0].candidateFlags).toContain("intensive_usage");
+
+      // App2 has candidateStatus = none
+      const noneRes = await handleOperatorRequest(
+        operatorRequest("/v1/operator/apps?candidateStatus=none"),
+        store,
+        operatorToken
+      );
+      expect(noneRes.status).toBe(200);
+      const noneData = await noneRes.json() as any;
+      expect(noneData.apps.some((a: any) => a.appId === app2.appId)).toBe(true);
+
+      // 2. Review candidate: approve as trusted with delegation
+      const reviewReq = operatorRequest(`/v1/operator/apps/${app1.appId}/candidate-review`, "POST", {
+        schemaVersion: 1,
+        candidateStatus: "trusted",
+        grantDelegation: true,
+        notes: "Approved high-throughput partner application"
+      });
+      const reviewRes = await handleOperatorRequest(reviewReq, store, operatorToken);
+      expect(reviewRes.status).toBe(200);
+      const reviewData = await reviewRes.json() as any;
+      expect(() => ReviewAppCandidateResponseSchema.parse(reviewData)).not.toThrow();
+      expect(reviewData.appId).toBe(app1.appId);
+      expect(reviewData.candidateStatus).toBe("trusted");
+      expect(reviewData.delegationAllowed).toBe(true);
+      expect(reviewData.permissions).toContain("claims:delegate");
+
+      // Verify in database
+      const row = store.db.prepare("SELECT candidate_status, permissions_json FROM registered_apps WHERE app_id = ?").get(app1.appId) as any;
+      expect(row.candidate_status).toBe("trusted");
+      expect(JSON.parse(row.permissions_json)).toContain("claims:delegate");
+
+      // 3. Review candidate: downgrade to reviewed and revoke delegation
+      const downgradeReq = operatorRequest(`/v1/operator/apps/${app1.appId}/candidate-review`, "POST", {
+        schemaVersion: 1,
+        candidateStatus: "reviewed",
+        grantDelegation: false
+      });
+      const downgradeRes = await handleOperatorRequest(downgradeReq, store, operatorToken);
+      expect(downgradeRes.status).toBe(200);
+      const downgradeData = await downgradeRes.json() as any;
+      expect(downgradeData.candidateStatus).toBe("reviewed");
+      expect(downgradeData.delegationAllowed).toBe(false);
+      expect(downgradeData.permissions).not.toContain("claims:delegate");
+
+      // 4. Unknown app returns 404
+      const unknownReq = operatorRequest("/v1/operator/apps/00000000-0000-4000-8000-000000000000/candidate-review", "POST", {
+        schemaVersion: 1,
+        candidateStatus: "trusted"
+      });
+      const unknownRes = await handleOperatorRequest(unknownReq, store, operatorToken);
+      expect(unknownRes.status).toBe(404);
+
+      // 5. Invalid payload returns 400
+      const invalidReq = operatorRequest(`/v1/operator/apps/${app1.appId}/candidate-review`, "POST", {
+        schemaVersion: 1,
+        candidateStatus: "invalid_status"
+      });
+      const invalidRes = await handleOperatorRequest(invalidReq, store, operatorToken);
+      expect(invalidRes.status).toBe(400);
     } finally {
       store.close();
     }

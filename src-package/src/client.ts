@@ -23,19 +23,58 @@ import {
   ReportSubmissionRequestSchema,
   type ReportSubmissionResponse,
   ReportSubmissionResponseSchema,
+  type CreatorClaimIntakeRequest,
+  CreatorClaimIntakeRequestSchema,
+  type CreatorClaimIntakeResponse,
+  CreatorClaimIntakeResponseSchema,
   type QueryOrigin
 } from "./protocol/downstream.ts";
 import { UserAppListQuerySchema, UserAppListResponseSchema, UserAppResponseSchema, UserAppSchema,
   type UserAppListQuery, type UserAppListResponse, type UserAppResponse } from "./protocol/user.ts";
 import {
+  MODERATOR_PROTOCOL_VERSION,
+  type ModeratorRatingRecord,
+  ModeratorRatingRecordSchema,
+  type ModeratorRatingListQuery,
+  ModeratorRatingListQuerySchema,
+  type ModeratorRatingListResponse,
+  ModeratorRatingListResponseSchema,
+  type SetRatingAdjustmentRequest,
+  SetRatingAdjustmentRequestSchema,
+  type SetRatingAdjustmentResponse,
+  SetRatingAdjustmentResponseSchema,
+  type ModeratorAppListQuery,
+  ModeratorAppListQuerySchema,
+  type ModeratorAppListResponse,
+  ModeratorAppListResponseSchema,
+  type ModeratorReviewAppCandidateRequest,
+  ModeratorReviewAppCandidateRequestSchema,
+  type ModeratorReviewAppCandidateResponse,
+  ModeratorReviewAppCandidateResponseSchema
+} from "./protocol/moderator.ts";
+import { type ContentRating } from "./taxonomy/taxonomy.ts";
+import {
   type LeadStatus,
+  type CandidateStatus,
+  CandidateStatusSchema,
+  ReviewAppCandidateRequestSchema,
+  ReviewAppCandidateResponseSchema,
+  type ReviewAppCandidateRequest,
+  type ReviewAppCandidateResponse,
   OperatorLeadListQuerySchema, OperatorProfileListQuerySchema, OperatorRuleListQuerySchema,
-  OperatorCatalogListQuerySchema, OperatorTakedownListQuerySchema,
-  LeadCursorSchema, ProfileCursorSchema, RuleCursorSchema, TakedownCursorSchema,
+  OperatorCatalogListQuerySchema, OperatorTakedownListQuerySchema, OperatorClaimListQuerySchema,
+  OperatorAppListQuerySchema, type OperatorAppListQuery,
+  OperatorAppListResponseSchema, type OperatorAppListResponse,
+  SetAppDelegationRequestSchema, SetAppDelegationResponseSchema,
+  type SetAppDelegationRequest, type SetAppDelegationResponse,
+  LeadCursorSchema, ProfileCursorSchema, RuleCursorSchema, TakedownCursorSchema, DelegatedClaimCursorSchema, OperatorAppCursorSchema,
   ApproveLeadSchema, RejectLeadSchema,
   CreateSourceAccessProfileSchema, DisableSourceAccessProfileSchema,
   CreateAutoQueueRuleSchema, DisableAutoQueueRuleSchema,
   IssueNodeCredentialSchema, VerifyTakedownRequestSchema,
+  VerifyDelegatedClaimRequestSchema, VerifyDelegatedClaimResponseSchema,
+  type VerifyDelegatedClaimResponse,
+  DelegatedClaimListResponseSchema, type DelegatedClaimListResponse,
   RevokeNodeRequestSchema, RevokeNodeResponseSchema, type RevokeNodeResponse,
   EnqueueJobRequestSchema, EnqueueJobResponseSchema,
   type EnqueueJobRequest, type EnqueueJobResponse,
@@ -66,6 +105,43 @@ import {
   type VerifyTakedownResponse,
   VerifyTakedownResponseSchema
 } from "./protocol/operator.ts";
+
+export const MAX_SDK_ERROR_BYTES = 64 * 1024;
+export const MAX_SDK_SUCCESS_BYTES = 4 * 1024 * 1024;
+
+async function readBoundedText(response: Response, maxBytes: number): Promise<string> {
+  const reader = response.body?.getReader();
+  if (!reader) {
+    const text = await response.text();
+    if (new TextEncoder().encode(text).byteLength > maxBytes) {
+      throw new VRCPApiError(response.status, `Response exceeds maximum byte limit of ${maxBytes} bytes`);
+    }
+    return text;
+  }
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      totalBytes += value.byteLength;
+      if (totalBytes > maxBytes) {
+        await reader.cancel();
+        throw new VRCPApiError(response.status, `Response exceeds maximum byte limit of ${maxBytes} bytes`);
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const merged = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    merged.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(merged);
+}
 
 export class VRCPApiError extends Error {
   readonly status: number;
@@ -183,7 +259,7 @@ export class VRCPackageClient {
     }
 
     if (!response.ok) {
-      const errorText = await response.text();
+      const errorText = await readBoundedText(response, MAX_SDK_ERROR_BYTES);
       let errorBody: any = errorText;
       try {
         errorBody = JSON.parse(errorText);
@@ -195,7 +271,8 @@ export class VRCPackageClient {
       throw new VRCPApiError(response.status, message, code, errorBody);
     }
 
-    return (await response.json()) as T;
+    const responseText = await readBoundedText(response, MAX_SDK_SUCCESS_BYTES);
+    return JSON.parse(responseText) as T;
   }
 
   /* ------------------------------------------------------------------------ */
@@ -284,6 +361,20 @@ export class VRCPackageClient {
         body: ReportSubmissionRequestSchema.parse(report)
       });
       return ReportSubmissionResponseSchema.parse(res);
+    }
+  };
+
+  readonly claims = {
+    /**
+     * Submits signed creator ownership claim attestation for review (POST /v1/app/claims/intake).
+     * Requires downstream application token.
+     */
+    submitIntake: async (request: CreatorClaimIntakeRequest): Promise<CreatorClaimIntakeResponse> => {
+      const res = await this.request<unknown>("/v1/app/claims/intake", "POST", {
+        auth: "app",
+        body: CreatorClaimIntakeRequestSchema.parse(request)
+      });
+      return CreatorClaimIntakeResponseSchema.parse(res);
     }
   };
 
@@ -531,6 +622,189 @@ export class VRCPackageClient {
           })
         });
         return VerifyTakedownResponseSchema.parse(res);
+      }
+    },
+
+    claims: {
+      /**
+       * Audits recorded delegated creator claims (GET /v1/operator/claims).
+       */
+      list: async (params: {
+        reviewStatus?: "pending" | "accepted" | "rejected";
+        limit?: number;
+        cursor?: string;
+      } = {}): Promise<DelegatedClaimListResponse> => {
+        const query = OperatorClaimListQuerySchema.parse(params);
+        const res = await this.request<unknown>("/v1/operator/claims", "GET", {
+          auth: "operator",
+          queryParams: {
+            reviewStatus: query.reviewStatus,
+            limit: query.limit,
+            cursor: query.cursor
+          }
+        });
+        return DelegatedClaimListResponseSchema.parse(res);
+      },
+
+      /**
+       * Records an operator verdict on a stored delegated creator claim (POST /v1/operator/claims/{id}/verify).
+       */
+      verify: async (
+        claimId: string,
+        request: { verdict: "accepted" | "rejected"; notes?: string }
+      ): Promise<VerifyDelegatedClaimResponse> => {
+        const id = DelegatedClaimCursorSchema.shape.claimId.parse(claimId).toLowerCase();
+        const res = await this.request<unknown>(`/v1/operator/claims/${id}/verify`, "POST", {
+          auth: "operator",
+          body: VerifyDelegatedClaimRequestSchema.parse({
+            schemaVersion: 1,
+            verdict: request.verdict,
+            notes: request.notes
+          })
+        });
+        return VerifyDelegatedClaimResponseSchema.parse(res);
+      }
+    },
+
+    apps: {
+      /**
+       * Lists registered downstream applications (GET /v1/operator/apps).
+       */
+      list: async (params: { limit?: number; cursor?: string; candidateStatus?: CandidateStatus } = {}): Promise<OperatorAppListResponse> => {
+        const query = OperatorAppListQuerySchema.parse(params);
+        const res = await this.request<unknown>("/v1/operator/apps", "GET", {
+          auth: "operator",
+          queryParams: {
+            limit: query.limit,
+            cursor: query.cursor,
+            candidateStatus: query.candidateStatus
+          }
+        });
+        return OperatorAppListResponseSchema.parse(res);
+      },
+
+      /**
+       * Sets delegation authority for a registered application (POST /v1/operator/apps/{appId}/delegation).
+       */
+      setDelegation: async (
+        appId: string,
+        request: { delegationAllowed: boolean; reason?: string }
+      ): Promise<SetAppDelegationResponse> => {
+        const id = OperatorAppCursorSchema.shape.appId.parse(appId).toLowerCase();
+        const res = await this.request<unknown>(`/v1/operator/apps/${id}/delegation`, "POST", {
+          auth: "operator",
+          body: SetAppDelegationRequestSchema.parse({
+            schemaVersion: 1,
+            delegationAllowed: request.delegationAllowed,
+            reason: request.reason
+          })
+        });
+        return SetAppDelegationResponseSchema.parse(res);
+      },
+
+      /**
+       * Reviews a registered application candidate for trusted access (POST /v1/operator/apps/{appId}/candidate-review).
+       */
+      reviewCandidate: async (
+        appId: string,
+        request: { candidateStatus: "none" | "reviewed" | "trusted"; grantDelegation?: boolean; notes?: string }
+      ): Promise<ReviewAppCandidateResponse> => {
+        const id = OperatorAppCursorSchema.shape.appId.parse(appId).toLowerCase();
+        const res = await this.request<unknown>(`/v1/operator/apps/${id}/candidate-review`, "POST", {
+          auth: "operator",
+          body: ReviewAppCandidateRequestSchema.parse({
+            schemaVersion: 1,
+            candidateStatus: request.candidateStatus,
+            grantDelegation: request.grantDelegation,
+            notes: request.notes
+          })
+        });
+        return ReviewAppCandidateResponseSchema.parse(res);
+      }
+    }
+  };
+
+  /* ------------------------------------------------------------------------ */
+  /* Moderator Protocol (/v1/moderator/*)                                     */
+  /* ------------------------------------------------------------------------ */
+
+  readonly moderator = {
+    ratings: {
+      /**
+       * Lists canonical packages for content rating review (GET /v1/moderator/ratings).
+       * Requires age-verified moderator user token.
+       */
+      list: async (params: { rating?: ContentRating; limit?: number; cursor?: string } = {}): Promise<ModeratorRatingListResponse> => {
+        const query = ModeratorRatingListQuerySchema.parse(params);
+        const res = await this.request<unknown>("/v1/moderator/ratings", "GET", {
+          auth: "user",
+          queryParams: {
+            rating: query.rating,
+            limit: query.limit,
+            cursor: query.cursor
+          }
+        });
+        return ModeratorRatingListResponseSchema.parse(res);
+      },
+
+      /**
+       * Adjusts the content rating of a canonical package (POST /v1/moderator/ratings/{canonicalId}).
+       * Requires age-verified moderator user token.
+       */
+      adjust: async (
+        canonicalId: string,
+        request: { newRating: ContentRating; reason: string }
+      ): Promise<SetRatingAdjustmentResponse> => {
+        const id = ModeratorRatingRecordSchema.shape.canonicalId.parse(canonicalId);
+        const res = await this.request<unknown>(`/v1/moderator/ratings/${encodeURIComponent(id)}`, "POST", {
+          auth: "user",
+          body: SetRatingAdjustmentRequestSchema.parse({
+            schemaVersion: MODERATOR_PROTOCOL_VERSION,
+            newRating: request.newRating,
+            reason: request.reason
+          })
+        });
+        return SetRatingAdjustmentResponseSchema.parse(res);
+      }
+    },
+
+    apps: {
+      /**
+       * Lists registered applications for candidate review (GET /v1/moderator/apps).
+       * Requires age-verified moderator user token.
+       */
+      list: async (params: { limit?: number; cursor?: string; candidateStatus?: CandidateStatus } = {}): Promise<ModeratorAppListResponse> => {
+        const query = ModeratorAppListQuerySchema.parse(params);
+        const res = await this.request<unknown>("/v1/moderator/apps", "GET", {
+          auth: "user",
+          queryParams: {
+            limit: query.limit,
+            cursor: query.cursor,
+            candidateStatus: query.candidateStatus
+          }
+        });
+        return ModeratorAppListResponseSchema.parse(res);
+      },
+
+      /**
+       * Reviews a registered application candidate (POST /v1/moderator/apps/{appId}/candidate-review).
+       * Requires age-verified moderator user token.
+       */
+      reviewCandidate: async (
+        appId: string,
+        request: { candidateStatus: "none" | "reviewed" | "trusted"; grantDelegation?: boolean; notes?: string }
+      ): Promise<ModeratorReviewAppCandidateResponse> => {
+        const id = OperatorAppCursorSchema.shape.appId.parse(appId).toLowerCase();
+        const res = await this.request<unknown>(`/v1/moderator/apps/${id}/candidate-review`, "POST", {
+          auth: "user",
+          body: ModeratorReviewAppCandidateRequestSchema.parse({
+            schemaVersion: MODERATOR_PROTOCOL_VERSION,
+            candidateStatus: request.candidateStatus,
+            grantDelegation: request.grantDelegation,
+            notes: request.notes
+          })
+        });
+        return ModeratorReviewAppCandidateResponseSchema.parse(res);
       }
     }
   };

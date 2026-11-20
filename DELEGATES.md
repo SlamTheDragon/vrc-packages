@@ -72,7 +72,7 @@ const search = await appClient.index.search({
 const deltaPage = await publicClient.index.syncDeltas({ limit: 100 });
 ```
 
-The SDK exposes `index`, not `catalog` or `app.search`. Public index pages accept only `limit` and `cursor`. The default limit is 50, with integer values from 1 through 100. The SDK returns the validated `schemaVersion`, `packages` and `nextCursor` fields, without a total count. A null cursor ends pagination. Search filters belong to authenticated `index.search`. Save delta cursors and handle the returned catalog epoch.
+The SDK exposes `index`, not `catalog` or `app.search`. Public index pages accept only `limit` and `cursor`. The default limit is 50, with integer values from 1 through 100. The SDK returns the validated `schemaVersion`, `packages` and `nextCursor` fields, without a total count. A null cursor ends pagination. Delta sync streams upserts and delist tombstones. Search filters belong to authenticated `index.search`. Save delta cursors and handle the returned catalog epoch.
 
 Search uses SQL text matching and classification heuristics. The Worker accepts queryOrigin but does not record or apply attribution in storage. Dynamic indexed tag lists, full-text ranking and publisher-date semantics remain open. Random sampling is removed.
 
@@ -93,7 +93,7 @@ The route is singular `/v1/app/report`. Removal returns HTTP 202 and a pending r
 
 The coordinator issues node credentials through `/v1/operator/nodes`. A token encodes platform capabilities. Queue entries still need scoped source approval and valid robots evidence before a lease.
 
-The node entry supports runtime identity and paths through its configuration and environment. `NODE_TOKEN` carries the secret separately. See [the node specification](docs/source/SPECIFICATION_CRAWLER_CLIENT.md) for the current execution boundary.
+The headless node ingests runtime identity, paths and credentials directly from `.env` or process environment variables (including `NODE_TOKEN`). It broadcasts operational activities and discovery findings to `latest.log`. See [the node specification](docs/source/specifications/crawler_node.md) for the current execution boundary.
 
 Docker files live in `src-crawler/`. Inspect the configuration before starting containers:
 
@@ -101,15 +101,21 @@ Docker files live in `src-crawler/`. Inspect the configuration before starting c
 docker compose -f src-crawler/docker-compose.yml config
 ```
 
-The compose file includes Watchtower with the host Docker socket. It is not a verified safe update workflow. Its image name differs from the workflow's publication name. Inspect and settle image trust, update timing, persistence and credential handling before fleet use.
+Configure `src-crawler/.env` from `src-crawler/.env.example`. Set `NODE_TOKEN` to your coordinator token. Set `VRCP_NODE_IMAGE` to a reviewed container image.
 
-`.github/workflows/node-docker.yml` builds only on `vrcp-crawler/v<configured-version>` tag pushes. The container publication switch defaults off. The image target is `ghcr.io/<repository-owner>/vrcp-crawler-node`. Successful CI publication, Linux startup and restart-safe submission remain unverified. Watchtower does not guarantee uninterrupted leases or result recovery.
+Published images live on GitHub Container Registry:
+- Release: `ghcr.io/<repository-owner>/vrcp-crawler-node:<version>`
+- Preview: `ghcr.io/<repository-owner>/vrcp-crawler-node-preview:<version>`
+
+Automatic updaters such as Watchtower are removed. They mount the host Docker socket and can abort active coordinator leases without notice. Update node images manually by changing `VRCP_NODE_IMAGE`.
+
+When you run multiple nodes in a fleet, assign unique `NODE_ID` values. Give each node an isolated data volume. Shared data directories cause SQLite locking errors on `node.db`. The container allows 30 seconds for graceful shutdown on `SIGTERM`.
 
 ## 4. API and Deployment References
 
-Use [API_ROUTES.md](docs/source/API_ROUTES.md) with the current handlers and SDK schemas. Planned routes are not runnable endpoints. `/v1/user/delist`, user collection POSTs and `/v1/app/index/random` are absent. Node result submission uses `/v1/node/jobs/result`.
+Use [API_ROUTES.md](./docs/applications/VRCP API/API_ROUTES.md) with the current handlers and SDK schemas. Planned routes are not runnable endpoints. `/v1/user/delist`, user collection POSTs and `/v1/app/index/random` are absent. Node result submission uses `/v1/node/jobs/result`.
 
-Use [the Cloudflare setup checklist](docs/research/CRAWLER_DEPENDENCY_RESEARCH.md#cloudflare-panel-setup-checklist) for the owner-completed folder split. The latest supplied build log confirms the API package `src-worker` ran remotely. `src-web` is the separate static site, not the API build root.
+Use [the Cloudflare setup checklist](./docs/research/architecture/infrastructure_and_quotas.md#cloudflare-panel-setup-checklist) for the owner-completed folder split. The latest supplied build log confirms the API package `src-worker` ran remotely. `src-web` is the separate static site, not the API build root.
 
 LEGAL.md states draft covenants, not measured implementation. Terms headers are not uniformly emitted by every handler. No remote build, deployment, source permission or legal compliance is inferred from this runbook.
 

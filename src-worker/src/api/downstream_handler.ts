@@ -8,6 +8,8 @@ import {
   ReportSubmissionResponseSchema,
   CatalogSearchRequestSchema,
   CatalogSearchResponseSchema,
+  CreatorClaimIntakeRequestSchema,
+  CreatorClaimIntakeResponseSchema,
   type RegisterAppRequest,
   type RegisterAppResponse,
   type DownstreamFeedbackRequest,
@@ -15,21 +17,42 @@ import {
   type ReportSubmissionRequest,
   type ReportSubmissionResponse,
   type CatalogSearchRequest,
-  type CatalogSearchResponse
+  type CatalogSearchResponse,
+  type CreatorClaimIntakeRequest,
+  type CreatorClaimIntakeResponse
 } from "vrc-packages-api";
 import { readJson, CoordinatorConflict } from "./handler.js";
 import { workerLogger } from "../worker_logger.ts";
 import { timingSafeEqual } from "../storage/d1/utils.ts";
+import {
+  extractClientIp,
+  RATE_LIMIT_POLICIES,
+  rateLimitResponse,
+  applyRateLimitHeaders,
+  defaultRateLimiter,
+  type IRateLimiter
+} from "./rate_limiter.ts";
+
+export interface DownstreamAppPrincipal {
+  appId: string;
+  appName: string;
+  permissions: string[];
+  candidateStatus?: "none" | "review_pending" | "reviewed" | "trusted";
+  isTrusted?: boolean;
+  isAgeVerified?: boolean;
+}
 
 export interface DownstreamStore {
   recordRemovalReport(appId: string, input: ReportSubmissionRequest): Promise<ReportSubmissionResponse> | ReportSubmissionResponse;
+  recordIssueReport(appId: string, input: ReportSubmissionRequest): Promise<ReportSubmissionResponse> | ReportSubmissionResponse;
+  recordCreatorClaimIntake(appId: string, input: CreatorClaimIntakeRequest): Promise<CreatorClaimIntakeResponse> | CreatorClaimIntakeResponse;
   registerApp(input: RegisterAppRequest, ownerUserId?: string): Promise<RegisterAppResponse> | RegisterAppResponse;
-  authenticateUser(token: string): Promise<{ userId: string; userName: string } | null> | { userId: string; userName: string } | null;
-  authenticateApp(appToken: string): Promise<{ appId: string; appName: string; permissions: string[] } | null> |
-    { appId: string; appName: string; permissions: string[] } | null;
+  authenticateUser(token: string): Promise<{ userId: string; userName: string; ageVerified?: boolean } | null> | { userId: string; userName: string; ageVerified?: boolean } | null;
+  authenticateApp(appToken: string): Promise<DownstreamAppPrincipal | null> | DownstreamAppPrincipal | null;
   recordDownstreamFeedback(appId: string, input: DownstreamFeedbackRequest): Promise<DownstreamFeedbackResponse> |
     DownstreamFeedbackResponse;
-  searchCatalogPackages(input: CatalogSearchRequest): Promise<CatalogSearchResponse> | CatalogSearchResponse;
+  searchCatalogPackages(input: CatalogSearchRequest, options?: { isAgeVerified?: boolean }): Promise<CatalogSearchResponse> | CatalogSearchResponse;
+  recordAppActivity(appId: string): Promise<void> | void;
 }
 
 function json(body: unknown, status = 200): Response {
@@ -50,7 +73,8 @@ function failure(status: number, code: string, message: string): Response {
 export async function handleDownstreamRequest(
   request: Request,
   store: DownstreamStore,
-  operatorToken = ""
+  operatorToken = "",
+  rateLimiter: IRateLimiter = defaultRateLimiter
 ): Promise<Response> {
   const url = new URL(request.url);
   const path = url.pathname;
@@ -58,13 +82,21 @@ export async function handleDownstreamRequest(
   const isRegister = request.method === "POST" && path === "/v1/app/register";
   const isFeedback = request.method === "POST" && path === "/v1/app/report";
   const isSearch = request.method === "POST" && path === "/v1/app/index/search";
+  const isClaimIntake = request.method === "POST" && path === "/v1/app/claims/intake";
 
-  if (!isRegister && !isFeedback && !isSearch) {
+  if (!isRegister && !isFeedback && !isSearch && !isClaimIntake) {
     return failure(404, "not_found", "Route not found");
   }
 
   // App registration authenticates the creator before reading the payload.
   if (isRegister) {
+    const clientIp = extractClientIp(request);
+    const regRate = await rateLimiter.check(`app:register:${clientIp}`, RATE_LIMIT_POLICIES.APP_REGISTER);
+    if (!regRate.allowed) {
+      workerLogger.warn("App register rate limit exceeded", { path, clientIp });
+      return rateLimitResponse(regRate, DOWNSTREAM_PROTOCOL_VERSION, "Rate limit exceeded for application registration. Please retry later.");
+    }
+
     const bearer = request.headers.get("authorization") || "";
     const token = bearer.startsWith("Bearer ") ? bearer.slice(7).trim() : "";
     const operator = /^[a-fA-F0-9]{64}$/.test(operatorToken) && /^[a-fA-F0-9]{64}$/.test(token) && timingSafeEqual(token, operatorToken);
@@ -108,8 +140,20 @@ export async function handleDownstreamRequest(
     return failure(401, "unauthorized", "Invalid application token");
   }
 
+  try {
+    await store.recordAppActivity(app.appId);
+  } catch (err) {
+    workerLogger.warn("Failed to record application activity", { appId: app.appId }, err);
+  }
+
   // 3. Consolidated Reporting Route (/v1/app/report) per API_ROUTES.md §2.4
   if (isFeedback) {
+    const reportRate = await rateLimiter.check(`app:report:${app.appId}`, RATE_LIMIT_POLICIES.APP_REPORT);
+    if (!reportRate.allowed) {
+      workerLogger.warn("App report rate limit exceeded", { path, appId: app.appId });
+      return rateLimitResponse(reportRate, DOWNSTREAM_PROTOCOL_VERSION, "Rate limit exceeded for application report submissions. Please retry later.");
+    }
+
     let body: unknown;
     try {
       body = await readJson(request);
@@ -127,13 +171,40 @@ export async function handleDownstreamRequest(
     }
 
     if (reportParsed.success && reportParsed.data.reportType === "removal_request") {
+      const isTrusted = app.candidateStatus === "trusted" || app.isTrusted === true || app.permissions.includes("takedowns:submit") || app.permissions.includes("claims:delegate");
+      if (!isTrusted) {
+        workerLogger.warn("Untrusted application attempted creator takedown request", { path, appId: app.appId });
+        return failure(403, "forbidden", "Application is not authorized for creator takedown requests; trusted registered app status required");
+      }
+
       try {
         const response = await store.recordRemovalReport(app.appId, reportParsed.data);
-        return json(ReportSubmissionResponseSchema.parse(response), 202);
+        return applyRateLimitHeaders(json(ReportSubmissionResponseSchema.parse(response), 202), reportRate);
       } catch (error) {
         workerLogger.error("Failed to record removal report", error, { path, appId: app.appId });
         return failure(500, "internal_error", "Removal report could not be recorded");
       }
+    }
+
+    const isInspectionOrSafety = reportParsed.success &&
+      reportParsed.data.reportType === "issue_report" &&
+      (reportParsed.data.reportKind === "explicit_false_positive" ||
+       reportParsed.data.reportKind === "explicit_false_negative" ||
+       reportParsed.data.reportKind === "misclassified" ||
+       reportParsed.data.reportKind === "inappropriate");
+
+    if (isInspectionOrSafety && reportParsed.success) {
+      try {
+        const response = await store.recordIssueReport(app.appId, reportParsed.data);
+        return applyRateLimitHeaders(json(ReportSubmissionResponseSchema.parse(response), 200), reportRate);
+      } catch (error) {
+        workerLogger.error("Failed to record issue report", error, { path, appId: app.appId });
+        return failure(500, "internal_error", "Issue report could not be recorded");
+      }
+    }
+
+    if (!app.permissions.includes("demand:feedback")) {
+      return failure(403, "forbidden", "Application is not authorized for demand feedback");
     }
 
     let feedbackInput: DownstreamFeedbackRequest;
@@ -162,12 +233,12 @@ export async function handleDownstreamRequest(
 
     try {
       const response = await store.recordDownstreamFeedback(app.appId, feedbackInput);
-      return json(ReportSubmissionResponseSchema.parse({
+      return applyRateLimitHeaders(json(ReportSubmissionResponseSchema.parse({
         schemaVersion: DOWNSTREAM_PROTOCOL_VERSION,
         status: "accepted",
         reportId: response.signalId,
         recordedAt: response.recordedAt
-      }), 200);
+      }), 200), reportRate);
     } catch (error) {
       const msg = error instanceof Error ? error.message : "Feedback ingestion failed";
       workerLogger.error("Failed to record downstream feedback", error, { path, appId: app.appId });
@@ -175,8 +246,61 @@ export async function handleDownstreamRequest(
     }
   }
 
-  // 4. Configurable Multi-Facet Search
+  // 4. Delegated Creator Attestation Intake (R54-C38C / R54-C38A)
+  if (isClaimIntake) {
+    if (!app.permissions.includes("claims:delegate")) {
+      return failure(403, "forbidden", "Application is not authorized for delegated creator claims");
+    }
+
+    const claimRate = await rateLimiter.check(`app:claim:${app.appId}`, RATE_LIMIT_POLICIES.APP_CLAIMS_INTAKE);
+    if (!claimRate.allowed) {
+      workerLogger.warn("App claim intake rate limit exceeded", { path, appId: app.appId });
+      return rateLimitResponse(claimRate, DOWNSTREAM_PROTOCOL_VERSION, "Rate limit exceeded for delegated creator claims intake. Please retry later.");
+    }
+
+    let body: unknown;
+    try {
+      body = await readJson(request);
+    } catch (error) {
+      if (error instanceof RangeError) return failure(413, "invalid_payload", error.message);
+      if (error instanceof CoordinatorConflict) return failure(415, "invalid_payload", error.message);
+      return failure(400, "bad_json", "Request body must be valid JSON");
+    }
+
+    const parsed = CreatorClaimIntakeRequestSchema.safeParse(body);
+    if (!parsed.success) {
+      return failure(400, "invalid_payload", parsed.error.issues.map((i) => i.path.join(".") || "body").join(", "));
+    }
+
+    if (parsed.data.attestation.appId !== app.appId) {
+      return failure(403, "forbidden", "Attestation appId does not match caller");
+    }
+
+    try {
+      const response = await store.recordCreatorClaimIntake(app.appId, parsed.data);
+      return applyRateLimitHeaders(json(CreatorClaimIntakeResponseSchema.parse(response), 202), claimRate);
+    } catch (error) {
+      if (error instanceof CoordinatorConflict) {
+        return failure(error.status, "conflict", error.message);
+      }
+      const msg = error instanceof Error ? error.message : "Claim intake failed";
+      workerLogger.error("Failed to record creator claim intake", error, { path, appId: app.appId });
+      return failure(500, "internal_error", msg);
+    }
+  }
+
+  // 5. Configurable Multi-Facet Search
   if (isSearch) {
+    if (!app.permissions.includes("catalog:search")) {
+      return failure(403, "forbidden", "Application is not authorized for catalog searches");
+    }
+
+    const searchRate = await rateLimiter.check(`app:search:${app.appId}`, RATE_LIMIT_POLICIES.APP_SEARCH);
+    if (!searchRate.allowed) {
+      workerLogger.warn("App search rate limit exceeded", { path, appId: app.appId });
+      return rateLimitResponse(searchRate, DOWNSTREAM_PROTOCOL_VERSION, "Rate limit exceeded for catalog searches. Please retry later.");
+    }
+
     let body: unknown;
     try {
       body = await readJson(request);
@@ -192,8 +316,8 @@ export async function handleDownstreamRequest(
     }
 
     try {
-      const response = await store.searchCatalogPackages(parsed.data);
-      return json(CatalogSearchResponseSchema.parse(response), 200);
+      const response = await store.searchCatalogPackages(parsed.data, { isAgeVerified: app.isAgeVerified ?? false });
+      return applyRateLimitHeaders(json(CatalogSearchResponseSchema.parse(response), 200), searchRate);
     } catch (error) {
       const msg = error instanceof Error ? error.message : "Catalog search failed";
       workerLogger.error("Failed to execute catalog search", error, { path, appId: app.appId });
@@ -204,15 +328,20 @@ export async function handleDownstreamRequest(
   return failure(404, "not_found", "Route not found");
 }
 
-export function createDownstreamHandler(store: DownstreamStore, operatorToken = ""): (request: Request) => Promise<Response | null> {
+export function createDownstreamHandler(
+  store: DownstreamStore,
+  operatorToken = "",
+  rateLimiter: IRateLimiter = defaultRateLimiter
+): (request: Request) => Promise<Response | null> {
   return async (request: Request): Promise<Response | null> => {
     const path = new URL(request.url).pathname;
     if (
       path === "/v1/app/register" ||
       path === "/v1/app/report" ||
+      path === "/v1/app/claims/intake" ||
       path === "/v1/app/index/search"
     ) {
-      return handleDownstreamRequest(request, store, operatorToken);
+      return handleDownstreamRequest(request, store, operatorToken, rateLimiter);
     }
     return null;
   };

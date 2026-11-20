@@ -1,7 +1,7 @@
 # Contributing to VRC Packages
 
 This monorepo is version-0 pre-production software. A successful build does not establish release readiness or source-access permission.
-Read [LEGAL.md](LEGAL.md) and the [active tracker](docs/scratch/IMPLEMENTATION_PLAN.md) before changes.
+Read [LEGAL.md](LEGAL.md) and the [system map](docs/source/SYSTEM_MAP.md) before changes.
 
 ## Project boundaries
 
@@ -23,7 +23,7 @@ Preserve upstream identifiers and the accepted vrc-packages-* package names.
 ## Development sequence
 
 Use [DELEGATES.md](DELEGATES.md) for operational responsibilities and [publishing](docs/source/PUBLISHING.md) for commands and CI setup.
-Agent-specific publishing checks are separate in [the agent procedure](docs/scratch/research/decisionsAGENT_PUBLISHING_PROCEDURE.md).
+Agent-specific publishing checks are separate in [the agent procedure](docs/research/decisions/AGENT_PUBLISHING_PROCEDURE.md).
 
 1. Read the canonical and unmerged ledgers in docs/scratch.
 2. Choose one capability gate or related gate group.

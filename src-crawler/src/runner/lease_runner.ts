@@ -2,12 +2,18 @@ import type { CrawlJob, ResultRequest, ResultResponse } from "vrc-packages-netwo
 import { fetchJobOutcome } from "../adapters/observation_adapter.ts";
 import { logger } from "../utils/logging/logger.ts";
 
-type Outcome = ResultRequest["outcome"];
-type LeaseClient = {
+export type Outcome = ResultRequest["outcome"];
+export type LeaseClient = {
   heartbeat: (state: "fetching", activeJobId: string, activeLeaseId: string) => Promise<unknown>;
   submit: (request: Omit<ResultRequest, "schemaVersion" | "nodeId">) => Promise<ResultResponse>;
+  getClockOffset?: () => number;
 };
-type MetadataFetcher = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
+export type MetadataFetcher = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
+
+export interface RunLeasedJobOptions {
+  onOutcome?: (outcome: Outcome, idempotencyKey: string) => Promise<void> | void;
+  idempotencyKey?: string;
+}
 
 function minimizeOutcome(job: CrawlJob, outcome: Outcome): Outcome {
   if (job.retainClasses.includes("creator_prose")) return outcome;
@@ -20,45 +26,122 @@ function minimizeOutcome(job: CrawlJob, outcome: Outcome): Outcome {
 
 /** An active lease must remain observable throughout egress, not just at submission. */
 export async function runLeasedJob(
-  job: CrawlJob, client: LeaseClient, fetcher: MetadataFetcher, heartbeatIntervalMs = 5_000,
-  stopSignal?: AbortSignal
+  job: CrawlJob,
+  client: LeaseClient,
+  fetcher: MetadataFetcher,
+  heartbeatIntervalMs = 5_000,
+  stopSignal?: AbortSignal,
+  options?: RunLeasedJobOptions
 ): Promise<{ outcome: Outcome; result: ResultResponse }> {
   if (!Number.isInteger(heartbeatIntervalMs) || heartbeatIntervalMs < 1) throw new Error("Invalid heartbeat interval");
   stopSignal?.throwIfAborted();
-  await client.heartbeat("fetching", job.jobId, job.leaseId);
+  let clockOffsetMs = client.getClockOffset?.() ?? 0;
+  const initialHeartbeat = await client.heartbeat("fetching", job.jobId, job.leaseId);
+  if (initialHeartbeat && typeof initialHeartbeat === "object" && "serverTime" in initialHeartbeat) {
+    const serverTimeMs = new Date((initialHeartbeat as { serverTime: string }).serverTime).getTime();
+    if (Number.isFinite(serverTimeMs)) {
+      clockOffsetMs = serverTimeMs - Date.now();
+    }
+  }
   stopSignal?.throwIfAborted();
   const authority = new AbortController();
   const signal = stopSignal ? AbortSignal.any([authority.signal, stopSignal]) : authority.signal;
   let authorityError: unknown;
   let pulsePromise: Promise<void> | null = null;
-  const pulse = () => {
+  const nowServerMs = () => Date.now() + clockOffsetMs;
+  const expiresAtMs = new Date(job.leaseExpiresAt).getTime();
+  const leaseExpired = () => new Error(`Lease ${job.leaseId} for job ${job.jobId} expired during execution (expired at ${job.leaseExpiresAt})`);
+  const fetchStartTime = Date.now();
+  const isDynamicHeartbeat = heartbeatIntervalMs >= 5_000;
+  let timer: ReturnType<typeof setTimeout> | ReturnType<typeof setInterval> | null = null;
+
+  const pulse = (): Promise<void> | void => {
     if (pulsePromise || authorityError || signal.aborted) return;
     pulsePromise = client.heartbeat("fetching", job.jobId, job.leaseId)
-      .then(() => {})
+      .then((res: unknown) => {
+        if (res && typeof res === "object" && "serverTime" in res) {
+          const serverTimeMs = new Date((res as { serverTime: string }).serverTime).getTime();
+          if (Number.isFinite(serverTimeMs)) {
+            clockOffsetMs = serverTimeMs - Date.now();
+          }
+        }
+      })
       .catch((error: unknown) => {
         logger.warn(`Heartbeat pulse lost for leased job ${job.jobId}`, error);
         authorityError = error;
         authority.abort();
       })
       .finally(() => { pulsePromise = null; });
+    return pulsePromise;
   };
-  const timer = setInterval(pulse, heartbeatIntervalMs);
+
+  const clearHeartbeatTimer = () => {
+    if (!timer) return;
+    if (isDynamicHeartbeat) {
+      clearTimeout(timer as ReturnType<typeof setTimeout>);
+    } else {
+      clearInterval(timer as ReturnType<typeof setInterval>);
+    }
+    timer = null;
+  };
+
+  if (!isDynamicHeartbeat) {
+    // Preserve exact fixed interval for short test fixture overrides (< 5_000ms)
+    timer = setInterval(pulse, heartbeatIntervalMs);
+  } else {
+    // Dynamic heartbeat interval scaling between 5s and 30s based on elapsed fetch duration (R54-C39B)
+    const scheduleNextPulse = (intervalMs: number) => {
+      if (signal.aborted || authorityError) return;
+      timer = setTimeout(async () => {
+        await pulse();
+        const elapsed = Date.now() - fetchStartTime;
+        const nextInterval = Math.min(30_000, Math.max(5_000, Math.round(elapsed / 2)));
+        scheduleNextPulse(nextInterval);
+      }, intervalMs);
+    };
+    scheduleNextPulse(Math.min(30_000, Math.max(5_000, heartbeatIntervalMs)));
+  }
+
+  // Fixed lease deadline: a pending heartbeat must not keep source work alive past expiry.
+  const remainingMs = expiresAtMs - nowServerMs();
+  if (!Number.isFinite(remainingMs) || remainingMs <= 0) { clearHeartbeatTimer(); authority.abort(); throw leaseExpired(); }
+  const deadline = setTimeout(() => { authorityError ??= leaseExpired(); authority.abort(); }, Math.min(remainingMs, 2_147_483_647)); // setTimeout overflows above 2^31-1 ms and would fire at once
   try {
     const outcome = minimizeOutcome(job, await fetchJobOutcome(job, fetcher, signal));
-    clearInterval(timer);
+    clearHeartbeatTimer();
+    clearTimeout(deadline);
     if (pulsePromise) await pulsePromise;
     if (authorityError) throw authorityError;
+    if (nowServerMs() >= expiresAtMs) throw leaseExpired();
     signal.throwIfAborted();
     // A final lease check closes the race between the last periodic pulse and submission.
-    await client.heartbeat("fetching", job.jobId, job.leaseId);
+    const finalHeartbeat = await client.heartbeat("fetching", job.jobId, job.leaseId);
+    if (finalHeartbeat && typeof finalHeartbeat === "object" && "serverTime" in finalHeartbeat) {
+      const serverTimeMs = new Date((finalHeartbeat as { serverTime: string }).serverTime).getTime();
+      if (Number.isFinite(serverTimeMs)) {
+        clockOffsetMs = serverTimeMs - Date.now();
+      }
+    }
+    if (nowServerMs() >= expiresAtMs) throw leaseExpired();
     signal.throwIfAborted();
-    const result = await client.submit({ jobId: job.jobId, leaseId: job.leaseId,
-      idempotencyKey: crypto.randomUUID(), outcome });
+
+    const idempotencyKey = options?.idempotencyKey ?? crypto.randomUUID();
+    if (options?.onOutcome) {
+      await options.onOutcome(outcome, idempotencyKey);
+    }
+
+    const result = await client.submit({
+      jobId: job.jobId,
+      leaseId: job.leaseId,
+      idempotencyKey,
+      outcome
+    });
     return { outcome, result };
   } catch (error) {
     throw authorityError || (stopSignal?.aborted ? stopSignal.reason : error);
   } finally {
-    clearInterval(timer);
+    clearTimeout(deadline);
+    clearHeartbeatTimer();
     authority.abort();
     if (pulsePromise) await pulsePromise;
   }

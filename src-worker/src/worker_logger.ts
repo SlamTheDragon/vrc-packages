@@ -1,6 +1,7 @@
 /**
  * Cloudflare Worker-oriented structured logger.
  *
+ * FIXME: I dont think this is too standard, i suggest removing or replacing it with an appropriate logging method, but mostly leaning on remove
  * Designed specifically for runtime neutrality and Cloudflare Worker environments:
  * - Zero dependencies on Node fs, path, or zlib.
  * - Emits structured JSON entries compatible with Cloudflare Logpush, Wrangler tail,

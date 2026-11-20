@@ -1,77 +1,46 @@
 ---
 trigger: always_on
-description: "Enforce the slice and gating iterative lifecycle using unmerged/canonical implementation plan ledgers and dedicated task tracking."
+description: "Enforce the 5-sector slice and gating iterative lifecycle, ledger footprint limits, commit/push discipline, and publishing boundaries."
 ---
 
-# 01 — Sequence the work (Iterative Slice & Gating Lifecycle)
+# 01: Sequence the Work (Iterative Slice and Gating Lifecycle)
 
-Every task must strictly adhere to the following sequence of rules:
-
-1. **Understand the codebase**:
-   - Read targeted documentation contexts before editing code.
-   - Note down working theories for relevant changes literally in the dedicated task tracker file (`docs/scratch/task_tracker.md`).
-
-2. **Clarify prompt using question hooks**:
-   - Clarify underspecified requirements, ambiguities, or architectural trade-offs with the user via `ask_question`.
-
-3. **Produce sequential gated iterations (Unmerged Implementation Plan)**:
-   - Dissect the user prompt into smaller context chunks.
-   - Tie related code and its underlying orthogonal or hierarchical class/entity dependencies.
-   - Output a tabled ledger under an **"Unmerged Implementation Plan"** header using this exact schema:
-      task slices:
-     `| status | ID | problem | related-code(s) | reason | solution | author comments |`
-     additionlly, milestone gates should be documented below that the first table will reference
-     `| ID | milestone | current results | author comments |`
-     *(The author comments column must be left blank for user input).*
-   - **Scratch constraint**: Keep exactly the three canonical files in `docs/scratch/`. This constraint does not limit source or test files.
-   - Select one capability gate or related gate group. Keep source changes within its complete dependency boundary.
-   - **Minimal Scratch Footprint**: The `docs/scratch/` directory must maintain a minimal footprint of only 2–3 files at a time and one folder (e.g., `UNMERGED_IMPLEMENTATION_PLAN.md`, `IMPLEMENTATION_PLAN.md` and `task_tracker.md`), merging historical items and conformance evidence into the true canonical ledger and pruning legacy docs.
-
-4. **Pause for author review**:
-   - Defer routine review pauses within the owner's granted lifecycle authority. Preserve explicit owner holds and critical undecided contracts.
-   - Once the author accepts by filling out comments, merge approved items into the master canonical implementation plan ledger.
-
-5. **Execute the slice via the task tracker**:
-   - Obtain a single slice from the true implementation plan ledger.
-   - Rewrite `docs/scratch/task_tracker.md` specifically for the current slice iteration.
-   - **Slices mean local commit, completed gates mean push**: Commit locally each implemented slice as a scoped checkpoint. Do not push incomplete slices. Push to the remote branch only when the capability gate checks pass.
-   - **Repository branch layout**: Operate on designated product branches:
-     - `main` (production / release)
-     - `preview/crawler-network` (`src-worker`, `src-crawler`, `src-worker/packages/network`)
-     - `preview/desktop-client` (`src-crawler-client`)
-     - `preview/web` (`src-web`, `src-web-search`)
-     - `preview/workers-api` (`src-package`)
-     - `release/patch/*` (short-lived patch branches)
-     - `release/candidate/*` (short-lived candidate PRs on main, can be overridden with `--force`)
-   - Preserve unrelated owner edits. Commit only the slice's files unless the owner explicitly requests a combined checkpoint.
-   - Implement the capability gate or related gate group before running its checks and checkpoint write-ups.
-   - Keep incomplete changes marked unverified. Run the relevant tests, typechecks and runtime/build checks together at that checkpoint.
-   - When the gate passes, commit its evidence and push the checked commits to the task branch.
-   - Owner update, 2026-10-06: normal source and preview commits may push to synchronized main or feature branches. Preview publishing stays on the current ahead branch and does not require a promotion PR.
-   - If a connector cannot create the PR, supply a comparison link. Do not expand credentials or bypass protection to finish the gate.
-   - Never disable rulesets, add a bypass, force-push main or merge for the owner. A gate pass authorizes a branch push, not a merge.
-   - After promotion, fetch and inspect the merged main commit before release preparation or tag-only finalization.
-   - A slice commit alone does not authorize a tag, publication or deployment. Preserve protected-main and product release approvals.
-
-6. **Practice publishing at capability milestones (R57-C57B)**:
-   - After the gate checks pass, select only the products whose delivered behavior or contracts changed.
-   - Use each selected product's root publishing chain (`publish:preview`, `publish:release`). It allocates the next configured patch, synchronizes metadata, commits, tags and pushes.
-   - Check dependency producers first. An SDK peer change needs a checked network archive before dependent crawler or Worker publishing.
-   - Keep artifact channels separate from SDK channels. Crawler/Worker use preview SDK. Desktop/web use release SDK. Network has one archive stream.
-   - Use preview for iterative verification. Release publication retains its owner approvals. Do not approve protected jobs or npm stages for the owner.
-   - Keep SDK v0.1.0 held for full owner API review. Keep website delivery disabled and Worker release build-only.
-   - Check the tagged CI run, original artifact bytes, receipts, registry identities and deployment links before recording delivery as verified.
-   - Keep failed and published tags fixed. Require publication/artifact proof for the configured predecessor before another bump or release tag finalization.
-   - CI reruns execute the frozen tagged commit. Use reruns only for transient errors. Code fixes require tag reversion (`recovery:revert-tag`) or patch branches (`recovery:patch`), followed by publishing from the ahead branch.
-   - Never bump unrelated products to align versions.
-   - Do not publish a product for a documentation-only gate, an unchanged runtime, or an unresolved safety boundary. Record the reason.
-   - Record the run/tag, dependency versions, checks and remaining uncertainty. A successful deployment does not complete the full goal.
-   - Follow [the agent publishing procedure](../../docs/scratch/research/decisions/AGENT_PUBLISHING_PROCEDURE.md). Human commands are in [PUBLISHING.md](../../docs/source/PUBLISHING.md).
-
-7. **Reconcile and repeat**:
-   - Once finished, check the implementation plan ledger and mark completed items as done based on the task tracker.
-   - Remove subsequent author comments for that row.
-   - Remove rows that were marked completed where author comments indicate acceptance (blank comments remain pending review).
-   - Otherwise, check for new author comments on rows marked as done with disapproval signals, then repeat from Step 1 after unmarking and updating their descriptions starting the lifecycle again
-
-With the documents updated, you only have to inform the user about the updates, no need to copy the whole thing into the final chat. If user asks a question in a comment, it is not an answer that is eligible for proceedings, the row must be clarified and requeued.
+1. **Verify sector anchor and understand the codebase**:
+   - Confirm the active responsibility sector (`crawler-network`, `desktop-client`, `api-web`, `pipeline`, or `legal-research`) before editing.
+   - Read targeted contexts along the truth cascade (`VISION.md` -> `SYSTEM_MAP.md` -> `LEGAL.md` -> sector spec -> live source) and record working hypotheses in the active `task_tracker.md`.
+2. **Clarify ambiguity with question hooks**:
+   - Clarify underspecified requirements, architectural trade-offs, legal expansion boundaries, or UI primitive additions via `ask_question` before drafting implementation plans.
+3. **Produce sequential gated iterations**:
+   - Dissect work into bounded slices inside one capability gate and its dependency boundary.
+   - Maintain the two-table ledger schema:
+     - **Task slices**: `| status | ID | problem | related-code(s) | reason | solution | author comments |`
+     - **Milestone gates**: `| ID | milestone | current results | author comments |`
+     - Leave `author comments` blank for owner input unless populated via explicit `ask_question` decisions.
+   - **Three-file scratch footprint (`handoff.md` integration ledger)**:
+     - Every sector-anchored `docs/scratch-<sector>/` directory (`crawler-network`, `desktop-client`, `api-web`, `pipeline`, `legal-research`) must contain strictly three files: `IMPLEMENTATION_PLAN.md`, `task_tracker.md`, and `handoff.md`.
+     - Express the 5-tier handoff cascade as labeled tier sections inside each `handoff.md`. Downstream sectors read upstream `handoff.md` files to propagate changes without editing upstream sectors.
+     - Legacy root `docs/scratch/` remains intact strictly for `scripts/delivery.mjs` and `tests/preprod_layout.test.ts` until Sector 4 `PIPELINE-SCRATCH-RETIRE` completes.
+4. **Pause policy and owner holds**:
+   - Defer routine review pauses within granted lifecycle authority, but strictly preserve explicit owner holds (including SDK `v0.1.0` API review, protected release approvals, and unresolved legal/security contracts).
+5. **Execute slices and gate checkpoints**:
+   - **Slices mean local commit; completed capability gates mean push** (session-specific local-only rules override pushes).
+   - Preserve unrelated owner edits. Commit only the active slice's files unless a combined checkpoint is explicitly requested.
+   - Operate on designated sector branches:
+     - `main`: production / releases (clean tree required)
+     - `preview/crawler-network`: `src-worker/`, `src-crawler/`, `src-worker/packages/network/`
+     - `preview/desktop-client`: `src-crawler-client/`
+     - `preview/web`: `src-web/`, `src-web-search/`
+     - `preview/workers-api`: `src-package/`
+     - `release/patch/*` and `release/candidate/*`: short-lived release branches
+   - Implement the capability gate or related gate group before running verification checks and checkpoint write-ups. Keep incomplete changes marked `unverified`.
+   - Never disable branch protection, add bypasses, force-push `main`, or merge/approve PRs on the owner's behalf.
+6. **Pull-only publication requests and Pipeline-exclusive changelog/publishing (R57-C57B)**:
+   - Product and legal sectors (`crawler-network`, `desktop-client`, `api-web`, `legal-research`) **must not** directly edit `docs/source/CHANGELOG.md` and **must not** run root `bun run publish:*` scripts directly.
+   - Instead, upon gate verification, product sectors submit a **written Publication Request** strictly inside their own `docs/scratch-<sector>/handoff.md` (target product, channel, producer prerequisites, factual ASD-STE100 draft release notes, verification proof, and source slice IDs).
+   - **Sector 4 (`pipeline`) agents** sweep all sector `handoff.md` ledgers, transfer verified product notes into `docs/source/CHANGELOG.md`, keep `docs/source/CHANGELOG.md` tidy, and execute root publication routines. Publication tooling snapshots `docs/source/CHANGELOG.md` to root `CHANGELOG.md` and appends consumed notes into `docs/changelogs/`.
+   - Publish only products whose delivered behavior or contracts changed, in strict producer-before-consumer order (`src-package` -> `src-worker/packages/network` -> dependent services/apps). Keep channels separate: Crawler Node and Coordinator consume preview SDK; Desktop Client and Web consume release SDK; `vrc-packages-network` uses one single-stream archive.
+   - Do not publish a product or add product changelog entries for documentation-only, governance-only, or legal-research-only gates. Follow `docs/research/decisions/AGENT_PUBLISHING_PROCEDURE.md` (agent) and `docs/source/PUBLISHING.md` (human).
+7. **Reconcile and Pipeline-exclusive ledger row clearing**:
+   - Product and legal sectors mark completed slices `verified` in `IMPLEMENTATION_PLAN.md` and `task_tracker.md` and log outbound handoffs or Publication Requests in `handoff.md`. **Product and legal sectors do not have the right to clear or delete rows in their ledgers.**
+   - **Only Sector 4 (`pipeline`) agents** may clear or delete `verified` rows from any sector's `IMPLEMENTATION_PLAN.md`, `task_tracker.md`, or `handoff.md`, strictly after transferring verified product notes to `docs/source/CHANGELOG.md` (or auditing non-product closure without version bumps).
+   - If the owner asks a question in `author comments`, treat it as clarification required, not approval.

@@ -6,15 +6,15 @@ import { CrawlerNodeDaemon } from "../src/runner/daemon.ts";
 import { LocalNodeStore } from "../src/storage/local_sqlite.ts";
 import type { NodeRuntimeConfig } from "../src/config/runtime_config.ts";
 import { ClaimRequestSchema, ClaimResponseSchema, CrawlJobSchema, HeartbeatRequestSchema,
-  HeartbeatResponseSchema, ResultRequestSchema, ResultResponseSchema,
-  type ClaimResponse, type ResultRequest } from "vrc-packages-network/node";
+  HeartbeatResponseSchema, ResultRequestSchema, ResultResponseSchema, BatchResultRequestSchema, BatchResultResponseSchema,
+  type ClaimResponse, type ResultRequest, type BatchResultRequest, type CrawlJob } from "vrc-packages-network/node";
 
 const config: NodeRuntimeConfig = { nodeId: "daemon-fixture", token: "fixture-only-not-a-live-credential",
   capabilities: ["vpm"], baseUrl: "https://coordinator.invalid", databasePath: ":memory:" };
 const job = CrawlJobSchema.parse({ jobId: "daemon-job", leaseId: crypto.randomUUID(), platform: "vpm",
   purpose: "metadata", url: "https://example.org/index.json", origin: "https://example.org",
   leaseExpiresAt: "2099-01-01T00:00:00.000Z", retainClasses: ["normalized_facts"], etag: null, lastModified: null });
-const leased: ClaimResponse = { schemaVersion: 1, status: "leased", job };
+const leased: ClaimResponse = { schemaVersion: 1 as const, status: "leased", job };
 const empty: ClaimResponse = { schemaVersion: 1, status: "empty", retryAfterMs: 1000 };
 const client = () => new CoordinatorClient(config.baseUrl, config.token, config.nodeId, config.capabilities,
   { maxRetries: 0 });
@@ -48,6 +48,59 @@ async function withWire(
         return result ? result(parsed, wire) : Response.json(ResultResponseSchema.parse({ schemaVersion: 1,
           status: "accepted", jobId: parsed.jobId, duplicate: false, sourceVersionCreated: true }));
       }
+      case "/v1/node/jobs/results": {
+        const parsed = BatchResultRequestSchema.parse(payload);
+        expect(parsed.nodeId).toBe(config.nodeId);
+        if (result) {
+          const receipts = [];
+          for (const item of parsed.results) {
+            const singlePayload = {
+              schemaVersion: parsed.schemaVersion,
+              nodeId: parsed.nodeId,
+              jobId: item.jobId,
+              leaseId: item.leaseId,
+              idempotencyKey: item.idempotencyKey,
+              outcome: item.outcome
+            };
+            const singleRes = await result(singlePayload, JSON.stringify(singlePayload));
+            if (singleRes.ok) {
+              const resJson = await singleRes.json() as any;
+              receipts.push({
+                status: "accepted" as const,
+                jobId: item.jobId,
+                duplicate: resJson.duplicate ?? false,
+                sourceVersionCreated: resJson.sourceVersionCreated ?? true
+              });
+            } else {
+              const resJson = await singleRes.json().catch(() => ({})) as any;
+              receipts.push({
+                status: "rejected" as const,
+                jobId: item.jobId,
+                terminal: singleRes.status === 403 || singleRes.status === 404,
+                error: resJson.error ?? `Coordinator ${singleRes.status}`,
+                code: singleRes.status === 403 ? ("forbidden" as const) : ("conflict" as const)
+              });
+            }
+          }
+          return Response.json(BatchResultResponseSchema.parse({
+            schemaVersion: 1,
+            receipts
+          }));
+        }
+        return Response.json(BatchResultResponseSchema.parse({
+          schemaVersion: 1,
+          receipts: parsed.results.map((r) => ({
+            status: "accepted" as const,
+            jobId: r.jobId,
+            duplicate: false,
+            sourceVersionCreated: true
+          }))
+        }));
+      }
+      case "/v1/node/robots/claim":
+        return Response.json({ schemaVersion: 1, status: "empty" });
+      case "/v1/node/robots/result":
+        return Response.json({ schemaVersion: 1, status: "accepted" });
       default: throw new Error("Unexpected node protocol route");
     }
   }) as typeof fetch;
@@ -222,5 +275,690 @@ describe("node-owned daemon lifecycle through serialized contracts", () => {
       expect(store.getTask(task.taskId)?.status).toBe("failed");
       // This diagnoses missing durable recovery. It does not prove coordinator idempotency.
     } finally { daemon.stop(); store.close(); removeFixture(directory); }
+  });
+
+  test("durable outbox restart recovery: daemon autonomously replays pending outbox on restart", async () => {
+    const directory = fixtureDirectory();
+    const databasePath = join(directory, "node_recovery.db");
+    let store: LocalNodeStore | null = null;
+    let daemon1: CrawlerNodeDaemon | null = null;
+    let daemon2: CrawlerNodeDaemon | null = null;
+    try {
+      store = new LocalNodeStore(databasePath);
+      daemon1 = new CrawlerNodeDaemon({ ...config, databasePath }, store, client(), { fetchFn: source });
+      let originalIdempotencyKey = "";
+
+      // Step fails due to transient 503 on submission
+      await withWire(leased, async () => {
+        await expect(daemon1!.step()).rejects.toThrow("Coordinator 503");
+      }, async (payload) => {
+        originalIdempotencyKey = payload.idempotencyKey;
+        return new Response(null, { status: 503 });
+      });
+
+      // Verify outbox entry was durably staged with status 'pending'
+      const tasks = store.listTasksForRun(daemon1!.currentRunId);
+      expect(tasks.length).toBe(1);
+      const taskId = tasks[0]!.taskId;
+      const outboxEntry = store.getOutboxEntryByTaskId(taskId);
+      expect(outboxEntry).not.toBeNull();
+      expect(outboxEntry?.idempotencyKey).toBe(originalIdempotencyKey);
+      expect(outboxEntry?.status).toBe("pending");
+      expect(outboxEntry?.retryCount).toBe(1);
+
+      daemon1!.stop();
+      store.close();
+      store = null;
+
+      // Restart node daemon with the same SQLite database
+      store = new LocalNodeStore(databasePath);
+      // Fast-forward retry backoff time so entry is immediately eligible
+      const pending = store.getOutboxEntryByTaskId(taskId)!;
+      store.markOutboxFailed(pending.outboxId, "fast-forward", -10_000);
+
+      // Now it appears in pending outbox entries
+      const eligibleEntries = store.getPendingOutboxEntries();
+      expect(eligibleEntries.length).toBe(1);
+
+      daemon2 = new CrawlerNodeDaemon({ ...config, databasePath }, store, client(), { fetchFn: source });
+      let replaySawSameKey = false;
+
+      // Replay via daemon flush
+      await withWire(empty, async () => {
+        const flushed = await daemon2!.flushOutbox();
+        expect(flushed).toBe(1);
+      }, async (payload) => {
+        if (payload.idempotencyKey === originalIdempotencyKey) {
+          replaySawSameKey = true;
+        }
+        return Response.json(ResultResponseSchema.parse({
+          schemaVersion: 1,
+          status: "accepted",
+          jobId: payload.jobId,
+          duplicate: false,
+          sourceVersionCreated: true
+        }));
+      });
+
+      expect(replaySawSameKey).toBe(true);
+      const deliveredEntry = store.getOutboxEntryByTaskId(taskId)!;
+      expect(deliveredEntry.status).toBe("sent");
+      expect(deliveredEntry.receipt).toMatchObject({ status: "accepted", jobId: job.jobId });
+      expect(store.getTask(taskId)?.status).toBe("completed");
+      expect(store.getTask(taskId)?.accepted).toBe(1);
+    } finally {
+      daemon1?.stop();
+      daemon2?.stop();
+      try { store?.close(); } catch {}
+      removeFixture(directory);
+    }
+  });
+
+  test("durable outbox terminal failure: non-retryable 403 transitions outbox entry to dead", async () => {
+    const store = new LocalNodeStore(":memory:");
+    const daemon = new CrawlerNodeDaemon(config, store, client(), { fetchFn: source });
+    try {
+      await withWire(leased, async () => {
+        await expect(daemon.step()).rejects.toThrow("Coordinator 403");
+      }, async () => Response.json({ error: "Lease expired or forbidden" }, { status: 403 }));
+
+      const tasks = store.listTasksForRun(daemon.currentRunId);
+      expect(tasks.length).toBe(1);
+      const outboxEntry = store.getOutboxEntryByTaskId(tasks[0]!.taskId);
+      expect(outboxEntry).not.toBeNull();
+      expect(outboxEntry?.status).toBe("dead");
+      expect(outboxEntry?.lastError).toContain("Coordinator 403");
+
+      // Verify that flushOutbox ignores dead entries
+      const flushed = await daemon.flushOutbox();
+      expect(flushed).toBe(0);
+    } finally {
+      daemon.stop();
+      store.close();
+    }
+  });
+
+  test("durable outbox batched flush processes per-item receipts and isolates terminal and transient failures", async () => {
+    const store = new LocalNodeStore(":memory:");
+    const daemon = new CrawlerNodeDaemon(config, store, client(), { fetchFn: source });
+    try {
+      const runId = daemon.currentRunId;
+      const job1 = CrawlJobSchema.parse({ ...job, jobId: "job-1", leaseId: crypto.randomUUID(), url: "https://example.org/1" });
+      const job2 = CrawlJobSchema.parse({ ...job, jobId: "job-2", leaseId: crypto.randomUUID(), url: "https://example.org/2" });
+      const job3 = CrawlJobSchema.parse({ ...job, jobId: "job-3", leaseId: crypto.randomUUID(), url: "https://example.org/3" });
+
+      const task1 = store.recordClaimedJob(runId, job1);
+      const task2 = store.recordClaimedJob(runId, job2);
+      const task3 = store.recordClaimedJob(runId, job3);
+
+      const outbox1 = store.stageOutboxOutcome(task1, { kind: "unchanged" }, crypto.randomUUID());
+      const outbox2 = store.stageOutboxOutcome(task2, { kind: "unchanged" }, crypto.randomUUID());
+      const outbox3 = store.stageOutboxOutcome(task3, { kind: "unchanged" }, crypto.randomUUID());
+
+      expect(store.getPendingOutboxEntries().length).toBe(3);
+
+      // Custom batch response: job1 accepted, job2 terminal rejection, job3 retryable failure
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = (async (input, init) => {
+        const req = new Request(input.toString(), init);
+        if (new URL(req.url).pathname === "/v1/node/jobs/results") {
+          return Response.json(BatchResultResponseSchema.parse({
+            schemaVersion: 1,
+            receipts: [
+              { status: "accepted", jobId: "job-1", duplicate: false, sourceVersionCreated: true },
+              { status: "rejected", jobId: "job-2", terminal: true, error: "Lease expired", code: "lease_expired" },
+              { status: "rejected", jobId: "job-3", terminal: false, error: "Origin temporary failure", code: "conflict" }
+            ]
+          }));
+        }
+        return Response.error();
+      }) as typeof fetch;
+
+      try {
+        const flushed = await daemon.flushOutbox(10);
+        expect(flushed).toBe(1);
+
+        // Job 1 is sent and completed
+        expect(store.getOutboxEntry(outbox1)?.status).toBe("sent");
+        expect(store.getTask(task1)?.status).toBe("completed");
+
+        // Job 2 is dead and failed terminally
+        expect(store.getOutboxEntry(outbox2)?.status).toBe("dead");
+        expect(store.getOutboxEntry(outbox2)?.lastError).toBe("Lease expired");
+        expect(store.getTask(task2)?.status).toBe("failed");
+
+        // Job 3 is still pending retry
+        expect(store.getOutboxEntry(outbox3)?.status).toBe("pending");
+        expect(store.getOutboxEntry(outbox3)?.retryCount).toBe(1);
+        expect(store.getOutboxEntry(outbox3)?.lastError).toBe("Origin temporary failure");
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    } finally {
+      daemon.stop();
+      store.close();
+    }
+  });
+
+  test("late batch receipt-write failure cannot reopen sent or terminal entries", async () => {
+    const store = new LocalNodeStore(":memory:");
+    const daemon = new CrawlerNodeDaemon(config, store, client());
+    try {
+      const tasks = ["accepted", "terminal", "write-failure"].map(suffix => store.recordClaimedJob(
+        daemon.currentRunId, { ...job, jobId: `mixed-${suffix}`, leaseId: crypto.randomUUID() }));
+      const entries = tasks.map(task => store.stageOutboxOutcome(task, { kind: "unchanged" }, crypto.randomUUID()));
+      const delivered = store.markOutboxDelivered.bind(store);
+      store.markOutboxDelivered = (id, receipt, metrics) => {
+        if (id === entries[2]) throw new Error("Local receipt write failed");
+        delivered(id, receipt, metrics);
+      };
+      await withWire(empty, async () => { expect(await daemon.flushOutbox()).toBe(1); }, async payload =>
+        payload.jobId === "mixed-terminal"
+          ? Response.json({ error: "Lease expired" }, { status: 403 })
+          : Response.json(ResultResponseSchema.parse({ schemaVersion: 1, status: "accepted",
+            jobId: payload.jobId, duplicate: false, sourceVersionCreated: false })));
+      expect(store.getOutboxEntry(entries[0]!)).toMatchObject({ status: "sent", retryCount: 0, lastError: null,
+        receipt: { jobId: "mixed-accepted", duplicate: false } });
+      expect(store.getTask(tasks[0]!)?.errorMessage).toBeNull();
+      expect(store.getOutboxEntry(entries[1]!)).toMatchObject({ status: "dead", retryCount: 0, lastError: "Lease expired" });
+      expect(store.getTask(tasks[1]!)?.errorMessage).toBe("Lease expired");
+      expect(store.getOutboxEntry(entries[2]!)).toMatchObject({ status: "pending", retryCount: 1,
+        lastError: "Local receipt write failed" });
+      expect(store.getPendingOutboxCount()).toBe(1);
+      expect(store.getRun(daemon.currentRunId)).toMatchObject({ tasksCompleted: 1, tasksFailed: 1 });
+    } finally { daemon.stop(); store.close(); }
+  });
+
+  describe("idle backoff ladder and bounded jitter (R50-C31, R54-C39B)", () => {
+    test("calculateIdleDelay clamps jitter to the coordinator and local minimum wait", () => {
+      const store = new LocalNodeStore(":memory:");
+      try {
+        const daemonMin = new CrawlerNodeDaemon(config, store, client(), {
+          minIdleDelayMs: 5_000,
+          maxIdleDelayMs: 60_000,
+          jitterRatio: 0.2,
+          randomFn: () => 0.0,
+        });
+        const daemonMid = new CrawlerNodeDaemon(config, store, client(), {
+          minIdleDelayMs: 5_000,
+          maxIdleDelayMs: 60_000,
+          jitterRatio: 0.2,
+          randomFn: () => 0.5,
+        });
+        const daemonMax = new CrawlerNodeDaemon(config, store, client(), {
+          minIdleDelayMs: 5_000,
+          maxIdleDelayMs: 60_000,
+          jitterRatio: 0.2,
+          randomFn: () => 1.0,
+        });
+        const daemonNoJitter = new CrawlerNodeDaemon(config, store, client(), {
+          minIdleDelayMs: 5_000,
+          maxIdleDelayMs: 60_000,
+          jitterRatio: 0,
+        });
+
+        // First empty claim (consecutive = 0 or 1 -> base = 5000)
+        expect(daemonMin.calculateIdleDelay(5_000)).toBe(5_000); // Never shorten the requested wait.
+        expect(daemonMid.calculateIdleDelay(5_000)).toBe(5_000); // 5000 * 1.0
+        expect(daemonMax.calculateIdleDelay(5_000)).toBe(6_000); // 5000 * 1.2
+        expect(daemonNoJitter.calculateIdleDelay(5_000)).toBe(5_000);
+      } finally {
+        store.close();
+      }
+    });
+
+    test("idle backoff ladder scales exponentially and caps at maxIdleDelayMs", async () => {
+      const store = new LocalNodeStore(":memory:");
+      const daemon = new CrawlerNodeDaemon(config, store, client(), {
+        minIdleDelayMs: 5_000,
+        maxIdleDelayMs: 60_000,
+        idleBackoffMultiplier: 2.0,
+        jitterRatio: 0.2,
+        randomFn: () => 0.5, // unjittered midpoint
+      });
+      try {
+        expect(daemon.emptyClaimCount).toBe(0);
+
+        // Step 1: empty -> 5,000ms
+        await withWire(empty, async () => { expect(await daemon.step()).toBe("empty"); });
+        expect(daemon.emptyClaimCount).toBe(1);
+        expect(daemon.currentIdleDelayMs).toBe(5_000);
+
+        // Step 2: empty -> 10,000ms
+        await withWire(empty, async () => { expect(await daemon.step()).toBe("empty"); });
+        expect(daemon.emptyClaimCount).toBe(2);
+        expect(daemon.currentIdleDelayMs).toBe(10_000);
+
+        // Step 3: empty -> 20,000ms
+        await withWire(empty, async () => { expect(await daemon.step()).toBe("empty"); });
+        expect(daemon.emptyClaimCount).toBe(3);
+        expect(daemon.currentIdleDelayMs).toBe(20_000);
+
+        // Step 4: empty -> 40,000ms
+        await withWire(empty, async () => { expect(await daemon.step()).toBe("empty"); });
+        expect(daemon.emptyClaimCount).toBe(4);
+        expect(daemon.currentIdleDelayMs).toBe(40_000);
+
+        // Step 5: empty -> 60,000ms (capped at maxIdleDelayMs)
+        await withWire(empty, async () => { expect(await daemon.step()).toBe("empty"); });
+        expect(daemon.emptyClaimCount).toBe(5);
+        expect(daemon.currentIdleDelayMs).toBe(60_000);
+
+        // Step 6: empty -> 60,000ms (still capped)
+        await withWire(empty, async () => { expect(await daemon.step()).toBe("empty"); });
+        expect(daemon.emptyClaimCount).toBe(6);
+        expect(daemon.currentIdleDelayMs).toBe(60_000);
+      } finally {
+        daemon.stop();
+        store.close();
+      }
+    });
+
+    test("claiming a leased job immediately resets backoff ladder and empty count", async () => {
+      const store = new LocalNodeStore(":memory:");
+      const daemon = new CrawlerNodeDaemon(config, store, client(), {
+        fetchFn: source,
+        minIdleDelayMs: 5_000,
+        maxIdleDelayMs: 60_000,
+        idleBackoffMultiplier: 2.0,
+        randomFn: () => 0.5,
+      });
+      try {
+        // Accumulate 3 consecutive empty claims
+        await withWire(empty, async () => { await daemon.step(); });
+        await withWire(empty, async () => { await daemon.step(); });
+        await withWire(empty, async () => { await daemon.step(); });
+        expect(daemon.emptyClaimCount).toBe(3);
+        expect(daemon.currentIdleDelayMs).toBe(20_000);
+
+        // Claim a real job: resets ladder
+        await withWire(leased, async () => { expect(await daemon.step()).toBe("claimed"); });
+        expect(daemon.emptyClaimCount).toBe(0);
+
+        // Next empty claim begins back at base 5,000ms
+        await withWire(empty, async () => { expect(await daemon.step()).toBe("empty"); });
+        expect(daemon.emptyClaimCount).toBe(1);
+        expect(daemon.currentIdleDelayMs).toBe(5_000);
+      } finally {
+        daemon.stop();
+        store.close();
+      }
+    });
+
+    test("coordinator higher retryAfterMs takes precedence over minIdleDelayMs", async () => {
+      const store = new LocalNodeStore(":memory:");
+      const highDelayClaim: ClaimResponse = { schemaVersion: 1, status: "empty", retryAfterMs: 30_000 };
+      const daemon = new CrawlerNodeDaemon(config, store, client(), {
+        minIdleDelayMs: 5_000,
+        maxIdleDelayMs: 60_000,
+        randomFn: () => 0.5,
+      });
+      try {
+        await withWire(highDelayClaim, async () => { expect(await daemon.step()).toBe("empty"); });
+        expect(daemon.emptyClaimCount).toBe(1);
+        expect(daemon.currentIdleDelayMs).toBe(30_000);
+      } finally {
+        daemon.stop();
+        store.close();
+      }
+    });
+
+    test("wire retry floors above the local cap survive jitter and repeated empty claims", async () => {
+      for (const retryAfterMs of [90_000, 300_000]) {
+        for (const [jitterRatio, random] of [[0, 0], [0.2, 0], [0.2, 0.5], [0.2, 1]]) {
+          const store = new LocalNodeStore(":memory:");
+          const daemon = new CrawlerNodeDaemon(config, store, client(), {
+            jitterRatio, randomFn: () => random,
+          });
+          try {
+            for (let claim = 0; claim < 3; claim++) {
+              await withWire({ schemaVersion: 1, status: "empty", retryAfterMs }, async () => {
+                expect(await daemon.step()).toBe("empty");
+              });
+              expect(daemon.currentIdleDelayMs).toBe(retryAfterMs);
+            }
+          } finally {
+            daemon.stop();
+            store.close();
+          }
+        }
+      }
+    });
+
+    test("positive jitter cannot exceed the local backoff ceiling", async () => {
+      const store = new LocalNodeStore(":memory:");
+      const daemon = new CrawlerNodeDaemon(config, store, client(), {
+        idleBackoffMultiplier: 2, randomFn: () => 1,
+      });
+      try {
+        for (const expectedDelay of [6_000, 12_000, 24_000, 48_000, 60_000, 60_000]) {
+          await withWire(empty, async () => { expect(await daemon.step()).toBe("empty"); });
+          expect(daemon.currentIdleDelayMs).toBe(expectedDelay);
+        }
+      } finally {
+        daemon.stop();
+        store.close();
+      }
+    });
+
+    test("daemon sleeping on idle delay terminates promptly when stop() is invoked", async () => {
+      const store = new LocalNodeStore(":memory:");
+      let sleepCalls = 0;
+      const daemon = new CrawlerNodeDaemon(config, store, client(), {
+        minIdleDelayMs: 60_000,
+        sleepFn: async (ms) => {
+          sleepCalls++;
+          daemon.stop();
+          await Bun.sleep(5);
+        },
+      });
+      try {
+        const startPromise = withWire(empty, async () => { await daemon.start(); });
+        await startPromise;
+        expect(daemon.isStopping).toBe(true);
+        expect(sleepCalls).toBeGreaterThanOrEqual(1);
+      } finally {
+        daemon.stop();
+        store.close();
+      }
+    });
+  });
+
+  describe("outbox flow control, crash recovery, and TTL lifecycle (R54-C39D)", () => {
+    test("pauses claims and enters backoff when outbox pending quota is reached", async () => {
+      const store = new LocalNodeStore(":memory:");
+      const runId = store.startRun("quota-node");
+      const testJob: CrawlJob = {
+        jobId: "quota-job-1",
+        leaseId: crypto.randomUUID(),
+        platform: "vpm",
+        purpose: "metadata",
+        url: "https://example.org/pkg1.json",
+        origin: "https://example.org",
+        leaseExpiresAt: new Date(Date.now() + 60000).toISOString(),
+        retainClasses: ["normalized_facts"],
+        etag: null,
+        lastModified: null,
+      };
+      const t1 = store.recordClaimedJob(runId, testJob);
+      const t2 = store.recordClaimedJob(runId, { ...testJob, jobId: "quota-job-2", leaseId: crypto.randomUUID() });
+
+      // Stage 2 pending items
+      store.stageOutboxOutcome(t1, { kind: "unchanged" }, "idemp-quota-00001", 10);
+      store.stageOutboxOutcome(t2, { kind: "unchanged" }, "idemp-quota-00002", 10);
+
+      expect(store.getPendingOutboxCount()).toBe(2);
+
+      let claimsAttempted = 0;
+      const testClient = client();
+      const origClaim = testClient.claim.bind(testClient);
+      testClient.claim = async (...args) => {
+        claimsAttempted++;
+        return origClaim(...args);
+      };
+
+      const daemon = new CrawlerNodeDaemon(config, store, testClient, {
+        maxPendingOutboxQuota: 2,
+        minIdleDelayMs: 5_000,
+      });
+
+      try {
+        // Since outbox is at quota (2 >= 2) and flush fails (wire throws offline), daemon should pause claims
+        const originalFetch = globalThis.fetch;
+        globalThis.fetch = Object.assign(async () => { throw new Error("Coordinator offline"); }, { preconnect() {} });
+        try {
+          const outcome = await daemon.step();
+          expect(outcome).toBe("empty");
+          expect(claimsAttempted).toBe(0); // client.claim was never called!
+          expect(daemon.emptyClaimCount).toBe(1);
+        } finally {
+          globalThis.fetch = originalFetch;
+        }
+      } finally {
+        daemon.stop();
+        store.close();
+      }
+    });
+
+    test("recovers interrupted 'submitting' outbox entries on daemon startup", async () => {
+      const store = new LocalNodeStore(":memory:");
+      const runId = store.startRun("recover-node");
+      const testJob: CrawlJob = {
+        jobId: "recover-job-1",
+        leaseId: crypto.randomUUID(),
+        platform: "vpm",
+        purpose: "metadata",
+        url: "https://example.org/pkg3.json",
+        origin: "https://example.org",
+        leaseExpiresAt: new Date(Date.now() + 60000).toISOString(),
+        retainClasses: ["normalized_facts"],
+        etag: null,
+        lastModified: null,
+      };
+      const taskId = store.recordClaimedJob(runId, testJob);
+      const outboxId = store.stageOutboxOutcome(taskId, { kind: "unchanged" }, "idemp-recover-00001");
+
+      // Simulate mid-crash state by marking outbox entry as 'submitting'
+      (store as any).db.prepare("UPDATE node_outbox SET status = 'submitting' WHERE outbox_id = ?").run(outboxId);
+      expect(store.getOutboxEntry(outboxId)?.status).toBe("submitting");
+
+      // Verify recoverInterruptedOutboxEntries resets it to 'pending'
+      const recovered = store.recoverInterruptedOutboxEntries();
+      expect(recovered).toBe(1);
+      expect(store.getOutboxEntry(outboxId)?.status).toBe("pending");
+
+      // Verify that flush delivers it cleanly
+      const daemon = new CrawlerNodeDaemon(config, store, client(), { runOnce: true });
+      try {
+        await withWire(empty, async () => {
+          const flushed = await daemon.flushOutbox();
+          expect(flushed).toBe(1);
+        });
+        expect(store.getOutboxEntry(outboxId)?.status).toBe("sent");
+        expect(store.getTask(taskId)?.status).toBe("completed");
+      } finally {
+        daemon.stop();
+        store.close();
+      }
+    });
+
+    test("terminal rejection for expired lease marks outbox dead and marks task failed without retry", async () => {
+      const store = new LocalNodeStore(":memory:");
+      const runId = store.startRun("terminal-node");
+      const testJob: CrawlJob = {
+        jobId: "term-job-1",
+        leaseId: crypto.randomUUID(),
+        platform: "vpm",
+        purpose: "metadata",
+        url: "https://example.org/pkg4.json",
+        origin: "https://example.org",
+        leaseExpiresAt: new Date(Date.now() + 60000).toISOString(),
+        retainClasses: ["normalized_facts"],
+        etag: null,
+        lastModified: null,
+      };
+      const taskId = store.recordClaimedJob(runId, testJob);
+      const outboxId = store.stageOutboxOutcome(taskId, { kind: "unchanged" }, "idemp-term-00000001");
+
+      const daemon = new CrawlerNodeDaemon(config, store, client());
+
+      try {
+        await withWire(
+          empty,
+          async () => {
+            const flushed = await daemon.flushOutbox();
+            expect(flushed).toBe(0);
+          },
+          async () => new Response(JSON.stringify({ error: "Node does not hold a live lease for this job" }), { status: 403 })
+        );
+
+        const outbox = store.getOutboxEntry(outboxId);
+        expect(outbox?.status).toBe("dead");
+        expect(outbox?.lastError).toContain("Node does not hold a live lease");
+
+        const task = store.getTask(taskId);
+        expect(task?.status).toBe("failed");
+        expect(task?.errorMessage).toContain("Node does not hold a live lease");
+
+        // Pending outbox entries should now be 0 (dead item is not pending)
+        expect(store.getPendingOutboxEntries().length).toBe(0);
+      } finally {
+        daemon.stop();
+        store.close();
+      }
+    });
+
+    test("processes multiple jobs sequentially from batch claim without refetching", async () => {
+      const store = new LocalNodeStore(":memory:");
+      const job1: CrawlJob = {
+        jobId: "batch-job-1",
+        leaseId: crypto.randomUUID(),
+        platform: "vpm",
+        purpose: "metadata",
+        url: "https://example.org/pkg1.json",
+        origin: "https://example.org",
+        leaseExpiresAt: new Date(Date.now() + 60000).toISOString(),
+        retainClasses: ["normalized_facts"],
+        etag: null,
+        lastModified: null,
+      };
+      const job2: CrawlJob = {
+        jobId: "batch-job-2",
+        leaseId: crypto.randomUUID(),
+        platform: "vpm",
+        purpose: "metadata",
+        url: "https://example.org/pkg2.json",
+        origin: "https://example.org",
+        leaseExpiresAt: new Date(Date.now() + 60000).toISOString(),
+        retainClasses: ["normalized_facts"],
+        etag: null,
+        lastModified: null,
+      };
+      const batchClaim = {
+        schemaVersion: 1 as const,
+        status: "leased" as const,
+        job: job1,
+        jobs: [job1, job2]
+      };
+
+      let claimCalls = 0;
+      const testClient = client();
+      const origClaim = testClient.claim.bind(testClient);
+      testClient.claim = async (...args) => {
+        claimCalls++;
+        return origClaim(...args);
+      };
+
+      const daemon = new CrawlerNodeDaemon(config, store, testClient);
+
+      try {
+        await withWire(
+          batchClaim,
+          async () => {
+            // Step 1 claims batch and executes job 1
+            const res1 = await daemon.step();
+            expect(res1).toBe("claimed");
+            expect(claimCalls).toBe(1);
+
+            // Step 2 executes job 2 from the local queue without calling coordinator claim
+            const res2 = await daemon.step();
+            expect(res2).toBe("claimed");
+            expect(claimCalls).toBe(1);
+          }
+        );
+
+        const tasks = store.listTasksForRun(daemon.currentRunId);
+        expect(tasks.length).toBe(2);
+        expect(tasks.map(t => t.jobId)).toEqual(["batch-job-1", "batch-job-2"]);
+      } finally {
+        daemon.stop();
+        store.close();
+      }
+    });
+    test("delegates robots preflight refresh on empty job claim (R24-C21)", async () => {
+      const store = new LocalNodeStore(":memory:");
+      const testClient = client();
+      let robotsClaimCalled = 0;
+      let submittedOrigin = "";
+      let submittedStatus = 0;
+      let submittedBody: string | undefined = undefined;
+
+      testClient.claimRobotsRefresh = async () => {
+        robotsClaimCalled++;
+        return {
+          schemaVersion: 1,
+          status: "leased",
+          origin: "https://robots-test.example.org",
+          leaseId: "test-robots-lease-1"
+        };
+      };
+
+      testClient.submitRobotsResult = async (origin, leaseId, statusCode, body) => {
+        submittedOrigin = origin;
+        submittedStatus = statusCode;
+        submittedBody = body;
+        return { status: "accepted", origin };
+      };
+
+      const mockFetch = async (url: any) => {
+        const u = url.toString();
+        if (u === "https://robots-test.example.org/robots.txt") {
+          return new Response("User-agent: *\nDisallow: /secret\n", { status: 200, headers: { "content-type": "text/plain" } });
+        }
+        return new Response("Not found", { status: 404 });
+      };
+
+      const daemon = new CrawlerNodeDaemon(config, store, testClient, { fetchFn: mockFetch as any });
+
+      try {
+        await withWire(empty, async () => {
+          const outcome = await daemon.step();
+          expect(outcome).toBe("claimed");
+          expect(robotsClaimCalled).toBe(1);
+          expect(submittedOrigin).toBe("https://robots-test.example.org");
+          expect(submittedStatus).toBe(200);
+          expect(submittedBody).toContain("Disallow: /secret");
+        });
+      } finally {
+        daemon.stop();
+        store.close();
+      }
+    });
+
+    test("tracks origin duration and computes dynamic heartbeat interval between 5s and 30s (R54-C39B)", () => {
+      const store = new LocalNodeStore(":memory:");
+      const daemon = new CrawlerNodeDaemon(config, store, client(), {});
+
+      try {
+        // Unknown origin defaults to 5,000ms
+        expect(daemon.computeDynamicHeartbeatInterval("https://unknown.example.org")).toBe(5_000);
+
+        // Fast origin (1,000ms) floors at 5,000ms
+        daemon.recordOriginDuration("https://fast.example.org", 1_000);
+        expect(daemon.getOriginDuration("https://fast.example.org")).toBe(1_000);
+        expect(daemon.computeDynamicHeartbeatInterval("https://fast.example.org")).toBe(5_000);
+
+        // Medium origin (24,000ms) scales to half (12,000ms)
+        daemon.recordOriginDuration("https://medium.example.org", 24_000);
+        expect(daemon.getOriginDuration("https://medium.example.org")).toBe(24_000);
+        expect(daemon.computeDynamicHeartbeatInterval("https://medium.example.org")).toBe(12_000);
+
+        // Slow origin (90,000ms) caps at 30,000ms
+        daemon.recordOriginDuration("https://slow.example.org", 90_000);
+        expect(daemon.getOriginDuration("https://slow.example.org")).toBe(90_000);
+        expect(daemon.computeDynamicHeartbeatInterval("https://slow.example.org")).toBe(30_000);
+
+        // Exponential moving average updates: 70% existing + 30% new
+        daemon.recordOriginDuration("https://ema.example.org", 10_000);
+        expect(daemon.getOriginDuration("https://ema.example.org")).toBe(10_000);
+        daemon.recordOriginDuration("https://ema.example.org", 20_000);
+        // 10000 * 0.7 + 20000 * 0.3 = 7000 + 6000 = 13000
+        expect(daemon.getOriginDuration("https://ema.example.org")).toBe(13_000);
+        expect(daemon.computeDynamicHeartbeatInterval("https://ema.example.org")).toBe(6_500);
+      } finally {
+        daemon.stop();
+        store.close();
+      }
+    });
   });
 });

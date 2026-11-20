@@ -2,7 +2,11 @@ import { z } from "zod";
 import { PlatformSchema, JobPurposeSchema, type Platform, type JobPurpose } from "vrc-packages-network/node";
 import { isPrivateOrReservedIp } from "vrc-packages-network/ip-policy";
 import { CreateSourceAccessProfileSchema as ConsumerSourceAccessProfileSchema,
-  isCanonicalSourceAccessPath } from "vrc-packages-api";
+  isCanonicalSourceAccessPath, ProfileCursorSchema, encodeProfileCursor, decodeProfileCursor,
+  SourceAccessProfileListResponseSchema as ConsumerProfileListSchema,
+  type ProfileCursor } from "vrc-packages-api";
+
+export { ProfileCursorSchema, encodeProfileCursor, decodeProfileCursor, type ProfileCursor } from "vrc-packages-api";
 
 export const SOURCE_ACCESS_SCHEMA_VERSION = 1 as const;
 export const SourcePurposeSchema = JobPurposeSchema;
@@ -21,31 +25,18 @@ export const CreateSourceAccessProfileSchema = ConsumerSourceAccessProfileSchema
 export type CreateSourceAccessProfile = z.infer<typeof CreateSourceAccessProfileSchema>;
 
 export const SourceAccessProfileSchema = CreateSourceAccessProfileSchema.safeExtend({
-  profileId: z.uuid(), createdAt: z.iso.datetime(), disabledAt: z.iso.datetime().nullable()
+  profileId: ProfileCursorSchema.shape.profileId, createdAt: ProfileCursorSchema.shape.createdAt,
+  disabledAt: ProfileCursorSchema.shape.createdAt.nullable()
 });
 export type SourceAccessProfile = z.infer<typeof SourceAccessProfileSchema>;
 export const DisableSourceAccessProfileSchema = z.strictObject({
   schemaVersion: z.literal(SOURCE_ACCESS_SCHEMA_VERSION), reason: z.string().trim().min(3).max(300)
 });
-export const ProfileCursorSchema = z.strictObject({ createdAt: z.iso.datetime(), profileId: z.uuid() });
-export type ProfileCursor = z.infer<typeof ProfileCursorSchema>;
-export function encodeProfileCursor(cursor: ProfileCursor): string {
-  return btoa(JSON.stringify(ProfileCursorSchema.parse(cursor)))
-    .replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
-}
-export function decodeProfileCursor(value: string): ProfileCursor | null {
-  if (!/^[A-Za-z0-9_-]{1,256}$/.test(value)) return null;
-  try {
-    const cursor = ProfileCursorSchema.parse(JSON.parse(atob(value.replaceAll("-", "+").replaceAll("_", "/"))));
-    return encodeProfileCursor(cursor) === value ? cursor : null;
-  } catch { return null; }
-}
 export const SourceAccessProfileResponseSchema = z.strictObject({
   schemaVersion: z.literal(SOURCE_ACCESS_SCHEMA_VERSION), profile: SourceAccessProfileSchema
 });
-export const SourceAccessProfileListResponseSchema = z.strictObject({
-  schemaVersion: z.literal(SOURCE_ACCESS_SCHEMA_VERSION), profiles: z.array(SourceAccessProfileSchema),
-  nextCursor: z.string().min(1).max(256).regex(/^[A-Za-z0-9_-]+$/).nullable()
+export const SourceAccessProfileListResponseSchema = ConsumerProfileListSchema.safeExtend({
+  profiles: z.array(SourceAccessProfileSchema)
 });
 
 /** Exact canonical path or slash-terminated directory scope; a query needs an explicit exact grant. */

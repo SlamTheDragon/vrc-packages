@@ -1,7 +1,9 @@
+import { z } from "zod";
 import {
   ClaimRequestSchema, ClaimResponseSchema, HeartbeatRequestSchema, HeartbeatResponseSchema, PROTOCOL_VERSION,
-  ResultRequestSchema, ResultResponseSchema,
-  type ClaimRequest, type ClaimResponse, type HeartbeatRequest, type HeartbeatResponse, type ResultRequest, type ResultResponse,
+  ResultRequestSchema, ResultResponseSchema, BatchResultRequestSchema, BatchResultResponseSchema, NodeIdSchema,
+  type ClaimRequest, type ClaimResponse, type HeartbeatRequest, type HeartbeatResponse,
+  type ResultRequest, type ResultResponse, type BatchResultRequest, type BatchResultResponse,
   type Platform
 } from "vrc-packages-network/node";
 
@@ -12,16 +14,35 @@ export interface NodePrincipal {
   credentialVersion: string;
 }
 
+export const NodeRobotsClaimRequestSchema = z.strictObject({
+  schemaVersion: z.literal(PROTOCOL_VERSION),
+  nodeId: NodeIdSchema
+});
+
+export const NodeRobotsResultRequestSchema = z.strictObject({
+  schemaVersion: z.literal(PROTOCOL_VERSION),
+  nodeId: NodeIdSchema,
+  origin: z.string().url().refine((val) => {
+    try { return new URL(val).origin === val; } catch { return false; }
+  }, "Canonical HTTPS origin required"),
+  leaseId: z.string().uuid(),
+  statusCode: z.number().int().min(100).max(599),
+  body: z.string().max(512 * 1024).default("")
+});
+
 /** Runtime-neutral storage boundary. A local SQLite adapter implements this first. */
 export interface CoordinatorStore {
   authenticate(nodeId: string, bearer: string): Promise<NodePrincipal | null> | NodePrincipal | null;
   claim(request: ClaimRequest, principal: NodePrincipal): Promise<ClaimResponse> | ClaimResponse;
   heartbeat(request: HeartbeatRequest, principal: NodePrincipal): Promise<HeartbeatResponse> | HeartbeatResponse;
   submit(request: ResultRequest, principal: NodePrincipal): Promise<ResultResponse> | ResultResponse;
+  submitBatch(request: BatchResultRequest, principal: NodePrincipal): Promise<BatchResultResponse> | BatchResultResponse;
+  claimDueRobotsRefresh?(): Promise<{ origin: string; leaseId: string } | null> | { origin: string; leaseId: string } | null;
+  completeRobotsRefresh?(origin: string, leaseId: string, statusCode: number, body?: string): Promise<boolean> | boolean;
 }
 
 export class CoordinatorConflict extends Error {
-  constructor(message: string, public readonly status: 403 | 404 | 409 = 409) { super(message); }
+  constructor(message: string, public readonly status: 400 | 403 | 404 | 409 = 409) { super(message); }
 }
 
 function json(body: unknown, status = 200): Response {
@@ -61,12 +82,58 @@ export async function readJson(request: Request): Promise<unknown> {
 }
 
 import { workerLogger } from "../worker_logger.ts";
+import {
+  extractClientIp,
+  RATE_LIMIT_POLICIES,
+  rateLimitResponse,
+  applyRateLimitHeaders,
+  defaultRateLimiter,
+  type IRateLimiter
+} from "./rate_limiter.ts";
 
 /** Same handler is used in-process, by local Bun HTTP, and later by a Worker adapter. */
-export async function handleNodeRequest(request: Request, store: CoordinatorStore): Promise<Response> {
+export async function handleNodeRequest(
+  request: Request,
+  store: CoordinatorStore,
+  rateLimiter: IRateLimiter = defaultRateLimiter
+): Promise<Response> {
   const path = new URL(request.url).pathname;
-  if (request.method !== "POST" || !["/v1/node/jobs/claim", "/v1/node/jobs/result", "/v1/node/heartbeat"].includes(path)) {
+  const ALLOWED_NODE_ROUTES = [
+    "/v1/node/jobs/claim", "/v1/node/jobs/result", "/v1/node/jobs/results",
+    "/v1/node/heartbeat", "/v1/node/robots/claim", "/v1/node/robots/result"
+  ];
+  if (request.method !== "POST" || !ALLOWED_NODE_ROUTES.includes(path)) {
     return failure(404, "not_found", "Route not found");
+  }
+
+  const auth = request.headers.get("authorization") || "";
+  if (!auth.startsWith("Bearer ") || !auth.slice(7).trim()) {
+    workerLogger.warn("Node bearer credential required", { path });
+    return failure(401, "unauthorized", "Node bearer credential required");
+  }
+
+  const clientIp = extractClientIp(request);
+  const tokenPrefix = auth.slice(7, 23);
+  const isRobotsClaim = path === "/v1/node/robots/claim";
+  const isRobotsResult = path === "/v1/node/robots/result";
+  const isClaim = path.endsWith("/claim");
+  const isHeartbeat = path.endsWith("/heartbeat");
+
+  const policy = isClaim
+    ? RATE_LIMIT_POLICIES.NODE_CLAIM
+    : isHeartbeat
+    ? RATE_LIMIT_POLICIES.NODE_HEARTBEAT
+    : RATE_LIMIT_POLICIES.NODE_RESULT;
+
+  const rateKey = `node:${isClaim ? "claim" : isHeartbeat ? "heartbeat" : "result"}:${clientIp}:${tokenPrefix}`;
+  const rateResult = await rateLimiter.check(rateKey, policy);
+  if (!rateResult.allowed) {
+    workerLogger.warn("Node rate limit exceeded", { path, clientIp });
+    return rateLimitResponse(
+      rateResult,
+      PROTOCOL_VERSION,
+      `Rate limit exceeded for node ${isClaim ? "claims" : isHeartbeat ? "heartbeats" : "submissions"}. Please retry later.`
+    );
   }
 
   let payload: unknown;
@@ -79,20 +146,18 @@ export async function handleNodeRequest(request: Request, store: CoordinatorStor
     return failure(400, "bad_json", "Request body must be valid JSON");
   }
 
-  const isClaim = path.endsWith("/claim");
-  const isHeartbeat = path.endsWith("/heartbeat");
-  const parsed = isClaim ? ClaimRequestSchema.safeParse(payload) :
-    isHeartbeat ? HeartbeatRequestSchema.safeParse(payload) : ResultRequestSchema.safeParse(payload);
+  const isBatchResult = path.endsWith("/results") || (path.endsWith("/result") && !isRobotsResult && Array.isArray((payload as Record<string, unknown> | null)?.results));
+  const parsed = isRobotsClaim ? NodeRobotsClaimRequestSchema.safeParse(payload) :
+    isRobotsResult ? NodeRobotsResultRequestSchema.safeParse(payload) :
+    isClaim ? ClaimRequestSchema.safeParse(payload) :
+    isHeartbeat ? HeartbeatRequestSchema.safeParse(payload) :
+    isBatchResult ? BatchResultRequestSchema.safeParse(payload) :
+    ResultRequestSchema.safeParse(payload);
   if (!parsed.success) {
     workerLogger.warn("Invalid payload schema for node request", { path, issues: parsed.error.issues });
     return failure(400, "invalid_payload", parsed.error.issues.map((issue) => issue.path.join(".") || "body").join(", "));
   }
 
-  const auth = request.headers.get("authorization") || "";
-  if (!auth.startsWith("Bearer ") || !auth.slice(7).trim()) {
-    workerLogger.warn("Node bearer credential required", { path });
-    return failure(401, "unauthorized", "Node bearer credential required");
-  }
   const nodeId = parsed.data.nodeId;
   const principal = await store.authenticate(nodeId, auth.slice(7).trim());
   if (!principal) {
@@ -101,18 +166,60 @@ export async function handleNodeRequest(request: Request, store: CoordinatorStor
   }
 
   try {
+    if (isRobotsClaim) {
+      if (!store.claimDueRobotsRefresh) {
+        return failure(501, "not_implemented", "Robots refresh not supported by store");
+      }
+      const due = await store.claimDueRobotsRefresh();
+      if (!due) {
+        return applyRateLimitHeaders(json({
+          schemaVersion: PROTOCOL_VERSION,
+          status: "empty",
+          retryAfterMs: 60000
+        }), rateResult);
+      }
+      workerLogger.info("Node claimed robots refresh", { nodeId: principal.nodeId, origin: due.origin, leaseId: due.leaseId });
+      return applyRateLimitHeaders(json({
+        schemaVersion: PROTOCOL_VERSION,
+        status: "leased",
+        origin: due.origin,
+        leaseId: due.leaseId
+      }), rateResult);
+    }
+    if (isRobotsResult) {
+      if (!store.completeRobotsRefresh) {
+        return failure(501, "not_implemented", "Robots refresh not supported by store");
+      }
+      const data = parsed.data as z.infer<typeof NodeRobotsResultRequestSchema>;
+      const completed = await store.completeRobotsRefresh(data.origin, data.leaseId, data.statusCode, data.body);
+      if (!completed) {
+        workerLogger.warn("Robots refresh completion rejected", { nodeId: principal.nodeId, origin: data.origin, leaseId: data.leaseId });
+        return failure(403, "forbidden", "Robots refresh lease expired or was replaced");
+      }
+      workerLogger.info("Node submitted robots result", { nodeId: principal.nodeId, origin: data.origin, statusCode: data.statusCode });
+      return applyRateLimitHeaders(json({
+        schemaVersion: PROTOCOL_VERSION,
+        status: "accepted",
+        origin: data.origin
+      }), rateResult);
+    }
     if (isClaim) {
       const response = await store.claim(parsed.data as ClaimRequest, principal);
       workerLogger.info("Node claimed job", { nodeId: principal.nodeId, status: response.status });
-      return json(ClaimResponseSchema.parse(response));
+      return applyRateLimitHeaders(json(ClaimResponseSchema.parse(response)), rateResult);
     }
     if (isHeartbeat) {
       const response = await store.heartbeat(parsed.data as HeartbeatRequest, principal);
-      return json(HeartbeatResponseSchema.parse(response));
+      return applyRateLimitHeaders(json(HeartbeatResponseSchema.parse(response)), rateResult);
+    }
+    if (isBatchResult) {
+      const response = await store.submitBatch(parsed.data as BatchResultRequest, principal);
+      workerLogger.info("Node submitted batch results", { nodeId: principal.nodeId, count: (parsed.data as BatchResultRequest).results.length });
+      return applyRateLimitHeaders(json(BatchResultResponseSchema.parse(response)), rateResult);
     }
     const response = await store.submit(parsed.data as ResultRequest, principal);
     workerLogger.info("Node submitted job result", { nodeId: principal.nodeId, jobId: (parsed.data as ResultRequest).jobId });
-    return json(ResultResponseSchema.parse(response));
+    return applyRateLimitHeaders(json(ResultResponseSchema.parse(response)), rateResult);
   } catch (error) {
     if (error instanceof CoordinatorConflict) {
       workerLogger.warn("Coordinator conflict", { path, nodeId: principal.nodeId, status: error.status, message: error.message });
@@ -124,10 +231,13 @@ export async function handleNodeRequest(request: Request, store: CoordinatorStor
   }
 }
 
-export function createCoordinatorHandler(store: CoordinatorStore): (request: Request) => Promise<Response | null> {
+export function createCoordinatorHandler(
+  store: CoordinatorStore,
+  rateLimiter: IRateLimiter = defaultRateLimiter
+): (request: Request) => Promise<Response | null> {
   return async (request: Request): Promise<Response | null> => {
     const path = new URL(request.url).pathname;
     if (!path.startsWith("/v1/node/")) return null;
-    return handleNodeRequest(request, store);
+    return handleNodeRequest(request, store, rateLimiter);
   };
 }

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
-import { initializeNodeConfig, loadNodeRuntimeConfig, NodeRuntimeConfigSchema } from "../src/config/runtime_config.ts";
+import { loadNodeRuntimeConfig, NodeRuntimeConfigSchema } from "../src/config/runtime_config.ts";
 import { ClaimRequestSchema, HeartbeatRequestSchema } from "vrc-packages-network/node";
 import { coordinatorEndpointAllowed, resolveCoordinatorUrl, isTransientEdgeStatus, CoordinatorClient } from "../src/client/node_client.ts";
 import { loadScopedGitHubTokenFromEnvFile } from "../src/adapters/observation_adapter.ts";
@@ -42,17 +42,23 @@ describe("standalone node runtime configuration", () => {
     } finally { removeFixtureDirectory(directory); }
   });
 
-  test("initialization creates one non-secret config without replacing operator edits", () => {
+  test("loads configuration directly from environment without requiring a config file", () => {
     const directory = fixtureDirectory();
     try {
-      const path = initializeNodeConfig(directory, "desktop-1", "http://127.0.0.1:8787", ["vpm"]);
-      const saved = readFileSync(path, "utf8");
-      expect(JSON.parse(saved)).toEqual({ schemaVersion: 1, nodeId: "desktop-1",
-        coordinatorUrl: "http://127.0.0.1:8787", capabilities: ["vpm"], databaseFile: "node.db" });
-      expect(saved).not.toContain(secret);
-      expect(() => initializeNodeConfig(directory, "replacement", "http://127.0.0.1:8787", ["vpm"]))
-        .toThrow();
-      expect(readFileSync(path, "utf8")).toBe(saved);
+      const config = loadNodeRuntimeConfig(directory, {
+        NODE_ID: "env-node-1",
+        NODE_TOKEN: secret,
+        COORDINATOR_URL: "http://127.0.0.1:8787",
+        NODE_CAPABILITIES: "vpm,github",
+        NODE_DB_PATH: join(directory, "env_node.db")
+      });
+      expect(config).toEqual({
+        nodeId: "env-node-1",
+        baseUrl: "http://127.0.0.1:8787",
+        capabilities: ["vpm", "github"],
+        token: secret,
+        databasePath: join(directory, "env_node.db")
+      });
     } finally { removeFixtureDirectory(directory); }
   });
 
@@ -252,6 +258,66 @@ describe("coordinator client transport & edge resilience", () => {
 
       expect(client.claim()).rejects.toThrow("Coordinator 403");
       expect(callCount).toBe(1);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("CoordinatorClient sends maxJobs on claim and handles submitBatch requests", async () => {
+    const originalFetch = globalThis.fetch;
+    let claimPayload: any = null;
+    let batchPayload: any = null;
+    try {
+      globalThis.fetch = (async (input: any, init: any) => {
+        const url = new URL(input.toString());
+        if (url.pathname === "/v1/node/jobs/claim") {
+          claimPayload = JSON.parse(init.body);
+          return new Response(JSON.stringify({
+            schemaVersion: 1,
+            status: "empty",
+            retryAfterMs: 5000
+          }), { status: 200, headers: { "Content-Type": "application/json" } });
+        }
+        if (url.pathname === "/v1/node/jobs/results") {
+          batchPayload = JSON.parse(init.body);
+          return new Response(JSON.stringify({
+            schemaVersion: 1,
+            receipts: [
+              { status: "accepted", jobId: "test-job-1", duplicate: false, sourceVersionCreated: true }
+            ]
+          }), { status: 200, headers: { "Content-Type": "application/json" } });
+        }
+        return new Response("Not found", { status: 404 });
+      }) as any;
+
+      const client = new CoordinatorClient(
+        "https://vrcp-coordinator.workers.dev",
+        secret,
+        "test-node-1",
+        ["vpm"],
+        { maxRetries: 0 }
+      );
+
+      const claimRes = await client.claim(5);
+      expect(claimRes.status).toBe("empty");
+      expect(claimPayload).toMatchObject({
+        schemaVersion: 1,
+        nodeId: "test-node-1",
+        capabilities: ["vpm"],
+        maxJobs: 5
+      });
+
+      const batchRes = await client.submitBatch([
+        {
+          jobId: "test-job-1",
+          leaseId: crypto.randomUUID(),
+          idempotencyKey: "test-idempotency-key",
+          outcome: { kind: "unchanged" }
+        }
+      ]);
+      expect(batchRes.receipts.length).toBe(1);
+      expect(batchRes.receipts[0]).toMatchObject({ status: "accepted", jobId: "test-job-1" });
+      expect(batchPayload.results.length).toBe(1);
     } finally {
       globalThis.fetch = originalFetch;
     }

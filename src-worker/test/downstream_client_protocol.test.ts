@@ -11,6 +11,7 @@ import { type ReportSubmissionRequest } from "vrc-packages-api";
 describe("Downstream Client Protocol & Demand Feedback Signals", () => {
   test("actual report HTTP receipts satisfy the SDK for demand, issue and removal", async () => {
     const app = store.registerApp({ schemaVersion: 1, appName: "Receipt fixture" });
+    store.reviewAppCandidate(app.appId, { candidateStatus: "trusted" }, "moderator-fixture");
     const statuses: number[] = [];
     const client = new VRCPackageClient({ baseUrl: "https://worker.example", appToken: app.appToken,
       fetch: Object.assign(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -43,7 +44,7 @@ describe("Downstream Client Protocol & Demand Feedback Signals", () => {
     expect(statuses).toEqual([200, 200, 202]);
   });
   test("app registration rejects anonymous callers and records authenticated ownership", async () => {
-    const input = { schemaVersion: 1, appName: "Owned app" };
+    const input = { schemaVersion: 1 as const, appName: "Owned app" };
     const anonymous = new Request("https://worker.example/v1/app/register", {
       method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(input) });
     expect((await handleDownstreamRequest(anonymous, store)).status).toBe(401);
@@ -54,7 +55,7 @@ describe("Downstream Client Protocol & Demand Feedback Signals", () => {
     const owner = store.db.prepare("SELECT user_id FROM user_app_ownership WHERE app_id=?").get(app.appId) as any;
     expect(owner.user_id).toBe(user.userId);
     const activeUser = store.issueUserToken("rollback-owner");
-    store.db.exec("CREATE TRIGGER reject_app_owner BEFORE INSERT ON user_app_ownership BEGIN SELECT RAISE(ABORT,'Owner write rejected'); END;");
+    store.db.exec("CREATE TRIGGER reject_app_owner BEFORE INSERT ON registered_apps WHEN NEW.owner_user_id IS NOT NULL BEGIN SELECT RAISE(ABORT,'Owner write rejected'); END;");
     expect(() => store.registerApp(input, activeUser.userId)).toThrow("Owner write rejected");
     store.db.exec("DROP TRIGGER reject_app_owner;");
     store.db.prepare("UPDATE registered_users SET revoked_at=? WHERE user_id=?").run(new Date().toISOString(), user.userId);
@@ -71,6 +72,16 @@ describe("Downstream Client Protocol & Demand Feedback Signals", () => {
     expect((await handleDownstreamRequest(request("/v1/app/report", "POST", payload), store)).status).toBe(401);
     expect((await handleDownstreamRequest(request("/v1/app/report", "POST", { ...payload, reason: "" }, registered.appToken), store)).status).toBe(400);
     expect((await handleDownstreamRequest(request("/v1/app/report", "POST", { schemaVersion: 1, reportType: "removal_request", reason: "No target" }, registered.appToken), store)).status).toBe(400);
+
+    // Untrusted app rejected with 403 (R54-C38A / R54-C38R / R54-C38B)
+    const untrustedRes = await handleDownstreamRequest(request("/v1/app/report", "POST", payload, registered.appToken), store);
+    expect(untrustedRes.status).toBe(403);
+    const untrustedBody = await untrustedRes.json() as any;
+    expect(untrustedBody.error).toContain("trusted registered app status required");
+
+    // Promote to trusted status
+    store.reviewAppCandidate(registered.appId, { candidateStatus: "trusted" }, "moderator-test");
+
     const response = await handleDownstreamRequest(request("/v1/app/report", "POST", payload, registered.appToken), store);
     expect(response.status).toBe(202);
     const body = await response.json() as { reportId: string };
@@ -293,5 +304,480 @@ describe("Downstream Client Protocol & Demand Feedback Signals", () => {
       store
     );
     expect(legacySearch.status).toBe(404);
+  });
+
+  test("delegated creator attestation intake accepts valid claims and enforces replay protection", async () => {
+    const reg = await handleDownstreamRequest(
+      request("/v1/app/register", "POST", {
+        schemaVersion: DOWNSTREAM_PROTOCOL_VERSION,
+        appName: "VRChat Creator Companion",
+        contactEmail: "creator@companion.test"
+      }),
+      store
+    );
+    expect(reg.status).toBe(201);
+    const { appId, appToken } = await reg.json() as { appId: string; appToken: string };
+
+    const nowSec = Math.floor(Date.now() / 1000);
+    const validAttestation = {
+      appId,
+      action: "creator_ownership_claim" as const,
+      frontUrl: "https://shop.booth.pm/items/999888",
+      creatorId: "creator_booth_123",
+      challengeToken: "chal_valid_tok_123456",
+      expiresAt: nowSec + 3600,
+      nonce: "nonce_unique_123456"
+    };
+    const validSignature = "sig_ed25519_valid_signature_123";
+
+    // 1. Rejects unauthenticated requests
+    const anonRes = await handleDownstreamRequest(
+      request("/v1/app/claims/intake", "POST", {
+        schemaVersion: 1,
+        attestation: validAttestation,
+        signature: validSignature
+      }),
+      store
+    );
+    expect(anonRes.status).toBe(401);
+
+    // 2. Rejects application lacking 'claims:delegate' permission (403)
+    const unauthorizedAppRes = await handleDownstreamRequest(
+      request("/v1/app/claims/intake", "POST", {
+        schemaVersion: 1,
+        attestation: validAttestation,
+        signature: validSignature
+      }, appToken),
+      store
+    );
+    expect(unauthorizedAppRes.status).toBe(403);
+    const unauthData = await unauthorizedAppRes.json() as any;
+    expect(unauthData.error).toBe("Application is not authorized for delegated creator claims");
+
+    // Grant delegation authority to the application
+    store.setAppDelegation(appId, true, "operator");
+
+    // 3. Rejects attestation appId mismatch
+    const mismatchRes = await handleDownstreamRequest(
+      request("/v1/app/claims/intake", "POST", {
+        schemaVersion: 1,
+        attestation: {
+          ...validAttestation,
+          appId: "00000000-0000-4000-8000-000000000000"
+        },
+        signature: validSignature
+      }, appToken),
+      store
+    );
+    expect(mismatchRes.status).toBe(403);
+
+    // 3. Rejects expired attestation (400)
+    const expiredRes = await handleDownstreamRequest(
+      request("/v1/app/claims/intake", "POST", {
+        schemaVersion: 1,
+        attestation: {
+          ...validAttestation,
+          nonce: "nonce_expired_123456",
+          expiresAt: nowSec - 10
+        },
+        signature: validSignature
+      }, appToken),
+      store
+    );
+    expect(expiredRes.status).toBe(400);
+
+    // 4. Accepts valid claim intake (202)
+    const acceptRes = await handleDownstreamRequest(
+      request("/v1/app/claims/intake", "POST", {
+        schemaVersion: 1,
+        attestation: validAttestation,
+        signature: validSignature,
+        reason: "Authoritative storefront claim",
+        contactEmail: "creator@booth.test"
+      }, appToken),
+      store
+    );
+    expect(acceptRes.status).toBe(202);
+    const acceptData = await acceptRes.json() as any;
+    expect(acceptData.schemaVersion).toBe(1);
+    expect(acceptData.status).toBe("accepted");
+    expect(acceptData.claimId).toBeDefined();
+    expect(acceptData.reviewStatus).toBe("pending");
+    expect(acceptData.recordedAt).toBeDefined();
+
+    // Verify row in DB
+    const claimRow = store.db.prepare("SELECT * FROM delegated_creator_claims WHERE claim_id = ?")
+      .get(acceptData.claimId) as any;
+    expect(claimRow.app_id).toBe(appId);
+    expect(claimRow.action).toBe("creator_ownership_claim");
+    expect(claimRow.front_url).toBe("https://shop.booth.pm/items/999888");
+    expect(claimRow.creator_id).toBe("creator_booth_123");
+    expect(claimRow.challenge_token).toBe("chal_valid_tok_123456");
+    expect(claimRow.expires_at).toBe(validAttestation.expiresAt);
+    expect(claimRow.nonce).toBe("nonce_unique_123456");
+    expect(claimRow.signature).toBe(validSignature);
+    expect(claimRow.review_status).toBe("pending");
+    expect(claimRow.reason).toBe("Authoritative storefront claim");
+    expect(claimRow.contact_email).toBe("creator@booth.test");
+
+    // Zero crawl egress invariant: no crawl jobs, origin leases, or suppressed URLs queued
+    expect((store.db.prepare("SELECT COUNT(*) AS c FROM crawl_jobs").get() as any).c).toBe(0);
+    expect((store.db.prepare("SELECT COUNT(*) AS c FROM suppressed_urls").get() as any).c).toBe(0);
+
+    // 5. Exact duplicate replay returns same receipt idempotently (202)
+    const duplicateRes = await handleDownstreamRequest(
+      request("/v1/app/claims/intake", "POST", {
+        schemaVersion: 1,
+        attestation: validAttestation,
+        signature: validSignature,
+        reason: "Authoritative storefront claim",
+        contactEmail: "creator@booth.test"
+      }, appToken),
+      store
+    );
+    expect(duplicateRes.status).toBe(202);
+    const duplicateData = await duplicateRes.json() as any;
+    expect(duplicateData.claimId).toBe(acceptData.claimId);
+    expect(duplicateData.recordedAt).toBe(acceptData.recordedAt);
+
+    // 6. Replay attack with same nonce but altered payload/signature is rejected with 409 conflict
+    const tamperedRes = await handleDownstreamRequest(
+      request("/v1/app/claims/intake", "POST", {
+        schemaVersion: 1,
+        attestation: validAttestation,
+        signature: "tampered_signature_xyz_123456",
+        reason: "Authoritative storefront claim",
+        contactEmail: "creator@booth.test"
+      }, appToken),
+      store
+    );
+    expect(tamperedRes.status).toBe(409);
+    const tamperedData = await tamperedRes.json() as any;
+    expect(tamperedData.code).toBe("conflict");
+
+    // 7. Revoking delegation authority restores 403 rejection
+    store.setAppDelegation(appId, false, "operator");
+    const revokedRes = await handleDownstreamRequest(
+      request("/v1/app/claims/intake", "POST", {
+        schemaVersion: 1,
+        attestation: validAttestation,
+        signature: validSignature
+      }, appToken),
+      store
+    );
+    expect(revokedRes.status).toBe(403);
+  });
+
+  test("catalog search enforces age rating boundary based on user age verification", async () => {
+    // 1. Seed canonical packages with ratings
+    const now = new Date(store["now"]()).toISOString();
+    const pkgs = [
+      { id: "pkg-general-1", rating: "general", name: "Safe Tool" },
+      { id: "pkg-mature-1", rating: "mature", name: "Mature Shader" },
+      { id: "pkg-adult-1", rating: "adult_restricted", name: "Explicit Avatar Asset" },
+      { id: "pkg-prohibited-1", rating: "prohibited", name: "Prohibited Malicious Asset" }
+    ];
+    for (const p of pkgs) {
+      store.db.prepare(`
+        INSERT INTO canonical_packages (canonical_id, umbrella, category, lifecycle, display_name, vpm_id, created_at, updated_at, content_rating)
+        VALUES (?, 'tools', 'tool', 'active', ?, ?, ?, ?, ?)
+      `).run(p.id, p.name, p.id, now, now, p.rating);
+    }
+
+    // 2. Register App owned by user without age verification (unverified / minor)
+    const userUnverified = store.issueUserToken("unverified-user", undefined, false);
+    const regRes1 = await handleDownstreamRequest(
+      request("/v1/app/register", "POST", { schemaVersion: 1, appName: "Unverified App" }, userUnverified.token),
+      store
+    );
+    expect(regRes1.status).toBe(201);
+    const app1 = await regRes1.json() as { appToken: string };
+
+    // Search without rating filter only receives 'general' content
+    const searchRes1 = await handleDownstreamRequest(
+      request("/v1/app/index/search", "POST", { schemaVersion: 1 }, app1.appToken),
+      store
+    );
+    expect(searchRes1.status).toBe(200);
+    const searchData1 = await searchRes1.json() as any;
+    expect(searchData1.items.map((i: any) => i.canonicalId)).toEqual(["pkg-general-1"]);
+    expect(searchData1.items[0].contentRating).toBe("general");
+
+    // Search explicitly asking for adult content ignores explicit rating tags and only provides general items
+    const searchResAdultUnverified = await handleDownstreamRequest(
+      request("/v1/app/index/search", "POST", { schemaVersion: 1, rating: "adult_restricted" }, app1.appToken),
+      store
+    );
+    expect(searchResAdultUnverified.status).toBe(200);
+    const searchDataAdultUnverified = await searchResAdultUnverified.json() as any;
+    expect(searchDataAdultUnverified.items.map((i: any) => i.canonicalId)).toEqual(["pkg-general-1"]);
+    expect(searchDataAdultUnverified.items[0].contentRating).toBe("general");
+
+    // 3. Register App owned by user with verified age
+    const userVerified = store.issueUserToken("verified-adult-user", undefined, true);
+    const regRes2 = await handleDownstreamRequest(
+      request("/v1/app/register", "POST", { schemaVersion: 1, appName: "Verified App" }, userVerified.token),
+      store
+    );
+    expect(regRes2.status).toBe(201);
+    const app2 = await regRes2.json() as { appToken: string };
+
+    // Search without rating filter receives all non-prohibited packages
+    const searchRes2 = await handleDownstreamRequest(
+      request("/v1/app/index/search", "POST", { schemaVersion: 1 }, app2.appToken),
+      store
+    );
+    expect(searchRes2.status).toBe(200);
+    const searchData2 = await searchRes2.json() as any;
+    const ids = searchData2.items.map((i: any) => i.canonicalId);
+    expect(ids).toContain("pkg-general-1");
+    expect(ids).toContain("pkg-mature-1");
+    expect(ids).toContain("pkg-adult-1");
+    // Invariant: Prohibited content is NEVER served to any downstream consumer
+    expect(ids).not.toContain("pkg-prohibited-1");
+
+    // Filtered search for adult_restricted
+    const searchResAdultVerified = await handleDownstreamRequest(
+      request("/v1/app/index/search", "POST", { schemaVersion: 1, rating: "adult_restricted" }, app2.appToken),
+      store
+    );
+    expect(searchResAdultVerified.status).toBe(200);
+    const searchDataAdultVerified = await searchResAdultVerified.json() as any;
+    expect(searchDataAdultVerified.items.map((i: any) => i.canonicalId)).toEqual(["pkg-adult-1"]);
+
+    // Attempting to query prohibited returns 0 items
+    const searchResProhibited = await handleDownstreamRequest(
+      request("/v1/app/index/search", "POST", { schemaVersion: 1, rating: "prohibited" }, app2.appToken),
+      store
+    );
+    expect(searchResProhibited.status).toBe(200);
+    const searchDataProhibited = await searchResProhibited.json() as any;
+    expect(searchDataProhibited.items).toHaveLength(0);
+  });
+
+  test("tracks downstream application request activity and flags intensive-use candidates at threshold (R54-C38A2)", async () => {
+    const store = new LocalCoordinatorStore(":memory:");
+    try {
+      const user = store.issueUserToken("active-developer", "dev@example.com", false);
+      const regRes = await handleDownstreamRequest(
+        request("/v1/app/register", "POST", { schemaVersion: 1, appName: "Intensive App" }, user.token),
+        store
+      );
+      expect(regRes.status).toBe(201);
+      const app = await regRes.json() as { appId: string; appToken: string };
+
+      // Initial state
+      let row = store.db.prepare("SELECT request_count, last_active_at, candidate_status, candidate_flags_json FROM registered_apps WHERE app_id = ?").get(app.appId) as any;
+      expect(row.request_count).toBe(0);
+      expect(row.last_active_at).toBeNull();
+      expect(row.candidate_status).toBe("none");
+      expect(JSON.parse(row.candidate_flags_json)).toEqual([]);
+
+      // 1st request
+      const searchRes1 = await handleDownstreamRequest(
+        request("/v1/app/index/search", "POST", { schemaVersion: 1 }, app.appToken),
+        store
+      );
+      expect(searchRes1.status).toBe(200);
+
+      row = store.db.prepare("SELECT request_count, last_active_at, candidate_status, candidate_flags_json FROM registered_apps WHERE app_id = ?").get(app.appId) as any;
+      expect(row.request_count).toBe(1);
+      expect(row.last_active_at).not.toBeNull();
+      expect(row.candidate_status).toBe("none");
+
+      // Loop up to 49 total requests
+      for (let i = 2; i <= 49; i++) {
+        await handleDownstreamRequest(
+          request("/v1/app/index/search", "POST", { schemaVersion: 1 }, app.appToken),
+          store
+        );
+      }
+
+      row = store.db.prepare("SELECT request_count, candidate_status FROM registered_apps WHERE app_id = ?").get(app.appId) as any;
+      expect(row.request_count).toBe(49);
+      expect(row.candidate_status).toBe("none");
+
+      // 50th request triggers threshold
+      await handleDownstreamRequest(
+        request("/v1/app/index/search", "POST", { schemaVersion: 1 }, app.appToken),
+        store
+      );
+
+      row = store.db.prepare("SELECT request_count, candidate_status, candidate_flags_json FROM registered_apps WHERE app_id = ?").get(app.appId) as any;
+      expect(row.request_count).toBe(50);
+      expect(row.candidate_status).toBe("review_pending");
+      const flags = JSON.parse(row.candidate_flags_json);
+      expect(flags).toContain("intensive_usage");
+      expect(flags).toContain("high_frequency_api");
+    } finally {
+      store.close();
+    }
+  });
+
+  test("enforces application permissions for search and demand feedback", async () => {
+    const app = store.registerApp({ schemaVersion: 1, appName: "Permission test" });
+    // Revoke catalog:search and demand:feedback
+    store.db.prepare("UPDATE registered_apps SET permissions_json = ? WHERE app_id = ?")
+      .run(JSON.stringify([]), app.appId);
+
+    const searchRes = await handleDownstreamRequest(
+      request("/v1/app/index/search", "POST", { schemaVersion: 1 }, app.appToken),
+      store
+    );
+    expect(searchRes.status).toBe(403);
+    const searchBody = await searchRes.json() as any;
+    expect(searchBody.error).toContain("Application is not authorized for catalog searches");
+
+    const feedbackRes = await handleDownstreamRequest(
+      request("/v1/app/report", "POST", { schemaVersion: 1, reportType: "demand_signal", query: "test", reason: "missing" }, app.appToken),
+      store
+    );
+    expect(feedbackRes.status).toBe(403);
+    const feedbackBody = await feedbackRes.json() as any;
+    expect(feedbackBody.error).toContain("Application is not authorized for demand feedback");
+
+    // Removal request requires trusted app status (R54-C38)
+    store.reviewAppCandidate(app.appId, { candidateStatus: "trusted" }, "moderator-test");
+    const removalRes = await handleDownstreamRequest(
+      request("/v1/app/report", "POST", { schemaVersion: 1, reportType: "removal_request", canonicalId: "pkg-1", reason: "opt out" }, app.appToken),
+      store
+    );
+    expect(removalRes.status).toBe(202);
+  });
+
+  test("POST /v1/app/report partitions issue reports into rating_dispute, safety_quarantine, and metadata_issue (R56-C56C)", async () => {
+    const app = store.registerApp({ schemaVersion: 1, appName: "Report Partitioning Test" });
+
+    // 1. Rating calibration dispute (explicit_false_positive)
+    const ratingRes = await handleDownstreamRequest(
+      request("/v1/app/report", "POST", {
+        schemaVersion: 1,
+        reportType: "issue_report",
+        reportKind: "explicit_false_positive",
+        canonicalId: "com.example.rating-pkg",
+        reason: "Item is safe for general audiences"
+      }, app.appToken),
+      store
+    );
+    expect(ratingRes.status).toBe(200);
+    const ratingData = await ratingRes.json() as any;
+    expect(ratingData.status).toBe("accepted");
+    expect(ratingData.reportId).toBeDefined();
+
+    const ratingRow = store.db.prepare("SELECT ticket_type, canonical_id, reason, review_status FROM catalog_tickets WHERE ticket_id = ?")
+      .get(ratingData.reportId) as any;
+    expect(ratingRow).toBeDefined();
+    expect(ratingRow.ticket_type).toBe("rating_dispute");
+    expect(ratingRow.canonical_id).toBe("com.example.rating-pkg");
+    expect(ratingRow.reason).toBe("Item is safe for general audiences");
+    expect(ratingRow.review_status).toBe("pending");
+
+    // 2. Suspected illegal / safety quarantine (inappropriate)
+    const safetyRes = await handleDownstreamRequest(
+      request("/v1/app/report", "POST", {
+        schemaVersion: 1,
+        reportType: "issue_report",
+        reportKind: "inappropriate",
+        canonicalId: "com.example.safety-pkg",
+        reason: "Suspected unlawful material"
+      }, app.appToken),
+      store
+    );
+    expect(safetyRes.status).toBe(200);
+    const safetyData = await safetyRes.json() as any;
+    expect(safetyData.status).toBe("accepted");
+    expect(safetyData.reportId).toBeDefined();
+
+    const safetyRow = store.db.prepare("SELECT ticket_type, canonical_id, reason, review_status FROM catalog_tickets WHERE ticket_id = ?")
+      .get(safetyData.reportId) as any;
+    expect(safetyRow).toBeDefined();
+    expect(safetyRow.ticket_type).toBe("safety_quarantine");
+    expect(safetyRow.canonical_id).toBe("com.example.safety-pkg");
+    expect(safetyRow.reason).toBe("Suspected unlawful material");
+    expect(safetyRow.review_status).toBe("pending");
+
+    // 3. Metadata issue (broken_link)
+    const metaRes = await handleDownstreamRequest(
+      request("/v1/app/report", "POST", {
+        schemaVersion: 1,
+        reportType: "issue_report",
+        reportKind: "broken_link",
+        targetUrl: "https://example.org/broken-url",
+        reason: "Target returns 404"
+      }, app.appToken),
+      store
+    );
+    expect(metaRes.status).toBe(200);
+    const metaData = await metaRes.json() as any;
+    expect(metaData.status).toBe("accepted");
+    expect(metaData.reportId).toBeDefined();
+
+    const metaRow = store.db.prepare("SELECT target_url, metadata_json FROM downstream_demand_signals WHERE signal_id = ?")
+      .get(metaData.reportId) as any;
+    expect(metaRow).toBeDefined();
+    expect(metaRow.target_url).toBe("https://example.org/broken-url");
+    const metaPayload = JSON.parse(metaRow.metadata_json);
+    expect(metaPayload.reportType).toBe("issue_report");
+    expect(metaPayload.reportKind).toBe("broken_link");
+    expect(metaPayload.reason).toBe("Target returns 404");
+  });
+
+  test("POST /v1/app/report gates creator takedowns on trusted app status and routes into catalog_tickets (R54-C38)", async () => {
+    const untrustedApp = store.registerApp({ schemaVersion: 1, appName: "Untrusted Takedown Submitter" });
+    const takedownPayload = {
+      schemaVersion: 1,
+      reportType: "removal_request",
+      canonicalId: "com.example.infringing-pkg",
+      reason: "Creator requested package delisting"
+    };
+
+    // 1. Untrusted application rejected with 403
+    const untrustedRes = await handleDownstreamRequest(
+      request("/v1/app/report", "POST", takedownPayload, untrustedApp.appToken),
+      store
+    );
+    expect(untrustedRes.status).toBe(403);
+    const errBody = await untrustedRes.json() as any;
+    expect(errBody.error).toContain("trusted registered app status required");
+
+    // 2. Review and promote application to trusted
+    const review = store.reviewAppCandidate(
+      untrustedApp.appId,
+      { candidateStatus: "trusted", notes: "Verified verified creator tool" },
+      "moderator-lead"
+    );
+    expect(review.candidateStatus).toBe("trusted");
+    expect(review.permissions).toContain("takedowns:submit");
+
+    // 3. Trusted application accepted with 202
+    const trustedRes = await handleDownstreamRequest(
+      request("/v1/app/report", "POST", takedownPayload, untrustedApp.appToken),
+      store
+    );
+    expect(trustedRes.status).toBe(202);
+    const receipt = await trustedRes.json() as any;
+    expect(receipt.status).toBe("accepted");
+    expect(receipt.reportId).toBeDefined();
+
+    // 4. Verify catalog_tickets entry
+    const ticket = store.db.prepare(
+      "SELECT ticket_id, ticket_type, app_id, canonical_id, requester_type, reason, review_status FROM catalog_tickets WHERE ticket_id = ?"
+    ).get(receipt.reportId) as any;
+    expect(ticket).toBeDefined();
+    expect(ticket.ticket_type).toBe("removal_report");
+    expect(ticket.app_id).toBe(untrustedApp.appId);
+    expect(ticket.canonical_id).toBe("com.example.infringing-pkg");
+    expect(ticket.requester_type).toBe("app");
+    expect(ticket.reason).toBe("Creator requested package delisting");
+    expect(ticket.review_status).toBe("pending");
+
+    // 5. Verify catalog_reports view projection
+    const reportView = store.db.prepare(
+      "SELECT report_id, app_id, report_type, review_status FROM catalog_reports WHERE report_id = ?"
+    ).get(receipt.reportId) as any;
+    expect(reportView).toBeDefined();
+    expect(reportView.report_type).toBe("removal_report");
+    expect(reportView.app_id).toBe(untrustedApp.appId);
+    expect(reportView.review_status).toBe("pending");
   });
 });

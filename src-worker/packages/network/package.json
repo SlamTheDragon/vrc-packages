@@ -1,6 +1,6 @@
 {
 	"name": "vrc-packages-network",
-	"version": "2026.10.7",
+	"version": "2026.10.8",
 	"private": true,
 	"description": "Internal leased-ingestion contracts and pure policy for VRC Packages nodes and coordinator.",
 	"license": "AGPL-3.0-or-later",
@@ -65,7 +65,7 @@
 		"zod": "^4.6.5"
 	},
 	"peerDependencies": {
-		"vrc-packages-api": "0.0.8 || 2026.10.9-pre"
+		"vrc-packages-api": "0.0.8 || 2026.10.11-pre"
 	},
 	"devDependencies": {
 		"vrc-packages-api": "npm:vrc-packages-api-preview@latest",

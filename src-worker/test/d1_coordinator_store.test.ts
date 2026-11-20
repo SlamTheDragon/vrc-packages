@@ -1,62 +1,61 @@
 import { describe, expect, it } from "bun:test";
-import { Database } from "bun:sqlite";
+import { Database, type SQLQueryBindings } from "bun:sqlite";
 import { Coordinator } from "../src/storage/d1/coordinator.ts";
-import {
-  type D1Database,
-  type D1PreparedStatement,
-  type D1Result,
-  type D1ExecResult
-} from "../src/storage/d1/definitions.ts";
 import workerEntry, { type Env } from "../src/worker_entry.ts";
-import { PlatformSchema } from "vrc-packages-network/node";
+import { PlatformSchema, type Platform, ResultResponseSchema, BatchResultResponseSchema } from "vrc-packages-network/node";
 import { DEFAULT_SEED_JOBS } from "../src/storage/default_seeds.ts";
-import { decodeCatalogCursor } from "vrc-packages-api";
+import { decodeCatalogCursor, PublicCatalogListResponseSchema } from "vrc-packages-api";
 import { VRCPackageClient } from "vrc-packages-api";
+import { handlePublicCatalogRequest } from "../src/api/public_handler.ts";
+import { InMemoryRateLimiter } from "../src/api/rate_limiter.ts";
+import { handleNodeRequest } from "../src/api/handler.ts";
+import { sha256Hex } from "../src/storage/d1/utils.ts";
 
-export function createMockD1Database(db = new Database(":memory:")): D1Database {
+export function createMockD1Database(db = new Database(":memory:")) {
   db.run("PRAGMA foreign_keys = ON;");
+  const executions = new WeakMap<D1PreparedStatement, () => D1Result<never>>();
+  // SQLite fixture metadata is synthetic, not D1 usage or billing evidence.
+  const meta = (changes = 0, lastRowId = 0): D1Result<never>["meta"] => ({ changes, last_row_id: lastRowId,
+    changed_db: changes > 0, duration: 0, size_after: 0, rows_read: 0, rows_written: 0 });
   return {
     prepare(query: string): D1PreparedStatement {
-      let boundValues: unknown[] = [];
+      let boundValues: SQLQueryBindings[] = [];
       const stmt: D1PreparedStatement = {
         bind(...values: unknown[]): D1PreparedStatement {
-          boundValues = values.map((v) => (v === undefined ? null : v));
+          boundValues = values.map((v) => (v === undefined ? null : v)) as SQLQueryBindings[];
           return stmt;
         },
         async first<T = unknown>(colName?: string): Promise<T | null> {
-          const prepared = db.prepare(query);
-          const row = prepared.get(...(boundValues as any)) as Record<string, unknown> | null;
+          const row = db.prepare(query).get(...boundValues) as Record<string, unknown> | null;
           if (!row) return null;
           if (colName) return (row[colName] as T) ?? null;
           return row as T;
         },
         async run<T = unknown>(): Promise<D1Result<T>> {
-          const prepared = db.prepare(query);
-          const info = prepared.run(...(boundValues as any));
-          return { success: true, meta: { changes: info.changes } };
+          const info = db.prepare(query).run(...boundValues);
+          return { success: true, results: [], meta: meta(info.changes, Number(info.lastInsertRowid)) };
         },
         async all<T = unknown>(): Promise<D1Result<T>> {
-          const prepared = db.prepare(query);
-          const results = prepared.all(...(boundValues as any)) as T[];
-          return { success: true, results };
+          const results = db.prepare(query).all(...boundValues) as T[];
+          return { success: true, results, meta: meta() };
+        },
+        async raw(): Promise<never> {
+          throw new Error("SQLite D1 fixture does not implement raw; use native workerd");
         }
       };
-      (stmt as any)._execute = () => {
-        const prepared = db.prepare(query);
-        const info = prepared.run(...(boundValues as any));
-        return { success: true, meta: { changes: info.changes } };
-      };
+      executions.set(stmt, () => {
+        const info = db.prepare(query).run(...boundValues);
+        return { success: true, results: [], meta: meta(info.changes, Number(info.lastInsertRowid)) };
+      });
       return stmt;
     },
     async batch<T = unknown>(statements: D1PreparedStatement[]): Promise<D1Result<T>[]> {
       const results: D1Result<T>[] = [];
       db.transaction(() => {
-        for (const s of statements) {
-          if (typeof (s as any)._execute === "function") {
-            results.push((s as any)._execute());
-          } else {
-            results.push({ success: true });
-          }
+        for (const statement of statements) {
+          const execute = executions.get(statement);
+          if (!execute) throw new Error("SQLite D1 fixture cannot batch a foreign statement");
+          results.push(execute());
         }
       })();
       return results;
@@ -68,11 +67,283 @@ export function createMockD1Database(db = new Database(":memory:")): D1Database 
         for (const command of commands) db.prepare(command).run();
       })();
       return { count: commands.length, duration: 0 };
+    },
+    withSession(): never {
+      throw new Error("SQLite D1 fixture does not implement sessions; use native workerd");
+    },
+    async dump(): Promise<never> {
+      throw new Error("SQLite D1 fixture does not implement dump; use native workerd");
     }
-  };
+  } satisfies Env["VRCP_D1"];
 }
 
 describe("Cloudflare D1 Coordinator Store & Edge Worker Adapter", () => {
+  it("rejects unsupported fixture operations and rolls back foreign batch statements", async () => {
+    const sqlite = new Database(":memory:"), other = new Database(":memory:");
+    try {
+      const db = createMockD1Database(sqlite), foreign = createMockD1Database(other);
+      await db.exec("CREATE TABLE fixture_contract (value TEXT)");
+      await foreign.exec("CREATE TABLE fixture_contract (value TEXT)");
+      expect(() => db.withSession()).toThrow("does not implement sessions");
+      await expect(db.dump()).rejects.toThrow("does not implement dump");
+      await expect(db.prepare("SELECT 1").raw()).rejects.toThrow("does not implement raw");
+      await expect(db.batch([db.prepare("INSERT INTO fixture_contract VALUES ('local')"),
+        foreign.prepare("INSERT INTO fixture_contract VALUES ('foreign')")])).rejects.toThrow("foreign statement");
+      expect(await db.prepare("SELECT COUNT(*) AS count FROM fixture_contract").first()).toEqual({ count: 0 });
+    } finally { sqlite.close(); other.close(); }
+  });
+  async function metadataFixture(platform: Platform, target: string, purpose: "metadata" | "discovery" = "metadata") {
+    const sqlite = new Database(":memory:");
+    const store = new Coordinator(createMockD1Database(sqlite));
+    await store.initSchema(false);
+    const url = new URL(target);
+    await store.createSourceAccessProfile({ schemaVersion: 1, platform, origin: url.origin,
+      pathScope: url.pathname, method: "GET", purpose, minDelayMs: 1000,
+      ...(url.search ? { exactQuery: url.search.slice(1) } : {}),
+      expiresAt: new Date(Date.now() + 3600000).toISOString(), reviewReference: "OFFLINE-METADATA-BOUNDARY",
+      reason: "Hermetic metadata trust boundary", retainClasses: ["normalized_facts"],
+      publishClasses: ["normalized_facts"] }, "fixture-operator");
+    await store.recordRobotsSnapshot(url.origin, 404);
+    await store.seedJob(target, platform, 1000, undefined, purpose);
+    const nodeId = `metadata-${platform}`;
+    const token = await store.createNodeCredential(nodeId, [platform]);
+    const principal = (await store.authenticate(nodeId, token))!;
+    const claim = await store.claim({ schemaVersion: 1, nodeId, capabilities: [platform] }, principal);
+    if (claim.status !== "leased") throw new Error("Expected metadata fixture lease");
+    const limiter = new InMemoryRateLimiter();
+    const post = (body: unknown, path = "/v1/node/jobs/result") => handleNodeRequest(new Request(`https://offline.invalid${path}`, {
+      method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+      body: JSON.stringify(body)
+    }), store, limiter);
+    const observation = { sourceItemKey: `${url.host}${url.pathname}`, title: "Metadata fixture", author: "Fixture creator",
+      summary: "", outboundLinks: [] as string[], originUpdatedAt: null };
+    const result = { schemaVersion: 1, nodeId, jobId: claim.job.jobId, leaseId: claim.job.leaseId,
+      idempotencyKey: "metadata-boundary-result", outcome: { kind: "changed", observation } };
+    const snapshot = () => Object.fromEntries(["source_items", "source_versions", "source_events", "job_results",
+      "canonical_packages", "identity_links", "package_fronts", "source_leads", "avatar_compatibilities",
+      "desktop_tool_evidence", "crawl_jobs", "origin_leases"].map(table => [table, sqlite.query(`SELECT * FROM ${table}`).all()]));
+    return { sqlite, store, post, result, observation, snapshot };
+  }
+
+  async function associationEvidence(store: Coordinator, sourceUrl: string, outboundLinks: string[],
+    platform: "vpm" | "github" = "vpm") {
+    const target = new URL(sourceUrl), nodeId = `association-evidence-${platform}`, canonicalId = "com.fixture.association";
+    const delay = platform === "github" ? 60000 : 1000;
+    await store.createSourceAccessProfile({ schemaVersion: 1, platform, origin: target.origin,
+      pathScope: target.pathname, method: "GET", purpose: "metadata", minDelayMs: delay,
+      ...(target.search ? { exactQuery: target.search.slice(1) } : {}),
+      expiresAt: new Date(Date.now() + 3600000).toISOString(), reviewReference: "OFFLINE-URL-EQUIVALENCE",
+      reason: "Hermetic accepted source fixture", retainClasses: ["normalized_facts"], publishClasses: ["normalized_facts"] }, "fixture-operator");
+    await store.recordRobotsSnapshot(target.origin, 404);
+    await store.seedJob(target.href, platform, delay, undefined, "metadata");
+    const token = await store.createNodeCredential(nodeId, [platform]);
+    const principal = (await store.authenticate(nodeId, token))!;
+    const claim = await store.claim({ schemaVersion: 1, nodeId, capabilities: [platform] }, principal);
+    if (claim.status !== "leased") throw new Error("Expected association evidence lease");
+    expect((await store.submit({ schemaVersion: 1, nodeId, jobId: claim.job.jobId, leaseId: claim.job.leaseId,
+      idempotencyKey: "association-evidence-result", outcome: { kind: "changed", observation: {
+        sourceItemKey: platform === "vpm" ? canonicalId : "github:999", title: "Accepted source fixture", author: "Fixture creator", summary: "",
+        outboundLinks, originUpdatedAt: null } } }, principal)).status).toBe("accepted");
+    return canonicalId;
+  }
+
+  it.each(["source_item", "outbound_lead", "job_lead"] as const)(
+    "preserves generic URL components during %s association", async (route) => {
+    const variants: [string, (base: string) => string, boolean][] = [
+      ["exact", base => base, true],
+      ["host case and default port", base => { const url = new URL(base);
+        return `https://${url.hostname.toUpperCase()}:443${url.pathname}${url.search}`; }, true],
+      ["path case", base => { const url = new URL(base); url.pathname = url.pathname.toUpperCase(); return url.href; }, false],
+      ["query key case", base => base.replace("Edition=", "edition="), false],
+      ["query value case", base => base.replace("Gold", "gold"), false],
+      ["path slash", base => { const url = new URL(base); url.pathname += "/"; return url.href; }, false],
+      ["query value slash", base => base + "/", false],
+      ["absent query", base => { const url = new URL(base); url.search = ""; return url.href; }, false],
+      ["fragment", base => base + "#details", false]
+    ];
+    for (const [label, variant, matches] of variants) {
+      const jobUrl = "https://booth.pm/ja/items/66666?Edition=Gold";
+      const fixture = await metadataFixture("booth", jobUrl);
+      try {
+        const reference = route === "job_lead" ? jobUrl : "https://publisher.example/Tools/Widget?Edition=Gold";
+        const candidate = variant(reference);
+        const canonicalId = await associationEvidence(fixture.store,
+          route === "source_item" ? reference : "https://vpm-evidence.example/index.json",
+          route === "outbound_lead" ? [reference] : route === "job_lead" ? [candidate] : []);
+        const result = { ...fixture.result, outcome: { kind: "changed", observation: { ...fixture.observation,
+          outboundLinks: route === "job_lead" ? [] : [candidate] } } };
+        const response = await fixture.post(result);
+        expect(response.status, label).toBe(200);
+        const publicResponse = await handlePublicCatalogRequest(new Request("https://offline.invalid/v1/app/index"),
+          fixture.store, new InMemoryRateLimiter());
+        const packages = PublicCatalogListResponseSchema.parse(await publicResponse.json()).packages;
+        expect((await fixture.store.getPackageFrontsForCanonical(canonicalId)).length, label).toBe(matches ? 1 : 0);
+        expect(packages.find(item => item.canonicalId === canonicalId)?.fronts.length, label).toBe(0);
+        expect(Boolean(await fixture.store.getCanonicalPackage(fixture.observation.sourceItemKey)), label).toBe(!matches);
+        if (!matches) expect(packages.find(item => item.canonicalId === fixture.observation.sourceItemKey)
+          ?.fronts[0]?.storefrontUrl, label).toBe(jobUrl);
+        const settled = fixture.snapshot();
+        expect(ResultResponseSchema.parse(await (await fixture.post(result)).json()).duplicate).toBe(true);
+        expect(fixture.snapshot()).toEqual(settled);
+      } finally { fixture.sqlite.close(); }
+    }
+  });
+
+  it("serializes VPM lead identities without changing retained outbound evidence", async () => {
+    const fixture = await metadataFixture("booth", "https://booth.pm/ja/items/66667");
+    try {
+      const sourceUrl = "https://vpm-evidence.example/index.json";
+      const links = ["https://PUBLISHER.EXAMPLE:443/Tools/Widget", "https://publisher.example/Tools/Widget",
+        "https://publisher.example/tools/widget"];
+      await associationEvidence(fixture.store, sourceUrl, links);
+      const leads = await fixture.store.listLeadsPage("pending_review", 10, null);
+      expect(leads.leads.map(lead => lead.target_url).sort()).toEqual([
+        "https://publisher.example/Tools/Widget", "https://publisher.example/tools/widget"]);
+      const retained = fixture.sqlite.query("SELECT payload_json FROM source_versions WHERE source_key=?")
+        .get(`vpm:${sourceUrl}:com.fixture.association`) as { payload_json: string };
+      expect(JSON.parse(retained.payload_json).outboundLinks).toEqual(links);
+    } finally { fixture.sqlite.close(); }
+  });
+
+  it("retains explicit GitHub owner/repository case matching without folding generic source URLs", async () => {
+    const fixture = await metadataFixture("booth", "https://booth.pm/ja/items/66668");
+    try {
+      const canonicalId = await associationEvidence(fixture.store, "https://vpm-evidence.example/index.json",
+        ["https://github.com/Fixture/Tool"]);
+      await associationEvidence(fixture.store, "https://api.github.com/repos/Fixture/Tool",
+        ["https://github.com/Fixture/Tool"], "github");
+      const result = { ...fixture.result, outcome: { kind: "changed", observation: { ...fixture.observation,
+        outboundLinks: ["https://github.com/FIXTURE/TOOL"] } } };
+      expect((await fixture.post(result)).status).toBe(200);
+      expect(await fixture.store.getPackageFrontsForCanonical(canonicalId)).toHaveLength(1);
+      expect(fixture.sqlite.query("SELECT review_state FROM identity_links WHERE canonical_id=? AND source_key LIKE 'github:%'")
+        .get(canonicalId)).toEqual({ review_state: "provisional" });
+    } finally { fixture.sqlite.close(); }
+  });
+
+  it("serializes discovery lead identities and preserves case-distinct targets on exact replay", async () => {
+    const fixture = await metadataFixture("curated", "https://directory.example/catalog", "discovery");
+    try {
+      const result = { ...fixture.result, outcome: { kind: "discovery", leads: [
+        { kind: "publisher_site", url: "https://PUBLISHER.EXAMPLE:443/Tools/Widget" },
+        { kind: "publisher_site", url: "https://publisher.example/Tools/Widget" },
+        { kind: "publisher_site", url: "https://publisher.example/tools/widget" }
+      ] } };
+      expect((await fixture.post(result)).status).toBe(200);
+      const leads = await fixture.store.listLeadsPage("pending_review", 10, null);
+      expect(leads.leads.map(lead => lead.target_url).sort()).toEqual([
+        "https://publisher.example/Tools/Widget", "https://publisher.example/tools/widget"]);
+      expect(fixture.sqlite.query("SELECT * FROM source_versions").all()).toEqual([]);
+      const settled = fixture.snapshot();
+      expect(ResultResponseSchema.parse(await (await fixture.post(result)).json()).duplicate).toBe(true);
+      expect(fixture.snapshot()).toEqual(settled);
+    } finally { fixture.sqlite.close(); }
+  });
+
+  it.each([
+    ["booth", "https://booth.pm/ja/items/12345"],
+    ["gumroad", "https://creator.gumroad.com/l/tool"],
+    ["jinxxy", "https://jinxxy.com/creator/tool"],
+    ["itch", "https://creator.itch.io/tool"],
+    ["shopify", "https://merchant.example/products/tool"],
+    ["sellfy", "https://sellfy.com/p/tool/"],
+    ["custom_domain", "https://creator.example/products/tool"]
+  ] as const)("binds %s metadata to its assigned item before durable writes", async (platform, target) => {
+    const fixture = await metadataFixture(platform, target);
+    try {
+      const victimId = "com.fixture.unrelated";
+      await fixture.store.upsertCanonicalPackage({ canonicalId: victimId, umbrella: "tools", category: "tool",
+        lifecycle: "active", displayName: "Unrelated original" });
+      const before = fixture.snapshot();
+      const targetUrl = new URL(target);
+      const invalid = [
+        { sourceItemKey: victimId },
+        { sourceItemKey: `${targetUrl.host}/another-product` },
+        { title: " \t\n " },
+        ...["https://unrelated.example/product", `${target}another-product`, `${target}?edition=other`,
+          `${target}#unverified`, `https://user:password@${targetUrl.host}${targetUrl.pathname}`,
+          `https://${targetUrl.hostname}:444${targetUrl.pathname}`].map(storefrontUrl => ({ storefrontUrl }))
+      ];
+      for (const patch of invalid) {
+        const response = await fixture.post({ ...fixture.result,
+          outcome: { kind: "changed", observation: { ...fixture.observation, ...patch } } });
+        expect(response.status).toBe(409);
+        expect(await response.json()).toMatchObject({ schemaVersion: 1, code: "conflict" });
+        expect(fixture.snapshot()).toEqual(before);
+      }
+      // Batch transport must report a correctable metadata conflict, not consume the lease.
+      const badItem = { ...fixture.result, outcome: { kind: "changed", observation: {
+        ...fixture.observation, storefrontUrl: "https://unrelated.example/product" } } };
+      const batch = await fixture.post({ schemaVersion: 1, nodeId: fixture.result.nodeId,
+        results: [{ jobId: badItem.jobId, leaseId: badItem.leaseId, idempotencyKey: badItem.idempotencyKey,
+          outcome: badItem.outcome }, { jobId: badItem.jobId, leaseId: badItem.leaseId,
+          idempotencyKey: "metadata-forged-release", outcome: { kind: "changed", observation: {
+            ...fixture.observation, release: { version: "1.0.0", dependencyRanges: {} } } } }] }, "/v1/node/jobs/results");
+      expect(batch.status).toBe(200);
+      const receipts = BatchResultResponseSchema.parse(await batch.json()).receipts;
+      expect(receipts).toHaveLength(2);
+      for (const receipt of receipts) expect(receipt).toMatchObject({
+        status: "rejected", terminal: false, code: "conflict" });
+      expect(fixture.snapshot()).toEqual(before);
+      const valid = { ...fixture.result, outcome: { kind: "changed", observation: { ...fixture.observation,
+        storefrontUrl: `${target}?utm_source=fixture`, price: 0, currency: "USD", availability: "available" } } };
+      const accepted = await fixture.post(valid);
+      expect(accepted.status).toBe(200);
+      expect(ResultResponseSchema.parse(await accepted.json())).toMatchObject({ status: "accepted", duplicate: false });
+      const fronts = await fixture.store.getPackageFrontsForCanonical(fixture.observation.sourceItemKey);
+      expect(fronts).toHaveLength(1);
+      expect(fronts[0]?.storefrontUrl).toBe(target);
+      expect((await fixture.store.getCanonicalPackage(victimId))?.displayName).toBe("Unrelated original");
+      const settled = fixture.snapshot();
+      const replay = await fixture.post(valid);
+      expect(ResultResponseSchema.parse(await replay.json()).duplicate).toBe(true);
+      expect(fixture.snapshot()).toEqual(settled);
+    } finally { fixture.sqlite.close(); }
+  });
+
+  it("rejects malformed HTTP metadata without poisoning a live job or its public projection", async () => {
+    const fixture = await metadataFixture("booth", "https://booth.pm/ja/items/55555");
+    try {
+      const before = fixture.snapshot();
+      for (const patch of [{ title: "x".repeat(501) }, { summary: "x".repeat(1025) },
+        { platformTags: ["x".repeat(101)] }, { outboundLinks: ["javascript:alert(1)"] },
+        { outboundLinks: ["http://unrelated.example/product"] }, { price: "free" },
+        { originUpdatedAt: "not-a-date" }, { unrecognized: true }]) {
+        const response = await fixture.post({ ...fixture.result,
+          outcome: { kind: "changed", observation: { ...fixture.observation, ...patch } } });
+        expect(response.status).toBe(400);
+        expect(await response.json()).toMatchObject({ schemaVersion: 1, code: "invalid_payload" });
+        expect(fixture.snapshot()).toEqual(before);
+      }
+      const corrected = await fixture.post(fixture.result);
+      expect(corrected.status).toBe(200);
+      expect(ResultResponseSchema.parse(await corrected.json()).status).toBe("accepted");
+      const page = await fixture.store.listCanonicalPackagesPage(100, null);
+      expect(page.packages[0]?.canonicalId).toBe(fixture.observation.sourceItemKey);
+      expect(page.packages[0]?.fronts[0]?.storefrontUrl).toBe("https://booth.pm/ja/items/55555");
+    } finally { fixture.sqlite.close(); }
+  });
+
+  it.each([
+    ["vpm", "https://packages.example/index.json"],
+    ["github", "https://api.github.com/repos/fixture/tool"],
+    ["curated", "https://directory.example/catalog"]
+  ] as const)("does not let %s metadata manufacture storefront authority", async (platform, target) => {
+    const fixture = await metadataFixture(platform, target);
+    try {
+      const before = fixture.snapshot();
+      for (const patch of [{ price: 0 }, { currency: "USD" }, { availability: "available" },
+        { storefrontUrl: "https://unrelated.example/product" }]) {
+        const response = await fixture.post({ ...fixture.result,
+          outcome: { kind: "changed", observation: { ...fixture.observation, ...patch } } });
+        expect(response.status).toBe(409);
+        expect(fixture.snapshot()).toEqual(before);
+      }
+      expect((await fixture.post(fixture.result)).status).toBe(200);
+      expect(fixture.sqlite.query("SELECT * FROM package_fronts").all()).toEqual([]);
+    } finally { fixture.sqlite.close(); }
+  });
+
   it("preserves earlier bot refusals and replaces both matchers with the snapshot", async () => {
     const fixture = await claimRaceFixture(["https://race.example/index.json"]);
     try {
@@ -121,7 +392,7 @@ describe("Cloudflare D1 Coordinator Store & Edge Worker Adapter", () => {
       expect(await fixture.store.completeRobotsRefresh(origin, oldLease, 404)).toBe(false);
       fixture.sqlite.run("UPDATE source_access_profiles SET disabled_at='2026-10-03T00:00:45.000Z'");
       expect(await fixture.store.completeRobotsRefresh(origin, replacement, 404)).toBe(false);
-      expect(fixture.sqlite.query("SELECT COUNT(*) AS count FROM origin_robots").get()).toEqual({ count: 0 });
+      expect(fixture.sqlite.query("SELECT COUNT(*) AS count FROM origin_robots WHERE snapshot_id IS NOT NULL").get()).toEqual({ count: 0 });
       expect(await fixture.store.releaseRobotsRefresh(origin, replacement)).toBe(true);
       fixture.advance(1000);
       expect(await fixture.store.reserveRobotsRefresh(origin)).toBeNull();
@@ -164,7 +435,8 @@ describe("Cloudflare D1 Coordinator Store & Edge Worker Adapter", () => {
       if (claimed.status !== "leased") throw new Error("Expected lease");
       const origin = fixture.sqlite.query("SELECT * FROM origin_leases").get();
       const client = new VRCPackageClient({ baseUrl: "https://worker.example", operatorToken: "a".repeat(64),
-        fetch: async (input, init) => workerEntry.fetch(new Request(input, init), { VRCP_D1: fixture.db, OPERATOR_TOKEN: "a".repeat(64) }) });
+        fetch: Object.assign(async (input: RequestInfo | URL, init?: RequestInit) =>
+          workerEntry.fetch(new Request(input, init), { VRCP_D1: fixture.db, OPERATOR_TOKEN: "a".repeat(64) }), { preconnect() {} }) });
       const revokePath = `https://worker.example/v1/operator/nodes/${principal.nodeId}/revoke`;
       for (const [payload, authorized, status] of [
         [{ schemaVersion: 1, reason: "Fixture" }, false, 401],
@@ -178,7 +450,7 @@ describe("Cloudflare D1 Coordinator Store & Edge Worker Adapter", () => {
         expect(result.status).toBe(status);
       }
       expect(fixture.sqlite.query("SELECT COUNT(*) AS count FROM node_credential_actions WHERE action='revoke'").get()).toEqual({ count: 0 });
-      fixture.sqlite.run("CREATE TRIGGER reject_revoke_audit BEFORE INSERT ON node_credential_actions WHEN NEW.action='revoke' BEGIN SELECT RAISE(ABORT,'fixture audit failure'); END;");
+      fixture.sqlite.run("CREATE TRIGGER reject_revoke_audit BEFORE INSERT ON operator_audit_log WHEN NEW.entity_type='node' AND NEW.action='revoke' BEGIN SELECT RAISE(ABORT,'fixture audit failure'); END;");
       await expect(client.operator.nodes.revoke(principal.nodeId, "Fixture revocation")).rejects.toThrow();
       expect(fixture.sqlite.query("SELECT revoked_at FROM node_credentials WHERE node_id=?").get(principal.nodeId)).toEqual({ revoked_at: null });
       fixture.sqlite.run("DROP TRIGGER reject_revoke_audit");
@@ -243,7 +515,8 @@ describe("Cloudflare D1 Coordinator Store & Edge Worker Adapter", () => {
       await store.initSchema();
       const env = { VRCP_D1: db, OPERATOR_TOKEN: "a".repeat(64) };
       const client = new VRCPackageClient({ baseUrl: "https://worker.example", operatorToken: env.OPERATOR_TOKEN,
-        fetch: async (input, init) => workerEntry.fetch(new Request(input, init), env) });
+        fetch: Object.assign(async (input: RequestInfo | URL, init?: RequestInit) =>
+          workerEntry.fetch(new Request(input, init), env), { preconnect() {} }) });
       const input = { schemaVersion: 1 as const, url: "https://seed.example/index.json", platform: "vpm" as const,
         purpose: "metadata" as const, minDelayMs: 1000, reason: "Offline operator candidate" };
       const first = await client.operator.jobs.enqueue(input);
@@ -259,7 +532,12 @@ describe("Cloudflare D1 Coordinator Store & Edge Worker Adapter", () => {
       const token = await store.issueNodeCredential({ schemaVersion: 1, nodeId: "enqueue-test", capabilities: ["vpm"], reason: "Fixture" }, "fixture");
       const principal = (await store.authenticate("enqueue-test", token))!;
       expect((await store.claim({ schemaVersion: 1, nodeId: principal.nodeId, capabilities: ["vpm"] }, principal)).status).toBe("empty");
-      sqlite.run("CREATE TRIGGER reject_seed_audit BEFORE INSERT ON job_seed_actions BEGIN SELECT RAISE(ABORT,'fixture audit failure'); END;");
+      const rawToken = "raw-token-without-capability-prefix-that-should-be-rejected";
+      const rawHash = await sha256Hex(rawToken);
+      sqlite.run("INSERT INTO node_credentials(node_id, token_hash, capabilities_json) VALUES (?, ?, ?)",
+        ["raw-node", rawHash, JSON.stringify(["vpm"])]);
+      expect(await store.authenticate("raw-node", rawToken)).toBeNull();
+      sqlite.run("CREATE TRIGGER reject_seed_audit BEFORE INSERT ON operator_audit_log WHEN NEW.entity_type='job' BEGIN SELECT RAISE(ABORT,'fixture audit failure'); END;");
       await expect(client.operator.jobs.enqueue({ ...input, url: "https://other.example/index.json" })).rejects.toThrow();
       expect(sqlite.query("SELECT COUNT(*) AS count FROM crawl_jobs").get()).toEqual({ count: 1 });
       expect(sqlite.query("SELECT COUNT(*) AS count FROM origin_leases").get()).toEqual({ count: 1 });
@@ -335,7 +613,8 @@ describe("Cloudflare D1 Coordinator Store & Edge Worker Adapter", () => {
       try {
         const env = { VRCP_D1: createMockD1Database(sqlite), OPERATOR_TOKEN: "a".repeat(64) };
         const client = new VRCPackageClient({ baseUrl: "https://worker.example", operatorToken: env.OPERATOR_TOKEN,
-          fetch: async (input, init) => workerEntry.fetch(new Request(input, init), env) });
+          fetch: Object.assign(async (input: RequestInfo | URL, init?: RequestInit) =>
+            workerEntry.fetch(new Request(input, init), env), { preconnect() {} }) });
         const result = await client.operator.init({ autoSeed });
         expect(result.schemaVersion).toBe(1);
         expect(result.autoSeed).toBe(autoSeed ?? true);
@@ -363,7 +642,9 @@ describe("Cloudflare D1 Coordinator Store & Edge Worker Adapter", () => {
       const db: D1Database = {
         prepare() { operations++; throw new Error("Unexpected database operation"); },
         async batch() { operations++; throw new Error("Unexpected database operation"); },
-        async exec() { operations++; throw new Error("Unexpected database operation"); }
+        async exec() { operations++; throw new Error("Unexpected database operation"); },
+        withSession() { operations++; throw new Error("Unexpected database operation"); },
+        async dump() { operations++; throw new Error("Unexpected database operation"); }
       };
       const response = await workerEntry.fetch(new Request("https://worker.example/v1/operator/init", {
         method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": contentType }, body
@@ -397,12 +678,20 @@ describe("Cloudflare D1 Coordinator Store & Edge Worker Adapter", () => {
         .all() as { name: string }[];
       for (const name of ["node_credentials", "crawl_jobs", "origin_leases", "origin_robots",
         "source_access_profiles", "canonical_packages", "source_versions", "identity_links",
-        "registered_apps", "registered_users", "creator_opt_outs"]) {
+        "registered_apps", "registered_users", "catalog_tickets"]) {
         expect(tables.some(table => table.name === name)).toBe(true);
+      }
+      const views = sqlite.query("SELECT name FROM sqlite_master WHERE type='view'")
+        .all() as { name: string }[];
+      for (const name of ["creator_opt_outs", "delegated_creator_claims", "catalog_reports", "user_app_ownership", "origin_robots_refresh_leases"]) {
+        expect(views.some(view => view.name === name)).toBe(true);
       }
       const columns = sqlite.query("PRAGMA table_info(canonical_packages)").all() as { name: string }[];
       expect(columns.some(column => column.name === "published_at")).toBe(true);
       expect(columns.some(column => column.name === "timestamp_confidence")).toBe(true);
+      expect(columns.some(column => column.name === "content_rating")).toBe(true);
+      const userColumns = sqlite.query("PRAGMA table_info(registered_users)").all() as { name: string }[];
+      expect(userColumns.some(column => column.name === "age_verified")).toBe(true);
     } finally { sqlite.close(); }
   });
 
@@ -420,6 +709,7 @@ describe("Cloudflare D1 Coordinator Store & Edge Worker Adapter", () => {
       const columns = sqlite.query("PRAGMA table_info(canonical_packages)").all() as { name: string }[];
       expect(columns.some(column => column.name === "published_at")).toBe(true);
       expect(columns.some(column => column.name === "timestamp_confidence")).toBe(true);
+      expect(columns.some(column => column.name === "content_rating")).toBe(true);
       expect(calls).toHaveLength(1);
       expect(sqlite.query("SELECT COUNT(*) AS count FROM crawl_jobs").get()).toEqual({ count: 0 });
     } finally { sqlite.close(); }
@@ -516,7 +806,7 @@ describe("Cloudflare D1 Coordinator Store & Edge Worker Adapter", () => {
       "UPDATE node_credentials SET revoked_at='2026-10-03T00:00:00.000Z'",
       "UPDATE origin_robots SET snapshot_id='replaced-snapshot',body='User-agent: *\nDisallow: /'",
       "UPDATE origin_leases SET min_delay_ms=min_delay_ms+1000",
-      "INSERT OR REPLACE INTO origin_robots_refresh_leases VALUES ('https://race.example','refresh-race','2026-10-03T00:05:00.000Z')"
+      "UPDATE origin_robots SET refresh_lease_id='refresh-race',refresh_lease_expires_at='2026-10-03T00:05:00.000Z' WHERE origin='https://race.example'"
     ]) {
       const fixture = await claimRaceFixture(["https://race.example/index.json"]);
       try {
@@ -602,6 +892,9 @@ describe("Cloudflare D1 Coordinator Store & Edge Worker Adapter", () => {
 
     expect(claimRes.status).toBe("leased");
     if (claimRes.status !== "leased") throw new Error("Expected leased status");
+    // Fixed 120s lease duration calibrated per R54-C39B
+    const leaseDurationMs = new Date(claimRes.job.leaseExpiresAt).getTime() - new Date().getTime();
+    expect(Math.abs(leaseDurationMs - 120_000)).toBeLessThan(5_000);
     expect(claimRes.job.jobId).toBe(jobId);
     expect(claimRes.job.url).toBe("https://vpm.example.com/index.json");
     expect(claimRes.job.platform).toBe("vpm");
@@ -1030,6 +1323,114 @@ describe("Cloudflare D1 Coordinator Store & Edge Worker Adapter", () => {
     const deltaJson = await deltaHttpRes.json() as any;
     expect(deltaJson.deltas).toHaveLength(2);
     expect(deltaJson.epoch).toBe(epoch2);
+
+    await store.adjustPackageRating("d1-pkg-active", "adult_restricted", "operator-1", "Rating adjustment test");
+    const deltaAfterRatingRes = await store.listCatalogDeltasPage(10, null);
+    const ratingWithdrawnDelta = deltaAfterRatingRes.deltas.find((d) => d.canonicalId === "d1-pkg-active");
+    expect(ratingWithdrawnDelta?.action).toBe("delist");
+    expect(ratingWithdrawnDelta?.package).toBeUndefined();
+
+    await store.deleteCanonicalPackage("d1-pkg-delisted");
+    const deltaAfterDeleteRes = await store.listCatalogDeltasPage(10, null);
+    const deletedDelta = deltaAfterDeleteRes.deltas.find((d) => d.canonicalId === "d1-pkg-delisted");
+    expect(deletedDelta?.action).toBe("delist");
+    expect(deletedDelta?.package).toBeUndefined();
+  });
+
+  it("initializes distinct catalog epochs, returns the concurrent winner and preserves stored values", async () => {
+    const firstDB = new Database(":memory:"), secondDB = new Database(":memory:");
+    const firstBinding = createMockD1Database(firstDB), secondBinding = createMockD1Database(secondDB);
+    const first = new Coordinator(firstBinding), second = new Coordinator(secondBinding);
+    try {
+      await first.initSchema();
+      await second.initSchema();
+      const readers = Array.from({ length: 8 }, () => new Coordinator(firstBinding));
+      const concurrent = await Promise.all(readers.map(reader => reader.getCatalogEpoch()));
+      expect(new Set(concurrent).size).toBe(1);
+      const initial = concurrent[0]!;
+      expect(initial).toMatch(/^epoch-d1-[0-9a-f-]{36}$/);
+      expect(await first.getCatalogEpoch()).toBe(initial);
+      expect(await second.getCatalogEpoch()).not.toBe(initial);
+      const reset = await first.resetCatalogEpoch();
+      expect(reset).not.toBe(initial);
+      expect(reset).toMatch(/^epoch-d1-[0-9a-f-]{36}$/);
+      expect(await new Coordinator(firstBinding).getCatalogEpoch()).toBe(reset);
+      // Existing deployed epochs must not be silently migrated or invalidated.
+      firstDB.run("UPDATE coordinator_meta SET value='epoch-d1-default' WHERE key='catalog_epoch'");
+      expect(await new Coordinator(firstBinding).getCatalogEpoch()).toBe("epoch-d1-default");
+    } finally { firstDB.close(); secondDB.close(); }
+  });
+
+  it("cannot report an initialized epoch when its persistence fails", async () => {
+    const sqlite = new Database(":memory:");
+    const store = new Coordinator(createMockD1Database(sqlite));
+    try {
+      await store.initSchema();
+      sqlite.run("CREATE TRIGGER reject_catalog_epoch BEFORE INSERT ON coordinator_meta WHEN NEW.key='catalog_epoch' BEGIN SELECT RAISE(ABORT,'Epoch persistence refused'); END");
+      await expect(store.getCatalogEpoch()).rejects.toThrow("Epoch persistence refused");
+      expect(sqlite.query("SELECT value FROM coordinator_meta WHERE key='catalog_epoch'").get()).toBeNull();
+      sqlite.run("DROP TRIGGER reject_catalog_epoch");
+      const recovered = await store.getCatalogEpoch();
+      expect(recovered).toMatch(/^epoch-d1-[0-9a-f-]{36}$/);
+      expect(await store.getCatalogEpoch()).toBe(recovered);
+    } finally { sqlite.close(); }
+  });
+
+  it.each([1, 2, 100])("pages stable equal-time deltas through the installed SDK (limit %s)", async limit => {
+    const sqlite = new Database(":memory:");
+    const timestamp = "2026-10-13T00:00:00.000Z";
+    const store = new Coordinator(createMockD1Database(sqlite), () => Date.parse(timestamp));
+    const ids = ["delta-a", "delta-b", "delta-c", "界".repeat(499) + "a", "😀"];
+    const delisted = new Set([ids[1], ids[4]]);
+    try {
+      await store.initSchema();
+      for (const canonicalId of ids) await store.upsertCanonicalPackage({
+        canonicalId, umbrella: "tools", category: "tool", createdAt: timestamp, updatedAt: timestamp,
+        lifecycle: delisted.has(canonicalId) ? "delisted" : "active",
+        displayName: delisted.has(canonicalId) ? "Delisted metadata must not leak" : "Equal-time fixture tool"
+      });
+      for (const contentRating of ["mature", "adult_restricted", "prohibited"] as const) {
+        await store.upsertCanonicalPackage({ canonicalId: `delta-aa-hidden-${contentRating}`, umbrella: "tools",
+          category: "tool", lifecycle: "delisted", displayName: "Restricted metadata must not leak",
+          createdAt: timestamp, updatedAt: timestamp, contentRating });
+      }
+      const limiter = new InMemoryRateLimiter();
+      const client = new VRCPackageClient({ baseUrl: "https://coordinator.invalid", fetch: Object.assign(
+        async (input: RequestInfo | URL, init?: RequestInit) => {
+          const request = new Request(input, init);
+          expect(request.headers.has("authorization")).toBe(false);
+          const response = await handlePublicCatalogRequest(request, store, limiter);
+          expect(response.status).toBe(200);
+          const wire = await response.clone().text();
+          expect(wire).not.toContain("Delisted metadata must not leak");
+          expect(wire).not.toContain("Restricted metadata must not leak");
+          return response;
+        }, { preconnect() {} }) });
+      const seen: string[] = [], cursors = new Set<string>();
+      const epoch = await store.getCatalogEpoch();
+      let cursor: string | undefined;
+      do {
+        const page = await client.index.syncDeltas({ limit, ...(cursor ? { cursor } : {}) });
+        expect(page.epoch).toBe(epoch);
+        expect(page.deltas.length).toBeGreaterThan(0);
+        expect(page.deltas.length).toBeLessThanOrEqual(limit);
+        for (const delta of page.deltas) {
+          expect(delta.updatedAt).toBe(timestamp);
+          expect(delta.action).toBe(delisted.has(delta.canonicalId) ? "delist" : "upsert");
+          if (delta.action === "delist") expect(delta.package).toBeUndefined();
+          else expect(delta.package?.canonicalId).toBe(delta.canonicalId);
+          seen.push(delta.canonicalId);
+        }
+        cursor = page.nextCursor ?? undefined;
+        if (cursor) {
+          expect(cursors.has(cursor)).toBe(false);
+          cursors.add(cursor);
+        }
+        if (seen.length > ids.length) throw new Error("Delta pagination repeated a row");
+      } while (cursor);
+      expect(seen).toEqual(ids);
+      expect(new Set(seen).size).toBe(ids.length);
+    } finally { sqlite.close(); }
   });
 
   it("autoSeed queues candidates without inventing access approval or robots evidence", async () => {
@@ -1148,6 +1549,28 @@ describe("Cloudflare D1 Coordinator Store & Edge Worker Adapter", () => {
 
     const remainingFronts = await store.getPackageFrontsForCanonical("d1-pkg-fronted");
     expect(remainingFronts).toHaveLength(0);
+  });
+
+  it.each(["confirmed", "inferred"] as const)("metadata-only upserts preserve %s publication evidence", async (confidence) => {
+    const sqlite = new Database(":memory:");
+    let clock = Date.now();
+    const store = new Coordinator(createMockD1Database(sqlite), () => clock);
+    try {
+      await store.initSchema(false);
+      const base = { canonicalId: "timestamp-upsert", umbrella: "tools" as const, category: "tool",
+        lifecycle: "active" as const, displayName: "Original metadata" };
+      const publishedAt = "2021-01-02T03:04:05.000Z";
+      const original = await store.upsertCanonicalPackage({ ...base, publishedAt, timestampConfidence: confidence });
+      clock += 1000;
+      const updated = await store.upsertCanonicalPackage({ ...base, displayName: "Updated metadata" });
+      expect(updated.publishedAt).toBe(publishedAt);
+      expect(updated.timestampConfidence).toBe(confidence);
+      expect(updated.createdAt).toBe(original.createdAt);
+      expect(updated.updatedAt).toBe(new Date(clock).toISOString());
+      const page = await store.listCanonicalPackagesPage(100, null);
+      expect(page.packages[0]?.publishedAt).toBe(publishedAt);
+      expect(page.packages[0]?.timestampConfidence).toBe(confidence);
+    } finally { sqlite.close(); }
   });
 
   it.each([
@@ -1569,7 +1992,7 @@ describe("Cloudflare D1 Coordinator Store & Edge Worker Adapter", () => {
       createdAt: "2026-10-01T08:00:00.000Z"
     });
 
-    // Package C (observed fallback without publisher timestamp)
+    // Package C (catalog creation fallback without publisher evidence)
     const observedTime = "2023-03-20T00:00:00.000Z";
     await store.upsertCanonicalPackage({
       canonicalId: "com.example.observed-tool",
@@ -1587,7 +2010,7 @@ describe("Cloudflare D1 Coordinator Store & Edge Worker Adapter", () => {
 
     const pkgC = await store.getCanonicalPackage("com.example.observed-tool");
     expect(pkgC?.publishedAt).toBeNull();
-    expect(pkgC?.timestampConfidence).toBe("observed");
+    expect(pkgC?.timestampConfidence).toBeNull();
 
     // Perform bulk tag search with tags: ["avatar_tool"] without keyword query
     const tagSearch = await store.searchCatalogPackages({
@@ -1604,7 +2027,7 @@ describe("Cloudflare D1 Coordinator Store & Edge Worker Adapter", () => {
     expect(tagSearch.items[0].timestampConfidence).toBe("confirmed");
 
     expect(tagSearch.items[1].canonicalId).toBe("com.example.observed-tool");
-    expect(tagSearch.items[1].timestampConfidence).toBe("observed");
+    expect(tagSearch.items[1].timestampConfidence).toBeNull();
 
     expect(tagSearch.items[2].canonicalId).toBe("com.example.older-tool");
     expect(tagSearch.items[2].publishedAt).toBe(olderTime);
@@ -1631,5 +2054,54 @@ describe("Cloudflare D1 Coordinator Store & Edge Worker Adapter", () => {
     });
     expect(page2.items).toHaveLength(1);
     expect(page2.items[0].canonicalId).toBe("com.example.older-tool");
+  });
+
+  it("Claim scan bounds candidate scans by MAX_CLAIM_SCAN_PAGES without exceeding invocation budget (R14-C14)", async () => {
+    const mockDb = createMockD1Database();
+    const store = new Coordinator(mockDb);
+    await store.initSchema();
+
+    const token = await store.issueNodeCredential({
+      schemaVersion: 1,
+      nodeId: "budget-test-node",
+      capabilities: ["vpm"],
+      reason: "Budget test node"
+    }, "operator-admin");
+    const principal = (await store.authenticate("budget-test-node", token))!;
+
+    const emptyClaim = await store.claim({
+      schemaVersion: 1,
+      nodeId: "budget-test-node",
+      capabilities: ["vpm"]
+    }, principal);
+    expect(emptyClaim.status).toBe("empty");
+
+    await store.createSourceAccessProfile({
+      schemaVersion: 1,
+      platform: "vpm",
+      origin: "https://budget.example.com",
+      pathScope: "/index.json",
+      method: "GET",
+      purpose: "metadata",
+      minDelayMs: 1000,
+      expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
+      reviewReference: "REV-BUDGET-01",
+      reason: "Budget profile",
+      retainClasses: ["normalized_facts"],
+      publishClasses: ["normalized_facts"]
+    }, "operator-admin");
+    await store.recordRobotsSnapshot("https://budget.example.com", 200, "User-agent: *\nAllow: /");
+
+    const jobId = await store.seedJob("https://budget.example.com/index.json", "vpm", 1000, undefined, "metadata");
+
+    const leasedClaim = await store.claim({
+      schemaVersion: 1,
+      nodeId: "budget-test-node",
+      capabilities: ["vpm"]
+    }, principal);
+    expect(leasedClaim.status).toBe("leased");
+    if (leasedClaim.status === "leased") {
+      expect(leasedClaim.job.jobId).toBe(jobId);
+    }
   });
 });

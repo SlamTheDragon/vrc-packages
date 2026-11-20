@@ -18,7 +18,9 @@ assert.equal(new VRCPApiError(403, 'Fixture rejection').name, 'VRCPApiError');
 for (const retiredName of ['VrcPackagesClient', 'VrcApiError', 'VRCPPackageClient', 'VRCPPackagesClient']) {
   assert.equal(Object.hasOwn(sdkExports, retiredName), false);
 }
-const publicCursor = encodeCatalogCursor({ createdAt: '2026-10-01T12:00:00.000Z', canonicalId: 'packed-item' });
+const publicCursor = encodeCatalogCursor({ createdAt: '2026-10-01T12:00:00.000Z', canonicalId: '界'.repeat(500) });
+assert.ok(publicCursor.length > 256);
+assert.equal(sdkExports.decodeCatalogCursor(publicCursor).canonicalId, '界'.repeat(500));
 assert.deepEqual(PublicCatalogListQuerySchema.parse({}), { limit: 50 });
 let publicRequests = 0;
 const publicIndex = new VRCPackageClient({ baseUrl: 'https://packed-worker.test',
@@ -65,7 +67,9 @@ assert.equal(anonymousRegistrationCalls, 0);
 assert.equal(RevokeNodeRequestSchema.parse({ schemaVersion: 1, reason: 'Packed fixture' }).reason, 'Packed fixture');
 assert.equal(typeof CatalogPackageSchema.parse, 'function');
 assert.equal(taxonomy.UmbrellaSchema.parse('tools'), 'tools');
-assert.deepEqual(Object.keys(taxonomy), ['UmbrellaSchema']);
+assert.deepEqual(Object.keys(taxonomy), ['ContentRatingSchema', 'UmbrellaSchema']);
+assert.equal(taxonomy.ContentRatingSchema.parse('adult_restricted'), 'adult_restricted');
+assert.equal(taxonomy.ContentRatingSchema.safeParse('unreviewed-invented-rating').success, false);
 for (const name of ['isVpmVersion', 'compareVpmVersions', 'cleanVpmVersion',
   'DesktopToolSubtypeSchema', 'DesktopToolEvidenceSchema', 'AvatarCompatibilitySchema']) {
   assert.equal(name in taxonomy, false);
@@ -142,13 +146,13 @@ const searchClient = new VRCPackageClient({ baseUrl: 'https://packed-worker.test
     assert.equal(new URL(request.url).pathname, '/v1/app/index/search');
     assert.equal(request.headers.get('authorization'), 'Bearer packed-test-only');
     searchBodies.push(await request.json());
-    return Response.json({ schemaVersion: 1, items: [], nextCursor: 'packed-next-cursor', totalEstimated: 2 });
+    return Response.json({ schemaVersion: 1, items: [], nextCursor: publicCursor, totalEstimated: 2 });
   } });
 const searchPage = await searchClient.index.search({ queryOrigin: 'app_automated', cursor: null, limit: 1 });
 await searchClient.index.search({ queryOrigin: 'app_automated', cursor: searchPage.nextCursor, limit: 1 });
 assert.deepEqual(searchBodies, [
   { schemaVersion: 1, queryOrigin: 'app_automated', limit: 1, cursor: null },
-  { schemaVersion: 1, queryOrigin: 'app_automated', limit: 1, cursor: 'packed-next-cursor' }
+  { schemaVersion: 1, queryOrigin: 'app_automated', limit: 1, cursor: publicCursor }
 ]);
 await assert.rejects(searchClient.index.search({ queryOrigin: 'app_automated', limit: 51 }), { name: 'ZodError' });
 assert.equal(searchBodies.length, 2);

@@ -56,13 +56,13 @@ Download & Install the latest release found at [Deployments](https://github.com/
 
 #### Crawler Docker
 
-The node has a Dockerfile and a fleet configuration. Image publication, restart recovery and automatic updates are pending.
+The node includes a Dockerfile and a fleet configuration. Operators run containers with pinned, reviewed image digests.
 
 ```bash
 docker compose -f src-crawler/docker-compose.yml config
 ```
 
-Review the [Docker runbook](DELEGATES.md#3-crawler-node-operation--fleet-management) before starting containers. The compose file grants Watchtower access to the host Docker socket.
+Review the [Docker runbook](DELEGATES.md#3-crawler-node-operation--fleet-management) before starting containers. Configure your environment in `src-crawler/.env`.
 
 ---
 

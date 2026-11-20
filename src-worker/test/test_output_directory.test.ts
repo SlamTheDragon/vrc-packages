@@ -13,6 +13,6 @@ describe("Worker test artifact ownership", () => {
 
   test("loads only Worker-owned test setup", () => {
     const config = Bun.TOML.parse(readFileSync(resolve(import.meta.dir, "../bunfig.toml"), "utf8"));
-    expect(config.test.preload).toEqual(["./test/helpers/test_setup.ts"]);
+    expect(config).toHaveProperty("test.preload", ["./test/helpers/test_setup.ts"]);
   });
 });

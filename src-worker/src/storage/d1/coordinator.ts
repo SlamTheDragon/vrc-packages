@@ -5,12 +5,15 @@ import { EnqueueJobRequestSchema, type EnqueueJobRequest,
   type RuleCursor, encodeRuleCursor, type CreateAutoQueueRule, CreateAutoQueueRuleSchema,
   type CatalogCursor, type CatalogPackage, type CatalogIdentityLink, type PackageFront,
   encodeCatalogCursor, decodeCatalogCursor, type CatalogDelta, type CatalogDeltaCursor,
-  encodeCatalogDeltaCursor } from "vrc-packages-api";
+  encodeCatalogDeltaCursor, type ContentRating,
+  encodeModeratorRatingCursor, type ModeratorRatingRecord, type ModeratorRatingCursor } from "vrc-packages-api";
 import { ROBOTS_RESTRICTION_TOKENS } from "vrc-packages-network/identity";
 import { isPrivateOrReservedIp } from "vrc-packages-network/ip-policy";
-import { type Platform, type HeartbeatRequest, type HeartbeatResponse, PROTOCOL_VERSION, type ClaimRequest, type ClaimResponse, type ResultRequest, type ResultResponse, observationMatchesPlatform, ClaimRequestSchema, PlatformSchema, type DiscoveryLead } from "vrc-packages-network/node";
+import { type Platform, type HeartbeatRequest, type HeartbeatResponse, PROTOCOL_VERSION, type ClaimRequest, type ClaimResponse, type ResultRequest, type ResultResponse, type CrawlJob, type BatchResultRequest, type BatchResultResponse, type BatchResultReceipt, observationMatchesPlatform, ClaimRequestSchema, PlatformSchema, type DiscoveryLead } from "vrc-packages-network/node";
 import { type LeadCursor, type LeadRow, encodeLeadCursor,
-  encodeTakedownCursor, type TakedownCursor, type TakedownRecord } from "../../api/protocol/operator_protocol.js";
+  encodeTakedownCursor, type TakedownCursor, type TakedownRecord,
+  encodeDelegatedClaimCursor, type DelegatedClaimCursor, type DelegatedClaimRecord,
+  encodeOperatorAppCursor, type OperatorAppCursor, type OperatorAppRecord } from "../../api/protocol/operator_protocol.js";
 import { robotsResultAllowsMissingFile, OriginRobotsSnapshotSchema, ROBOTS_REFRESH_LEASE_MS, type OriginRobotsSnapshot } from "vrc-packages-network/robots";
 import { type SourceAccessProfile, SourceAccessProfileSchema, sourceAccessProfileMatches, type SourcePurpose, type ProfileCursor, encodeProfileCursor, type CreateSourceAccessProfile, CreateSourceAccessProfileSchema, sourcePathScopesOverlap } from "../../domain/access/source_access_profile.js";
 import { isItchSearchUrl } from "vrc-packages-network/source-paths";
@@ -33,15 +36,20 @@ import {
   type DownstreamFeedbackRequest,
   type DownstreamFeedbackResponse,
   type CatalogSearchRequest,
-  type CatalogSearchResponse
+  type CatalogSearchResponse,
+  CreatorClaimIntakeRequestSchema,
+  type CreatorClaimIntakeRequest,
+  type CreatorClaimIntakeResponse
 } from "vrc-packages-api";
 import type { UserStore } from "../../api/user_handler.ts";
+import type { ModeratorStore } from "../../api/moderator_handler.ts";
 import { D1_SCHEMA_SQL, sha256Hex, timingSafeEqual, generateToken, isIp } from "./utils.js";
 import { deriveCategoryFromTags, deriveUmbrellaFromTags, classifyDesktopTool, inferSupportedOS, type DesktopToolEvidence } from "../../domain/classification/taxonomy.ts";
 import { extractAvatarCompatibility, type AvatarCompatibility } from "../../domain/classification/avatar_compatibility.ts";
 import { cleanTitle, cleanTrackingParams } from "vrc-packages-network/catalog-hygiene";
 import { STOREFRONT_PLATFORMS } from "vrc-packages-network/node";
-import { DEFAULT_SEED_JOBS } from "../default_seeds.js";
+export const CRAWL_JOB_LEASE_MS = 120 * 1000; // 120s fixed lease per author direction (R54-C39B)
+import { DEFAULT_SEED_JOBS, DEFAULT_APPROVED_SOURCE_PROFILES } from "../default_seeds.js";
 import type {
   D1Database,
   D1PreparedStatement,
@@ -55,6 +63,16 @@ import type {
   CanonicalPackage,
   IdentityLink
 } from "./definitions.js";
+
+export interface OperatorAuditLogRow {
+  action_id: number;
+  entity_type: "node" | "lead" | "job" | "rule" | "profile";
+  entity_id: string;
+  actor: string;
+  action: string;
+  reason: string;
+  occurred_at: string;
+}
 
 export function classifyOutboundLeadKind(targetUrl: string): DiscoveryLead["kind"] | null {
   try {
@@ -73,7 +91,8 @@ export function classifyOutboundLeadKind(targetUrl: string): DiscoveryLead["kind
     }
     if (url.hostname === "booth.pm" || url.hostname === "gumroad.com" ||
         url.hostname === "jinxxy.com" || url.hostname.endsWith(".itch.io") ||
-        url.hostname === "sellfy.com" || url.hostname === "payhip.com") {
+        url.hostname === "sellfy.com" || url.hostname === "payhip.com" ||
+        url.hostname === "ko-fi.com") {
       return "storefront_product";
     }
     if (!url.hostname.includes("localhost") && !url.hostname.endsWith(".internal") &&
@@ -102,7 +121,7 @@ function approvedRobotsJobDelaySql(origin: string, now: string): string {
             substr(j.url,1,length(p.origin||p.path_scope))=p.origin||p.path_scope)))))`;
 }
 
-export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatalogStore, UserStore {
+export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatalogStore, UserStore, ModeratorStore {
   private readonly robotsMatchers = new Map<string, { snapshotId: string; matchers: readonly CrawlerRules[]; }>();
 
   constructor(
@@ -115,6 +134,32 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
       const existing = await this.db.prepare(`SELECT 1 FROM crawl_jobs WHERE url=?
         UNION ALL SELECT 1 FROM suppressed_urls WHERE url=? LIMIT 1`).bind(job.url, job.url).first();
       if (!existing) await this.seedJob(job.url, job.platform, job.minDelayMs, undefined, job.purpose);
+    }
+  }
+
+  async seedInitialProfiles(actor: string = "system-bootstrap"): Promise<void> {
+    const nowMs = this.now();
+    for (const p of DEFAULT_APPROVED_SOURCE_PROFILES) {
+      const expiresAt = new Date(nowMs + p.expiresInDays * 24 * 60 * 60 * 1000).toISOString();
+      const existing = await this.db.prepare(`SELECT 1 FROM source_access_profiles
+        WHERE platform=? AND origin=? AND path_scope=? AND purpose=? AND disabled_at IS NULL AND expires_at>? LIMIT 1`)
+        .bind(p.platform, p.origin, p.pathScope, p.purpose, new Date(nowMs).toISOString()).first();
+      if (!existing) {
+        await this.createSourceAccessProfile({
+          schemaVersion: 1,
+          platform: p.platform,
+          origin: p.origin,
+          pathScope: p.pathScope,
+          method: p.method,
+          purpose: p.purpose,
+          minDelayMs: p.minDelayMs,
+          expiresAt,
+          reviewReference: p.reviewReference,
+          reason: p.reason,
+          retainClasses: p.retainClasses,
+          publishClasses: p.publishClasses
+        }, actor);
+      }
     }
   }
 
@@ -193,16 +238,37 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
     return cached.matchers.every(matcher => matcher.isAllowed(job.url));
   }
 
-  async activeSourceAccessProfileForTarget(platform: Platform, target: string, purpose: SourcePurpose): Promise<SourceAccessProfile | null> {
+  private async executeBatchChunked<T = unknown>(statements: D1PreparedStatement[], chunkSize = 50): Promise<D1Result<T>[]> {
+    if (statements.length === 0) return [];
+    if (statements.length <= chunkSize) {
+      return (await this.db.batch(statements)) as D1Result<T>[];
+    }
+    const results: D1Result<T>[] = [];
+    for (let i = 0; i < statements.length; i += chunkSize) {
+      const chunk = statements.slice(i, i + chunkSize);
+      const res = (await this.db.batch(chunk)) as D1Result<T>[];
+      results.push(...res);
+    }
+    return results;
+  }
+
+  async activeSourceAccessProfileForTarget(platform: Platform, target: string, purpose: SourcePurpose, cache?: Map<string, SourceAccessProfileRow[]>): Promise<SourceAccessProfile | null> {
     let origin: string;
     try { origin = new URL(target).origin; } catch { return null; }
     const nowMs = this.now();
     const now = new Date(nowMs).toISOString();
-    const res = await this.db.prepare(`SELECT * FROM source_access_profiles
-      WHERE platform=? AND origin=? AND purpose=? AND disabled_at IS NULL AND expires_at>?
-      ORDER BY length(path_scope) DESC,created_at ASC,profile_id ASC`)
-      .bind(platform, origin, purpose, now).all<SourceAccessProfileRow>();
-    const rows = res.results || [];
+    const cacheKey = `${platform}:${origin}:${purpose}`;
+    let rows: SourceAccessProfileRow[];
+    if (cache && cache.has(cacheKey)) {
+      rows = cache.get(cacheKey)!;
+    } else {
+      const res = await this.db.prepare(`SELECT * FROM source_access_profiles
+        WHERE platform=? AND origin=? AND purpose=? AND disabled_at IS NULL AND expires_at>?
+        ORDER BY length(path_scope) DESC,created_at ASC,profile_id ASC`)
+        .bind(platform, origin, purpose, now).all<SourceAccessProfileRow>();
+      rows = res.results || [];
+      if (cache) cache.set(cacheKey, rows);
+    }
     for (const row of rows) {
       const profile = this.sourceAccessProfileFromRow(row);
       if (sourceAccessProfileMatches(profile, platform, target, purpose, nowMs)) return profile;
@@ -234,8 +300,9 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
       .bind(origin, now, now).all<JobRow>();
     const rows = res.results || [];
     let delay: number | null = null;
+    const profileCache = new Map<string, SourceAccessProfileRow[]>();
     for (const job of rows) {
-      const profile = await this.activeSourceAccessProfileForTarget(job.platform, job.url, job.job_purpose);
+      const profile = await this.activeSourceAccessProfileForTarget(job.platform, job.url, job.job_purpose, profileCache);
       if (profile) delay = Math.max(delay ?? 0, profile.minDelayMs);
     }
     return delay;
@@ -252,7 +319,7 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
     if (!timingSafeEqual(suppliedHash, row.token_hash)) return null;
 
     const storedCapabilities = JSON.parse(row.capabilities_json) as Platform[];
-    if (isCapabilityToken(bearer)) {
+    if (!isCapabilityToken(bearer)) return null;
       const parsed = parseCapabilityToken(bearer);
       if (!parsed) return null;
       const parsedSet = new Set(parsed.capabilities);
@@ -260,7 +327,7 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
       if (parsedSet.size !== storedSet.size || [...parsedSet].some((c) => !storedSet.has(c))) {
         return null;
       }
-    }
+
 
     return {
       nodeId,
@@ -307,9 +374,8 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
     const eligibleFrom = `FROM crawl_jobs j
       JOIN origin_leases o ON o.origin = j.origin
       JOIN origin_robots r ON r.origin = j.origin AND r.expires_at > ?
-      LEFT JOIN origin_robots_refresh_leases rl ON rl.origin=j.origin AND rl.lease_expires_at>?
+        AND (r.refresh_lease_expires_at IS NULL OR r.refresh_lease_expires_at <= ?)
       WHERE j.platform IN (${placeholders})
-        AND rl.origin IS NULL
         AND j.next_fetch_at <= ?
         AND (j.state IN ('pending','done','backoff') OR (j.state='leased' AND j.lease_expires_at <= ?))
         AND o.next_allowed_at <= ?
@@ -332,8 +398,16 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
       r.body AS robots_body,r.expires_at AS robots_expires_at ${eligibleFrom}
       ORDER BY j.next_fetch_at ASC, j.created_at ASC, j.job_id ASC LIMIT 100 OFFSET ?`;
 
+    const maxJobs = Math.max(1, Math.min(request.maxJobs ?? 1, 10));
+    const leasedJobs: CrawlJob[] = [];
+    const reservedOrigins = new Set<string>();
+    const profileCache = new Map<string, SourceAccessProfileRow[]>();
+
+    const MAX_CLAIM_SCAN_PAGES = 3;
+    let pagesScanned = 0;
     let offset = 0;
     for (; ;) {
+      if (pagesScanned++ >= MAX_CLAIM_SCAN_PAGES) break;
       const bindParams = [...eligibilityParams(now), offset];
       const res = await this.db.prepare(query).bind(...bindParams).all<JobRow & {
         robots_snapshot_id: string; robots_status_code: number; robots_body: string; robots_expires_at: string;
@@ -342,7 +416,8 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
       if (candidates.length === 0) break;
       let deferred = false;
       for (const job of candidates) {
-        const profile = await this.activeSourceAccessProfileForTarget(job.platform, job.url, job.job_purpose);
+        if (reservedOrigins.has(job.origin)) continue;
+        const profile = await this.activeSourceAccessProfileForTarget(job.platform, job.url, job.job_purpose, profileCache);
         if (!profile) continue;
         if (!this.robotsAllows(job)) {
           await this.db.prepare(`UPDATE crawl_jobs SET next_fetch_at=?,robots_deferred_until=?,
@@ -362,7 +437,7 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
         if (lease.next_allowed_at > now || (lease.active_job_id && lease.lease_expires_at && lease.lease_expires_at > now)) continue;
         const reservationMs = this.now();
         const reservationTime = new Date(reservationMs).toISOString();
-        const expires = new Date(reservationMs + 5 * 60 * 1000).toISOString();
+        const expires = new Date(reservationMs + CRAWL_JOB_LEASE_MS).toISOString();
         const leaseId = crypto.randomUUID();
         const nextAllowed = new Date(reservationMs + Math.max(lease.min_delay_ms, profile.minDelayMs)).toISOString();
 
@@ -385,20 +460,32 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
             .bind(job.job_id, expires, nextAllowed, job.origin, job.job_id, leaseId, principal.nodeId)
         ]);
         if ((reservation[0]?.meta as { changes?: number } | undefined)?.changes !== 1) continue;
-        return {
-          schemaVersion: PROTOCOL_VERSION, status: "leased" as const,
-          job: {
-            jobId: job.job_id, leaseId, platform: job.platform, purpose: job.job_purpose,
-            url: job.url, origin: job.origin,
-            leaseExpiresAt: expires, retainClasses: profile.retainClasses,
-            etag: job.etag, lastModified: job.last_modified
-          }
-        };
+        reservedOrigins.add(job.origin);
+        leasedJobs.push({
+          jobId: job.job_id, leaseId, platform: job.platform, purpose: job.job_purpose,
+          url: job.url, origin: job.origin,
+          leaseExpiresAt: expires, retainClasses: profile.retainClasses,
+          etag: job.etag, lastModified: job.last_modified
+        });
+        if (leasedJobs.length >= maxJobs) {
+          return {
+            schemaVersion: PROTOCOL_VERSION, status: "leased" as const,
+            job: leasedJobs[0],
+            jobs: leasedJobs
+          };
+        }
       }
       if (deferred) offset = 0;
       else offset += candidates.length;
     }
-    return { schemaVersion: PROTOCOL_VERSION, status: "empty" as const, retryAfterMs: 1000 };
+    if (leasedJobs.length > 0) {
+      return {
+        schemaVersion: PROTOCOL_VERSION, status: "leased" as const,
+        job: leasedJobs[0],
+        jobs: leasedJobs
+      };
+    }
+    return { schemaVersion: PROTOCOL_VERSION, status: "empty" as const, retryAfterMs: 5000 };
   }
 
   async submit(request: ResultRequest, principal: NodePrincipal): Promise<ResultResponse> {
@@ -489,6 +576,25 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
       outcome.kind === "batch" || outcome.kind === "partial_batch" ? outcome.observations : [];
     if (observations.some(observation => !observationMatchesPlatform(job.platform, observation))) {
       throw new CoordinatorConflict("Release evidence does not match the leased platform");
+    }
+    if (observations.some(observation => !cleanTitle(observation.title))) {
+      throw new CoordinatorConflict("Observation requires a nonempty catalog title");
+    }
+    const isStorefront = STOREFRONT_PLATFORMS.has(job.platform);
+    if (isStorefront) {
+      // Match the shipped parser: hints and outbound links cannot replace the assigned item.
+      const target = new URL(job.url);
+      const sourceItemKey = `${target.host}${target.pathname}`;
+      if (observations.some(observation => observation.sourceItemKey !== sourceItemKey)) {
+        throw new CoordinatorConflict("Storefront identity does not match the assigned source");
+      }
+      if (observations.some(observation => observation.storefrontUrl !== undefined &&
+        cleanTrackingParams(observation.storefrontUrl) !== cleanTrackingParams(target.href))) {
+        throw new CoordinatorConflict("Storefront URL does not match the assigned source");
+      }
+    } else if (observations.some(observation => observation.price !== undefined ||
+      observation.currency !== undefined || observation.availability !== undefined || observation.storefrontUrl !== undefined)) {
+      throw new CoordinatorConflict("Storefront fields require a storefront source");
     }
     if ((observations.length > 0 || outcome.kind === "discovery" || outcome.kind === "partial_batch") &&
       !sourceProfile.retainClasses.includes("normalized_facts")) {
@@ -592,9 +698,10 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
         );
 
         for (const outbound of observation.outboundLinks) {
-          const leadKind = classifyOutboundLeadKind(outbound);
+          const targetUrl = new URL(outbound).href;
+          const leadKind = classifyOutboundLeadKind(targetUrl);
           if (leadKind) {
-            const identity = [job.url, vpmId, leadKind, outbound, vpmId];
+            const identity = [job.url, vpmId, leadKind, targetUrl, vpmId];
             const leadKey = await sha256Hex(JSON.stringify(identity));
             batchStmts.push(
               this.db.prepare(`INSERT INTO source_leads
@@ -607,7 +714,7 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
                   last_seen_node_id=excluded.last_seen_node_id,last_seen_lease_id=excluded.last_seen_lease_id,
                   last_seen_profile_id=excluded.last_seen_profile_id`)
                 .bind(leadKey, job.url, job.job_id, vpmId,
-                  leadKind, outbound, vpmId,
+                  leadKind, targetUrl, vpmId,
                   now, now, principal.nodeId, request.leaseId, sourceProfile.profileId,
                   principal.nodeId, request.leaseId, sourceProfile.profileId)
             );
@@ -651,6 +758,7 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
       // When an observation has an accepted or provisional identity link to a canonical package
       // (or if it is a storefront platform with an outbound match), upsert a row into package_fronts.
       const linkedCanonicalIds = new Set<string>();
+      const highConfidenceCanonicalIds = new Set<string>();
       const existingLinksRes = await this.db.prepare(`
         SELECT canonical_id FROM identity_links
         WHERE source_key = ? AND review_state IN ('accepted', 'provisional')
@@ -659,16 +767,16 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
         linkedCanonicalIds.add(canonical_id);
       }
 
-      const isStorefront = STOREFRONT_PLATFORMS.has(job.platform) || observation.price !== undefined;
       if (isStorefront) {
         // Outbound match 1: observation outbound links matching source items or leads linked to a canonical package
         for (const outbound of observation.outboundLinks) {
-          const normalizedOutbound = outbound.toLowerCase().replace(/\/+$/, "");
+          // URL serialization normalizes the host, not case-sensitive path/query data.
+          const normalizedOutbound = new URL(outbound).href;
           const matchesRes = await this.db.prepare(`
             SELECT DISTINCT il.canonical_id
             FROM identity_links il
             JOIN source_items si ON si.source_key = il.source_key
-            WHERE LOWER(RTRIM(si.source_url, '/')) = ?
+            WHERE si.source_url = ?
               AND il.review_state IN ('accepted', 'provisional')
           `).bind(normalizedOutbound).all<{ canonical_id: string; }>();
           for (const { canonical_id } of matchesRes.results || []) {
@@ -682,7 +790,7 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
               SELECT DISTINCT il.canonical_id
               FROM identity_links il
               JOIN source_items si ON si.source_key = il.source_key
-              WHERE LOWER(RTRIM(si.source_url, '/')) = ?
+              WHERE si.platform = 'github' AND LOWER(RTRIM(si.source_url, '/')) = ?
                 AND il.review_state IN ('accepted', 'provisional')
             `).bind(apiGhUrl).all<{ canonical_id: string; }>();
             for (const { canonical_id } of ghMatchesRes.results || []) {
@@ -701,7 +809,7 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
               ))
               OR (sl.claimed_package_id IS NOT NULL AND il.canonical_id = sl.claimed_package_id)
             )
-            WHERE LOWER(RTRIM(sl.target_url, '/')) = ?
+            WHERE sl.target_url = ?
               AND il.review_state IN ('accepted', 'provisional')
           `).bind(normalizedOutbound).all<{ canonical_id: string; }>();
           for (const { canonical_id } of leadMatchesRes.results || []) {
@@ -710,9 +818,9 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
         }
 
         // Outbound match 2: source leads where target_url matches this job URL (e.g. storefront discovered from VPM)
-        const normalizedJobUrl = job.url.toLowerCase().replace(/\/+$/, "");
+        const normalizedJobUrl = job.url;
         const jobLeadMatchesRes = await this.db.prepare(`
-          SELECT DISTINCT il.canonical_id
+          SELECT DISTINCT il.canonical_id, sl.discovered_from_item_key, sl.claimed_package_id, sl.status as lead_status
           FROM source_leads sl
           JOIN identity_links il ON (
             (sl.discovered_from_item_key IS NOT NULL AND (
@@ -722,11 +830,20 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
             ))
             OR (sl.claimed_package_id IS NOT NULL AND il.canonical_id = sl.claimed_package_id)
           )
-          WHERE LOWER(RTRIM(sl.target_url, '/')) = ?
+          WHERE sl.target_url = ?
             AND il.review_state IN ('accepted', 'provisional')
-        `).bind(normalizedJobUrl).all<{ canonical_id: string; }>();
-        for (const { canonical_id } of jobLeadMatchesRes.results || []) {
-          linkedCanonicalIds.add(canonical_id);
+        `).bind(normalizedJobUrl).all<{
+          canonical_id: string;
+          discovered_from_item_key: string | null;
+          claimed_package_id: string | null;
+          lead_status: string;
+        }>();
+        for (const r of jobLeadMatchesRes.results || []) {
+          linkedCanonicalIds.add(r.canonical_id);
+          // High-confidence: approved lead (operator approved or high-confidence auto-pass) -> auto-link as accepted
+          if (r.lead_status === "approved") {
+            highConfidenceCanonicalIds.add(r.canonical_id);
+          }
         }
       }
 
@@ -767,19 +884,32 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
 
       for (const canonicalId of linkedCanonicalIds) {
         if (isStorefront) {
+          const isHighConfidence = highConfidenceCanonicalIds.has(canonicalId);
           const alreadyLinked = (existingLinksRes.results || []).some(r => r.canonical_id === canonicalId) ||
             canonicalId === observation.sourceItemKey;
           if (!alreadyLinked) {
             batchStmts.push(
               this.db.prepare(`INSERT OR IGNORE INTO identity_links
-                (link_id,source_key,canonical_id,evidence_kind,confidence,review_state,created_at)
-                VALUES (?,?,?,'cross_storefront_link',0.8,'provisional',?)`).bind(
-                crypto.randomUUID(), sourceKey, canonicalId, now)
+                (link_id,source_key,canonical_id,evidence_kind,confidence,review_state,created_at,reviewed_at)
+                VALUES (?,?,?,'cross_storefront_link',?,?,?,?)`).bind(
+                crypto.randomUUID(), sourceKey, canonicalId,
+                isHighConfidence ? 0.95 : 0.8,
+                isHighConfidence ? "accepted" : "provisional",
+                now,
+                isHighConfidence ? now : null
+              )
+            );
+          } else if (isHighConfidence) {
+            batchStmts.push(
+              this.db.prepare(`UPDATE identity_links
+                SET review_state='accepted', confidence=0.95, reviewed_at=?
+                WHERE source_key=? AND canonical_id=? AND review_state='provisional'`).bind(
+                now, sourceKey, canonicalId
+              )
             );
           }
 
-          const rawStorefrontUrl = (observation as any).storefrontUrl || job.url;
-          const storefrontUrl = cleanTrackingParams(rawStorefrontUrl);
+          const storefrontUrl = cleanTrackingParams(job.url);
           const frontId = crypto.randomUUID();
           const price = observation.price ?? null;
           const currency = observation.currency ?? null;
@@ -887,7 +1017,8 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
       );
     }
 
-    const discoveryLeads = outcome.kind === "discovery" ? await Promise.all(outcome.leads.map(async lead => {
+    const discoveryLeads = outcome.kind === "discovery" ? await Promise.all(outcome.leads.map(async reportedLead => {
+      const lead = { ...reportedLead, url: new URL(reportedLead.url).href };
       const identity = lead.discoveredFromItemKey ?
         [job.url, lead.discoveredFromItemKey, lead.kind, lead.url, lead.claimedPackageId || null] :
         [job.url, lead.kind, lead.url, lead.claimedPackageId || null];
@@ -938,7 +1069,7 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
     );
 
     if (batchStmts.length > 0) {
-      await this.db.batch(batchStmts);
+      await this.executeBatchChunked(batchStmts);
     }
 
     if (outcome.kind === "discovery") {
@@ -952,8 +1083,8 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
               await this.approveVpmListingLead(leadKey, rule.minDelayMs, `auto-rule:${rule.ruleId}`,
                 "Matched reviewed auto-queue rule", rule.ruleId);
             } catch (cause) {
-              await this.db.prepare(`INSERT INTO operator_rule_actions(rule_id,actor,action,reason,occurred_at)
-                VALUES (?,'coordinator','promotion_failed',?,?)`)
+              await this.db.prepare(`INSERT INTO operator_audit_log(entity_type,entity_id,actor,action,reason,occurred_at)
+                VALUES ('rule',?,'coordinator','promotion_failed',?,?)`)
                 .bind(rule.ruleId, cause instanceof Error ? cause.message.slice(0, 300) : "Unknown promotion failure", now).run();
             }
           }
@@ -964,6 +1095,55 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
     return response;
   }
 
+  async submitBatch(request: BatchResultRequest, principal: NodePrincipal): Promise<BatchResultResponse> {
+    if (request.nodeId !== principal.nodeId) throw new CoordinatorConflict("Node identity mismatch", 403);
+    const receipts: BatchResultReceipt[] = [];
+    for (const item of request.results) {
+      try {
+        const res = await this.submit({
+          schemaVersion: request.schemaVersion,
+          nodeId: request.nodeId,
+          jobId: item.jobId,
+          leaseId: item.leaseId,
+          idempotencyKey: item.idempotencyKey,
+          outcome: item.outcome
+        }, principal);
+        receipts.push({
+          status: "accepted",
+          jobId: item.jobId,
+          duplicate: res.duplicate,
+          sourceVersionCreated: res.sourceVersionCreated
+        });
+      } catch (error) {
+        if (error instanceof CoordinatorConflict) {
+          // A release-evidence conflict is not lease expiry. Do not classify by substrings.
+          const isLeaseExpired = error.status === 403 && error.message === "Node does not hold a live lease for this job";
+          const isTerminal = error.status === 403 || error.status === 404;
+          const code = isLeaseExpired ? "lease_expired" : error.status === 403 ? "forbidden" : error.status === 404 ? "not_found" : "conflict";
+          receipts.push({
+            status: "rejected",
+            jobId: item.jobId,
+            terminal: isTerminal,
+            error: error.message,
+            code
+          });
+        } else {
+          receipts.push({
+            status: "rejected",
+            jobId: item.jobId,
+            terminal: false,
+            error: error instanceof Error ? error.message : "Internal error",
+            code: "internal_error"
+          });
+        }
+      }
+    }
+    return {
+      schemaVersion: PROTOCOL_VERSION,
+      receipts
+    };
+  }
+
   // --- OperatorStore Methods ---
   async revokeNode(nodeId: string, input: RevokeNodeRequest, actor: string): Promise<void> {
     RevokeNodeResponseSchema.shape.nodeId.parse(nodeId);
@@ -971,8 +1151,8 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
     if (!actor.trim() || actor.length > 100) throw new Error("Operator actor required");
     const now = new Date(this.now()).toISOString();
     const result = await this.db.batch([
-      this.db.prepare(`INSERT INTO node_credential_actions(node_id,actor,action,reason,occurred_at)
-        SELECT node_id,?,'revoke',?,? FROM node_credentials WHERE node_id=?`)
+      this.db.prepare(`INSERT INTO operator_audit_log(entity_type,entity_id,actor,action,reason,occurred_at)
+        SELECT 'node',node_id,?,'revoke',?,? FROM node_credentials WHERE node_id=?`)
         .bind(actor, parsed.reason, now, nodeId),
       this.db.prepare("UPDATE node_credentials SET revoked_at=COALESCE(revoked_at,?) WHERE node_id=?").bind(now, nodeId)
     ]);
@@ -992,8 +1172,8 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
       ON CONFLICT(node_id) DO UPDATE SET token_hash=excluded.token_hash,
         capabilities_json=excluded.capabilities_json, revoked_at=NULL
     `).bind(nodeId, hash, JSON.stringify([...new Set(capabilities)]))];
-    if (audit) writes.push(this.db.prepare(`INSERT INTO node_credential_actions(node_id,actor,action,reason,occurred_at)
-      VALUES (?,?,'issue',?,?)`).bind(nodeId, audit.actor, audit.reason.trim(), new Date(this.now()).toISOString()));
+    if (audit) writes.push(this.db.prepare(`INSERT INTO operator_audit_log(entity_type,entity_id,actor,action,reason,occurred_at)
+      VALUES ('node',?,?, 'issue', ?, ?)`).bind(nodeId, audit.actor, audit.reason.trim(), new Date(this.now()).toISOString()));
     await this.db.batch(writes);
     return token;
   }
@@ -1008,7 +1188,7 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
       ? [...new Set(candidateCapabilities)]
       : [...PlatformSchema.options];
     const now = new Date(this.now()).toISOString();
-    const activeCutoff = new Date(this.now() - 15 * 60 * 1000).toISOString();
+    const activeCutoff = new Date(this.now() - 5 * 60 * 1000).toISOString();
 
     const jobsByPlatform = new Map<string, number>();
     const jobRes = await this.db.prepare(`
@@ -1125,7 +1305,10 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
       else if (urlObj.hostname === "gumroad.com") platform = "gumroad";
       else if (urlObj.hostname === "jinxxy.com") platform = "jinxxy";
       else if (urlObj.hostname === "sellfy.com") platform = "sellfy";
-      else platform = "custom_domain";
+      else if (urlObj.hostname === "ko-fi.com") {
+        platform = "custom_domain";
+        delay = Math.max(delay, 2000);
+      } else platform = "custom_domain";
       delay = Math.max(delay, 1500);
     } else if (lead.kind === "publisher_site") {
       platform = "custom_domain";
@@ -1147,8 +1330,8 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
     if (lead.status === "rejected") return;
     await this.db.batch([
       this.db.prepare("UPDATE source_leads SET status='rejected' WHERE lead_key=?").bind(leadKey),
-      this.db.prepare(`INSERT INTO operator_actions(actor,action,lead_key,reason,occurred_at)
-        VALUES (?,'reject_lead',?,?,?)`).bind(actor, leadKey, reason.trim(), new Date(this.now()).toISOString())
+      this.db.prepare(`INSERT INTO operator_audit_log(entity_type,entity_id,actor,action,reason,occurred_at)
+        VALUES ('lead',?,?,'reject_lead',?,?)`).bind(leadKey, actor, reason.trim(), new Date(this.now()).toISOString())
     ]);
   }
 
@@ -1184,8 +1367,8 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
         (rule_id,lead_kind,origin,path_scope,min_delay_ms,expires_at,review_reference,reason,created_at)
         VALUES (?,?,?,?,?,?,?,?,?)`).bind(ruleId, parsed.leadKind, parsed.origin, parsed.pathScope,
         parsed.minDelayMs, parsed.expiresAt, parsed.reviewReference, parsed.reason, now),
-      this.db.prepare(`INSERT INTO operator_rule_actions(rule_id,actor,action,reason,occurred_at)
-        VALUES (?,?,'create',?,?)`).bind(ruleId, actor, parsed.reason, now)
+      this.db.prepare(`INSERT INTO operator_audit_log(entity_type,entity_id,actor,action,reason,occurred_at)
+        VALUES ('rule',?,?, 'create', ?, ?)`).bind(ruleId, actor, parsed.reason, now)
     ]);
     const row = await this.db.prepare("SELECT * FROM lead_autoqueue_rules WHERE rule_id=?")
       .bind(ruleId).first<AutoQueueRuleRow>();
@@ -1214,10 +1397,10 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
         );
       }
       batchStmts.push(
-        this.db.prepare(`INSERT INTO operator_rule_actions(rule_id,actor,action,reason,occurred_at)
-          VALUES (?,?,'disable',?,?)`).bind(ruleId, actor, reason.trim(), now)
+        this.db.prepare(`INSERT INTO operator_audit_log(entity_type,entity_id,actor,action,reason,occurred_at)
+          VALUES ('rule',?,?, 'disable', ?, ?)`).bind(ruleId, actor, reason.trim(), now)
       );
-      await this.db.batch(batchStmts);
+      await this.executeBatchChunked(batchStmts);
       row.disabled_at = now;
     }
     return this.autoQueueRuleFromRow(row);
@@ -1261,9 +1444,8 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
         parsed.pathScope, parsed.exactQuery ?? null, parsed.method, parsed.purpose, parsed.minDelayMs, parsed.expiresAt,
         parsed.reviewReference, parsed.reason, JSON.stringify(parsed.retainClasses),
         JSON.stringify(parsed.publishClasses), now),
-      this.db.prepare(`INSERT INTO source_access_profile_actions
-        (profile_id,actor,action,reason,occurred_at) VALUES (?,?,'create',?,?)`)
-        .bind(profileId, actor, parsed.reason, now)
+      this.db.prepare(`INSERT INTO operator_audit_log(entity_type,entity_id,actor,action,reason,occurred_at)
+        VALUES ('profile',?,?, 'create', ?, ?)`).bind(profileId, actor, parsed.reason, now)
     ]);
     const row = await this.db.prepare("SELECT * FROM source_access_profiles WHERE profile_id=?")
       .bind(profileId).first<SourceAccessProfileRow>();
@@ -1295,29 +1477,56 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
     }
     const dueDelay = await this.approvedDueProfileDelayForOrigin(row.origin, now);
     if (dueDelay === null) {
-      batchStmts.push(this.db.prepare("DELETE FROM origin_robots_refresh_leases WHERE origin=?").bind(row.origin));
+      batchStmts.push(this.db.prepare("UPDATE origin_robots SET refresh_lease_id=NULL, refresh_lease_expires_at=NULL WHERE origin=?").bind(row.origin));
     }
     batchStmts.push(
-      this.db.prepare(`INSERT INTO source_access_profile_actions
-        (profile_id,actor,action,reason,occurred_at) VALUES (?,?,'disable',?,?)`)
-        .bind(profileId, actor, reason.trim(), now)
+      this.db.prepare(`INSERT INTO operator_audit_log(entity_type,entity_id,actor,action,reason,occurred_at)
+        VALUES ('profile',?,?, 'disable', ?, ?)`).bind(profileId, actor, reason.trim(), now)
     );
-    await this.db.batch(batchStmts);
+    await this.executeBatchChunked(batchStmts);
     const updatedRow = await this.db.prepare("SELECT * FROM source_access_profiles WHERE profile_id=?")
       .bind(profileId).first<SourceAccessProfileRow>();
     return this.sourceAccessProfileFromRow(updatedRow!);
   }
 
+  async listAuditLogs(options?: {
+    entityType?: "node" | "lead" | "job" | "rule" | "profile";
+    entityId?: string;
+    limit?: number;
+  }): Promise<OperatorAuditLogRow[]> {
+    const limit = Math.min(Math.max(options?.limit ?? 50, 1), 100);
+    let sql = "SELECT * FROM operator_audit_log";
+    const conditions: string[] = [];
+    const params: unknown[] = [];
+    if (options?.entityType) {
+      conditions.push("entity_type = ?");
+      params.push(options.entityType);
+    }
+    if (options?.entityId) {
+      conditions.push("entity_id = ?");
+      params.push(options.entityId);
+    }
+    if (conditions.length > 0) {
+      sql += ` WHERE ${conditions.join(" AND ")}`;
+    }
+    sql += " ORDER BY occurred_at DESC, action_id DESC LIMIT ?";
+    params.push(limit);
+    const res = await this.db.prepare(sql).bind(...params).all<OperatorAuditLogRow>();
+    return res.results || [];
+  }
+
   async getCatalogEpoch(): Promise<string> {
     const row = await this.db.prepare("SELECT value FROM coordinator_meta WHERE key='catalog_epoch'").first<{ value: string }>();
     if (row) return row.value;
-    const initial = "epoch-d1-default";
+    const initial = "epoch-d1-" + crypto.randomUUID();
     await this.db.prepare("INSERT OR IGNORE INTO coordinator_meta(key, value) VALUES ('catalog_epoch', ?)").bind(initial).run();
-    return initial;
+    const stored = await this.db.prepare("SELECT value FROM coordinator_meta WHERE key='catalog_epoch'").first<{ value: string }>();
+    if (!stored) throw new Error("Catalog epoch initialization failed");
+    return stored.value;
   }
 
   async resetCatalogEpoch(): Promise<string> {
-    const next = "epoch-d1-" + Math.random().toString(36).slice(2, 10);
+    const next = "epoch-d1-" + crypto.randomUUID();
     await this.db.prepare("INSERT INTO coordinator_meta(key, value) VALUES ('catalog_epoch', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(next).run();
     return next;
   }
@@ -1326,71 +1535,164 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
     canonical_id: string; umbrella: string; category: string; lifecycle: string;
     display_name: string; vpm_id: string | null; created_at: string; updated_at: string;
     published_at?: string | null; timestamp_confidence?: string | null;
+    content_rating?: string | null;
   }): Promise<CatalogPackage> {
-    const linkRes = await this.db.prepare(`SELECT link_id,source_key,evidence_kind,confidence,created_at
-      FROM identity_links WHERE canonical_id=? AND review_state='accepted'
-      ORDER BY created_at ASC`).bind(pkg.canonical_id).all<{
-      link_id: string; source_key: string; evidence_kind: string;
-      confidence: number; created_at: string;
+    const [result] = await this.buildCatalogPackagesBatch([pkg]);
+    return result;
+  }
+
+  async buildCatalogPackagesBatch(pkgRows: Array<{
+    canonical_id: string; umbrella: string; category: string; lifecycle: string;
+    display_name: string; vpm_id: string | null; created_at: string; updated_at: string;
+    published_at?: string | null; timestamp_confidence?: string | null;
+    content_rating?: string | null;
+  }>): Promise<CatalogPackage[]> {
+    if (pkgRows.length === 0) return [];
+    const canonicalIds = pkgRows.map((p) => p.canonical_id);
+    const placeholders = canonicalIds.map(() => "?").join(",");
+
+    const linkRes = await this.db.prepare(`SELECT il.link_id, il.canonical_id, il.source_key, il.evidence_kind, il.confidence, il.created_at,
+        sap.publish_classes_json
+      FROM identity_links il
+      LEFT JOIN (
+        SELECT sv.source_key, sap_inner.publish_classes_json
+        FROM source_versions sv
+        JOIN source_access_profiles sap_inner ON sv.source_profile_id = sap_inner.profile_id
+        WHERE sv.version_no = (
+          SELECT MAX(sv2.version_no) FROM source_versions sv2 WHERE sv2.source_key = sv.source_key
+        )
+      ) sap ON il.source_key = sap.source_key
+      WHERE il.canonical_id IN (${placeholders}) AND il.review_state='accepted'
+      ORDER BY il.created_at ASC`).bind(...canonicalIds).all<{
+      link_id: string; canonical_id: string; source_key: string; evidence_kind: string;
+      confidence: number; created_at: string; publish_classes_json: string | null;
     }>();
-    const linkRows = linkRes.results || [];
-    const acceptedLinks: CatalogIdentityLink[] = linkRows.map((l) => ({
-      linkId: l.link_id, sourceKey: l.source_key,
-      evidenceKind: l.evidence_kind as CatalogIdentityLink["evidenceKind"],
-      confidence: l.confidence, createdAt: l.created_at
-    }));
-    const frontRes = await this.db.prepare(`SELECT front_id, canonical_id, source_key, platform, storefront_url, price, currency, availability, observed_at
-      FROM package_fronts WHERE canonical_id=?
-      ORDER BY observed_at ASC, front_id ASC`).bind(pkg.canonical_id).all<{
+    const linksByCanonical = new Map<string, CatalogIdentityLink[]>();
+    const canonicalHasLinks = new Set<string>();
+    const canonicalHasPublishableLink = new Set<string>();
+    for (const l of linkRes.results || []) {
+      canonicalHasLinks.add(l.canonical_id);
+      let canPublish = true;
+      if (l.publish_classes_json !== null && l.publish_classes_json !== undefined) {
+        try {
+          const parsed = JSON.parse(l.publish_classes_json);
+          canPublish = Array.isArray(parsed) && parsed.length > 0 && parsed.includes("normalized_facts");
+        } catch {
+          canPublish = false;
+        }
+      }
+      if (canPublish) {
+        canonicalHasPublishableLink.add(l.canonical_id);
+        const list = linksByCanonical.get(l.canonical_id) || [];
+        list.push({
+          linkId: l.link_id, sourceKey: l.source_key,
+          evidenceKind: l.evidence_kind as CatalogIdentityLink["evidenceKind"],
+          confidence: l.confidence, createdAt: l.created_at
+        });
+        linksByCanonical.set(l.canonical_id, list);
+      }
+    }
+
+    const frontRes = await this.db.prepare(`SELECT pf.front_id, pf.canonical_id, pf.source_key, pf.platform, pf.storefront_url, pf.price, pf.currency, pf.availability, pf.observed_at,
+        sap.publish_classes_json
+      FROM package_fronts pf
+      LEFT JOIN (
+        SELECT sv.source_key, sap_inner.publish_classes_json
+        FROM source_versions sv
+        JOIN source_access_profiles sap_inner ON sv.source_profile_id = sap_inner.profile_id
+        WHERE sv.version_no = (
+          SELECT MAX(sv2.version_no) FROM source_versions sv2 WHERE sv2.source_key = sv.source_key
+        )
+      ) sap ON pf.source_key = sap.source_key
+      WHERE pf.canonical_id IN (${placeholders})
+        AND EXISTS (
+          SELECT 1 FROM identity_links il
+          WHERE il.canonical_id = pf.canonical_id
+            AND il.source_key = pf.source_key
+            AND il.review_state = 'accepted'
+        )
+      ORDER BY pf.observed_at ASC, pf.front_id ASC`).bind(...canonicalIds).all<{
       front_id: string; canonical_id: string; source_key: string; platform: Platform;
       storefront_url: string; price: number | null; currency: string | null;
       availability: "available" | "delisted" | "unknown"; observed_at: string;
+      publish_classes_json: string | null;
     }>();
-    const frontRows = frontRes.results || [];
-    const fronts: PackageFront[] = frontRows.map((f) => ({
-      frontId: f.front_id,
-      canonicalId: f.canonical_id,
-      sourceKey: f.source_key,
-      platform: f.platform,
-      storefrontUrl: f.storefront_url,
-      price: f.price,
-      currency: f.currency,
-      availability: f.availability,
-      observedAt: f.observed_at
-    }));
-    return {
-      canonicalId: pkg.canonical_id,
-      umbrella: pkg.umbrella as CatalogPackage["umbrella"],
-      category: pkg.category,
-      lifecycle: pkg.lifecycle as CatalogPackage["lifecycle"],
-      displayName: pkg.display_name,
-      vpmId: pkg.vpm_id,
-      createdAt: pkg.created_at,
-      updatedAt: pkg.updated_at,
-      publishedAt: pkg.published_at ?? null,
-      timestampConfidence: (pkg.timestamp_confidence as CatalogPackage["timestampConfidence"]) ?? null,
-      acceptedLinks,
-      fronts
-    };
+    const frontsByCanonical = new Map<string, PackageFront[]>();
+    for (const f of frontRes.results || []) {
+      let canPublish = true;
+      if (f.publish_classes_json !== null && f.publish_classes_json !== undefined) {
+        try {
+          const parsed = JSON.parse(f.publish_classes_json);
+          canPublish = Array.isArray(parsed) && parsed.length > 0 && parsed.includes("normalized_facts");
+        } catch {
+          canPublish = false;
+        }
+      }
+      if (canPublish) {
+        const list = frontsByCanonical.get(f.canonical_id) || [];
+        list.push({
+          frontId: f.front_id,
+          canonicalId: f.canonical_id,
+          sourceKey: f.source_key,
+          platform: f.platform,
+          storefrontUrl: f.storefront_url,
+          price: f.price,
+          currency: f.currency,
+          availability: f.availability,
+          observedAt: f.observed_at
+        });
+        frontsByCanonical.set(f.canonical_id, list);
+      }
+    }
+
+    return pkgRows
+      .filter((pkg) => !canonicalHasLinks.has(pkg.canonical_id) || canonicalHasPublishableLink.has(pkg.canonical_id))
+      .map((pkg) => ({
+        canonicalId: pkg.canonical_id,
+        umbrella: pkg.umbrella as CatalogPackage["umbrella"],
+        category: pkg.category,
+        lifecycle: pkg.lifecycle as CatalogPackage["lifecycle"],
+        displayName: pkg.display_name,
+        vpmId: pkg.vpm_id,
+        createdAt: pkg.created_at,
+        updatedAt: pkg.updated_at,
+        publishedAt: pkg.published_at ?? null,
+        timestampConfidence: (pkg.timestamp_confidence as CatalogPackage["timestampConfidence"]) ?? null,
+        contentRating: (pkg.content_rating as CatalogPackage["contentRating"]) || "general",
+        acceptedLinks: linksByCanonical.get(pkg.canonical_id) || [],
+        fronts: frontsByCanonical.get(pkg.canonical_id) || []
+      }));
   }
 
-  async listCanonicalPackagesPage(limit: number, cursor: CatalogCursor | null): Promise<{ packages: CatalogPackage[]; nextCursor: string | null; }> {
+  async listCanonicalPackagesPage(
+    limit: number,
+    cursor: CatalogCursor | null,
+    options: { includeAllRatings?: boolean } = {}
+  ): Promise<{ packages: CatalogPackage[]; nextCursor: string | null; }> {
     if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error("Catalog limit must be 1..100");
-    const before = cursor ? "WHERE (p.created_at,p.canonical_id)<(?,?)" : "";
-    const params = cursor ? [cursor.createdAt, cursor.canonicalId, limit + 1] : [limit + 1];
-    const pkgRes = await this.db.prepare(`SELECT * FROM canonical_packages p ${before}
+    const conditions: string[] = ["p.content_rating != 'prohibited'"];
+    const params: (string | number)[] = [];
+    if (!options.includeAllRatings) {
+      conditions.push("p.content_rating = 'general'");
+    }
+    if (cursor) {
+      conditions.push("(p.created_at, p.canonical_id) < (?, ?)");
+      params.push(cursor.createdAt, cursor.canonicalId);
+    }
+    const where = `WHERE ${conditions.join(" AND ")}`;
+    params.push(limit + 1);
+    const pkgRes = await this.db.prepare(`SELECT p.canonical_id, p.umbrella, p.category, p.lifecycle, p.display_name, p.vpm_id, p.created_at, p.updated_at, p.published_at, p.timestamp_confidence, p.content_rating FROM canonical_packages p ${where}
       ORDER BY p.created_at DESC, p.canonical_id DESC LIMIT ?`)
       .bind(...params).all<{
         canonical_id: string; umbrella: string; category: string; lifecycle: string;
         display_name: string; vpm_id: string | null; created_at: string; updated_at: string;
+        published_at?: string | null; timestamp_confidence?: string | null;
+        content_rating?: string | null;
       }>();
     const pkgRows = pkgRes.results || [];
     const visible = pkgRows.slice(0, limit);
     const last = visible.at(-1);
-    const packages: CatalogPackage[] = [];
-    for (const pkg of visible) {
-      packages.push(await this.buildCatalogPackage(pkg));
-    }
+    const packages = await this.buildCatalogPackagesBatch(visible);
     return {
       packages,
       nextCursor: pkgRows.length > limit && last
@@ -1402,32 +1704,67 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
   async listCatalogDeltasPage(limit: number, cursor: CatalogDeltaCursor | null): Promise<{ epoch: string; deltas: CatalogDelta[]; nextCursor: string | null; }> {
     if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error("Catalog limit must be 1..100");
     const epoch = await this.getCatalogEpoch();
-    const after = cursor ? "WHERE (p.updated_at,p.canonical_id)>(?,?)" : "";
-    const params = cursor ? [cursor.updatedAt, cursor.canonicalId, limit + 1] : [limit + 1];
-    const pkgRes = await this.db.prepare(`SELECT * FROM canonical_packages p ${after}
-      ORDER BY p.updated_at ASC, p.canonical_id ASC LIMIT ?`)
+    const conditions: string[] = [];
+    const params: (string | number)[] = [];
+    if (cursor) {
+      conditions.push("(d.updated_at, d.canonical_id) > (?, ?)");
+      params.push(cursor.updatedAt, cursor.canonicalId);
+    }
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+    params.push(limit + 1);
+    const query = `SELECT d.canonical_id, d.umbrella, d.category, d.lifecycle, d.display_name, d.vpm_id, d.created_at, d.updated_at, d.published_at, d.timestamp_confidence, d.content_rating, d.delta_action FROM (
+      SELECT p.canonical_id, p.umbrella, p.category, p.lifecycle, p.display_name, p.vpm_id, p.created_at, p.updated_at, p.published_at, p.timestamp_confidence, p.content_rating,
+        CASE WHEN p.lifecycle = 'delisted' THEN 'delist' ELSE 'upsert' END AS delta_action
+      FROM canonical_packages p WHERE p.content_rating = 'general'
+      UNION ALL
+      SELECT t.canonical_id, NULL AS umbrella, NULL AS category, 'delisted' AS lifecycle, '' AS display_name, NULL AS vpm_id, '' AS created_at, t.recorded_at AS updated_at, NULL AS published_at, NULL AS timestamp_confidence, 'general' AS content_rating, 'delist' AS delta_action
+      FROM catalog_tombstones t
+      WHERE NOT EXISTS (
+        SELECT 1 FROM canonical_packages p
+        WHERE p.canonical_id = t.canonical_id
+          AND p.updated_at = t.recorded_at
+          AND p.lifecycle = 'delisted'
+          AND p.content_rating = 'general'
+      )
+    ) d ${where}
+    ORDER BY d.updated_at ASC, d.canonical_id ASC LIMIT ?`;
+    const pkgRes = await this.db.prepare(query)
       .bind(...params).all<{
-        canonical_id: string; umbrella: string; category: string; lifecycle: string;
+        canonical_id: string; umbrella: string | null; category: string | null; lifecycle: string;
         display_name: string; vpm_id: string | null; created_at: string; updated_at: string;
+        published_at?: string | null; timestamp_confidence?: string | null;
+        content_rating?: string | null; delta_action: "upsert" | "delist";
       }>();
     const pkgRows = pkgRes.results || [];
     const visible = pkgRows.slice(0, limit);
     const last = visible.at(-1);
+    const nonDelisted = visible.filter((p) => p.delta_action !== "delist");
+    const builtPackages = await this.buildCatalogPackagesBatch(nonDelisted as any);
+    const packageMap = new Map(builtPackages.map((p) => [p.canonicalId, p]));
     const deltas: CatalogDelta[] = [];
     for (const pkg of visible) {
-      if (pkg.lifecycle === "delisted") {
+      if (pkg.delta_action === "delist") {
         deltas.push({
           action: "delist",
           canonicalId: pkg.canonical_id,
           updatedAt: pkg.updated_at
         });
       } else {
-        deltas.push({
-          action: "upsert",
-          canonicalId: pkg.canonical_id,
-          updatedAt: pkg.updated_at,
-          package: await this.buildCatalogPackage(pkg)
-        });
+        const item = packageMap.get(pkg.canonical_id);
+        if (item) {
+          deltas.push({
+            action: "upsert",
+            canonicalId: pkg.canonical_id,
+            updatedAt: pkg.updated_at,
+            package: item
+          });
+        } else {
+          deltas.push({
+            action: "delist",
+            canonicalId: pkg.canonical_id,
+            updatedAt: pkg.updated_at
+          });
+        }
       }
     }
     return {
@@ -1526,8 +1863,8 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
     if (audit?.leadKey !== undefined) {
       const matchingJob = `EXISTS (SELECT 1 FROM crawl_jobs WHERE url=? AND platform=? AND job_purpose=?)`;
       batchStmts.push(
-        this.db.prepare(`INSERT INTO operator_actions(actor,action,lead_key,reason,occurred_at)
-          SELECT ?,'approve_lead',lead_key,?,? FROM source_leads
+        this.db.prepare(`INSERT INTO operator_audit_log(entity_type,entity_id,actor,action,reason,occurred_at)
+          SELECT 'lead',lead_key,?,'approve_lead',?,? FROM source_leads
           WHERE lead_key=? AND status='pending_review' AND ${matchingJob} AND ${authoritySql}`)
           .bind(audit.actor, audit.reason.trim(), now, audit.leadKey, parsed.href, platform, purpose, ...authorityParams),
         this.db.prepare(`UPDATE source_leads SET status='approved'
@@ -1535,11 +1872,11 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
           .bind(audit.leadKey, parsed.href, platform, purpose, ...authorityParams)
       );
     } else if (audit) {
-      batchStmts.push(this.db.prepare(`INSERT INTO job_seed_actions(action_id,job_id,actor,reason,occurred_at)
-        SELECT ?,job_id,?,?,? FROM crawl_jobs WHERE url=? AND platform=? AND job_purpose=? AND ${authoritySql}`)
-        .bind(crypto.randomUUID(), audit.actor, audit.reason.trim(), now, parsed.href, platform, purpose, ...authorityParams));
+      batchStmts.push(this.db.prepare(`INSERT INTO operator_audit_log(entity_type,entity_id,actor,action,reason,occurred_at)
+        SELECT 'job',job_id,?,'seed',?,? FROM crawl_jobs WHERE url=? AND platform=? AND job_purpose=? AND ${authoritySql}`)
+        .bind(audit.actor, audit.reason.trim(), now, parsed.href, platform, purpose, ...authorityParams));
     }
-    await this.db.batch(batchStmts);
+    await this.executeBatchChunked(batchStmts);
 
     const stored = await this.db.prepare(`SELECT job_id,platform,job_purpose,
       EXISTS (SELECT 1 FROM suppressed_urls WHERE url=?) AS suppressed,
@@ -1559,6 +1896,27 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
     return stored.job_id;
   }
 
+  /** Claim one stale/missing snapshot for an already queued, nonblocked origin. */
+  async claimDueRobotsRefresh(): Promise<{ origin: string; leaseId: string } | null> {
+    const nowMs = this.now();
+    const now = new Date(nowMs).toISOString();
+    const delay = approvedRobotsJobDelaySql("o.origin", "?1");
+    const due = await this.db.prepare(`SELECT o.origin FROM origin_leases o
+      LEFT JOIN origin_robots r ON r.origin=o.origin
+      WHERE o.next_allowed_at<=?1 AND (r.origin IS NULL OR r.expires_at IS NULL OR r.expires_at<=?1)
+        AND (r.refresh_lease_expires_at IS NULL OR r.refresh_lease_expires_at<=?1)
+        AND (o.active_job_id IS NULL OR o.lease_expires_at<=?1)
+        AND EXISTS (SELECT 1 FROM crawl_jobs j WHERE j.origin=o.origin
+          AND j.state!='blocked' AND j.next_fetch_at<=?1
+          AND (j.source_rule_id IS NULL OR EXISTS (SELECT 1 FROM lead_autoqueue_rules ar
+            WHERE ar.rule_id=j.source_rule_id AND ar.disabled_at IS NULL AND ar.expires_at>?1)))
+        AND ${delay} IS NOT NULL
+      ORDER BY o.origin ASC LIMIT 1`).bind(now).first<{ origin: string }>();
+    if (!due) return null;
+    const leaseId = await this.reserveRobotsRefresh(due.origin);
+    return leaseId ? { origin: due.origin, leaseId } : null;
+  }
+
   /** Reserve only a due, authorized origin; never grants a node fetch lease. */
   async reserveRobotsRefresh(origin: string): Promise<string | null> {
     OriginRobotsSnapshotSchema.parse({ origin, statusCode: 599, body: "" });
@@ -1568,39 +1926,44 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
     const leaseId = crypto.randomUUID();
     const delay = approvedRobotsJobDelaySql("?1", "?2");
     const results = await this.db.batch([
-      this.db.prepare(`INSERT INTO origin_robots_refresh_leases(origin,lease_id,lease_expires_at)
+      this.db.prepare(`INSERT INTO origin_robots(origin,refresh_lease_id,refresh_lease_expires_at)
         SELECT o.origin,?3,?4 FROM origin_leases o WHERE o.origin=?1 AND o.next_allowed_at<=?2
           AND (o.active_job_id IS NULL OR o.lease_expires_at<=?2)
           AND NOT EXISTS (SELECT 1 FROM origin_robots r WHERE r.origin=o.origin AND r.expires_at>?2)
           AND ${delay} IS NOT NULL
-        ON CONFLICT(origin) DO UPDATE SET lease_id=excluded.lease_id,lease_expires_at=excluded.lease_expires_at
-          WHERE origin_robots_refresh_leases.lease_expires_at<=?2`).bind(origin, now, leaseId, expires),
+        ON CONFLICT(origin) DO UPDATE SET refresh_lease_id=excluded.refresh_lease_id,refresh_lease_expires_at=excluded.refresh_lease_expires_at
+          WHERE origin_robots.refresh_lease_expires_at IS NULL OR origin_robots.refresh_lease_expires_at<=?2`).bind(origin, now, leaseId, expires),
       this.db.prepare(`UPDATE origin_leases SET next_allowed_at=MAX(next_allowed_at,
         strftime('%Y-%m-%dT%H:%M:%fZ',julianday(?2)+MAX(min_delay_ms,${delay})/86400000.0))
-        WHERE origin=?1 AND EXISTS (SELECT 1 FROM origin_robots_refresh_leases l
-          WHERE l.origin=?1 AND l.lease_id=?3 AND l.lease_expires_at>?2)`)
+        WHERE origin=?1 AND EXISTS (SELECT 1 FROM origin_robots r
+          WHERE r.origin=?1 AND r.refresh_lease_id=?3 AND r.refresh_lease_expires_at>?2)`)
         .bind(origin, now, leaseId)
     ]);
-    return (results[0]?.meta as { changes?: number } | undefined)?.changes === 1 ? leaseId : null;
+    return ((results[0]?.meta as { changes?: number } | undefined)?.changes ?? 0) === 1 ? leaseId : null;
   }
 
   async releaseRobotsRefresh(origin: string, leaseId: string): Promise<boolean> {
-    const result = await this.db.prepare("DELETE FROM origin_robots_refresh_leases WHERE origin=? AND lease_id=?")
-      .bind(origin, leaseId).run();
-    return (result.meta as { changes?: number } | undefined)?.changes === 1;
+    const results = await this.db.batch([
+      this.db.prepare("DELETE FROM origin_robots WHERE origin=? AND refresh_lease_id=? AND snapshot_id IS NULL").bind(origin, leaseId),
+      this.db.prepare("UPDATE origin_robots SET refresh_lease_id=NULL, refresh_lease_expires_at=NULL WHERE origin=? AND refresh_lease_id=? AND snapshot_id IS NOT NULL").bind(origin, leaseId)
+    ]);
+    const delChanges = (results[0]?.meta as { changes?: number } | undefined)?.changes ?? 0;
+    const updChanges = (results[1]?.meta as { changes?: number } | undefined)?.changes ?? 0;
+    return (delChanges + updChanges) === 1;
   }
 
   private robotsSnapshotStatements(parsed: OriginRobotsSnapshot, nowMs: number,
-    guard: string | ((offset: number) => string) = "1", guardValues: unknown[] = []): D1PreparedStatement[] {
+    guard: string | ((offset: number) => string) = "1", guardValues: unknown[] = [], clearLease = false): D1PreparedStatement[] {
     const fetchedAt = new Date(nowMs).toISOString();
     const ttlMs = (parsed.statusCode >= 200 && parsed.statusCode < 300) ||
       robotsResultAllowsMissingFile(parsed.statusCode) ? 24 * 60 * 60 * 1000 : 60 * 60 * 1000;
     const expiresAt = new Date(nowMs + ttlMs).toISOString();
+    const leaseUpdate = clearLease ? ",refresh_lease_id=NULL,refresh_lease_expires_at=NULL" : "";
     return [
       this.db.prepare(`INSERT INTO origin_robots(origin,snapshot_id,status_code,body,fetched_at,expires_at)
         SELECT ?,?,?,?,?,? WHERE ${typeof guard === "string" ? guard : guard(6)} ON CONFLICT(origin) DO UPDATE SET
         snapshot_id=excluded.snapshot_id,status_code=excluded.status_code,body=excluded.body,
-        fetched_at=excluded.fetched_at,expires_at=excluded.expires_at`)
+        fetched_at=excluded.fetched_at,expires_at=excluded.expires_at${leaseUpdate}`)
         .bind(parsed.origin, crypto.randomUUID(), parsed.statusCode, parsed.body, fetchedAt, expiresAt, ...guardValues),
       this.db.prepare(`UPDATE crawl_jobs SET next_fetch_at=?,robots_deferred_until=NULL
         WHERE origin=? AND robots_deferred_until IS NOT NULL AND state IN ('pending','done','backoff') AND ${typeof guard === "string" ? guard : guard(2)}`)
@@ -1613,15 +1976,13 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
     const nowMs = this.now();
     const now = new Date(nowMs).toISOString();
     // The guard uses positional placeholders relative to each statement's prefix.
-    const guardFor = (offset: number) => `EXISTS (SELECT 1 FROM origin_robots_refresh_leases l
-      WHERE l.origin=?${offset + 1} AND l.lease_id=?${offset + 2} AND l.lease_expires_at>?${offset + 3})
+    const guardFor = (offset: number) => `EXISTS (SELECT 1 FROM origin_robots r
+      WHERE r.origin=?${offset + 1} AND r.refresh_lease_id=?${offset + 2} AND r.refresh_lease_expires_at>?${offset + 3})
       AND ${approvedRobotsJobDelaySql(`?${offset + 1}`, `?${offset + 3}`)} IS NOT NULL`;
     const results = await this.db.batch([
-      ...this.robotsSnapshotStatements(parsed, nowMs, guardFor, [origin, leaseId, now]),
-      this.db.prepare(`DELETE FROM origin_robots_refresh_leases WHERE origin=?1 AND lease_id=?2
-        AND ${guardFor(0)}`).bind(origin, leaseId, now)
+      ...this.robotsSnapshotStatements(parsed, nowMs, guardFor, [origin, leaseId, now], true)
     ]);
-    const completed = (results[0]?.meta as { changes?: number } | undefined)?.changes === 1;
+    const completed = ((results[0]?.meta as { changes?: number } | undefined)?.changes ?? 0) === 1;
     if (completed) this.robotsMatchers.delete(parsed.origin);
     return completed;
   }
@@ -1670,16 +2031,21 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
     updatedAt?: string;
     publishedAt?: string | null;
     timestampConfidence?: "confirmed" | "inferred" | "observed" | null;
-  }): Promise<CanonicalPackage & { publishedAt?: string | null; timestampConfidence?: string | null }> {
+    contentRating?: ContentRating | null;
+  }): Promise<CanonicalPackage & { publishedAt?: string | null; timestampConfidence?: string | null; contentRating?: ContentRating }> {
     const now = new Date(this.now()).toISOString();
     const createdAt = pkg.createdAt ?? now;
     const updatedAt = pkg.updatedAt ?? now;
     const vpmId = pkg.vpmId ?? null;
     const publishedAt = pkg.publishedAt ?? null;
-    const timestampConfidence = pkg.timestampConfidence ?? (publishedAt ? "confirmed" : "observed");
+    const timestampConfidence = pkg.timestampConfidence ?? (publishedAt ? "confirmed" : null);
+    const contentRating = pkg.contentRating ?? "general";
+    const existing = await this.db.prepare(
+      "SELECT content_rating FROM canonical_packages WHERE canonical_id = ?"
+    ).bind(pkg.canonicalId).first<{ content_rating: string }>();
     await this.db.prepare(`
-      INSERT INTO canonical_packages (canonical_id, umbrella, category, lifecycle, display_name, vpm_id, created_at, updated_at, published_at, timestamp_confidence)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO canonical_packages (canonical_id, umbrella, category, lifecycle, display_name, vpm_id, created_at, updated_at, published_at, timestamp_confidence, content_rating)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(canonical_id) DO UPDATE SET
         umbrella = excluded.umbrella,
         category = excluded.category,
@@ -1688,15 +2054,22 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
         vpm_id = COALESCE(excluded.vpm_id, canonical_packages.vpm_id),
         updated_at = excluded.updated_at,
         published_at = COALESCE(excluded.published_at, canonical_packages.published_at),
-        timestamp_confidence = COALESCE(excluded.timestamp_confidence, canonical_packages.timestamp_confidence)
-    `).bind(pkg.canonicalId, pkg.umbrella, pkg.category, pkg.lifecycle, pkg.displayName, vpmId, createdAt, updatedAt, publishedAt, timestampConfidence).run();
+        timestamp_confidence = COALESCE(excluded.timestamp_confidence, canonical_packages.timestamp_confidence),
+        content_rating = excluded.content_rating
+    `).bind(pkg.canonicalId, pkg.umbrella, pkg.category, pkg.lifecycle, pkg.displayName, vpmId, createdAt, updatedAt, publishedAt, timestampConfidence, contentRating).run();
+    if (existing && existing.content_rating === "general" && contentRating !== "general") {
+      await this.db.prepare(`
+        INSERT OR IGNORE INTO catalog_tombstones (canonical_id, reason, recorded_at)
+        VALUES (?, 'rating_withdrawn', ?)
+      `).bind(pkg.canonicalId, updatedAt).run();
+    }
     const result = await this.getCanonicalPackage(pkg.canonicalId);
     return result!;
   }
 
-  async getCanonicalPackage(canonicalId: string): Promise<(CanonicalPackage & { publishedAt?: string | null; timestampConfidence?: string | null }) | null> {
+  async getCanonicalPackage(canonicalId: string): Promise<(CanonicalPackage & { publishedAt?: string | null; timestampConfidence?: string | null; contentRating?: ContentRating }) | null> {
     const row = await this.db.prepare(
-      "SELECT canonical_id, umbrella, category, lifecycle, display_name, vpm_id, created_at, updated_at, published_at, timestamp_confidence FROM canonical_packages WHERE canonical_id = ?"
+      "SELECT canonical_id, umbrella, category, lifecycle, display_name, vpm_id, created_at, updated_at, published_at, timestamp_confidence, content_rating FROM canonical_packages WHERE canonical_id = ?"
     ).bind(canonicalId).first<{
       canonical_id: string;
       umbrella: CanonicalUmbrella;
@@ -1708,6 +2081,7 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
       updated_at: string;
       published_at: string | null;
       timestamp_confidence: string | null;
+      content_rating: string | null;
     }>();
     if (!row) return null;
     return {
@@ -1720,7 +2094,8 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       publishedAt: row.published_at,
-      timestampConfidence: row.timestamp_confidence
+      timestampConfidence: row.timestamp_confidence as "confirmed" | "inferred" | "observed" | null,
+      contentRating: (row.content_rating as ContentRating) || "general"
     };
   }
 
@@ -1850,8 +2225,20 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
   }
 
   async deleteCanonicalPackage(canonicalId: string): Promise<boolean> {
+    const existing = await this.db.prepare(
+      "SELECT canonical_id, content_rating FROM canonical_packages WHERE canonical_id = ?"
+    ).bind(canonicalId).first<{ canonical_id: string; content_rating: string }>();
+
+    await this.db.prepare("DELETE FROM identity_links WHERE canonical_id = ?").bind(canonicalId).run();
     const res = await this.db.prepare("DELETE FROM canonical_packages WHERE canonical_id = ?").bind(canonicalId).run();
-    return ((res.meta as any)?.changes ?? 0) > 0;
+    const deleted = (((res.meta as any)?.changes ?? 0) > 0);
+    if (deleted && existing && existing.content_rating === "general") {
+      const now = new Date(this.now()).toISOString();
+      await this.db.prepare(
+        "INSERT OR IGNORE INTO catalog_tombstones (canonical_id, reason, recorded_at) VALUES (?, 'deleted', ?)"
+      ).bind(canonicalId, now).run();
+    }
+    return deleted;
   }
 
   async upsertPackageFront(front: {
@@ -1998,9 +2385,34 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
     if (parsed.reportType !== "removal_request") throw new CoordinatorConflict("Removal report required", 403);
     const reportId = crypto.randomUUID();
     const recordedAt = new Date(this.now()).toISOString();
-    const result = await this.db.prepare(`INSERT INTO catalog_reports(report_id,app_id,report_type,payload_json,review_status,recorded_at)
-      SELECT ?,app_id,'removal_request',?,'pending',? FROM registered_apps WHERE app_id=? AND revoked_at IS NULL`)
-      .bind(reportId, JSON.stringify(parsed), recordedAt, appId).run();
+    const targetUrl = parsed.targetUrl ?? null;
+    const canonicalId = parsed.canonicalId ?? null;
+    const reason = parsed.reason ?? "Creator takedown requested by trusted app";
+    const result = await this.db.prepare(`INSERT INTO catalog_tickets(ticket_id,ticket_type,app_id,target_url,canonical_id,requester_type,reason,payload_json,review_status,recorded_at)
+      SELECT ?,'removal_report',app_id,?,?,'app',?,?, 'pending',? FROM registered_apps WHERE app_id=? AND revoked_at IS NULL`)
+      .bind(reportId, targetUrl, canonicalId, reason, JSON.stringify(parsed), recordedAt, appId).run();
+    if ((result.meta as { changes?: number } | undefined)?.changes !== 1) throw new CoordinatorConflict("Invalid application credential", 403);
+    return { schemaVersion: 1, status: "accepted", reportId, recordedAt };
+  }
+
+  async recordIssueReport(appId: string, input: unknown): Promise<{ schemaVersion: 1; status: "accepted"; reportId: string; recordedAt: string }> {
+    const parsed = ReportSubmissionRequestSchema.parse(input);
+    if (parsed.reportType !== "issue_report") throw new CoordinatorConflict("Issue report required", 400);
+    const reportId = crypto.randomUUID();
+    const recordedAt = new Date(this.now()).toISOString();
+    const targetUrl = parsed.targetUrl ? new URL(parsed.targetUrl).href : null;
+    const canonicalId = parsed.canonicalId ?? null;
+
+    let ticketType = "metadata_issue";
+    if (parsed.reportKind === "explicit_false_positive" || parsed.reportKind === "explicit_false_negative" || parsed.reportKind === "misclassified") {
+      ticketType = "rating_dispute";
+    } else if (parsed.reportKind === "inappropriate") {
+      ticketType = "safety_quarantine";
+    }
+
+    const result = await this.db.prepare(`INSERT INTO catalog_tickets(ticket_id,ticket_type,app_id,target_url,canonical_id,reason,payload_json,review_status,recorded_at)
+      SELECT ?,?,app_id,?,?,?,?, 'pending',? FROM registered_apps WHERE app_id=? AND revoked_at IS NULL`)
+      .bind(reportId, ticketType, targetUrl, canonicalId, parsed.reason ?? parsed.reportKind ?? null, JSON.stringify(parsed), recordedAt, appId).run();
     if ((result.meta as { changes?: number } | undefined)?.changes !== 1) throw new CoordinatorConflict("Invalid application credential", 403);
     return { schemaVersion: 1, status: "accepted", reportId, recordedAt };
   }
@@ -2009,9 +2421,9 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
   async listUserApps(userId: string, limit: number, cursor: string | null, appId?: string): Promise<UserAppListResponse> {
     const query = UserAppListQuerySchema.parse({ limit, cursor: cursor ?? undefined });
     const rows = await this.db.prepare(`SELECT a.app_id,a.app_name,a.permissions_json,a.created_at,a.revoked_at
-      FROM registered_apps a JOIN user_app_ownership o ON o.app_id=a.app_id
-      JOIN registered_users u ON u.user_id=o.user_id
-      WHERE o.user_id=? AND u.revoked_at IS NULL AND (? IS NULL OR a.app_id>?) AND (? IS NULL OR a.app_id=?)
+      FROM registered_apps a
+      JOIN registered_users u ON u.user_id=a.owner_user_id
+      WHERE a.owner_user_id=? AND u.revoked_at IS NULL AND (? IS NULL OR a.app_id>?) AND (? IS NULL OR a.app_id=?)
       ORDER BY a.app_id LIMIT ?`).bind(userId, query.cursor ?? null, query.cursor ?? null, appId ?? null, appId ?? null, query.limit + 1)
       .all<{ app_id: string; app_name: string; permissions_json: string; created_at: string; revoked_at: string | null }>();
     const items = rows.results ?? [];
@@ -2030,15 +2442,12 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
     const permissions = ["catalog:read", "catalog:search", "demand:feedback"];
 
     const insert = this.db.prepare(`
-      INSERT INTO registered_apps (app_id, app_name, token_hash, contact_email, permissions_json, created_at, revoked_at)
-      SELECT ?, ?, ?, ?, ?, ?, NULL WHERE ? IS NULL OR EXISTS (
+      INSERT INTO registered_apps (app_id, app_name, token_hash, contact_email, permissions_json, created_at, revoked_at, owner_user_id)
+      SELECT ?, ?, ?, ?, ?, ?, NULL, ? WHERE ? IS NULL OR EXISTS (
         SELECT 1 FROM registered_users WHERE user_id=? AND revoked_at IS NULL)
-    `).bind(appId, parsed.appName, tokenHash, parsed.contactEmail || null, JSON.stringify(permissions), now, ownerUserId ?? null, ownerUserId ?? null);
-    const writes = [insert];
-    if (ownerUserId !== undefined) writes.push(this.db.prepare(`INSERT INTO user_app_ownership(app_id,user_id)
-      SELECT app_id,? FROM registered_apps WHERE app_id=?`).bind(ownerUserId, appId));
-    const result = await this.db.batch(writes);
-    if ((result[0]?.meta as { changes?: number } | undefined)?.changes !== 1) throw new CoordinatorConflict("Invalid user owner", 403);
+    `).bind(appId, parsed.appName, tokenHash, parsed.contactEmail || null, JSON.stringify(permissions), now, ownerUserId ?? null, ownerUserId ?? null, ownerUserId ?? null);
+    const result = await insert.run();
+    if ((result.meta as { changes?: number } | undefined)?.changes !== 1) throw new CoordinatorConflict("Invalid user owner", 403);
 
     return {
       schemaVersion: 1,
@@ -2050,19 +2459,27 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
   }
 
   /** Authenticates a downstream application bearer token. */
-  async authenticateApp(appToken: string): Promise<{ appId: string; appName: string; permissions: string[] } | null> {
+  async authenticateApp(appToken: string): Promise<{ appId: string; appName: string; permissions: string[]; candidateStatus?: "none" | "review_pending" | "reviewed" | "trusted"; isTrusted?: boolean; isAgeVerified?: boolean } | null> {
     if (!/^vrcp_app_[a-f0-9]{64}$/.test(appToken)) return null;
     const tokenHash = await sha256Hex(appToken);
     const row = await this.db.prepare(`
-      SELECT app_id, app_name, permissions_json, revoked_at
-      FROM registered_apps
-      WHERE token_hash = ?
-    `).bind(tokenHash).first<{ app_id: string; app_name: string; permissions_json: string; revoked_at: string | null }>();
+      SELECT a.app_id, a.app_name, a.permissions_json, a.revoked_at, a.candidate_status,
+             COALESCE(MAX(u.age_verified), 0) AS age_verified
+      FROM registered_apps a
+      LEFT JOIN registered_users u ON u.user_id = a.owner_user_id AND u.revoked_at IS NULL
+      WHERE a.token_hash = ?
+      GROUP BY a.app_id
+    `).bind(tokenHash).first<{ app_id: string; app_name: string; permissions_json: string; revoked_at: string | null; candidate_status: string; age_verified: number }>();
     if (!row || row.revoked_at) return null;
+    const permissions = JSON.parse(row.permissions_json) as string[];
+    const candidateStatus = (row.candidate_status || "none") as "none" | "review_pending" | "reviewed" | "trusted";
     return {
       appId: row.app_id,
       appName: row.app_name,
-      permissions: JSON.parse(row.permissions_json) as string[]
+      permissions,
+      candidateStatus,
+      isTrusted: candidateStatus === "trusted" || permissions.includes("takedowns:submit") || permissions.includes("claims:delegate"),
+      isAgeVerified: Boolean(row.age_verified)
     };
   }
 
@@ -2099,11 +2516,29 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
   }
 
   /** Configurable search across canonical packages for registered downstream applications. */
-  async searchCatalogPackages(input: CatalogSearchRequest): Promise<CatalogSearchResponse> {
+  async searchCatalogPackages(input: CatalogSearchRequest, options: { isAgeVerified?: boolean } = {}): Promise<CatalogSearchResponse> {
     const parsed = CatalogSearchRequestSchema.parse(input);
     const limit = Math.min(Math.max(parsed.limit ?? 50, 1), 100);
     const conditions = ["p.lifecycle != 'delisted'"];
     const params: (string | number)[] = [];
+
+    if (!options.isAgeVerified) {
+      conditions.push("p.content_rating = 'general'");
+    } else {
+      conditions.push("p.content_rating != 'prohibited'");
+      if (parsed.rating) {
+        if (parsed.rating === "prohibited") {
+          return {
+            schemaVersion: 1,
+            items: [],
+            nextCursor: null,
+            totalEstimated: 0
+          };
+        }
+        conditions.push("p.content_rating = ?");
+        params.push(parsed.rating);
+      }
+    }
 
     if (parsed.umbrella) {
       conditions.push("p.umbrella = ?");
@@ -2169,7 +2604,7 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
 
     const queryParams = [...params, limit + 1];
     const res = await this.db.prepare(`
-      SELECT p.canonical_id, p.umbrella, p.category, p.lifecycle, p.display_name, p.vpm_id, p.created_at, p.updated_at, p.published_at, p.timestamp_confidence
+      SELECT p.canonical_id, p.umbrella, p.category, p.lifecycle, p.display_name, p.vpm_id, p.created_at, p.updated_at, p.published_at, p.timestamp_confidence, p.content_rating
       FROM canonical_packages p
       WHERE ${whereClause}
       ${orderClause}
@@ -2178,6 +2613,7 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
       canonical_id: string; umbrella: string; category: string; lifecycle: string;
       display_name: string; vpm_id: string | null; created_at: string; updated_at: string;
       published_at: string | null; timestamp_confidence: string | null;
+      content_rating: string | null;
     }>();
 
     const rows = res.results || [];
@@ -2185,10 +2621,7 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
     const visible = hasMore ? rows.slice(0, limit) : rows;
     const last = visible.at(-1);
 
-    const items: CatalogPackage[] = [];
-    for (const row of visible) {
-      items.push(await this.buildCatalogPackage(row));
-    }
+    const items: CatalogPackage[] = await this.buildCatalogPackagesBatch(visible);
 
     const nextCursor = hasMore && last
       ? encodeCatalogCursor({
@@ -2206,8 +2639,8 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
   }
 
   /** Issues a `vrcp_usr_` token for a new or returning user. */
-  async issueUserToken(userName: string, contactEmail?: string): Promise<{
-    userId: string; userName: string; token: string;
+  async issueUserToken(userName: string, contactEmail?: string, ageVerified: boolean = false, isModerator: boolean = false): Promise<{
+    userId: string; userName: string; token: string; ageVerified: boolean; isModerator: boolean;
   }> {
     if (!userName.trim()) throw new Error("User name required");
     const userId = crypto.randomUUID();
@@ -2216,21 +2649,21 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
     const tokenHash = await sha256Hex(token);
     const now = new Date(this.now()).toISOString();
     await this.db.prepare(`
-      INSERT INTO registered_users (user_id, user_name, token_hash, contact_email, created_at, revoked_at)
-      VALUES (?, ?, ?, ?, ?, NULL)
-    `).bind(userId, userName.trim(), tokenHash, contactEmail || null, now).run();
-    return { userId, userName: userName.trim(), token };
+      INSERT INTO registered_users (user_id, user_name, token_hash, contact_email, created_at, revoked_at, age_verified, is_moderator)
+      VALUES (?, ?, ?, ?, ?, NULL, ?, ?)
+    `).bind(userId, userName.trim(), tokenHash, contactEmail || null, now, ageVerified ? 1 : 0, isModerator ? 1 : 0).run();
+    return { userId, userName: userName.trim(), token, ageVerified, isModerator };
   }
 
   /** Authenticates a user bearer token. */
-  async authenticateUser(token: string): Promise<{ userId: string; userName: string } | null> {
+  async authenticateUser(token: string): Promise<{ userId: string; userName: string; ageVerified?: boolean; isModerator?: boolean } | null> {
     if (!/^vrcp_usr_[a-f0-9]{64}$/.test(token)) return null;
     const tokenHash = await sha256Hex(token);
     const row = await this.db.prepare(`
-      SELECT user_id, user_name, revoked_at FROM registered_users WHERE token_hash = ?
-    `).bind(tokenHash).first<{ user_id: string; user_name: string; revoked_at: string | null }>();
+      SELECT user_id, user_name, revoked_at, age_verified, is_moderator FROM registered_users WHERE token_hash = ?
+    `).bind(tokenHash).first<{ user_id: string; user_name: string; revoked_at: string | null; age_verified: number; is_moderator: number }>();
     if (!row || row.revoked_at) return null;
-    return { userId: row.user_id, userName: row.user_name };
+    return { userId: row.user_id, userName: row.user_name, ageVerified: Boolean(row.age_verified), isModerator: Boolean(row.is_moderator) };
   }
 
   /**
@@ -2257,10 +2690,10 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
     const reviewStatus = input.requesterType === "unauthenticated_creator" ? "pending" : "accepted";
 
     await this.db.prepare(`
-      INSERT INTO creator_opt_outs (
-        takedown_id, target_url, canonical_id, requester_type, requester_id,
+      INSERT INTO catalog_tickets (
+        ticket_id, ticket_type, target_url, canonical_id, requester_type, requester_id,
         reason, proof_kind, proof_value, contact_email, recorded_at, review_status, review_notes
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+      ) VALUES (?, 'opt_out', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
     `).bind(
       takedownId,
       input.targetUrl || null,
@@ -2302,6 +2735,9 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
         UPDATE canonical_packages SET lifecycle = 'delisted', updated_at = ?
         WHERE canonical_id = ? AND lifecycle != 'delisted'
       `).bind(recordedAt, input.canonicalId).run();
+      await this.db.prepare(
+        "INSERT OR IGNORE INTO catalog_tombstones (canonical_id, reason, recorded_at) VALUES (?, 'delisted', ?)"
+      ).bind(input.canonicalId, recordedAt).run();
     }
     if (input.targetUrl) {
       await this.db.prepare(`
@@ -2310,6 +2746,14 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
           SELECT DISTINCT pf.canonical_id FROM package_fronts pf WHERE pf.storefront_url = ?
         ) AND lifecycle != 'delisted'
       `).bind(recordedAt, input.targetUrl).run();
+      const matchingFronts = await this.db.prepare(
+        "SELECT DISTINCT pf.canonical_id FROM package_fronts pf WHERE pf.storefront_url = ?"
+      ).bind(input.targetUrl).all<{ canonical_id: string }>();
+      for (const row of matchingFronts.results || []) {
+        await this.db.prepare(
+          "INSERT OR IGNORE INTO catalog_tombstones (canonical_id, reason, recorded_at) VALUES (?, 'delisted', ?)"
+        ).bind(row.canonical_id, recordedAt).run();
+      }
     }
 
     return {
@@ -2337,18 +2781,18 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
       params.push(requesterType);
     }
     if (cursor) {
-      conditions.push("(recorded_at, takedown_id) < (?, ?)");
+      conditions.push("(recorded_at, ticket_id) < (?, ?)");
       params.push(cursor.recordedAt, cursor.takedownId);
     }
-    const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+    const where = conditions.length > 0 ? `AND ${conditions.join(" AND ")}` : "";
     params.push(limit + 1);
 
     const res = await this.db.prepare(`
-      SELECT takedown_id, target_url, canonical_id, requester_type, requester_id,
+      SELECT ticket_id AS takedown_id, target_url, canonical_id, requester_type, requester_id,
              reason, proof_kind, proof_value, contact_email, review_status, review_notes, recorded_at
-      FROM creator_opt_outs
-      ${where}
-      ORDER BY recorded_at DESC, takedown_id DESC
+      FROM catalog_tickets
+      WHERE ticket_type = 'opt_out' ${where}
+      ORDER BY recorded_at DESC, ticket_id DESC
       LIMIT ?
     `).bind(...params).all<{
       takedown_id: string;
@@ -2400,9 +2844,9 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
     notes?: string
   ): Promise<{ takedownId: string; status: "accepted" | "rejected"; updatedAt: string; }> {
     const row = await this.db.prepare(`
-      SELECT takedown_id, target_url, canonical_id, requester_type, review_status
-      FROM creator_opt_outs
-      WHERE takedown_id = ?
+      SELECT ticket_id AS takedown_id, target_url, canonical_id, requester_type, review_status
+      FROM catalog_tickets
+      WHERE ticket_id = ? AND ticket_type = 'opt_out'
     `).bind(takedownId).first<{
       takedown_id: string;
       target_url: string | null;
@@ -2418,9 +2862,9 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
     const updatedAt = new Date(this.now()).toISOString();
     const batchStatements: D1PreparedStatement[] = [
       this.db.prepare(`
-        UPDATE creator_opt_outs
+        UPDATE catalog_tickets
         SET review_status = ?, review_notes = ?
-        WHERE takedown_id = ?
+        WHERE ticket_id = ? AND ticket_type = 'opt_out'
       `).bind(verdict, notes || null, takedownId)
     ];
 
@@ -2455,11 +2899,520 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
       }
     }
 
-    await this.db.batch(batchStatements);
+    await this.executeBatchChunked(batchStatements);
 
     return {
       takedownId,
       status: verdict,
+      updatedAt
+    };
+  }
+
+  /**
+   * Ingests delegated creator ownership claims from downstream applications.
+   * Performs signature/payload verification, expiration checks, and atomic replay protection on (app_id, nonce).
+   */
+  async recordCreatorClaimIntake(appId: string, input: CreatorClaimIntakeRequest): Promise<CreatorClaimIntakeResponse> {
+    const parsed = CreatorClaimIntakeRequestSchema.parse(input);
+    if (parsed.attestation.appId !== appId) {
+      throw new CoordinatorConflict("Attestation appId does not match caller", 403);
+    }
+
+    const nowSec = Math.floor(this.now() / 1000);
+    if (parsed.attestation.expiresAt < nowSec) {
+      throw new CoordinatorConflict("Attestation has expired", 400);
+    }
+
+    const recordedAt = new Date(this.now()).toISOString();
+    const payloadJson = JSON.stringify(parsed);
+
+    // Atomic replay protection on (app_id, nonce)
+    const existing = await this.db.prepare(`
+      SELECT ticket_id AS claim_id, payload_json, signature, review_status, recorded_at
+      FROM catalog_tickets
+      WHERE ticket_type = 'delegated_claim' AND app_id = ? AND nonce = ?
+    `).bind(appId, parsed.attestation.nonce).first<{
+      claim_id: string;
+      payload_json: string;
+      signature: string;
+      review_status: "pending" | "accepted" | "rejected";
+      recorded_at: string;
+    }>();
+
+    if (existing) {
+      if (existing.signature !== parsed.signature || existing.payload_json !== payloadJson) {
+        throw new CoordinatorConflict("Nonce already used with different payload or signature", 409);
+      }
+      return {
+        schemaVersion: 1,
+        status: "accepted",
+        claimId: existing.claim_id,
+        reviewStatus: "pending",
+        recordedAt: existing.recorded_at
+      };
+    }
+
+    const claimId = crypto.randomUUID();
+    const result = await this.db.prepare(`
+      INSERT INTO catalog_tickets (
+        ticket_id, ticket_type, app_id, target_url, creator_id, challenge_token,
+        expires_at, nonce, signature, payload_json, reason, contact_email,
+        review_status, review_notes, recorded_at
+      )
+      SELECT ?, 'delegated_claim', app_id, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, ?
+      FROM registered_apps
+      WHERE app_id = ? AND revoked_at IS NULL
+    `).bind(
+      claimId,
+      parsed.attestation.frontUrl,
+      parsed.attestation.creatorId,
+      parsed.attestation.challengeToken,
+      parsed.attestation.expiresAt,
+      parsed.attestation.nonce,
+      parsed.signature,
+      payloadJson,
+      parsed.reason || null,
+      parsed.contactEmail || null,
+      recordedAt,
+      appId
+    ).run();
+
+    if ((result.meta as { changes?: number } | undefined)?.changes !== 1) {
+      throw new CoordinatorConflict("Invalid application credential", 403);
+    }
+
+    return {
+      schemaVersion: 1,
+      status: "accepted",
+      claimId,
+      reviewStatus: "pending",
+      recordedAt
+    };
+  }
+
+  async listDelegatedClaimsPage(
+    reviewStatus?: string,
+    limit = 100,
+    cursor: DelegatedClaimCursor | null = null
+  ): Promise<{ records: DelegatedClaimRecord[]; nextCursor: string | null }> {
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error("Claim limit must be 1..100");
+    const conditions: string[] = [];
+    const params: (string | number)[] = [];
+
+    if (reviewStatus) {
+      conditions.push("review_status = ?");
+      params.push(reviewStatus);
+    }
+    if (cursor) {
+      conditions.push("(recorded_at, ticket_id) < (?, ?)");
+      params.push(cursor.recordedAt, cursor.claimId);
+    }
+    const where = conditions.length > 0 ? `AND ${conditions.join(" AND ")}` : "";
+    params.push(limit + 1);
+
+    const res = await this.db.prepare(`
+      SELECT ticket_id AS claim_id, app_id, 'creator_ownership_claim' AS action, target_url AS front_url, creator_id, challenge_token,
+             expires_at, nonce, signature, reason, contact_email, review_status, review_notes, recorded_at
+      FROM catalog_tickets
+      WHERE ticket_type = 'delegated_claim' ${where}
+      ORDER BY recorded_at DESC, ticket_id DESC
+      LIMIT ?
+    `).bind(...params).all<{
+      claim_id: string;
+      app_id: string;
+      action: "creator_ownership_claim";
+      front_url: string;
+      creator_id: string;
+      challenge_token: string;
+      expires_at: number;
+      nonce: string;
+      signature: string;
+      reason: string | null;
+      contact_email: string | null;
+      review_status: "pending" | "accepted" | "rejected";
+      review_notes: string | null;
+      recorded_at: string;
+    }>();
+
+    const rows = res.results || [];
+    const visible = rows.slice(0, limit);
+    const last = visible.at(-1);
+
+    const records: DelegatedClaimRecord[] = visible.map((row) => ({
+      claimId: row.claim_id,
+      appId: row.app_id,
+      action: row.action,
+      frontUrl: row.front_url,
+      creatorId: row.creator_id,
+      challengeToken: row.challenge_token,
+      expiresAt: row.expires_at,
+      nonce: row.nonce,
+      signature: row.signature,
+      reason: row.reason,
+      contactEmail: row.contact_email,
+      reviewStatus: row.review_status,
+      reviewNotes: row.review_notes,
+      recordedAt: row.recorded_at
+    }));
+
+    return {
+      records,
+      nextCursor: rows.length > limit && last ? encodeDelegatedClaimCursor({
+        recordedAt: last.recorded_at,
+        claimId: last.claim_id
+      }) : null
+    };
+  }
+
+  async verifyDelegatedClaim(
+    claimId: string,
+    verdict: "accepted" | "rejected",
+    actor: string,
+    notes?: string
+  ): Promise<{ claimId: string; status: "accepted" | "rejected"; updatedAt: string }> {
+    const row = await this.db.prepare(`
+      SELECT ticket_id AS claim_id, review_status
+      FROM catalog_tickets
+      WHERE ticket_id = ? AND ticket_type = 'delegated_claim'
+    `).bind(claimId).first<{
+      claim_id: string;
+      review_status: string;
+    }>();
+
+    if (!row) {
+      throw new Error("Claim not found");
+    }
+
+    const updatedAt = new Date(this.now()).toISOString();
+    await this.db.prepare(`
+      UPDATE catalog_tickets
+      SET review_status = ?, review_notes = ?
+      WHERE ticket_id = ? AND ticket_type = 'delegated_claim'
+    `).bind(verdict, notes || null, claimId).run();
+
+    return {
+      claimId,
+      status: verdict,
+      updatedAt
+    };
+  }
+
+  async recordAppActivity(appId: string): Promise<void> {
+    const row = await this.db.prepare(`
+      SELECT app_id, request_count, candidate_status, candidate_flags_json
+      FROM registered_apps
+      WHERE app_id = ?
+    `).bind(appId).first<{
+      app_id: string;
+      request_count: number;
+      candidate_status: string;
+      candidate_flags_json: string;
+    }>();
+    if (!row) return;
+
+    const newCount = (row.request_count || 0) + 1;
+    const now = new Date(this.now()).toISOString();
+    let status = row.candidate_status || "none";
+    let flags: string[] = [];
+    try {
+      flags = JSON.parse(row.candidate_flags_json || "[]");
+    } catch {}
+
+    if (newCount >= 50) {
+      if (status === "none") {
+        status = "review_pending";
+      }
+      if (!flags.includes("intensive_usage")) {
+        flags.push("intensive_usage");
+      }
+      if (!flags.includes("high_frequency_api")) {
+        flags.push("high_frequency_api");
+      }
+    }
+
+    await this.db.prepare(`
+      UPDATE registered_apps
+      SET request_count = ?, last_active_at = ?, candidate_status = ?, candidate_flags_json = ?
+      WHERE app_id = ?
+    `).bind(newCount, now, status, JSON.stringify(flags), appId).run();
+  }
+
+  async listOperatorAppsPage(
+    limit = 100,
+    cursor: OperatorAppCursor | null = null,
+    candidateStatus?: string
+  ): Promise<{ apps: OperatorAppRecord[]; nextCursor: string | null }> {
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error("App limit must be 1..100");
+    const conditions: string[] = [];
+    const params: (string | number)[] = [];
+
+    if (candidateStatus) {
+      conditions.push("candidate_status = ?");
+      params.push(candidateStatus);
+    }
+
+    if (cursor) {
+      conditions.push("(created_at, app_id) < (?, ?)");
+      params.push(cursor.createdAt, cursor.appId);
+    }
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+    params.push(limit + 1);
+
+    const res = await this.db.prepare(`
+      SELECT app_id, app_name, contact_email, permissions_json, created_at, revoked_at,
+             request_count, last_active_at, candidate_status, candidate_flags_json
+      FROM registered_apps
+      ${where}
+      ORDER BY created_at DESC, app_id DESC
+      LIMIT ?
+    `).bind(...params).all<{
+      app_id: string;
+      app_name: string;
+      contact_email: string | null;
+      permissions_json: string;
+      created_at: string;
+      revoked_at: string | null;
+      request_count: number;
+      last_active_at: string | null;
+      candidate_status: string;
+      candidate_flags_json: string;
+    }>();
+
+    const rows = res.results || [];
+    const visible = rows.slice(0, limit);
+    const last = visible.at(-1);
+
+    const apps: OperatorAppRecord[] = visible.map((row) => {
+      const perms: string[] = JSON.parse(row.permissions_json);
+      let flags: string[] = [];
+      try { flags = JSON.parse(row.candidate_flags_json); } catch {}
+      return {
+        appId: row.app_id,
+        appName: row.app_name,
+        contactEmail: row.contact_email ?? null,
+        permissions: perms,
+        delegationAllowed: perms.includes("claims:delegate"),
+        requestCount: row.request_count ?? 0,
+        lastActiveAt: row.last_active_at ?? null,
+        candidateStatus: (row.candidate_status as any) || "none",
+        candidateFlags: flags,
+        createdAt: row.created_at,
+        revokedAt: row.revoked_at ?? null
+      };
+    });
+
+    return {
+      apps,
+      nextCursor: rows.length > limit && last ? encodeOperatorAppCursor({
+        createdAt: last.created_at,
+        appId: last.app_id
+      }) : null
+    };
+  }
+
+  async reviewAppCandidate(
+    appId: string,
+    input: { candidateStatus: "none" | "reviewed" | "trusted"; grantDelegation?: boolean; notes?: string },
+    actor: string
+  ): Promise<{
+    appId: string;
+    candidateStatus: "none" | "review_pending" | "reviewed" | "trusted";
+    candidateFlags: string[];
+    delegationAllowed: boolean;
+    permissions: string[];
+    reviewedAt: string;
+  }> {
+    const row = await this.db.prepare(`
+      SELECT app_id, permissions_json, revoked_at, candidate_flags_json
+      FROM registered_apps
+      WHERE app_id = ?
+    `).bind(appId).first<{
+      app_id: string;
+      permissions_json: string;
+      revoked_at: string | null;
+      candidate_flags_json: string;
+    }>();
+
+    if (!row) {
+      throw new Error("App not found");
+    }
+    if (row.revoked_at) {
+      throw new Error("App is revoked");
+    }
+
+    const currentPerms = new Set<string>(JSON.parse(row.permissions_json));
+    if (input.grantDelegation === true || input.candidateStatus === "trusted") {
+      currentPerms.add("claims:delegate");
+      currentPerms.add("takedowns:submit");
+    } else if (input.grantDelegation === false) {
+      currentPerms.delete("claims:delegate");
+      currentPerms.delete("takedowns:submit");
+    }
+    const newPerms = Array.from(currentPerms);
+
+    let flags: string[] = [];
+    try { flags = JSON.parse(row.candidate_flags_json); } catch {}
+    const reviewedAt = new Date(this.now()).toISOString();
+
+    await this.db.prepare(`
+      UPDATE registered_apps
+      SET candidate_status = ?, permissions_json = ?
+      WHERE app_id = ?
+    `).bind(input.candidateStatus, JSON.stringify(newPerms), appId).run();
+
+    return {
+      appId,
+      candidateStatus: input.candidateStatus,
+      candidateFlags: flags,
+      delegationAllowed: newPerms.includes("claims:delegate"),
+      permissions: newPerms,
+      reviewedAt
+    };
+  }
+
+  async setAppDelegation(
+    appId: string,
+    allowed: boolean,
+    actor: string,
+    reason?: string
+  ): Promise<{ appId: string; delegationAllowed: boolean; permissions: string[]; updatedAt: string }> {
+    const row = await this.db.prepare(`
+      SELECT app_id, permissions_json, revoked_at
+      FROM registered_apps
+      WHERE app_id = ?
+    `).bind(appId).first<{
+      app_id: string;
+      permissions_json: string;
+      revoked_at: string | null;
+    }>();
+
+    if (!row) {
+      throw new Error("App not found");
+    }
+    if (row.revoked_at) {
+      throw new Error("App is revoked");
+    }
+
+    const currentPerms = new Set<string>(JSON.parse(row.permissions_json));
+    if (allowed) {
+      currentPerms.add("claims:delegate");
+    } else {
+      currentPerms.delete("claims:delegate");
+    }
+    const newPerms = Array.from(currentPerms);
+    const updatedAt = new Date(this.now()).toISOString();
+
+    await this.db.prepare(`
+      UPDATE registered_apps
+      SET permissions_json = ?
+      WHERE app_id = ?
+    `).bind(JSON.stringify(newPerms), appId).run();
+
+    return {
+      appId,
+      delegationAllowed: allowed,
+      permissions: newPerms,
+      updatedAt
+    };
+  }
+
+  async listModeratorRatingsPage(
+    rating?: ContentRating,
+    limit = 100,
+    cursor: { updatedAt: string; canonicalId: string } | null = null
+  ): Promise<{ ratings: ModeratorRatingRecord[]; nextCursor: string | null }> {
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error("Rating limit must be 1..100");
+    const conditions: string[] = [];
+    const params: (string | number)[] = [];
+
+    if (rating) {
+      conditions.push("c.content_rating = ?");
+      params.push(rating);
+    }
+    if (cursor) {
+      conditions.push("(c.updated_at, c.canonical_id) < (?, ?)");
+      params.push(cursor.updatedAt, cursor.canonicalId);
+    }
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+    params.push(limit + 1);
+
+    const res = await this.db.prepare(`
+      SELECT c.canonical_id, c.display_name, c.content_rating, c.umbrella, c.category, c.updated_at,
+             (SELECT COUNT(*) FROM catalog_tickets r WHERE r.ticket_type IN ('removal_report', 'rating_dispute') AND (r.canonical_id = c.canonical_id OR json_extract(r.payload_json, '$.canonicalId') = c.canonical_id)) AS report_count
+      FROM canonical_packages c
+      ${where}
+      ORDER BY c.updated_at DESC, c.canonical_id DESC
+      LIMIT ?
+    `).bind(...params).all<{
+      canonical_id: string;
+      display_name: string;
+      content_rating: string;
+      umbrella: "assets" | "tools" | "avatars";
+      category: string;
+      updated_at: string;
+      report_count: number;
+    }>();
+
+    const rows = res.results || [];
+    const visible = rows.slice(0, limit);
+    const last = visible.at(-1);
+
+    const ratings: ModeratorRatingRecord[] = visible.map((row) => ({
+      canonicalId: row.canonical_id,
+      displayName: row.display_name,
+      currentRating: row.content_rating as ContentRating,
+      umbrella: row.umbrella,
+      category: row.category,
+      reportCount: row.report_count ?? 0,
+      updatedAt: row.updated_at
+    }));
+
+    return {
+      ratings,
+      nextCursor: rows.length > limit && last ? encodeModeratorRatingCursor({ updatedAt: last.updated_at, canonicalId: last.canonical_id }) : null
+    };
+  }
+
+  async adjustPackageRating(
+    canonicalId: string,
+    newRating: ContentRating,
+    adjustedBy: string,
+    reason: string
+  ): Promise<{ canonicalId: string; previousRating: ContentRating; newRating: ContentRating; adjustedBy: string; updatedAt: string } | null> {
+    const row = await this.db.prepare(`
+      SELECT canonical_id, content_rating
+      FROM canonical_packages
+      WHERE canonical_id = ?
+    `).bind(canonicalId).first<{
+      canonical_id: string;
+      content_rating: string;
+    }>();
+
+    if (!row) {
+      return null;
+    }
+
+    const previousRating = row.content_rating as ContentRating;
+    const updatedAt = new Date(this.now()).toISOString();
+
+    await this.db.prepare(`
+      UPDATE canonical_packages
+      SET content_rating = ?, updated_at = ?
+      WHERE canonical_id = ?
+    `).bind(newRating, updatedAt, canonicalId).run();
+
+    if (previousRating === "general" && newRating !== "general") {
+      await this.db.prepare(`
+        INSERT OR IGNORE INTO catalog_tombstones (canonical_id, reason, recorded_at)
+        VALUES (?, 'rating_withdrawn', ?)
+      `).bind(canonicalId, updatedAt).run();
+    }
+
+    return {
+      canonicalId,
+      previousRating,
+      newRating,
+      adjustedBy,
       updatedAt
     };
   }

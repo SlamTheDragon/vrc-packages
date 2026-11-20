@@ -40,6 +40,23 @@ describe("node lease runner", () => {
     } finally { globalThis.fetch = originalFetch; }
   });
 
+  test("the fixed lease deadline aborts hung source work and an already expired lease never fetches", async () => {
+    let submissions = 0;
+    let aborted = false;
+    const client = { heartbeat: async () => {}, submit: async () => { submissions++; throw new Error("unexpected"); } };
+    const soon = CrawlJobSchema.parse({ ...fixtureJob, leaseExpiresAt: new Date(Date.now() + 80).toISOString() });
+    await expect(runLeasedJob(soon, client, (_input, init) => new Promise<Response>((_resolve, reject) =>
+      init?.signal?.addEventListener("abort", () => { aborted = true; reject(new Error("aborted")); }, { once: true })),
+      1_000)).rejects.toThrow("expired during execution");
+    expect(aborted).toBe(true);
+    let fetches = 0;
+    const past = CrawlJobSchema.parse({ ...fixtureJob, leaseExpiresAt: new Date(Date.now() - 1000).toISOString() });
+    await expect(runLeasedJob(past, client, async () => { fetches++; return new Response("x"); }, 10))
+      .rejects.toThrow("expired during execution");
+    expect(fetches).toBe(0);
+    expect(submissions).toBe(0);
+  });
+
   test("a BOOTH browse lease submits discovery leads through the wire contract", async () => {
     const job = CrawlJobSchema.parse({ ...fixtureJob, platform: "booth", purpose: "discovery",
       url: "https://booth.pm/ja/browse/3D%E3%83%84%E3%83%BC%E3%83%AB%E3%83%BB%E3%82%B7%E3%82%B9%E3%83%86%E3%83%A0?page=1",
@@ -130,5 +147,64 @@ describe("node lease runner", () => {
     await expect(runLeasedJob(fixtureJob, client, fetcher, 10)).rejects.toThrow("coordinator offline");
     expect(aborted).toBe(true);
     expect(submissions).toBe(0);
+  });
+
+  test("calibrates lease deadline using serverTime clock offset", async () => {
+    let submissions = 0;
+    // Server is 50 seconds ahead of local node time
+    // Lease expires in 50ms relative to server (even though local clock thinks 50050ms remaining)
+    const serverTimeAhead = new Date(Date.now() + 50_000).toISOString();
+    const leaseExpiresAt = new Date(Date.now() + 50_000 + 50).toISOString();
+    const client = {
+      heartbeat: async () => ({
+        schemaVersion: 1,
+        status: "alive",
+        serverTime: serverTimeAhead
+      }),
+      submit: async (): Promise<ResultResponse> => {
+        submissions++;
+        throw new Error("unexpected submission");
+      }
+    };
+    const soonServer = CrawlJobSchema.parse({ ...fixtureJob, leaseExpiresAt });
+    let aborted = false;
+    await expect(runLeasedJob(soonServer, client, (_input, init) => new Promise<Response>((_resolve, reject) =>
+      init?.signal?.addEventListener("abort", () => { aborted = true; reject(new Error("aborted")); }, { once: true })),
+      1_000)).rejects.toThrow("expired during execution");
+    expect(aborted).toBe(true);
+    expect(submissions).toBe(0);
+  });
+
+  test("dynamic heartbeat scheduling cleanly clears timeout when fetch completes before interval (R54-C39B)", async () => {
+    let submissions = 0;
+    const client = {
+      heartbeat: async () => ({
+        schemaVersion: 1,
+        status: "alive",
+        serverTime: new Date().toISOString()
+      }),
+      submit: async (): Promise<ResultResponse> => {
+        submissions++;
+        return {
+          schemaVersion: 1,
+          status: "accepted",
+          jobId: fixtureJob.jobId,
+          duplicate: false,
+          sourceVersionCreated: true
+        };
+      }
+    };
+    const start = Date.now();
+    const { outcome, result } = await runLeasedJob(
+      fixtureJob,
+      client,
+      async () => new Response(JSON.stringify({ name: "com.example.pkg", version: "1.0.0" }), { status: 200 }),
+      5_000
+    );
+    const elapsed = Date.now() - start;
+    expect(outcome.kind).toBe("changed");
+    expect(result.status).toBe("accepted");
+    expect(submissions).toBe(1);
+    expect(elapsed).toBeLessThan(1_000);
   });
 });

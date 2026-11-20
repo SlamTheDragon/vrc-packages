@@ -1,29 +1,32 @@
+# ==============================================================================
+# VRC Packages (VRCP) - Crawler Node Fleet Compose Configuration
+# ==============================================================================
+# Operators deploy crawler nodes using reviewed, pinned container image digests.
+# Automatic updaters (e.g. Watchtower) are excluded to prevent ungraceful lease
+# aborts and avoid mounting the host Docker socket.
+#
+# Multi-node deployments require distinct NODE_ID values and isolated data volumes
+# per container to prevent SQLite file locks on node.db.
+# ==============================================================================
+
 services:
   crawler-node:
     image: ${VRCP_NODE_IMAGE:?Set a reviewed CI-built image digest before starting the node}
-    container_name: vrcp-crawler-node
     restart: unless-stopped
     volumes:
+      # Data volume stores persistent SQLite database (node.db) and logs (latest.log).
+      # For multi-node fleets, assign a separate host directory or named volume per node.
       - ./data:/app/data
     environment:
-      - NODE_TOKEN=${NODE_TOKEN}
+      # Required: Capability token issued by coordinator (/v1/operator/nodes).
+      - NODE_TOKEN=${NODE_TOKEN:?Set NODE_TOKEN in .env before starting the node}
+      # Coordinator API endpoint.
       - COORDINATOR_URL=${COORDINATOR_URL:-https://vrcp-coordinator.workers.dev}
+      # Unique node identifier for logging and coordinator telemetry.
       - NODE_ID=${NODE_ID:-docker-node-1}
+      # Optional platform filter. The coordinator token enforces actual capabilities.
       - NODE_CAPABILITIES=${NODE_CAPABILITIES:-booth,github,vpm,gumroad,shopify}
-      # FIXME: node capabilities are documented and driven by tokens 
+      # Optional: GitHub token to avoid API rate limits when fetching GitHub metadata.
+      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
+    # Allow up to 30 seconds for in-flight tasks and outbox flushes to finish on SIGTERM.
     stop_grace_period: 30s
-    labels:
-      - "com.centurylinklabs.watchtower.enable=true"
-
-  watchtower:
-    image: containrrr/watchtower:latest
-    container_name: vrcp-node-watchtower
-    restart: unless-stopped
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-    environment:
-      - WATCHTOWER_CLEANUP=true
-      - WATCHTOWER_LABEL_ENABLE=true
-      - WATCHTOWER_POLL_INTERVAL=300
-      - WATCHTOWER_ROLLING_RESTART=true
-    command: --interval 300

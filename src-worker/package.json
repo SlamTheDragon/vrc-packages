@@ -1,6 +1,6 @@
 {
 	"name": "vrcp-worker",
-	"version": "2026.10.10-pre",
+	"version": "2026.10.11-pre",
 	"private": true,
 	"type": "module",
 	"scripts": {
@@ -11,7 +11,7 @@
 		"build": "bun run build:preview",
 		"build:preview": "wrangler deploy --dry-run --autoconfig=false --env preview --outdir .wrangler/dev-build/preview --config wrangler.toml",
 		"build:release": "wrangler deploy --dry-run --autoconfig=false --env=\"\" --outdir .wrangler/dev-build/production --config wrangler.toml",
-		"check": "bun run cf-typegen && tsc --noEmit && tsc --noEmit -p test/tsconfig.json",
+		"check": "bun run cf-typegen && tsc --noEmit && tsc --noEmit -p test/tsconfig.json && tsc --noEmit -p test/tsconfig.bun.json",
 		"dev": "wrangler dev --env preview --config wrangler.toml --persist-to .wrangler/local-preview",
 		"start": "bun run dev",
 		"test": "bun test ./test",
@@ -22,7 +22,7 @@
 	"dependencies": {
 		"@trybyte/robotstxt-parser": "2.0.0",
 		"vrc-packages-api": "npm:vrc-packages-api-preview@latest",
-		"vrc-packages-network": "https://github.com/SlamTheDragon/vrc-packages/releases/download/vrcp-network/v2026.10.7/vrc-packages-network-2026.10.7.tgz",
+		"vrc-packages-network": "https://github.com/SlamTheDragon/vrc-packages/releases/download/vrcp-network/v2026.10.8/vrc-packages-network-2026.10.8.tgz",
 		"zod": "^4.6.5"
 	},
 	"devDependencies": {

@@ -130,13 +130,13 @@ describe("VRCPackageClient SDK", () => {
       query: "kikyo dress",
       queryOrigin: "user_authored",
       limit: 10,
-      cursor: "opaque-search-cursor"
+      cursor: encodeCatalogCursor({ createdAt: "2026-10-01T12:00:00.000Z", canonicalId: "search-item" })
     });
 
     expect((capturedHeaders as Record<string, string>)["Authorization"]).toBe(`Bearer ${dummyAppToken}`);
     expect(capturedBody.queryOrigin).toBe("user_authored");
     expect(capturedBody.query).toBe("kikyo dress");
-    expect(capturedBody.cursor).toBe("opaque-search-cursor");
+    expect(capturedBody.cursor).toBe(encodeCatalogCursor({ createdAt: "2026-10-01T12:00:00.000Z", canonicalId: "search-item" }));
     expect(capturedBody.limit).toBe(10);
     expect(res.schemaVersion).toBe(1);
   });
@@ -166,7 +166,7 @@ describe("VRCPackageClient SDK", () => {
             updatedAt: "2026-10-01T12:00:00.000Z"
           }
         ],
-        nextCursor: "cursor-next"
+        nextCursor: cursor
       }), { status: 200, headers: { "Content-Type": "application/json" } });
     };
 
@@ -659,6 +659,191 @@ describe("VRCPackageClient SDK", () => {
     expect(verifyRes.takedownId).toBe(takedownId);
   });
 
+  it("submits delegated creator claim intake with appToken and audits via operator.claims", async () => {
+    let capturedHeaders: HeadersInit | undefined;
+    let capturedUrl = "";
+    let capturedMethod = "";
+    const claimId = "123e4567-e89b-12d3-a456-426614174000";
+    const operatorToken = "e".repeat(64);
+
+    const mockFetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+      capturedUrl = String(input);
+      capturedMethod = init?.method || "GET";
+      capturedHeaders = init?.headers;
+
+      if (capturedUrl.includes("/v1/app/claims/intake")) {
+        return new Response(JSON.stringify({
+          schemaVersion: 1,
+          status: "accepted",
+          claimId,
+          reviewStatus: "pending",
+          recordedAt: new Date().toISOString()
+        }), { status: 202, headers: { "Content-Type": "application/json" } });
+      }
+
+      if (capturedUrl.includes(`/v1/operator/claims/${claimId}/verify`)) {
+        return new Response(JSON.stringify({
+          schemaVersion: 1,
+          claimId,
+          status: "accepted",
+          updatedAt: new Date().toISOString()
+        }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+
+      if (capturedUrl.includes("/v1/operator/claims")) {
+        return new Response(JSON.stringify({
+          schemaVersion: 1,
+          records: [{
+            claimId,
+            appId: "123e4567-e89b-12d3-a456-426614174000",
+            action: "creator_ownership_claim",
+            frontUrl: "https://creator.booth.pm",
+            creatorId: "creator-123",
+            challengeToken: "vrcp_chal_0123456789abcdef",
+            expiresAt: Math.floor(Date.now() / 1000) + 3600,
+            nonce: "nonce_abcdef0123456789",
+            signature: "sig_abc123456789",
+            reason: "Storefront ownership verification",
+            contactEmail: "creator@example.com",
+            reviewStatus: "pending",
+            reviewNotes: null,
+            recordedAt: new Date().toISOString()
+          }],
+          nextCursor: null
+        }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+
+      return new Response("Not found", { status: 404 });
+    };
+
+    const client = new VRCPackageClient({
+      baseUrl: "https://api.vrc-packages.example",
+      appToken: dummyAppToken,
+      operatorToken,
+      fetch: mockFetch as unknown as typeof fetch
+    });
+
+    const intakeRes = await client.claims.submitIntake({
+      schemaVersion: 1,
+      attestation: {
+        appId: "123e4567-e89b-12d3-a456-426614174000",
+        action: "creator_ownership_claim",
+        frontUrl: "https://creator.booth.pm",
+        creatorId: "creator-123",
+        challengeToken: "vrcp_chal_0123456789abcdef",
+        expiresAt: Math.floor(Date.now() / 1000) + 3600,
+        nonce: "nonce_abcdef0123456789"
+      },
+      signature: "sig_abc123456789",
+      reason: "Storefront ownership verification",
+      contactEmail: "creator@example.com"
+    });
+
+    expect((capturedHeaders as Record<string, string>)["Authorization"]).toBe(`Bearer ${dummyAppToken}`);
+    expect(intakeRes.status).toBe("accepted");
+    expect(intakeRes.claimId).toBe(claimId);
+    expect(intakeRes.reviewStatus).toBe("pending");
+
+    const listRes = await client.operator.claims.list({ reviewStatus: "pending" });
+    expect(listRes.records.length).toBe(1);
+    expect(listRes.records[0]?.claimId).toBe(claimId);
+
+    const verifyRes = await client.operator.claims.verify(claimId, {
+      verdict: "accepted",
+      notes: "Confirmed ownership"
+    });
+    expect(verifyRes.status).toBe("accepted");
+    expect(verifyRes.claimId).toBe(claimId);
+  });
+
+  it("exercises operator apps: list and setDelegation", async () => {
+    let capturedHeaders: HeadersInit | undefined;
+    let capturedUrl = "";
+    let capturedMethod = "";
+    let capturedBody = "";
+    const operatorToken = "e".repeat(64);
+    const appId = "123e4567-e89b-12d3-a456-426614174000";
+
+    const mockFetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      capturedUrl = String(input);
+      capturedMethod = init?.method || "GET";
+      capturedHeaders = init?.headers;
+      capturedBody = typeof init?.body === "string" ? init.body : "";
+
+      if (capturedUrl.includes(`/v1/operator/apps/${appId}/delegation`)) {
+        return new Response(JSON.stringify({
+          schemaVersion: 1,
+          appId,
+          delegationAllowed: true,
+          permissions: ["catalog:read", "catalog:search", "demand:feedback", "claims:delegate"],
+          updatedAt: new Date().toISOString()
+        }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+
+      if (capturedUrl.includes(`/v1/operator/apps/${appId}/candidate-review`)) {
+        return new Response(JSON.stringify({
+          schemaVersion: 1,
+          appId,
+          candidateStatus: "trusted",
+          candidateFlags: ["intensive_usage"],
+          delegationAllowed: true,
+          permissions: ["catalog:read", "catalog:search", "demand:feedback", "claims:delegate"],
+          reviewedAt: new Date().toISOString()
+        }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+
+      if (capturedUrl.includes("/v1/operator/apps")) {
+        return new Response(JSON.stringify({
+          schemaVersion: 1,
+          apps: [{
+            appId,
+            appName: "Trusted Creator Tool",
+            contactEmail: "tool@example.com",
+            permissions: ["catalog:read", "catalog:search", "demand:feedback"],
+            delegationAllowed: false,
+            createdAt: "2026-10-01T10:00:00.000Z",
+            revokedAt: null
+          }],
+          nextCursor: null
+        }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+
+      return new Response("Not found", { status: 404 });
+    };
+
+    const client = new VRCPackageClient({
+      baseUrl: "https://api.vrc-packages.example",
+      operatorToken,
+      fetch: mockFetch as unknown as typeof fetch
+    });
+
+    const listRes = await client.operator.apps.list({ limit: 10 });
+    expect(listRes.apps.length).toBe(1);
+    expect(listRes.apps[0]?.appName).toBe("Trusted Creator Tool");
+    expect(listRes.apps[0]?.delegationAllowed).toBe(false);
+
+    const delegationRes = await client.operator.apps.setDelegation(appId, {
+      delegationAllowed: true,
+      reason: "Verified trusted store partner"
+    });
+    expect(delegationRes.appId).toBe(appId);
+    expect(delegationRes.delegationAllowed).toBe(true);
+    expect(delegationRes.permissions).toContain("claims:delegate");
+    expect(capturedUrl).toContain(`/v1/operator/apps/${appId}/delegation`);
+    expect(capturedMethod).toBe("POST");
+
+    // Operator Candidate Review (R54-C38A2)
+    const reviewRes = await client.operator.apps.reviewCandidate(appId, {
+      candidateStatus: "trusted",
+      grantDelegation: true,
+      notes: "High volume candidate approved for trusted delegation"
+    });
+    expect(reviewRes.appId).toBe(appId);
+    expect(reviewRes.candidateStatus).toBe("trusted");
+    expect(reviewRes.delegationAllowed).toBe(true);
+    expect(reviewRes.permissions).toContain("claims:delegate");
+  });
+
   it("throws VRCPApiError if operator methods called without operatorToken", async () => {
     const client = new VRCPackageClient({
       baseUrl: "https://api.vrc-packages.example"
@@ -669,6 +854,186 @@ describe("VRCPackageClient SDK", () => {
     await expect(client.operator.autoQueueRules.list()).rejects.toThrow(VRCPApiError);
     await expect(client.operator.catalog.list()).rejects.toThrow(VRCPApiError);
     await expect(client.operator.takedowns.list()).rejects.toThrow(VRCPApiError);
+    await expect(client.operator.claims.list()).rejects.toThrow(VRCPApiError);
+    await expect(client.operator.apps.list()).rejects.toThrow(VRCPApiError);
+    await expect(client.operator.apps.setDelegation("123e4567-e89b-12d3-a456-426614174000", { delegationAllowed: true })).rejects.toThrow(VRCPApiError);
+    await expect(client.operator.apps.reviewCandidate("123e4567-e89b-12d3-a456-426614174000", { candidateStatus: "trusted" })).rejects.toThrow(VRCPApiError);
+  });
+
+  it("exercises moderator ratings: list and adjust (R56-C56C1)", async () => {
+    let capturedUrl = "";
+    let capturedMethod = "";
+    let capturedAuth = "";
+    let capturedBody: any = null;
+
+    const mockFetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+      const req = new Request(input, init);
+      capturedUrl = req.url;
+      capturedMethod = req.method;
+      capturedAuth = req.headers.get("Authorization") ?? "";
+      if (req.body) {
+        capturedBody = await req.json();
+      }
+
+      if (capturedUrl.includes("/v1/moderator/ratings") && capturedMethod === "GET") {
+        return Response.json({
+          schemaVersion: 1,
+          ratings: [
+            {
+              canonicalId: "com.author.package",
+              displayName: "Package With Rating",
+              currentRating: "adult_restricted",
+              umbrella: "avatars",
+              category: "models",
+              reportCount: 3,
+              updatedAt: "2026-10-01T12:00:00.000Z"
+            }
+          ],
+          nextCursor: null
+        });
+      }
+
+      if (capturedUrl.includes("/v1/moderator/ratings/com.author.package") && capturedMethod === "POST") {
+        return Response.json({
+          schemaVersion: 1,
+          canonicalId: "com.author.package",
+          previousRating: "adult_restricted",
+          newRating: "mature",
+          adjustedBy: "user_moderator_1",
+          updatedAt: "2026-10-01T13:00:00.000Z"
+        });
+      }
+
+      return new Response("Not found", { status: 404 });
+    };
+
+    const client = new VRCPackageClient({
+      baseUrl: "https://api.vrc-packages.example",
+      userToken: "vrcp_usr_" + "1".repeat(64),
+      fetch: mockFetch as unknown as typeof fetch
+    });
+
+    const listRes = await client.moderator.ratings.list({ rating: "adult_restricted", limit: 25 });
+    expect(listRes.ratings.length).toBe(1);
+    expect(listRes.ratings[0]?.canonicalId).toBe("com.author.package");
+    expect(capturedUrl).toContain("rating=adult_restricted");
+    expect(capturedUrl).toContain("limit=25");
+    expect(capturedAuth).toBe(`Bearer vrcp_usr_${"1".repeat(64)}`);
+    expect(capturedMethod).toBe("GET");
+
+    const adjustRes = await client.moderator.ratings.adjust("com.author.package", {
+      newRating: "mature",
+      reason: "False positive adult filter detection resolved"
+    });
+    expect(adjustRes.canonicalId).toBe("com.author.package");
+    expect(adjustRes.previousRating).toBe("adult_restricted");
+    expect(adjustRes.newRating).toBe("mature");
+    expect(capturedBody.newRating).toBe("mature");
+    expect(capturedBody.reason).toBe("False positive adult filter detection resolved");
+  });
+
+  it("exercises moderator apps: list and reviewCandidate (R54-C38A2)", async () => {
+    let capturedUrl = "";
+    let capturedMethod = "";
+    let capturedAuth = "";
+    let capturedBody: any = null;
+    const appId = "123e4567-e89b-12d3-a456-426614174000";
+
+    const mockFetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+      const req = new Request(input, init);
+      capturedUrl = req.url;
+      capturedMethod = req.method;
+      capturedAuth = req.headers.get("Authorization") ?? "";
+      if (req.body) {
+        capturedBody = await req.json();
+      }
+
+      if (capturedUrl.includes(`/v1/moderator/apps/${appId}/candidate-review`) && capturedMethod === "POST") {
+        return Response.json({
+          schemaVersion: 1,
+          appId,
+          candidateStatus: "trusted",
+          candidateFlags: ["intensive_usage", "high_frequency_api"],
+          delegationAllowed: true,
+          permissions: ["catalog:read", "catalog:search", "demand:feedback", "claims:delegate"],
+          reviewedAt: "2026-10-01T15:00:00.000Z"
+        });
+      }
+
+      if (capturedUrl.includes("/v1/moderator/apps") && capturedMethod === "GET") {
+        return Response.json({
+          schemaVersion: 1,
+          apps: [
+            {
+              appId,
+              appName: "Candidate Downstream App",
+              contactEmail: "candidate@example.com",
+              permissions: ["catalog:read", "catalog:search", "demand:feedback"],
+              delegationAllowed: false,
+              requestCount: 88,
+              lastActiveAt: "2026-10-01T14:30:00.000Z",
+              candidateStatus: "review_pending",
+              candidateFlags: ["intensive_usage"],
+              createdAt: "2026-10-01T10:00:00.000Z",
+              revokedAt: null
+            }
+          ],
+          nextCursor: null
+        });
+      }
+
+      return new Response("Not found", { status: 404 });
+    };
+
+    const client = new VRCPackageClient({
+      baseUrl: "https://api.vrc-packages.example",
+      userToken: "vrcp_usr_" + "2".repeat(64),
+      fetch: mockFetch as unknown as typeof fetch
+    });
+
+    const listRes = await client.moderator.apps.list({ candidateStatus: "review_pending", limit: 10 });
+    expect(listRes.apps.length).toBe(1);
+    expect(listRes.apps[0]?.appId).toBe(appId);
+    expect(listRes.apps[0]?.requestCount).toBe(88);
+    expect(listRes.apps[0]?.candidateStatus).toBe("review_pending");
+    expect(capturedUrl).toContain("candidateStatus=review_pending");
+    expect(capturedAuth).toBe(`Bearer vrcp_usr_${"2".repeat(64)}`);
+
+    const reviewRes = await client.moderator.apps.reviewCandidate(appId, {
+      candidateStatus: "trusted",
+      grantDelegation: true,
+      notes: "Staff verified client activity"
+    });
+    expect(reviewRes.appId).toBe(appId);
+    expect(reviewRes.candidateStatus).toBe("trusted");
+    expect(reviewRes.delegationAllowed).toBe(true);
+    expect(capturedBody.candidateStatus).toBe("trusted");
+    expect(capturedBody.grantDelegation).toBe(true);
+  });
+
+  it("throws VRCPApiError if moderator methods called without userToken", async () => {
+    const client = new VRCPackageClient({
+      baseUrl: "https://api.vrc-packages.example"
+    });
+
+    await expect(client.moderator.ratings.list()).rejects.toThrow(VRCPApiError);
+    await expect(client.moderator.ratings.adjust("com.pkg", { newRating: "general", reason: "Valid reason" })).rejects.toThrow(VRCPApiError);
+    await expect(client.moderator.apps.list()).rejects.toThrow(VRCPApiError);
+    await expect(client.moderator.apps.reviewCandidate("123e4567-e89b-12d3-a456-426614174000", { candidateStatus: "trusted" })).rejects.toThrow(VRCPApiError);
+  });
+
+  it("rejects responses exceeding SDK byte limits", async () => {
+    const largeErrorClient = new VRCPackageClient({
+      baseUrl: "https://api.vrc-packages.example",
+      fetch: (async () => new Response("x".repeat(65 * 1024), { status: 500 })) as unknown as typeof fetch
+    });
+    await expect(largeErrorClient.index.query()).rejects.toThrow(/exceeds maximum byte limit/);
+
+    const largeSuccessClient = new VRCPackageClient({
+      baseUrl: "https://api.vrc-packages.example",
+      fetch: (async () => new Response("x".repeat(5 * 1024 * 1024), { status: 200, headers: { "Content-Type": "application/json" } })) as unknown as typeof fetch
+    });
+    await expect(largeSuccessClient.index.query()).rejects.toThrow(/exceeds maximum byte limit/);
   });
 });
 

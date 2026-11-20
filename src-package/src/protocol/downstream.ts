@@ -1,6 +1,10 @@
 import { z } from "zod";
+import { CursorTokenSchema, CursorTimestampSchema } from "../encoding/cursor.ts";
+import { decodeCatalogCursor } from "../types/package.ts";
 import { PlatformSchema, type Platform } from "../types/platform.ts";
 import { CatalogPackageSchema, type CatalogPackage } from "../types/package.ts";
+import { ContentRatingSchema, type ContentRating } from "../taxonomy/taxonomy.ts";
+
 
 export const DOWNSTREAM_PROTOCOL_VERSION = 1 as const;
 
@@ -46,7 +50,7 @@ export const DownstreamFeedbackResponseSchema = z.strictObject({
   schemaVersion: z.literal(DOWNSTREAM_PROTOCOL_VERSION),
   status: z.literal("accepted"),
   signalId: z.string().uuid(),
-  recordedAt: z.string().datetime()
+  recordedAt: CursorTimestampSchema
 });
 export type DownstreamFeedbackResponse = z.infer<typeof DownstreamFeedbackResponseSchema>;
 
@@ -60,16 +64,17 @@ export const CatalogSearchRequestSchema = z.strictObject({
   umbrella: z.enum(["tools", "assets", "avatars"]).optional(),
   category: z.string().trim().max(100).optional(),
   platform: PlatformSchema.optional(),
+  rating: ContentRatingSchema.optional(),
   tags: z.array(z.string().trim().max(50)).max(20).optional(),
   limit: z.number().int().min(1).max(50).default(50).optional(),
-  cursor: z.string().max(256).nullable().optional()
+  cursor: CursorTokenSchema.refine(value => decodeCatalogCursor(value) !== null, "Invalid search cursor").nullable().optional()
 });
 export type CatalogSearchRequest = z.infer<typeof CatalogSearchRequestSchema>;
 
 export const CatalogSearchResponseSchema = z.strictObject({
   schemaVersion: z.literal(DOWNSTREAM_PROTOCOL_VERSION),
   items: z.array(CatalogPackageSchema),
-  nextCursor: z.string().nullable().optional(),
+  nextCursor: CursorTokenSchema.refine(value => decodeCatalogCursor(value) !== null, "Invalid search cursor").nullable().optional(),
   totalEstimated: z.number().int().min(0).optional(),
   count: z.number().int().min(0).optional(),
   queryOrigin: QueryOriginSchema.optional()
@@ -83,7 +88,14 @@ export type ConsolidatedReportType = z.infer<typeof ConsolidatedReportTypeSchema
 export const DemandSignalKindSchema = z.enum(["search_miss", "refresh_demand", "popularity_signal"]);
 export type DemandSignalKind = z.infer<typeof DemandSignalKindSchema>;
 
-export const IssueReportKindSchema = z.enum(["broken_link", "wrong_metadata", "misclassified", "inappropriate"]);
+export const IssueReportKindSchema = z.enum([
+  "broken_link",
+  "wrong_metadata",
+  "misclassified",
+  "inappropriate",
+  "explicit_false_positive",
+  "explicit_false_negative"
+]);
 export type IssueReportKind = z.infer<typeof IssueReportKindSchema>;
 
 export const ReportSubmissionRequestSchema = z.strictObject({
@@ -107,6 +119,40 @@ export const ReportSubmissionResponseSchema = z.strictObject({
   schemaVersion: z.literal(DOWNSTREAM_PROTOCOL_VERSION),
   status: z.literal("accepted"),
   reportId: z.string().uuid(),
-  recordedAt: z.string().datetime()
+  recordedAt: CursorTimestampSchema
 });
 export type ReportSubmissionResponse = z.infer<typeof ReportSubmissionResponseSchema>;
+
+/* -------------------------------------------------------------------------- */
+/* Delegated Creator Attestation Intake (R54-C38C)                            */
+/* -------------------------------------------------------------------------- */
+
+export const CreatorDelegationAttestationSchema = z.strictObject({
+  appId: z.string().uuid(),
+  action: z.literal("creator_ownership_claim"),
+  frontUrl: HttpsUrlSchema,
+  creatorId: z.string().trim().min(1).max(200),
+  challengeToken: z.string().trim().min(16).max(128),
+  expiresAt: z.number().int().positive(),
+  nonce: z.string().trim().min(16).max(128)
+});
+export type CreatorDelegationAttestation = z.infer<typeof CreatorDelegationAttestationSchema>;
+
+export const CreatorClaimIntakeRequestSchema = z.strictObject({
+  schemaVersion: z.literal(DOWNSTREAM_PROTOCOL_VERSION),
+  attestation: CreatorDelegationAttestationSchema,
+  signature: z.string().trim().min(1).max(512),
+  reason: z.string().trim().min(1).max(1000).optional(),
+  contactEmail: z.string().email().max(200).optional()
+});
+export type CreatorClaimIntakeRequest = z.infer<typeof CreatorClaimIntakeRequestSchema>;
+
+export const CreatorClaimIntakeResponseSchema = z.strictObject({
+  schemaVersion: z.literal(DOWNSTREAM_PROTOCOL_VERSION),
+  status: z.literal("accepted"),
+  claimId: z.string().uuid(),
+  reviewStatus: z.literal("pending"),
+  recordedAt: CursorTimestampSchema
+});
+export type CreatorClaimIntakeResponse = z.infer<typeof CreatorClaimIntakeResponseSchema>;
+

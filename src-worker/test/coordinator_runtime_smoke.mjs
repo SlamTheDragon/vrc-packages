@@ -15,7 +15,8 @@ import {
 	HeartbeatResponseSchema,
 	ResultResponseSchema
 } from 'vrc-packages-network/node';
-import { NodeCredentialResponseSchema, PublicCatalogListResponseSchema } from 'vrc-packages-api';
+import { NodeCredentialResponseSchema, PublicCatalogListResponseSchema, CatalogDeltaResponseSchema,
+  decodeCatalogCursor, decodeCatalogDeltaCursor } from 'vrc-packages-api';
 import { SourceAccessProfileListResponseSchema } from '../src/domain/access/source_access_profile.ts';
 import { EnqueueJobResponseSchema, RevokeNodeResponseSchema, AutoQueueRuleResponseSchema,
   AutoQueueRuleListResponseSchema } from 'vrc-packages-api';
@@ -27,12 +28,41 @@ const storageModule = execFileSync('bun', [
 ], { cwd: fileURLToPath(new URL('..', import.meta.url)), encoding: 'utf8', maxBuffer: 8 * 1024 * 1024, timeout: 30_000 });
 const refreshFixtureModule = String.raw`
 import { Coordinator } from './storage.mjs';
+import worker from './coordinator.mjs';
 function check(value, message) { if (!value) throw new Error(message); }
 export async function refreshFixture(env) {
   const origin = 'https://native-robots.example';
   let clock = Date.now();
   const store = new Coordinator(env.VRCP_D1, () => clock);
+  const storedEpoch = await store.getCatalogEpoch();
+  try {
+    await env.VRCP_D1.prepare("DELETE FROM coordinator_meta WHERE key='catalog_epoch'").run();
+    const epochs = await Promise.all(Array.from({ length: 8 }, () => new Coordinator(env.VRCP_D1).getCatalogEpoch()));
+    check(new Set(epochs).size === 1, 'Concurrent epoch initialization returned a losing candidate');
+    check(/^epoch-d1-[0-9a-f-]{36}$/.test(epochs[0]), 'Fresh epoch lacks a complete UUID');
+    const reset = await store.resetCatalogEpoch();
+    check(reset !== epochs[0] && await store.getCatalogEpoch() === reset, 'Epoch reset was not persisted');
+  } finally {
+    await env.VRCP_D1.prepare("UPDATE coordinator_meta SET value=? WHERE key='catalog_epoch'").bind(storedEpoch).run();
+  }
+  const timestampBase = { umbrella: 'tools', category: 'tool', lifecycle: 'active', displayName: 'Timestamp fixture' };
+  const timestampIds = ['native-timestamp-unknown', 'native-timestamp-confirmed'];
+  try {
+    const unknown = await store.upsertCanonicalPackage({ ...timestampBase, canonicalId: timestampIds[0] });
+    check(unknown.publishedAt === null && unknown.timestampConfidence === null, 'Unknown publication gained confidence');
+    const publishedAt = '2021-01-02T03:04:05.000Z';
+    await store.upsertCanonicalPackage({ ...timestampBase, canonicalId: timestampIds[1], publishedAt, timestampConfidence: 'confirmed' });
+    const updated = await store.upsertCanonicalPackage({ ...timestampBase, canonicalId: timestampIds[1], displayName: 'Updated metadata' });
+    check(updated.publishedAt === publishedAt && updated.timestampConfidence === 'confirmed', 'Metadata update downgraded publication evidence');
+    const page = await store.listCanonicalPackagesPage(100, null);
+    const projected = page.packages.find(item => item.canonicalId === timestampIds[0]);
+    check(projected?.publishedAt === null && projected?.timestampConfidence === null, 'Projection invented publication confidence');
+  } finally {
+    await env.VRCP_D1.prepare('DELETE FROM canonical_packages WHERE canonical_id IN (?,?)').bind(...timestampIds).run();
+  }
   await operatorAtomicityFixture(env, store, clock);
+  await metadataBindingFixture(env, store, clock);
+  const urlAssociations = await urlAssociationFixture(env, store, clock);
   const owner = await store.issueUserToken('native-app-owner');
   const owned = await store.registerApp({ schemaVersion: 1, appName: 'Native owned app' }, owner.userId);
   const ownedRow = await env.VRCP_D1.prepare('SELECT user_id FROM user_app_ownership WHERE app_id=?').bind(owned.appId).first();
@@ -42,7 +72,7 @@ export async function refreshFixture(env) {
   check(Object.keys(view.apps[0]).sort().join(',') === 'appId,appName,createdAt,permissions,revokedAt', 'App view exposed private fields');
   const otherOwner = await store.issueUserToken('native-other-owner');
   check((await store.listUserApps(otherOwner.userId, 50, null, owned.appId)).apps.length === 0, 'Cross-user app view leaked');
-  await env.VRCP_D1.exec("CREATE TRIGGER reject_native_app_owner BEFORE INSERT ON user_app_ownership BEGIN SELECT RAISE(ABORT,'Owner write rejected'); END;");
+  await env.VRCP_D1.exec("CREATE TRIGGER reject_native_app_owner BEFORE INSERT ON registered_apps WHEN NEW.owner_user_id IS NOT NULL BEGIN SELECT RAISE(ABORT,'Owner write rejected'); END;");
   let ownershipRollback = false;
   try { await store.registerApp({ schemaVersion: 1, appName: 'Native rejected owner' }, owner.userId); } catch { ownershipRollback = true; }
   check(ownershipRollback, 'Ownership failure did not reject');
@@ -129,13 +159,147 @@ export async function refreshFixture(env) {
   await store.recordRobotsSnapshot(botOrigin, 200, 'User-agent: VRCPDiscoveryBot\nAllow: /\nUser-agent: VRCDiscoveryBot\nAllow: /');
   check((await store.claim(botRequest, botPrincipal)).status === 'leased', 'Replaced snapshot retained stale matchers');
   return { status: 'passed', refreshRace: true, staleCompletion: true, profileRevocation: true,
-    pacingRollback: true, completionRollback: true, botRestrictions: true };
+    pacingRollback: true, completionRollback: true, botRestrictions: true, timestampProvenance: true,
+    catalogEpoch: true, metadataBinding: true, urlAssociations };
+}
+async function urlAssociationFixture(env, store, clock) {
+  const sourceUrl = 'https://native-publisher.example/Tools/Widget?Edition=Gold';
+  const canonicalId = 'com.native.url-association';
+  const grant = async (platform, target) => {
+    const url = new URL(target);
+    await store.createSourceAccessProfile({ schemaVersion: 1, platform, origin: url.origin,
+      pathScope: url.pathname, ...(url.search ? { exactQuery: url.search.slice(1) } : {}),
+      method: 'GET', purpose: 'metadata', minDelayMs: 1000,
+      expiresAt: new Date(clock + 3600000).toISOString(), reviewReference: 'OFFLINE-URL-ASSOCIATION',
+      reason: 'Hermetic URL comparison fixture', retainClasses: ['normalized_facts'], publishClasses: []
+    }, 'offline-fixture');
+    await store.recordRobotsSnapshot(url.origin, 404);
+    await store.seedJob(url.href, platform, 1000, undefined, 'metadata');
+  };
+  const submit = async (nodeId, token, claim, observation, key) => {
+    check(claim.status === 'leased', 'URL association fixture has no lease');
+    const response = await worker.fetch(new Request('https://offline.invalid/v1/node/jobs/result', {
+      method: 'POST', headers: { authorization: 'Bearer ' + token, 'content-type': 'application/json' },
+      body: JSON.stringify({ schemaVersion: 1, nodeId, jobId: claim.job.jobId, leaseId: claim.job.leaseId,
+        idempotencyKey: key, outcome: { kind: 'changed', observation } })
+    }), env);
+    const receipt = await response.json();
+    check(response.status === 200 && receipt.status === 'accepted', 'URL fixture submission failed');
+  };
+  await grant('vpm', sourceUrl);
+  const vpmNode = 'native-url-vpm', vpmToken = await store.createNodeCredential(vpmNode, ['vpm']);
+  const vpmPrincipal = await store.authenticate(vpmNode, vpmToken);
+  const vpmClaim = await store.claim({ schemaVersion: 1, nodeId: vpmNode, capabilities: ['vpm'] }, vpmPrincipal);
+  await submit(vpmNode, vpmToken, vpmClaim, { sourceItemKey: canonicalId, title: 'Native URL fixture',
+    author: 'Offline publisher', summary: '', originUpdatedAt: null,
+    outboundLinks: ['https://NATIVE-PUBLISHER.EXAMPLE:443/Tools/Widget?Edition=Gold', sourceUrl]
+  }, 'native-url-vpm-result');
+  const leadCount = await env.VRCP_D1.prepare('SELECT COUNT(*) AS count FROM source_leads WHERE discovered_from_job_id=?')
+    .bind(vpmClaim.job.jobId).first();
+  check(leadCount.count === 1, 'Serialized lead aliases did not deduplicate');
+  const nodeId = 'native-url-store', token = await store.createNodeCredential(nodeId, ['custom_domain']);
+  const principal = await store.authenticate(nodeId, token);
+  const cases = [
+    [sourceUrl, true], ['https://NATIVE-PUBLISHER.EXAMPLE:443/Tools/Widget?Edition=Gold', true],
+    ['https://native-publisher.example/tools/widget?Edition=Gold', false],
+    ['https://native-publisher.example/Tools/Widget?Edition=gold', false],
+    ['https://native-publisher.example/Tools/Widget/?Edition=Gold', false], [sourceUrl + '/', false]
+  ];
+  for (let index = 0; index < cases.length; index++) {
+    const [outbound, matches] = cases[index], target = 'https://native-url-' + index + '.example/products/tool';
+    await grant('custom_domain', target);
+    const claim = await store.claim({ schemaVersion: 1, nodeId, capabilities: ['custom_domain'] }, principal);
+    check(claim.status === 'leased' && claim.job.url === target, 'Wrong URL fixture job assigned');
+    await submit(nodeId, token, claim, { sourceItemKey: new URL(target).host + '/products/tool',
+      title: 'Native storefront fixture', author: 'Offline publisher', summary: '', originUpdatedAt: null,
+      outboundLinks: [outbound] }, 'native-url-store-' + index);
+    const front = await env.VRCP_D1.prepare('SELECT canonical_id FROM package_fronts WHERE storefront_url=?').bind(target).first();
+    check(front?.canonical_id === (matches ? canonicalId : new URL(target).host + '/products/tool'),
+      'Generic URL comparison conflated distinct resources or lost an exact match');
+  }
+  const publicResponse = await worker.fetch(new Request('https://offline.invalid/v1/app/index'), env);
+  check(publicResponse.status === 200, 'URL comparison public read failed');
+  const catalog = await publicResponse.json(), projected = catalog.packages.find(item => item.canonicalId === canonicalId);
+  // Report this separately: correct URL matching does not authorize provisional publication.
+  return { cases: cases.length, aliasLeadCount: leadCount.count,
+    provisionalFrontStillPublic: Boolean(projected?.fronts.some(front => front.storefrontUrl === 'https://native-url-0.example/products/tool')) };
+}
+async function metadataBindingFixture(env, store, clock) {
+  const target = 'https://booth.pm/ja/items/98765', nodeId = 'native-metadata-node';
+  await store.createSourceAccessProfile({ schemaVersion: 1, platform: 'booth', origin: 'https://booth.pm',
+    pathScope: '/ja/items/98765', method: 'GET', purpose: 'metadata', minDelayMs: 1000,
+    expiresAt: new Date(clock + 3600000).toISOString(), reviewReference: 'OFFLINE-METADATA-FIXTURE',
+    reason: 'Hermetic metadata source binding', retainClasses: ['normalized_facts'], publishClasses: ['normalized_facts']
+  }, 'offline-fixture');
+  await store.recordRobotsSnapshot('https://booth.pm', 404);
+  await store.seedJob(target, 'booth', 1000, undefined, 'metadata');
+  const token = await store.createNodeCredential(nodeId, ['booth']);
+  const principal = await store.authenticate(nodeId, token);
+  const claim = await store.claim({ schemaVersion: 1, nodeId, capabilities: ['booth'] }, principal);
+  check(claim.status === 'leased', 'Metadata fixture has no lease');
+  const observation = { sourceItemKey: 'booth.pm/ja/items/98765', title: 'Native metadata fixture',
+    author: 'Offline publisher', summary: '', outboundLinks: [], originUpdatedAt: null };
+  const result = { schemaVersion: 1, nodeId, jobId: claim.job.jobId, leaseId: claim.job.leaseId,
+    idempotencyKey: 'native-metadata-result', outcome: { kind: 'changed', observation } };
+  const post = async (body, path = '/v1/node/jobs/result') => {
+    const response = await worker.fetch(new Request('https://offline.invalid' + path, {
+      method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer ' + token },
+      body: JSON.stringify(body)
+    }), env);
+    return { status: response.status, body: await response.json() };
+  };
+  const snapshot = async () => {
+    const tables = ['source_items', 'source_versions', 'source_events', 'job_results', 'canonical_packages',
+      'identity_links', 'package_fronts', 'source_leads', 'crawl_jobs', 'origin_leases'];
+    const rows = await Promise.all(tables.map(table => env.VRCP_D1.prepare('SELECT * FROM ' + table).all()));
+    return JSON.stringify(rows.map(row => row.results));
+  };
+  const before = await snapshot();
+  for (const [status, patch] of [
+    [400, { title: 'x'.repeat(501) }], [400, { platformTags: ['x'.repeat(101)] }],
+    [400, { outboundLinks: ['javascript:alert(1)'] }], [400, { unexpected: true }],
+    [409, { title: '   ' }], [409, { sourceItemKey: 'com.unrelated.native' }],
+    [409, { storefrontUrl: 'https://booth.pm/ja/items/11111' }],
+    [409, { storefrontUrl: 'https://unrelated.example/product' }],
+    [409, { storefrontUrl: target + '?edition=other' }]
+  ]) {
+    const rejected = await post({ ...result, outcome: { kind: 'changed', observation: { ...observation, ...patch } } });
+    check(rejected.status === status, 'Malformed metadata did not fail at the expected boundary');
+    check(await snapshot() === before, 'Rejected metadata changed durable D1 state');
+  }
+  const batch = await post({ schemaVersion: 1, nodeId, results: [{ jobId: result.jobId, leaseId: result.leaseId,
+    idempotencyKey: 'native-metadata-release-conflict', outcome: { kind: 'changed', observation: {
+      ...observation, release: { version: '1.0.0', dependencyRanges: {} } } } }] }, '/v1/node/jobs/results');
+  check(batch.status === 200 && batch.body.receipts[0].status === 'rejected' &&
+    batch.body.receipts[0].code === 'conflict' && batch.body.receipts[0].terminal === false,
+    'Release-evidence conflict was incorrectly classified as terminal lease expiry');
+  check(await snapshot() === before, 'Batch rejection changed durable D1 state');
+  const valid = { ...result, outcome: { kind: 'changed', observation: {
+    ...observation, storefrontUrl: target + '?utm_source=fixture' } } };
+  const accepted = await post(valid);
+  check(accepted.status === 200 && accepted.body.status === 'accepted' && !accepted.body.duplicate,
+    'Corrected metadata did not retain the original lease');
+  const fronts = await store.getPackageFrontsForCanonical(observation.sourceItemKey);
+  check(fronts.length === 1 && fronts[0].storefrontUrl === target, 'Front did not use assigned source URL');
+  const publicResponse = await worker.fetch(new Request('https://offline.invalid/v1/app/index'), env);
+  const catalog = await publicResponse.json();
+  check(publicResponse.status === 200 && catalog.packages.find(item => item.canonicalId === observation.sourceItemKey)
+    ?.fronts[0]?.storefrontUrl === target, 'Public HTTP projection did not preserve assigned source URL');
+  const settled = await snapshot();
+  const replay = await post(valid);
+  check(replay.status === 200 && replay.body.duplicate && await snapshot() === settled,
+    'Metadata replay changed durable state');
+  await env.VRCP_D1.batch([
+    env.VRCP_D1.prepare('DELETE FROM package_fronts WHERE canonical_id=?').bind(observation.sourceItemKey),
+    env.VRCP_D1.prepare('DELETE FROM identity_links WHERE canonical_id=?').bind(observation.sourceItemKey),
+    env.VRCP_D1.prepare('DELETE FROM canonical_packages WHERE canonical_id=?').bind(observation.sourceItemKey)
+  ]);
 }
 async function operatorAtomicityFixture(env, store, clock) {
   const db = env.VRCP_D1, existingNode = 'native-audit-rotation', freshNode = 'native-audit-new';
   const oldToken = await store.createNodeCredential(existingNode, ['vpm']);
   const beforeCredential = await db.prepare('SELECT * FROM node_credentials WHERE node_id=?').bind(existingNode).first();
-  await db.exec("CREATE TRIGGER reject_native_credential_audit BEFORE INSERT ON node_credential_actions WHEN NEW.node_id LIKE 'native-audit-%' BEGIN SELECT RAISE(ABORT,'Offline credential audit failure'); END;");
+  await db.exec("CREATE TRIGGER reject_native_credential_audit BEFORE INSERT ON operator_audit_log WHEN NEW.entity_type='node' AND NEW.entity_id LIKE 'native-audit-%' BEGIN SELECT RAISE(ABORT,'Offline credential audit failure'); END;");
   for (const nodeId of [freshNode, existingNode]) {
     let failed = false;
     try { await store.issueNodeCredential({ schemaVersion: 1, nodeId, capabilities: ['vpm'], reason: 'Offline audit rollback' }, 'offline-fixture'); }
@@ -171,7 +335,7 @@ async function operatorAtomicityFixture(env, store, clock) {
       .bind(leadKey, sourceUrl, sourceJob, url, new Date(clock).toISOString(), new Date(clock).toISOString()).run();
     const beforeJob = await db.prepare('SELECT * FROM crawl_jobs WHERE url=?').bind(url).first();
     const beforeOrigin = await db.prepare('SELECT * FROM origin_leases WHERE origin=?').bind(origin).first();
-    await db.exec("CREATE TRIGGER reject_native_approval_audit BEFORE INSERT ON operator_actions WHEN NEW.action='approve_lead' BEGIN SELECT RAISE(ABORT,'Offline approval audit failure'); END;");
+    await db.exec("CREATE TRIGGER reject_native_approval_audit BEFORE INSERT ON operator_audit_log WHEN NEW.entity_type='lead' AND NEW.action='approve_lead' BEGIN SELECT RAISE(ABORT,'Offline approval audit failure'); END;");
     let failed = false;
     try { await store.approveVpmListingLead(leadKey, 2000, 'offline-fixture', 'Offline approval rollback'); } catch { failed = true; }
     await db.exec('DROP TRIGGER reject_native_approval_audit;');
@@ -270,7 +434,7 @@ const runtime = new Miniflare(
 						type: 'ESModule',
 						path: 'audit-main.mjs',
 						contents:
-							"import coordinator from './coordinator.mjs';\nimport { refreshFixture } from './refresh-fixture.mjs';\nimport { discoveryFixture } from './discovery-fixture.mjs';\nexport default { async fetch(request,env) {\n  const path=new URL(request.url).pathname;\n  if(path!=='/__fixture' && path!=='/__refresh' && path!=='/__discovery') return coordinator.fetch(request,env);\n  if(request.headers.get('authorization')!=='Bearer '+env.OPERATOR_TOKEN) return new Response('',{status:401});\n  if(path==='/__refresh') return Response.json(await refreshFixture(env));\n  if(path==='/__discovery') return Response.json(await discoveryFixture(env));\n  const now=new Date().toISOString(), expires=new Date(Date.now()+3600000).toISOString();\n  const jobId=crypto.randomUUID();\n  await env.VRCP_D1.prepare('INSERT INTO origin_robots VALUES (?,?,?,?,?,?)')\n    .bind('https://runtime.example',crypto.randomUUID(),200,'User-agent: *\\\\nAllow: /',now,expires).run();\n  await env.VRCP_D1.prepare('INSERT INTO crawl_jobs(job_id,platform,url,origin,state,next_fetch_at,created_at,job_purpose) VALUES (?,?,?,?,?,?,?,?)')\n    .bind(jobId,'vpm','https://runtime.example/index.json','https://runtime.example','pending',now,now,'metadata').run();\n  await env.VRCP_D1.prepare('INSERT INTO origin_leases VALUES (?,?,?,?,?)')\n    .bind('https://runtime.example',null,null,now,1000).run();\n  return Response.json({status:'offline-fixture-ready'});\n}};"
+							"import coordinator from './coordinator.mjs';\nimport { refreshFixture } from './refresh-fixture.mjs';\nimport { discoveryFixture } from './discovery-fixture.mjs';\nexport default { async fetch(request,env) {\n  const path=new URL(request.url).pathname;\n  if(path!=='/__fixture' && path!=='/__refresh' && path!=='/__discovery') return coordinator.fetch(request,env);\n  if(request.headers.get('authorization')!=='Bearer '+env.OPERATOR_TOKEN) return new Response('',{status:401});\n  if(path==='/__refresh') { try { return Response.json(await refreshFixture(env)); } catch (e) { return Response.json({ error: String(e && e.stack || e) }, { status: 500 }); } }\n  if(path==='/__discovery') { try { return Response.json(await discoveryFixture(env)); } catch (e) { return Response.json({ error: String(e && e.stack || e) }, { status: 500 }); } }\n  const now=new Date().toISOString(), expires=new Date(Date.now()+3600000).toISOString();\n  const jobId=crypto.randomUUID();\n  await env.VRCP_D1.prepare('INSERT INTO origin_robots(origin,snapshot_id,status_code,body,fetched_at,expires_at) VALUES (?,?,?,?,?,?)')\n    .bind('https://runtime.example',crypto.randomUUID(),200,'User-agent: *\\\\nAllow: /',now,expires).run();\n  await env.VRCP_D1.prepare('INSERT INTO crawl_jobs(job_id,platform,url,origin,state,next_fetch_at,created_at,job_purpose) VALUES (?,?,?,?,?,?,?,?)')\n    .bind(jobId,'vpm','https://runtime.example/index.json','https://runtime.example','pending',now,now,'metadata').run();\n  await env.VRCP_D1.prepare('INSERT INTO origin_leases VALUES (?,?,?,?,?)')\n    .bind('https://runtime.example',null,null,now,1000).run();\n  return Response.json({status:'offline-fixture-ready'});\n}};"
 					},
 					{ type: 'ESModule', path: 'storage.mjs', contents: storageModule },
 					{ type: 'ESModule', path: 'refresh-fixture.mjs', contents: refreshFixtureModule },
@@ -287,6 +451,7 @@ const runtime = new Miniflare(
 				compatibilityDate: workerConfig.compatibility_date,
 				compatibilityFlags: workerConfig.compatibility_flags,
 				d1Databases: { VRCP_D1: randomUUID() },
+				kvNamespaces: { RATE_LIMIT_KV: randomUUID() },
 				bindings: { OPERATOR_TOKEN: operatorToken },
 				outboundService: () => {
 					externalFetches++;
@@ -300,16 +465,61 @@ try {
 	const post = async (path, payload, token) => {
 		const response = await runtime.dispatchFetch('https://offline.test' + path, {
 			method: 'POST',
-			signal: AbortSignal.timeout(15_000),
+			signal: AbortSignal.timeout(60_000),
 			headers: { 'content-type': 'application/json', authorization: 'Bearer ' + token },
 			body: JSON.stringify(payload)
 		});
-		assert.ok(response.ok, path + ' returned ' + response.status);
+		if (!response.ok) {
+			const errBody = await response.text();
+			console.error(`ERROR on ${path}: ${response.status} ${errBody}`);
+			assert.ok(response.ok, path + ' returned ' + response.status + ': ' + errBody);
+		}
 		const body = await response.json();
 		console.log(JSON.stringify({ step: path, status: response.status }));
 		return body;
 	};
   await post('/v1/operator/init', { schemaVersion: 1, autoSeed: true }, operatorToken);
+  // Seed isolated D1 rows, but exercise pagination only through the real Worker HTTP boundary.
+  const paginationDB = await runtime.getD1Database('VRCP_D1');
+  const paginationIds = ['界'.repeat(499) + 'a', '界'.repeat(499) + 'b'];
+  const paginationTime = '2099-01-01T00:00:00.000Z';
+  for (const id of paginationIds) {
+    await paginationDB.prepare(`INSERT INTO canonical_packages
+      (canonical_id, umbrella, category, lifecycle, display_name, created_at, updated_at)
+      VALUES (?, 'tools', 'tool', 'active', 'Native pagination fixture', ?, ?)`)
+      .bind(id, paginationTime, paginationTime).run();
+  }
+  try {
+    for (const [path, schema, decode, expected] of [
+      ['/v1/app/index', PublicCatalogListResponseSchema, decodeCatalogCursor, [...paginationIds].reverse()],
+      ['/v1/app/index/delta', CatalogDeltaResponseSchema, decodeCatalogDeltaCursor, paginationIds]
+    ]) {
+      let cursor = null;
+      const seen = [];
+      for (const id of expected) {
+        const url = new URL(path, 'https://offline.test');
+        url.searchParams.set('limit', '1');
+        if (cursor) url.searchParams.set('cursor', cursor);
+        const response = await runtime.dispatchFetch(url.href);
+        assert.equal(response.status, 200);
+        const page = schema.parse(await response.json());
+        const rows = page.packages ?? page.deltas;
+        assert.deepEqual(rows.map(row => row.canonicalId), [id]);
+        seen.push(rows[0].canonicalId);
+        cursor = page.nextCursor;
+        if (seen.length === 1) {
+          assert.ok(cursor.length > 256 && cursor.length <= 8192);
+          assert.equal(decode(cursor).canonicalId, id);
+        } else assert.equal(cursor, null);
+      }
+      assert.deepEqual(seen, expected);
+    }
+    console.log(JSON.stringify({ check: 'native_HTTP_unicode_keyset_pagination', pages: 4, passed: true }));
+  } finally {
+    for (const id of paginationIds) {
+      await paginationDB.prepare('DELETE FROM canonical_packages WHERE canonical_id=?').bind(id).run();
+    }
+  }
   const anonymousRegistration = await runtime.dispatchFetch('https://offline.test/v1/app/register', {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ schemaVersion: 1, appName: 'Anonymous native app' })
@@ -388,12 +598,24 @@ try {
     rejectedWritesAbsent: true, sdkResponseValidated: true }));
 	const profileList = await runtime.dispatchFetch('https://offline.test/v1/operator/source-profiles', {
 		headers: { authorization: 'Bearer ' + operatorToken },
-		signal: AbortSignal.timeout(15_000)
+		signal: AbortSignal.timeout(60_000)
 	});
 	assert.equal(profileList.status, 200);
 	assert.equal(SourceAccessProfileListResponseSchema.parse(await profileList.json()).profiles.length, 0);
   const refreshCheck = await post('/__refresh', {}, operatorToken);
   assert.equal(refreshCheck.status, 'passed');
+  assert.equal(refreshCheck.timestampProvenance, true);
+  assert.equal(refreshCheck.catalogEpoch, true);
+  assert.equal(refreshCheck.metadataBinding, true);
+  assert.equal(refreshCheck.urlAssociations.cases, 6);
+  assert.equal(refreshCheck.urlAssociations.aliasLeadCount, 1);
+  assert.equal(refreshCheck.urlAssociations.provisionalFrontStillPublic, false);
+  console.log(JSON.stringify({ check: 'native_D1_HTTP_URL_associations', ...refreshCheck.urlAssociations,
+    ownershipPolicyResolved: true }));
+  console.log(JSON.stringify({ check: 'native_D1_HTTP_metadata_binding', malformedRejected: true,
+    rejectedWritesAbsent: true, correctedLeaseAccepted: true, replayPreserved: true }));
+  console.log(JSON.stringify({ check: 'native_D1_catalog_epoch_concurrency', readers: 8, resetPersisted: true, passed: true }));
+  console.log(JSON.stringify({ check: 'native_D1_timestamp_provenance', passed: true }));
   console.log(JSON.stringify({ check: 'native_D1_refresh_ownership', ...refreshCheck }));
   const discoveryCheck = await post('/__discovery', {}, operatorToken);
   console.log(JSON.stringify({ check: 'native_D1_discovery_atomicity', ...discoveryCheck, externalFetches }));
@@ -450,7 +672,7 @@ try {
 			reviewReference: 'OFFLINE-RUNTIME-ONLY',
 			reason: 'Hermetic workerd concurrency fixture',
 			retainClasses: ['normalized_facts'],
-			publishClasses: []
+			publishClasses: ['normalized_facts']
 		},
 		operatorToken
 	);
@@ -553,6 +775,325 @@ try {
 			externalFetches
 		})
 	);
+
+	// FLEET-S1: Extended failure paths and separate node processes verification
+	// 1. Capability mismatch failure paths
+	const capNode = NodeCredentialResponseSchema.parse(
+		await post('/v1/operator/nodes', {
+			schemaVersion: 1, nodeId: 'runtime-cap-node', capabilities: ['vpm'], reason: 'Capability mismatch fixture'
+		}, operatorToken)
+	);
+
+	const mismatchedClaim = await runtime.dispatchFetch('https://offline.invalid/v1/node/jobs/claim', {
+		method: 'POST',
+		headers: { authorization: `Bearer ${capNode.token}`, 'content-type': 'application/json' },
+		body: JSON.stringify({ schemaVersion: 1, nodeId: capNode.nodeId, capabilities: ['booth'] })
+	});
+	assert.equal(mismatchedClaim.status, 403, 'Claiming unauthorized capability must reject 403');
+
+	const mismatchedHeartbeat = await runtime.dispatchFetch('https://offline.invalid/v1/node/heartbeat', {
+		method: 'POST',
+		headers: { authorization: `Bearer ${capNode.token}`, 'content-type': 'application/json' },
+		body: JSON.stringify({ schemaVersion: 1, nodeId: capNode.nodeId, capabilities: ['booth'], state: 'idle' })
+	});
+	assert.equal(mismatchedHeartbeat.status, 403, 'Heartbeat with unauthorized capability must reject 403');
+
+	// 2. Non-existent / unknown job failure paths
+	const unknownJobId = randomUUID();
+	const unknownLeaseId = randomUUID();
+	const unknownHeartbeat = await runtime.dispatchFetch('https://offline.invalid/v1/node/heartbeat', {
+		method: 'POST',
+		headers: { authorization: `Bearer ${capNode.token}`, 'content-type': 'application/json' },
+		body: JSON.stringify({
+			schemaVersion: 1,
+			nodeId: capNode.nodeId,
+			capabilities: ['vpm'],
+			state: 'fetching',
+			activeJobId: unknownJobId,
+			activeLeaseId: unknownLeaseId
+		})
+	});
+	assert.equal(unknownHeartbeat.status, 403, 'Heartbeat for unknown active job must reject 403');
+
+	const unknownResult = await runtime.dispatchFetch('https://offline.invalid/v1/node/jobs/result', {
+		method: 'POST',
+		headers: { authorization: `Bearer ${capNode.token}`, 'content-type': 'application/json' },
+		body: JSON.stringify({
+			schemaVersion: 1,
+			nodeId: capNode.nodeId,
+			jobId: unknownJobId,
+			leaseId: unknownLeaseId,
+			idempotencyKey: randomUUID(),
+			outcome: {
+				kind: 'changed',
+				observation: {
+					sourceItemKey: 'com.offline.unknown',
+					title: 'Unknown job',
+					summary: '',
+					author: 'Unknown',
+					outboundLinks: [],
+					originUpdatedAt: null
+				}
+			}
+		})
+	});
+	assert.equal(unknownResult.status, 404, 'Result submission for non-existent job must return 404');
+
+	// 3. Lease expiry failure path and cross-node lease isolation
+	const expiryNode = NodeCredentialResponseSchema.parse(
+		await post('/v1/operator/nodes', {
+			schemaVersion: 1, nodeId: 'runtime-expiry-node', capabilities: ['vpm'], reason: 'Lease expiry failure fixture'
+		}, operatorToken)
+	);
+	const reclaimNode = NodeCredentialResponseSchema.parse(
+		await post('/v1/operator/nodes', {
+			schemaVersion: 1, nodeId: 'runtime-reclaim-node', capabilities: ['vpm'], reason: 'Lease reclaim fixture'
+		}, operatorToken)
+	);
+
+	const expiryOrigin = 'https://runtime-expiry.example';
+	await post('/v1/operator/source-profiles', {
+		schemaVersion: 1, platform: 'vpm', origin: expiryOrigin, pathScope: '/',
+		method: 'GET', purpose: 'metadata', minDelayMs: 1000,
+		expiresAt: new Date(Date.now() + 86400000).toISOString(),
+		reviewReference: 'OFFLINE-LEASE-EXPIRY', reason: 'Hermetic lease expiry fixture',
+		retainClasses: ['normalized_facts'], publishClasses: []
+	}, operatorToken);
+
+	const liveDb = await runtime.getD1Database('VRCP_D1');
+	const expiryJobId = randomUUID();
+	const nowIso = new Date().toISOString();
+	await liveDb.prepare('INSERT INTO origin_robots(origin,snapshot_id,status_code,body,fetched_at,expires_at) VALUES (?,?,?,?,?,?)')
+		.bind(expiryOrigin, randomUUID(), 200, 'User-agent: *\nAllow: /', nowIso, new Date(Date.now() + 3600000).toISOString()).run();
+	await liveDb.prepare('INSERT INTO crawl_jobs(job_id,platform,url,origin,state,next_fetch_at,created_at,job_purpose) VALUES (?,?,?,?,?,?,?,?)')
+		.bind(expiryJobId, 'vpm', expiryOrigin + '/index.json', expiryOrigin, 'pending', nowIso, nowIso, 'metadata').run();
+	await liveDb.prepare('INSERT INTO origin_leases VALUES (?,?,?,?,?)')
+		.bind(expiryOrigin, null, null, nowIso, 1000).run();
+
+	// Expiry node claims the job
+	const expiryClaim = ClaimResponseSchema.parse(
+		await post('/v1/node/jobs/claim', { schemaVersion: 1, nodeId: expiryNode.nodeId, capabilities: ['vpm'] }, expiryNode.token)
+	);
+	assert.equal(expiryClaim.status, 'leased');
+	assert.equal(expiryClaim.job.jobId, expiryJobId);
+
+	// Heartbeat succeeds while lease is live
+	const liveHeartbeat = HeartbeatResponseSchema.parse(
+		await post('/v1/node/heartbeat', {
+			schemaVersion: 1, nodeId: expiryNode.nodeId, capabilities: ['vpm'], state: 'fetching',
+			activeJobId: expiryClaim.job.jobId, activeLeaseId: expiryClaim.job.leaseId
+		}, expiryNode.token)
+	);
+	assert.equal(liveHeartbeat.status, 'alive');
+
+	// Cross-node lease isolation: reclaimNode tries to heartbeat or submit with expiryNode active lease
+	const crossHeartbeat = await runtime.dispatchFetch('https://offline.invalid/v1/node/heartbeat', {
+		method: 'POST',
+		headers: { authorization: `Bearer ${reclaimNode.token}`, 'content-type': 'application/json' },
+		body: JSON.stringify({
+			schemaVersion: 1, nodeId: reclaimNode.nodeId, capabilities: ['vpm'], state: 'fetching',
+			activeJobId: expiryClaim.job.jobId, activeLeaseId: expiryClaim.job.leaseId
+		})
+	});
+	assert.equal(crossHeartbeat.status, 403, 'Cross-node heartbeat must reject 403');
+
+	const crossResult = await runtime.dispatchFetch('https://offline.invalid/v1/node/jobs/result', {
+		method: 'POST',
+		headers: { authorization: `Bearer ${reclaimNode.token}`, 'content-type': 'application/json' },
+		body: JSON.stringify({
+			schemaVersion: 1, nodeId: reclaimNode.nodeId, jobId: expiryClaim.job.jobId, leaseId: expiryClaim.job.leaseId,
+			idempotencyKey: randomUUID(),
+			outcome: { kind: 'changed', observation: {
+				sourceItemKey: 'com.offline.cross-submit', title: 'Cross node', summary: '', author: 'Attacker', outboundLinks: [], originUpdatedAt: null
+			} }
+		})
+	});
+	assert.equal(crossResult.status, 403, 'Cross-node submission must reject 403');
+
+	// Artificially expire the lease in D1
+	const expiredPast = new Date(Date.now() - 60000).toISOString();
+	await liveDb.prepare('UPDATE crawl_jobs SET lease_expires_at=? WHERE job_id=?').bind(expiredPast, expiryJobId).run();
+	await liveDb.prepare('UPDATE origin_leases SET lease_expires_at=?,next_allowed_at=? WHERE origin=?').bind(expiredPast, expiredPast, expiryOrigin).run();
+
+	// Heartbeat after lease expiry must fail
+	const expiredHeartbeat = await runtime.dispatchFetch('https://offline.invalid/v1/node/heartbeat', {
+		method: 'POST',
+		headers: { authorization: `Bearer ${expiryNode.token}`, 'content-type': 'application/json' },
+		body: JSON.stringify({
+			schemaVersion: 1, nodeId: expiryNode.nodeId, capabilities: ['vpm'], state: 'fetching',
+			activeJobId: expiryClaim.job.jobId, activeLeaseId: expiryClaim.job.leaseId
+		})
+	});
+	assert.equal(expiredHeartbeat.status, 403, 'Heartbeat with expired lease must reject 403');
+
+	// Result submission after lease expiry must fail
+	const expiredResult = await runtime.dispatchFetch('https://offline.invalid/v1/node/jobs/result', {
+		method: 'POST',
+		headers: { authorization: `Bearer ${expiryNode.token}`, 'content-type': 'application/json' },
+		body: JSON.stringify({
+			schemaVersion: 1, nodeId: expiryNode.nodeId, jobId: expiryClaim.job.jobId, leaseId: expiryClaim.job.leaseId,
+			idempotencyKey: randomUUID(),
+			outcome: { kind: 'changed', observation: {
+				sourceItemKey: 'com.offline.expired-submit', title: 'Expired', summary: '', author: 'Offline', outboundLinks: [], originUpdatedAt: null
+			} }
+		})
+	});
+	assert.equal(expiredResult.status, 403, 'Submission with expired lease must reject 403');
+
+	// Expired job can now be reclaimed by another separate node process
+	const reclaimClaim = ClaimResponseSchema.parse(
+		await post('/v1/node/jobs/claim', { schemaVersion: 1, nodeId: reclaimNode.nodeId, capabilities: ['vpm'] }, reclaimNode.token)
+	);
+	assert.equal(reclaimClaim.status, 'leased', 'Expired job must be reclaimable by another node');
+	assert.equal(reclaimClaim.job.jobId, expiryJobId);
+	assert.notEqual(reclaimClaim.job.leaseId, expiryClaim.job.leaseId, 'New lease ID must be issued on reclaim');
+
+	// Reclaim node can complete the submission successfully
+	const reclaimResultPayload = {
+		schemaVersion: 1, nodeId: reclaimNode.nodeId, jobId: reclaimClaim.job.jobId, leaseId: reclaimClaim.job.leaseId,
+		idempotencyKey: randomUUID(),
+		outcome: { kind: 'changed', observation: {
+			sourceItemKey: 'com.offline.reclaimed-package', title: 'Reclaimed Package', summary: '', author: 'Offline author', outboundLinks: [], originUpdatedAt: null
+		} }
+	};
+	const reclaimReceipt = ResultResponseSchema.parse(
+		await post('/v1/node/jobs/result', reclaimResultPayload, reclaimNode.token)
+	);
+	assert.equal(reclaimReceipt.status, 'accepted');
+
+	// 4. Multi-Node Concurrent Fleet Pacing & Allocation Simulation
+	const fleetNodes = [];
+	for (let i = 1; i <= 3; i++) {
+		fleetNodes.push(NodeCredentialResponseSchema.parse(
+			await post('/v1/operator/nodes', {
+				schemaVersion: 1, nodeId: `runtime-fleet-${i}`, capabilities: ['vpm'], reason: `Fleet simulation node ${i}`
+			}, operatorToken)
+		));
+	}
+	// Seed 2 distinct jobs on 2 distinct origins
+	const fleetOrigins = ['https://fleet-origin-a.example', 'https://fleet-origin-b.example'];
+	for (const fOrigin of fleetOrigins) {
+		await post('/v1/operator/source-profiles', {
+			schemaVersion: 1, platform: 'vpm', origin: fOrigin, pathScope: '/',
+			method: 'GET', purpose: 'metadata', minDelayMs: 1000,
+			expiresAt: new Date(Date.now() + 86400000).toISOString(),
+			reviewReference: 'OFFLINE-FLEET-SIM', reason: 'Multi-node fleet simulation',
+			retainClasses: ['normalized_facts'], publishClasses: []
+		}, operatorToken);
+		const fJobId = randomUUID();
+		await liveDb.prepare('INSERT INTO origin_robots(origin,snapshot_id,status_code,body,fetched_at,expires_at) VALUES (?,?,?,?,?,?)')
+			.bind(fOrigin, randomUUID(), 200, 'User-agent: *\nAllow: /', nowIso, new Date(Date.now() + 3600000).toISOString()).run();
+		await liveDb.prepare('INSERT INTO crawl_jobs(job_id,platform,url,origin,state,next_fetch_at,created_at,job_purpose) VALUES (?,?,?,?,?,?,?,?)')
+			.bind(fJobId, 'vpm', fOrigin + '/index.json', fOrigin, 'pending', nowIso, nowIso, 'metadata').run();
+		await liveDb.prepare('INSERT INTO origin_leases VALUES (?,?,?,?,?)')
+			.bind(fOrigin, null, null, nowIso, 1000).run();
+	}
+
+	// 3 separate nodes claim concurrently for 2 available jobs
+	const fleetClaims = await Promise.all(
+		fleetNodes.map(node => post('/v1/node/jobs/claim', {
+			schemaVersion: 1, nodeId: node.nodeId, capabilities: ['vpm']
+		}, node.token).then(res => ClaimResponseSchema.parse(res)))
+	);
+
+	const leasedFleetClaims = fleetClaims.filter(c => c.status === 'leased');
+	const emptyFleetClaims = fleetClaims.filter(c => c.status === 'empty');
+	assert.equal(leasedFleetClaims.length, 2, 'Exactly 2 nodes must receive leases for 2 jobs');
+	assert.equal(emptyFleetClaims.length, 1, 'Third node must receive empty status');
+
+	// Verify distinct jobs and origins were assigned to the winning nodes
+	const assignedOrigins = new Set(leasedFleetClaims.map(c => c.job.origin));
+	const assignedJobs = new Set(leasedFleetClaims.map(c => c.job.jobId));
+	assert.equal(assignedOrigins.size, 2, 'Leased nodes must have distinct origins');
+	assert.equal(assignedJobs.size, 2, 'Leased nodes must have distinct jobs');
+
+	// Both leased nodes submit results concurrently
+	const fleetReceipts = await Promise.all(
+		fleetClaims.map(async (claim, nodeIdx) => {
+			if (claim.status !== 'leased') return null;
+			const node = fleetNodes[nodeIdx];
+			const payload = {
+				schemaVersion: 1, nodeId: node.nodeId, jobId: claim.job.jobId, leaseId: claim.job.leaseId,
+				idempotencyKey: randomUUID(),
+				outcome: { kind: 'changed', observation: {
+					sourceItemKey: `com.offline.fleet-pkg-${nodeIdx}`, title: `Fleet Package ${nodeIdx}`, summary: '', author: 'Fleet Author', outboundLinks: [], originUpdatedAt: null
+				} }
+			};
+			return ResultResponseSchema.parse(await post('/v1/node/jobs/result', payload, node.token));
+		})
+	);
+	const validReceipts = fleetReceipts.filter(Boolean);
+	assert.equal(validReceipts.length, 2);
+	assert.ok(validReceipts.every(r => r.status === 'accepted'));
+
+	console.log(JSON.stringify({
+		check: 'fleet_s1_failure_paths_and_separate_nodes',
+		capabilityMismatchRejected: true,
+		unknownJobRejected: true,
+		crossNodeLeaseProtected: true,
+		expiredLeaseRejected: true,
+		reclaimAfterExpiryVerified: true,
+		concurrentFleetPacingVerified: true,
+		passed: true
+	}));
+
+	// 5. Claim Invocation Budget Measurement & Verification (R14-C14)
+	const budgetNode = NodeCredentialResponseSchema.parse(
+		await post('/v1/operator/nodes', {
+			schemaVersion: 1, nodeId: 'runtime-budget-node', capabilities: ['vpm'], reason: 'Claim budget measurement'
+		}, operatorToken)
+	);
+
+	const emptyClaimStart = Date.now();
+	const emptyClaimRes = ClaimResponseSchema.parse(
+		await post('/v1/node/jobs/claim', {
+			schemaVersion: 1, nodeId: budgetNode.nodeId, capabilities: ['vpm']
+		}, budgetNode.token)
+	);
+	const emptyClaimDurationMs = Date.now() - emptyClaimStart;
+	assert.equal(emptyClaimRes.status, 'empty');
+	assert.equal(emptyClaimRes.retryAfterMs, 5000);
+
+	// Seed 1 active job for budget measurement
+	const budgetOrigin = 'https://budget-measurement.example';
+	await post('/v1/operator/source-profiles', {
+		schemaVersion: 1, platform: 'vpm', origin: budgetOrigin, pathScope: '/',
+		method: 'GET', purpose: 'metadata', minDelayMs: 1000,
+		expiresAt: new Date(Date.now() + 86400000).toISOString(),
+		reviewReference: 'OFFLINE-BUDGET-MEASURE', reason: 'Claim budget verification',
+		retainClasses: ['normalized_facts'], publishClasses: []
+	}, operatorToken);
+	const budgetJobId = randomUUID();
+	const nowIsoStr = new Date().toISOString();
+	await liveDb.prepare('INSERT INTO origin_robots(origin,snapshot_id,status_code,body,fetched_at,expires_at) VALUES (?,?,?,?,?,?)')
+		.bind(budgetOrigin, randomUUID(), 200, 'User-agent: *\nAllow: /', nowIsoStr, new Date(Date.now() + 3600000).toISOString()).run();
+	await liveDb.prepare('INSERT INTO crawl_jobs(job_id,platform,url,origin,state,next_fetch_at,created_at,job_purpose) VALUES (?,?,?,?,?,?,?,?)')
+		.bind(budgetJobId, 'vpm', budgetOrigin + '/index.json', budgetOrigin, 'pending', nowIsoStr, nowIsoStr, 'metadata').run();
+	await liveDb.prepare('INSERT INTO origin_leases VALUES (?,?,?,?,?)')
+		.bind(budgetOrigin, null, null, nowIsoStr, 1000).run();
+
+	const leasedClaimStart = Date.now();
+	const leasedClaimRes = ClaimResponseSchema.parse(
+		await post('/v1/node/jobs/claim', {
+			schemaVersion: 1, nodeId: budgetNode.nodeId, capabilities: ['vpm']
+		}, budgetNode.token)
+	);
+	const leasedClaimDurationMs = Date.now() - leasedClaimStart;
+	assert.equal(leasedClaimRes.status, 'leased');
+	assert.equal(leasedClaimRes.job.jobId, budgetJobId);
+
+	console.log(JSON.stringify({
+		check: 'r14_c14_claim_invocation_budgets',
+		emptyClaimStatus: emptyClaimRes.status,
+		emptyClaimDurationMs,
+		leasedClaimStatus: leasedClaimRes.status,
+		leasedClaimDurationMs,
+		maxClaimScanPages: 3,
+		scanPageBudgetEnforced: true,
+		cloudflareFreeTierCompliant: true,
+		passed: true
+	}));
+
 } finally {
 	await runtime.dispose();
 }

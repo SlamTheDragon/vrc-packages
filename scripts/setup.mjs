@@ -301,20 +301,18 @@ export async function interactiveSetup(options = {}) {
       selectedTarget = projectKeys.includes(targetChoice) || targetChoice === "all" ? targetChoice : "all";
     }
 
+    const installation = isInteractiveTTY ? p.spinner() : undefined;
+    installation?.start(`Installing dependencies for ${selectedTarget}...`);
+    try {
+      await setup(selectedTarget, { workspace, quiet: isInteractiveTTY, exec });
+      installation?.stop(`Installed dependencies for ${selectedTarget}`);
+    } catch (error) {
+      installation?.stop("Dependency installation failed");
+      throw error;
+    }
     if (isInteractiveTTY) {
-      const s = p.spinner();
-      const targets = selectedTarget === "all" ? Object.keys(setupProjects) : [selectedTarget];
-      for (let i = 0; i < targets.length; i++) {
-        const name = targets[i];
-        const dir = setupProjects[name];
-        s.start(`[${i + 1}/${targets.length}] Installing dependencies for ${name} (${dir})...`);
-        await setup(name, { workspace, quiet: true, exec });
-        s.stop(`[${i + 1}/${targets.length}] Installed dependencies for ${name} (${dir})`);
-      }
       p.outro(`${c.green}${c.bold}Setup and onboarding complete!${c.reset}`);
     } else {
-      onProgress(`\n${c.cyan}◆${c.reset} Starting dependency installation for target: "${c.bold}${selectedTarget}${c.reset}"...`);
-      await setup(selectedTarget, { workspace, quiet: false, exec });
       onProgress(`\n${c.green}${c.bold}✓ Setup and onboarding complete!${c.reset}`);
       onProgress(`${c.dim}Run 'bun run help' for common commands and operational workflows.${c.reset}\n`);
     }

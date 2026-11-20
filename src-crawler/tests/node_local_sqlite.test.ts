@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import { Database } from "bun:sqlite";
 import { LocalNodeStore } from "../src/storage/local_sqlite.ts";
-import type { CrawlJob, ResultResponse } from "vrc-packages-network/node";
+import type { CrawlJob, ResultRequest, ResultResponse } from "vrc-packages-network/node";
 const outputPath = resolve(import.meta.dir, "../dist/tests");
 mkdirSync(outputPath, { recursive: true });
 const tempRoot = realpathSync(outputPath);
@@ -14,6 +14,78 @@ function removeFixtureDirectory(directory: string): void {
 }
 
 describe("LocalNodeStore database behavior", () => {
+  test("settled outbox entries ignore late failures and preserve the first accepted receipt", () => {
+    const store = new LocalNodeStore();
+    try {
+      const runId = store.startRun("settled-node");
+      const base: CrawlJob = { jobId: "settled-job", leaseId: crypto.randomUUID(), platform: "vpm",
+        purpose: "metadata", url: "https://example.org/index.json", origin: "https://example.org",
+        leaseExpiresAt: "2099-01-01T00:00:00.000Z", retainClasses: ["normalized_facts"], etag: null, lastModified: null };
+      for (const state of ["sent", "dead"] as const) {
+        const job = { ...base, jobId: `${base.jobId}-${state}` };
+        const taskId = store.recordClaimedJob(runId, job);
+        const outboxId = store.stageOutboxOutcome(taskId, { kind: "unchanged" }, crypto.randomUUID());
+        const receipt: ResultResponse = { schemaVersion: 1, status: "accepted", jobId: job.jobId,
+          duplicate: false, sourceVersionCreated: false };
+        if (state === "sent") store.markOutboxDelivered(outboxId, receipt, { durationMs: 7 });
+        else store.markOutboxTerminal(outboxId, "Lease expired");
+        const before = { entry: store.getOutboxEntry(outboxId), task: store.getTask(taskId), run: store.getRun(runId) };
+        store.markOutboxFailed(outboxId, "Late batch bookkeeping error", 0);
+        store.markOutboxTerminal(outboxId, "Late terminal error");
+        if (state === "sent") store.markOutboxDelivered(outboxId, { ...receipt, duplicate: true }, { durationMs: 999 });
+        expect({ entry: store.getOutboxEntry(outboxId), task: store.getTask(taskId), run: store.getRun(runId) }).toEqual(before);
+        expect(store.getPendingOutboxCount()).toBe(0);
+      }
+      expect(store.getRun(runId)).toMatchObject({ tasksCompleted: 1, tasksFailed: 1 });
+    } finally { store.close(); }
+  });
+
+  test.each(["staging", "receipt"])("real SQLITE_FULL rolls back %s and permits recovery after capacity returns", phase => {
+    const directory = fixtureDirectory(), dbPath = join(directory, "full.db");
+    let store = new LocalNodeStore(dbPath);
+    try {
+      // Test-only connection access: no production page cap or host-disk filling.
+      const db = (store as unknown as { db: Database }).db;
+      const runId = store.startRun("full-node");
+      const job: CrawlJob = { jobId: "full-job", leaseId: crypto.randomUUID(), platform: "vpm",
+        purpose: "metadata", url: "https://example.org/index.json", origin: "https://example.org",
+        leaseExpiresAt: "2099-01-01T00:00:00.000Z", retainClasses: ["normalized_facts"], etag: null, lastModified: null };
+      const taskId = store.recordClaimedJob(runId, job);
+      store.recordTaskProgress(taskId, "fetching");
+      const key = crypto.randomUUID();
+      let outboxId = phase === "receipt" ? store.stageOutboxOutcome(taskId, { kind: "unchanged" }, key) : null;
+      db.run("CREATE TABLE full_pressure (bytes BLOB)");
+      db.run(phase === "staging"
+        ? "CREATE TRIGGER full_write BEFORE INSERT ON node_outbox BEGIN INSERT INTO full_pressure VALUES (zeroblob(131072)); END"
+        : "CREATE TRIGGER full_write BEFORE UPDATE OF tasks_completed ON node_runs BEGIN INSERT INTO full_pressure VALUES (zeroblob(131072)); END");
+      const originalMax = (db.query("PRAGMA max_page_count").get() as { max_page_count: number }).max_page_count;
+      const pages = (db.query("PRAGMA page_count").get() as { page_count: number }).page_count;
+      expect((db.query(`PRAGMA max_page_count = ${pages}`).get() as { max_page_count: number }).max_page_count).toBe(pages);
+      const receipt: ResultResponse = { schemaVersion: 1, status: "accepted", jobId: job.jobId,
+        duplicate: true, sourceVersionCreated: false };
+      const before = { task: store.getTask(taskId), run: store.getRun(runId), entry: store.getOutboxEntryByTaskId(taskId) };
+      const write = () => phase === "staging"
+        ? outboxId = store.stageOutboxOutcome(taskId, { kind: "unchanged" }, key)
+        : store.markOutboxDelivered(outboxId!, receipt);
+      let failure: unknown;
+      try { write(); } catch (error) { failure = error; }
+      expect(failure).toMatchObject({ code: "SQLITE_FULL" });
+      expect(db.inTransaction).toBe(false);
+      expect({ task: store.getTask(taskId), run: store.getRun(runId), entry: store.getOutboxEntryByTaskId(taskId) }).toEqual(before);
+      expect((db.query("SELECT COUNT(*) AS count FROM full_pressure").get() as { count: number }).count).toBe(0);
+      db.run(`PRAGMA max_page_count = ${originalMax}`);
+      db.run("DROP TRIGGER full_write");
+      write();
+      expect(store.getOutboxEntry(outboxId!)?.status).toBe(phase === "staging" ? "pending" : "sent");
+      expect(store.getRun(runId)?.tasksCompleted).toBe(phase === "staging" ? 0 : 1);
+      expect(db.query("PRAGMA integrity_check").get()).toEqual({ integrity_check: "ok" });
+      store.close();
+      store = new LocalNodeStore(dbPath);
+      expect(store.getOutboxEntry(outboxId!)?.idempotencyKey).toBe(key);
+      expect(store.getOutboxEntry(outboxId!)?.status).toBe(phase === "staging" ? "pending" : "sent");
+    } finally { store.close(); removeFixtureDirectory(directory); }
+  });
+
   test("terminal writes roll back with counters and accepted recovery counts once after restart", () => {
     const directory = fixtureDirectory();
     const dbPath = join(directory, "node.db");
@@ -172,6 +244,143 @@ describe("LocalNodeStore database behavior", () => {
       expect(store.getRun(runId)?.status).toBe("running");
       store.close();
     } finally {
+      removeFixtureDirectory(directory);
+    }
+  });
+
+  test("durable outbox stages outcome, tracks pending state, and delivers with receipt", () => {
+    const directory = fixtureDirectory();
+    const dbPath = join(directory, "node.db");
+    try {
+      const store = new LocalNodeStore(dbPath);
+      const runId = store.startRun("outbox-node");
+      const job: CrawlJob = {
+        jobId: "outbox-job-1",
+        leaseId: "00000000-0000-0000-0000-000000000201",
+        platform: "vpm",
+        purpose: "discovery",
+        url: "https://example.org/vpm/index.json",
+        origin: "https://example.org",
+        leaseExpiresAt: new Date(Date.now() + 60000).toISOString(),
+        retainClasses: ["normalized_facts"],
+        etag: null,
+        lastModified: null,
+      };
+      const taskId = store.recordClaimedJob(runId, job);
+      const outcome: ResultRequest["outcome"] = { kind: "unchanged" };
+      const idempotencyKey = crypto.randomUUID();
+
+      const outboxId = store.stageOutboxOutcome(taskId, outcome, idempotencyKey);
+      expect(outboxId).toMatch(/^outbox_/);
+
+      const taskSubmitting = store.getTask(taskId);
+      expect(taskSubmitting?.status).toBe("submitting");
+      expect(taskSubmitting?.outcomeKind).toBe("unchanged");
+
+      const entry = store.getOutboxEntry(outboxId);
+      expect(entry).not.toBeNull();
+      expect(entry?.status).toBe("pending");
+      expect(entry?.jobId).toBe("outbox-job-1");
+      expect(entry?.idempotencyKey).toBe(idempotencyKey);
+      expect(entry?.outcome).toEqual(outcome);
+      expect(entry?.retryCount).toBe(0);
+
+      const pending = store.getPendingOutboxEntries();
+      expect(pending.length).toBe(1);
+      expect(pending[0].outboxId).toBe(outboxId);
+
+      const receipt: ResultResponse = {
+        schemaVersion: 1,
+        status: "accepted",
+        jobId: "outbox-job-1",
+        duplicate: false,
+        sourceVersionCreated: false,
+      };
+
+      store.markOutboxDelivered(outboxId, receipt, { durationMs: 200, httpStatus: 200 });
+
+      const entryAfter = store.getOutboxEntry(outboxId);
+      expect(entryAfter?.status).toBe("sent");
+      expect(entryAfter?.receipt).toEqual(receipt);
+
+      const taskCompleted = store.getTask(taskId);
+      expect(taskCompleted?.status).toBe("completed");
+      expect(taskCompleted?.accepted).toBe(1);
+
+      const pendingAfter = store.getPendingOutboxEntries();
+      expect(pendingAfter.length).toBe(0);
+
+      store.close();
+    } finally {
+      removeFixtureDirectory(directory);
+    }
+  });
+
+  test("durable outbox handles failure retry backoff, terminal failure, and quota enforcement", () => {
+    const directory = fixtureDirectory();
+    const dbPath = join(directory, "node.db");
+    let store: LocalNodeStore | undefined;
+    try {
+      let mockTime = 1_000_000;
+      store = new LocalNodeStore(dbPath, () => mockTime);
+      const runId = store.startRun("outbox-retry-node");
+      const job: CrawlJob = {
+        jobId: "outbox-job-2",
+        leaseId: "00000000-0000-0000-0000-000000000202",
+        platform: "vpm",
+        purpose: "metadata",
+        url: "https://example.org/vpm/pkg.json",
+        origin: "https://example.org",
+        leaseExpiresAt: new Date(mockTime + 60000).toISOString(),
+        retainClasses: ["normalized_facts"],
+        etag: null,
+        lastModified: null,
+      };
+      const taskId = store.recordClaimedJob(runId, job);
+      const outcome: ResultRequest["outcome"] = { kind: "gone" };
+      const outboxId = store.stageOutboxOutcome(taskId, outcome, "idemp-key-retry", 2);
+
+      // Record a transient failure
+      store.markOutboxFailed(outboxId, "Network timeout 504", 5000);
+      const entryFailed = store.getOutboxEntry(outboxId);
+      expect(entryFailed?.retryCount).toBe(1);
+      expect(entryFailed?.lastError).toBe("Network timeout 504");
+      expect(entryFailed?.status).toBe("pending");
+
+      // Before retry delay expires, getPendingOutboxEntries returns empty
+      expect(store.getPendingOutboxEntries().length).toBe(0);
+
+      // Advance mock time past retry delay
+      mockTime += 6000;
+      expect(store.getPendingOutboxEntries().length).toBe(1);
+
+      // Test quota enforcement
+      const job3: CrawlJob = { ...job, jobId: "outbox-job-3", leaseId: crypto.randomUUID() };
+      const taskId3 = store.recordClaimedJob(runId, job3);
+      store.stageOutboxOutcome(taskId3, outcome, "idemp-key-3", 2);
+
+      const job4: CrawlJob = { ...job, jobId: "outbox-job-4", leaseId: crypto.randomUUID() };
+      const taskId4 = store.recordClaimedJob(runId, job4);
+      expect(() => store!.stageOutboxOutcome(taskId4, outcome, "idemp-key-4", 2))
+        .toThrow("Outbox quota exceeded: 2 pending items (limit: 2)");
+
+      // Mark outbox entry terminal (e.g. lease expired or 409 conflict)
+      store.markOutboxTerminal(outboxId, "Lease expired: HTTP 409");
+      const entryTerminal = store.getOutboxEntry(outboxId);
+      expect(entryTerminal?.status).toBe("dead");
+      expect(entryTerminal?.lastError).toBe("Lease expired: HTTP 409");
+
+      const taskTerminal = store.getTask(taskId);
+      expect(taskTerminal?.status).toBe("failed");
+      expect(taskTerminal?.errorMessage).toBe("Lease expired: HTTP 409");
+
+      // Test TTL pruning
+      mockTime += 100_000_000; // Far in the future
+      const pruneResult = store.pruneOutbox(86_400_000);
+      expect(pruneResult.expiredDead).toBe(1); // taskId3 was still pending -> expired dead
+      expect(pruneResult.deleted).toBe(2); // outboxId (dead) and taskId3 (expired dead) -> both deleted
+    } finally {
+      store?.close();
       removeFixtureDirectory(directory);
     }
   });

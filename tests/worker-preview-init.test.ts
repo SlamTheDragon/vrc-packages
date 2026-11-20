@@ -100,3 +100,42 @@ test("manual initializer uses only main and preview secrets with root forwarding
   expect(root.scripts["worker:preview:init"]).toBe("bun scripts/worker-preview-init.mjs");
   expect(worker.scripts["preview:init"]).toBe("bun run --cwd .. worker:preview:init");
 });
+
+test("preview initialization authorizes automated delivery context in cloudflare-worker workflow", async () => {
+  const deliveryEnv = {
+    GITHUB_ACTIONS: "true",
+    GITHUB_EVENT_NAME: "push",
+    GITHUB_REPOSITORY: "SlamTheDragon/vrc-packages",
+    GITHUB_REF: "refs/tags/cloudflare-worker/v2026.10.12-pre",
+    GITHUB_WORKFLOW_REF: "SlamTheDragon/vrc-packages/.github/workflows/cloudflare-worker.yml@refs/tags/cloudflare-worker/v2026.10.12-pre",
+    VRCP_WORKER_OPERATION_ENV: "cloudflare-preview",
+    OPERATOR_TOKEN: "b".repeat(64)
+  };
+  expect(() => requirePreviewInitialization(deliveryEnv)).not.toThrow();
+
+  const calls: unknown[] = [];
+  class Client {
+    constructor(options: any) { calls.push({ origin: options.baseUrl, tokenPresent: !!options.operatorToken }); }
+    operator = { init: async (params: unknown) => { calls.push(params); return { autoSeed: true }; } };
+    index = { query: async (params: unknown) => { calls.push(params); return { schemaVersion: 1 }; } };
+  }
+  const result = await initializePreview(Client, deliveryEnv, fetch, { autoSeed: true });
+  expect(result).toEqual({ target: previewOrigin, autoSeed: true, schemaVersion: 1, catalogRead: "passed" });
+  expect(calls).toEqual([{ origin: previewOrigin, tokenPresent: true }, { autoSeed: true }, { limit: 1 }]);
+});
+
+test("previewFetch allows autoSeed: true when explicitly enabled and rejects mismatch", async () => {
+  const requestEnabled = previewFetch(async () => Response.json({ status: "ok" }), true);
+  const resp = await requestEnabled(`${previewOrigin}/v1/operator/init`, {
+    method: "POST",
+    body: JSON.stringify({ schemaVersion: 1, autoSeed: true })
+  });
+  expect(resp.status).toBe(200);
+
+  // Rejects disabled seeding when enabled is expected
+  await expect(requestEnabled(`${previewOrigin}/v1/operator/init`, {
+    method: "POST",
+    body: JSON.stringify({ schemaVersion: 1, autoSeed: false })
+  })).rejects.toThrow();
+});
+

@@ -210,16 +210,10 @@ export async function checkReleaseMetadata(selected, proof, workspace = root, gi
   const parent = realpathSync(tmpdir()), directory = mkdtempSync(join(parent, "vrcp-release-metadata-"));
   if (!realpathSync(directory).startsWith(parent + sep)) throw new Error("Unsafe release metadata fixture");
   try {
-    const hasChangelog = (() => {
-      try {
-        const entry = git(workspace, "ls-tree", base, "--", "CHANGELOG.md").trim();
-        return /^100644 blob [a-f0-9]{40}\t/.test(entry);
-      } catch { return false; }
-    })();
-    if (hasChangelog) {
-      const target = join(directory, "CHANGELOG.md");
-      writeFileSync(target, text(base, "CHANGELOG.md"));
+    for (const path of ["CHANGELOG.md", "docs/source/CHANGELOG.md"]) {
+      if (git(workspace, "ls-tree", base, "--", path).trim()) paths.push(path);
     }
+    const hasChangelog = paths.includes("CHANGELOG.md") || paths.includes("docs/source/CHANGELOG.md");
     const prior = new Map();
     for (const path of paths) {
       const value = text(base, path);
@@ -234,9 +228,9 @@ export async function checkReleaseMetadata(selected, proof, workspace = root, gi
     if (hasChangelog) {
       const { extractProductChangelog } = await import("./changelog.mjs");
       const changelogResult = extractProductChangelog("release", selected.product, bumped.version, directory);
-      if (changelogResult?.file) {
-        const rel = relative(directory, changelogResult.file).replace(/\\/g, "/");
-        paths.push(rel);
+      for (const file of changelogResult?.changed ?? []) {
+        const rel = relative(directory, file).replace(/\\/g, "/");
+        if (!paths.includes(rel)) paths.push(rel);
       }
     }
     const expected = new Map(paths.map(path => [path, readFileSync(join(directory, path), "utf8").replace(/\r\n/g, "\n").trimEnd() + "\n"]));

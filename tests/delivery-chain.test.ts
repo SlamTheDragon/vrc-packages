@@ -281,10 +281,20 @@ test("a previously prepared release cannot bypass predecessor publication proof 
   });
 }, 60_000);
 
-test("release preparation pushes one version branch, then owner-reviewed main finalization pushes only a tag", async () => {
-  for (const product of ["package", "crawler", "crawler-client", "worker"]) {
+for (const product of ["package", "crawler", "crawler-client", "worker"]) {
+  test(`release preparation pushes one version branch, then owner-reviewed main finalization pushes only a tag: ${product}`, async () => {
     await fixture(async (workspace, git) => {
+      const identifier = { package: "vrcp-packages-api", crawler: "vrcp-crawler-node",
+        "crawler-client": "vrcp-crawler-client", worker: "vrcp-worker" }[product];
+      await mkdir(resolve(workspace, "docs/source"), { recursive: true });
+      const notes = `# Release\n## ${identifier}\n### Added\n- Publication snapshot integration\n### Bugs Fixed\n### Changes\n`;
+      await writeFile(resolve(workspace, "docs/source/CHANGELOG.md"), notes);
+      git(workspace, "add", "--", "docs/source/CHANGELOG.md");
+      git(workspace, "commit", "-m", "Synthetic source changelog baseline");
+      git(workspace, "push", "origin", "main");
       const reviewed = await reviewedFixture(workspace, git, product);
+      expect((await readFile(resolve(workspace, "CHANGELOG.md"), "utf8")).replace(/\r\n/g, "\n")).toBe(notes);
+      expect(await readFile(resolve(workspace, "docs/source/CHANGELOG.md"), "utf8")).not.toContain("Publication snapshot integration");
       const before = git(workspace, "rev-parse", "HEAD");
       const versions = await readFile(resolve(workspace, "config.versions.json"), "utf8");
       const commands: string[][] = [];
@@ -303,8 +313,8 @@ test("release preparation pushes one version branch, then owner-reviewed main fi
       expect(await readFile(resolve(workspace, "config.versions.json"), "utf8")).toBe(versions);
       expect(git(workspace, "status", "--porcelain")).toBe("");
     });
-  }
-}, 120_000);
+  }, 60_000);
+}
 
 test("release finalizer rejects a renamed annotated object before publication", async () => {
   await fixture(async (workspace, git) => {
@@ -455,7 +465,7 @@ test("root chain dry-run is read-only; execute atomically commits one config and
   });
 }, 60_000);
 
-test("dirty plans stay read-only and releases, divergent origin, existing tags and SDK holds stop before writes", async () => {
+test("dirty plans stay read-only and unsynchronized releases, existing tags and SDK holds stop before writes", async () => {
   await fixture(async (workspace, git) => {
     const path = resolve(workspace, "config.preview.versions.json"), before = await readFile(path, "utf8");
     await writeFile(resolve(workspace, "owner.txt"), "Owner edits must not be committed");
@@ -469,7 +479,8 @@ test("dirty plans stay read-only and releases, divergent origin, existing tags a
     await expect(startDelivery("release", "worker", true, workspace, now, git)).rejects.toThrow("dirty");
     expect(await readFile(path, "utf8")).toBe(before);
     git(workspace, "add", "owner.txt"); git(workspace, "commit", "-m", "Owner change not yet pushed");
-    await expect(startDelivery("preview", "network", true, workspace, now, git)).rejects.toThrow("differs");
+    expect((await planDelivery("preview", "network", workspace, now, git)).blockers).toEqual([]);
+    await expect(startDelivery("release", "worker", true, workspace, now, git)).rejects.toThrow("differs");
     git(workspace, "push", "origin", "main");
     git(workspace, "tag", "vrcp-network/v2026.10.1");
     await expect(startDelivery("preview", "network", true, workspace, now, git)).rejects.toThrow("already exists");
@@ -607,7 +618,7 @@ test("indexed ignored pending inputs reject without unstaging them or committing
   });
 }, 60_000);
 
-test("failed pending push retains its separate commit and requires a same-branch normal push before any bump", async () => {
+test("failed pending push retains its separate commit for an explicit same-branch root retry", async () => {
   await fixture(async (workspace, git) => {
     git(workspace, "checkout", "-b", "feature-pending-recovery");
     git(workspace, "push", "origin", "feature-pending-recovery");
@@ -620,7 +631,7 @@ test("failed pending push retains its separate commit and requires a same-branch
       if (args[0] === "push") throw new Error("Synthetic refused pending push");
       return git(cwd, ...args);
     };
-    await expect(startDelivery("preview", "network", true, workspace, now, failedPush)).rejects.toThrow('git push --no-follow-tags origin "HEAD:refs/heads/feature-pending-recovery"');
+    await expect(startDelivery("preview", "network", true, workspace, now, failedPush)).rejects.toThrow('retry bun run publish:preview network --execute on that same branch');
     const retained = git(workspace, "rev-parse", "HEAD");
     expect(retained).not.toBe(before);
     expect(git(workspace, "rev-parse", `${retained}^`)).toBe(before);
@@ -628,9 +639,8 @@ test("failed pending push retains its separate commit and requires a same-branch
     expect(await readFile(resolve(workspace, "config.preview.versions.json"), "utf8")).toBe(versions);
     expect(git(workspace, "tag", "--list")).toBe("");
     expect(commands.filter(args => args[0] === "commit")).toHaveLength(1);
-    await expect(startDelivery("preview", "network", true, workspace, now, git)).rejects.toThrow("Origin branch differs");
+    expect((await planDelivery("preview", "network", workspace, now, git)).blockers).toEqual([]);
     expect(git(workspace, "rev-parse", "HEAD")).toBe(retained);
-    git(workspace, "push", "--no-follow-tags", "origin", "HEAD:refs/heads/feature-pending-recovery");
     const result = await startDelivery("preview", "network", true, workspace, now, git);
     expect(result.version).toBe("2026.10.1");
     expect(result.pendingCheckpoint).toBeUndefined();
@@ -660,6 +670,75 @@ test("preview rechecks remote freshness after pushing pending files and stops be
     expect(commands.filter(args => args[0] === "push")).toEqual([["push", "--no-follow-tags", "origin", "HEAD:refs/heads/main"]]);
     expect(git(workspace, "tag", "--list")).toBe("");
     expect(git(workspace, "status", "--porcelain")).toBe("");
+  });
+}, 60_000);
+
+test.each([
+  { branch: "main", dirty: false }, { branch: "main", dirty: true },
+  { branch: "feature-ahead", dirty: false }, { branch: "feature-ahead", dirty: true }
+])("ahead preview allocates and atomically pushes without a manual sync: %j", async ({ branch, dirty }) => {
+  await fixture(async (workspace, git) => {
+    if (branch !== "main") {
+      git(workspace, "checkout", "-b", branch);
+      git(workspace, "push", "origin", branch);
+    }
+    await writeFile(resolve(workspace, "ahead-input.txt"), "Checked local source change");
+    git(workspace, "add", "ahead-input.txt"); git(workspace, "commit", "-m", "Local capability checkpoint");
+    const head = git(workspace, "rev-parse", "HEAD");
+    const remote = git(workspace, "ls-remote", "origin", `refs/heads/${branch}`);
+    expect(remote).not.toContain(head);
+    if (dirty) await writeFile(resolve(workspace, "pending-input.txt"), "Owner pending input");
+    const versions = await readFile(resolve(workspace, "config.preview.versions.json"), "utf8");
+    expect((await planDelivery("preview", "network", workspace, now, git)).blockers)
+      .toEqual(dirty ? ["Worktree or index is dirty"] : []);
+    const commands: string[][] = [];
+    const observed = (cwd: string, ...args: string[]) => { commands.push(args); return git(cwd, ...args); };
+    await expect(checkedStartDelivery("preview", "network", true, workspace, now, observed,
+      async tag => ({ ...(await fixturePublication(tag)), artifactsVerified: false, status: "ci-failed" })))
+      .rejects.toThrow("No version or tag write ran");
+    expect(commands.some(args => ["add", "commit", "tag", "push"].includes(args[0]))).toBe(false);
+    expect(await readFile(resolve(workspace, "config.preview.versions.json"), "utf8")).toBe(versions);
+    const delivered = await startDelivery("preview", "network", true, workspace, now, observed);
+    expect(delivered.status).toBe("pushed");
+    expect(delivered.version).toBe("2026.10.1");
+    expect(git(workspace, "symbolic-ref", "--short", "HEAD")).toBe(branch);
+    expect(git(workspace, "ls-remote", "origin", `refs/heads/${branch}`)).toBe(`${delivered.commit}\trefs/heads/${branch}`);
+    expect(git(workspace, "ls-remote", "origin", `refs/tags/${delivered.tag}`)).toBe(`${delivered.tagObject}\trefs/tags/${delivered.tag}`);
+    expect(commands.some(args => args[0] === "push" && args.includes("--atomic"))).toBe(true);
+    expect(commands.some(args => args.includes("--force") || args.some(arg => arg.startsWith("+")))).toBe(false);
+    expect(git(workspace, "status", "--porcelain")).toBe("");
+  });
+}, 60_000);
+
+test.each(["behind", "diverged", "unfetched", "missing"])("preview rejects %s origin before pending writes", async reason => {
+  await fixture(async (workspace, git) => {
+    const original = git(workspace, "rev-parse", "HEAD");
+    git(workspace, "checkout", "-b", "feature-ancestry");
+    if (reason !== "missing") git(workspace, "push", "origin", "feature-ancestry");
+    if (reason === "diverged") {
+      await writeFile(resolve(workspace, "local.txt"), "Local divergence");
+      git(workspace, "add", "local.txt"); git(workspace, "commit", "-m", "Local divergence");
+    }
+    if (reason === "behind" || reason === "diverged") {
+      git(workspace, "checkout", "-b", "remote-progress", original);
+      await writeFile(resolve(workspace, "remote.txt"), "Remote progress");
+      git(workspace, "add", "remote.txt"); git(workspace, "commit", "-m", "Remote progress");
+      git(workspace, "push", "origin", "HEAD:refs/heads/feature-ancestry");
+      git(workspace, "checkout", "feature-ancestry");
+    }
+    await writeFile(resolve(workspace, "pending.txt"), "Preserve owner input");
+    const before = git(workspace, "status", "--porcelain"), head = git(workspace, "rev-parse", "HEAD");
+    const commands: string[][] = [];
+    const observed = (cwd: string, ...args: string[]) => {
+      commands.push(args);
+      const result = git(cwd, ...args);
+      return reason === "unfetched" && args[0] === "ls-remote"
+        ? result.replace(/^[a-f0-9]{40}(?=\trefs\/heads\/feature-ancestry$)/m, "f".repeat(40)) : result;
+    };
+    await expect(startDelivery("preview", "network", true, workspace, now, observed)).rejects.toThrow("Origin branch differs");
+    expect(commands.some(args => ["add", "commit", "tag", "push", "checkout", "fetch"].includes(args[0]))).toBe(false);
+    expect(git(workspace, "status", "--porcelain")).toBe(before);
+    expect(git(workspace, "rev-parse", "HEAD")).toBe(head);
   });
 }, 60_000);
 
@@ -1215,7 +1294,7 @@ test("promptInteractiveDelivery aborts if changelog summary is not written", asy
   const answers: Record<string, string> = {
     "Select product": "package",
     "Select deployment channel": "preview",
-    "written in CHANGELOG.md": "n"
+    "written in docs/source/CHANGELOG.md": "n"
   };
   const askFn = async (query: string) => {
     for (const [key, val] of Object.entries(answers)) {
@@ -1224,7 +1303,7 @@ test("promptInteractiveDelivery aborts if changelog summary is not written", asy
     return "y";
   };
   await expect(promptInteractiveDelivery({ askFn, git: mockCleanGit, onProgress: () => {} }))
-    .rejects.toThrow("Delivery aborted: Please write a summary for the release in CHANGELOG.md before proceeding.");
+    .rejects.toThrow("Delivery aborted: Please write a summary for the release in docs/source/CHANGELOG.md before proceeding.");
 });
 
 test("promptInteractiveDelivery aborts if no changes are confirmed in preparedness self-check", async () => {
@@ -1236,7 +1315,7 @@ test("promptInteractiveDelivery aborts if no changes are confirmed in preparedne
   const answers: Record<string, string> = {
     "Select product": "package",
     "Select deployment channel": "preview",
-    "written in CHANGELOG.md": "y",
+    "written in docs/source/CHANGELOG.md": "y",
     "new features": "n",
     "bug fixes": "n",
     "other changes": "n"
@@ -1285,7 +1364,7 @@ test("promptInteractiveDelivery accepts case-insensitive initial arguments", asy
   };
   const askFn = async (_q: string) => "n"; // abort on changelog summary
   await expect(promptInteractiveDelivery({ firstArg: "Crawler", secondArg: "Preview", askFn, git: mockCleanGit, onProgress: () => {} }))
-    .rejects.toThrow("Delivery aborted: Please write a summary for the release in CHANGELOG.md before proceeding.");
+    .rejects.toThrow("Delivery aborted: Please write a summary for the release in docs/source/CHANGELOG.md before proceeding.");
 });
 
 test("askBinary formats prompt with (Y/n) or (y/N) and respects defaults and explicit input", async () => {
@@ -1317,6 +1396,34 @@ test("askBinary formats prompt with (Y/n) or (y/N) and respects defaults and exp
   const askUpperN = async (_q: string) => "N";
   expect(await askBinary(askUpperN, "Proceed?", true)).toBe(false);
 });
+
+test("startDelivery rolls back unstaged version and changelog modifications if commit fails", async () => {
+  await fixture(async (workspace, git) => {
+    const versionsBefore = await readFile(resolve(workspace, "config.preview.versions.json"), "utf8");
+    await mkdir(resolve(workspace, "docs/source"), { recursive: true });
+    const changelogContent = "# Changelog\n\n## What Changed\n\n### Internal - Packages\n\n## VRC Packages Network `vrcp-packages-network`\n\n### Added\n- **Test Item**: Sample\n";
+    await writeFile(resolve(workspace, "docs/source/CHANGELOG.md"), changelogContent);
+    git(workspace, "add", "docs/source/CHANGELOG.md");
+    git(workspace, "commit", "-m", "Add sample source changelog");
+    const commitBefore = git(workspace, "rev-parse", "HEAD");
+
+    // Pass a git wrapper where 'commit' fails
+    const flakyGit = (cwd: string, ...args: string[]) => {
+      if (args[0] === "commit") {
+        throw new Error("Simulated commit crash during preparation");
+      }
+      return git(cwd, ...args);
+    };
+
+    await expect(startDelivery("preview", "network", true, workspace, now, flakyGit)).rejects.toThrow("Simulated commit crash");
+
+    // Assert that worktree was cleanly rolled back to HEAD
+    expect(git(workspace, "status", "--porcelain")).toBe("");
+    expect(git(workspace, "rev-parse", "HEAD")).toBe(commitBefore);
+    expect(await readFile(resolve(workspace, "config.preview.versions.json"), "utf8")).toBe(versionsBefore);
+    expect((await readFile(resolve(workspace, "docs/source/CHANGELOG.md"), "utf8")).replace(/\r\n/g, "\n")).toBe(changelogContent.replace(/\r\n/g, "\n"));
+  });
+}, 60_000);
 
 
 

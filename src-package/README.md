@@ -75,4 +75,6 @@ Review [LEGAL.md](../LEGAL.md) for full operational covenants, governing law, an
 
 ## License
 
-This package is licensed under the **Apache License v2.0**
+This package is licensed under the **Apache License v2.0*
+
+<!-- LOCKED DOCUMENTATION - DO NOT CHANGE -->

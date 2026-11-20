@@ -5,7 +5,7 @@
 > **Target Subsystems:** `src-worker` (API Worker coordinator) · `src-crawler` (node) · `src-package` (`vrc-packages-api` SDK)
 > **Status Legend:** ✅ Implemented · 🔲 Planned · ⚠️ In Transition · ⏸️ On Hold / Redefining
 
-Implemented means a handler exists. It does not mean that the feature or release gate passed. The [complete route review](../research/audits/API_CONTRACT_REVIEW.md) lists storage, SDK and authorization gaps for owner review.
+Implemented means a handler exists. It does not mean that the feature or release gate passed. The [complete route review](../../research/audits/api_contract_review.md) lists storage, SDK and authorization gaps for owner review.
 
 ---
 
@@ -61,9 +61,12 @@ Success returns `{ "schemaVersion": 1, "jobId": "<UUID>" }` with status 200 and 
 
 | Method | Path | Status | Description | Request Payload | Response (2xx) |
 |---|---|:---:|---|---|---|
-| `POST` | `/v1/node/jobs/claim` | ✅ | Requests a job under capability, robots and active-profile checks. | `{ schemaVersion: 1, nodeId, capabilities[] }` | `200` `{ schemaVersion: 1, status: "leased", job }` or `{ schemaVersion: 1, status: "empty", retryAfterMs }` |
+| `POST` | `/v1/node/jobs/claim` | ✅ | Requests a job under capability, robots and active-profile checks. Bounded by `MAX_CLAIM_SCAN_PAGES = 3` (300 candidates maximum evaluated per invocation). | `{ schemaVersion: 1, nodeId, capabilities[], maxJobs? }` | `200` `{ schemaVersion: 1, status: "leased", job, jobs? }` or `{ schemaVersion: 1, status: "empty", retryAfterMs }` |
 | `POST` | `/v1/node/heartbeat` | ✅ | Reports idle/fetching state and checks active job authority. | `{ schemaVersion: 1, nodeId, capabilities[], state: "idle" }` or `state: "fetching"` with `activeJobId`, `activeLeaseId` | `200` `{ schemaVersion: 1, status: "alive", serverTime }` |
 | `POST` | `/v1/node/jobs/result` | ✅ | Submits typed facts, leads or access outcomes. | `{ schemaVersion: 1, nodeId, jobId, leaseId, idempotencyKey, outcome }` | `200` `{ schemaVersion: 1, status: "accepted", jobId, duplicate, sourceVersionCreated }` |
+| `POST` | `/v1/node/jobs/results` | ✅ | Submits batched job outcomes with atomic per-item receipts and isolated failure handling. | `{ schemaVersion: 1, nodeId, results: [{ jobId, leaseId, idempotencyKey, outcome }] }` | `200` `{ schemaVersion: 1, receipts: [{ status: "accepted", jobId, duplicate, sourceVersionCreated } | { status: "rejected", jobId, terminal, error, code }] }` |
+| `POST` | `/v1/node/robots/claim` | ✅ | Requests a delegated robots.txt preflight refresh job for an origin due for refresh under pacing. | `{ schemaVersion: 1, nodeId }` | `200` `{ schemaVersion: 1, status: "leased", origin, leaseId }` or `{ schemaVersion: 1, status: "empty" }` |
+| `POST` | `/v1/node/robots/result` | ✅ | Submits fetched robots.txt snapshot with HTTP status and body to refresh cached origin rules. | `{ schemaVersion: 1, nodeId, origin, leaseId, statusCode, body? }` | `200` `{ schemaVersion: 1, status: "accepted", origin }` |
 
 There is no GET `/v1/node/jobs` route. Claim lets the coordinator select authorized work. Nodes must not browse a queue and fetch jobs without a lease. The consumer SDK does not expose node routes.
 
@@ -92,6 +95,11 @@ There is no GET `/v1/node/jobs` route. Claim lets the coordinator select authori
 | `GET`  | `/v1/operator/catalog`                      |   ✅    | Lists canonical packages with cursor pagination. Uses the public index projection.                                                                                                                     | Query: `limit`, `cursor`                                                                                                                                                    | `200` `{ schemaVersion: 1, packages[], nextCursor }`                                |
 | `GET`  | `/v1/operator/takedowns`                    |   ✅    | Lists creator opt-out records, not pending removal reports.                                                                                                                                            | Query: `requesterType`, `limit`, `cursor`                                                                                                                                   | `200` `{ schemaVersion: 1, records[], nextCursor }`                                 |
 | `POST` | `/v1/operator/takedowns/{id}/verify`        |   ✅    | Records a verdict on a stored opt-out. Automated proof checks and persisted actor audit are absent.                                                                                                    | `{ schemaVersion: 1, verdict: "accepted" \| "rejected", notes? }`                                                                                                           | `200` `{ schemaVersion: 1, takedownId, status, updatedAt }`                         |
+| `GET`  | `/v1/operator/claims`                       |   ✅    | Lists recorded delegated creator claims with reviewStatus filter and keyset pagination.                                                                                                                | Query: `reviewStatus?`, `limit?`, `cursor`                                                                                                                                  | `200` `{ schemaVersion: 1, records[], nextCursor }`                                 |
+| `POST` | `/v1/operator/claims/{id}/verify`           |   ✅    | Records an operator review verdict on a stored delegated creator claim.                                                                                                                                | `{ schemaVersion: 1, verdict: "accepted" \| "rejected", notes? }`                                                                                                           | `200` `{ schemaVersion: 1, claimId, status, updatedAt }`                            |
+| `GET`  | `/v1/operator/apps`                         |   ✅    | Lists registered downstream applications with candidate filters and cursor pagination.                                                                                                                | Query: `candidateStatus?`, `limit?`, `cursor`                                                                                                                               | `200` `{ schemaVersion: 1, apps[], nextCursor }`                                    |
+| `POST` | `/v1/operator/apps/{appId}/delegation`      |   ✅    | Sets or updates delegation authorization for a registered application.                                                                                                                                  | `{ schemaVersion: 1, delegationAllowed: boolean, reason?: string }`                                                                                                         | `200` `{ schemaVersion: 1, appId, delegationAllowed, permissions[], updatedAt }`   |
+| `POST` | `/v1/operator/apps/{appId}/candidate-review`|   ✅    | Records an operator review verdict for high-intensity application candidates.                                                                                                                           | `{ schemaVersion: 1, candidateStatus, grantDelegation?, notes? }`                                                                                                           | `200` `{ schemaVersion: 1, appId, candidateStatus, candidateFlags[], delegationAllowed, permissions[], reviewedAt }` |
 
 ---
 
@@ -137,44 +145,72 @@ SDK delta and operator list methods now check strict query schemas before transp
 | `GET` | `/v1/app/index/delta` | Public | ✅ | Pages current rows by update time. Emits `upsert` or `delist`. This is not a durable event stream. | Query: `cursor?`, `limit?` (1–100, default 50) | `200` `{ schemaVersion: 1, epoch, deltas[], nextCursor }` |
 | `POST` | `/v1/app/index/search` | `vrcp_app_` | ⚠️ | Bounded substring search. Attribution is accepted but unused. Tags use heuristics, not canonical tag data. | `{ schemaVersion: 1, query?, queryOrigin?, category?, umbrella?, platform?, tags[]?, limit?, cursor? }` | `200` `{ schemaVersion: 1, items[], nextCursor, totalEstimated }` |
 | `POST` | `/v1/app/report` | `vrcp_app_` | ✅ | Records demand, issue reports or pending removal requests. Removal does not alter the catalog. | `{ schemaVersion: 1, reportType: "demand_signal" \| "issue_report" \| "removal_request", signalKind?, reportKind?, targetUrl?, canonicalId?, query?, zeroHits?, reason?, metadata? }` | `{ schemaVersion: 1, status: "accepted", reportId, recordedAt }`. demand/issue `200`, removal `202`. |
+| `POST` | `/v1/app/claims/intake` | `vrcp_app_` | ✅ | Ingests delegated creator ownership claims with atomic replay protection on `(app_id, nonce)`. Records as pending review. Zero external crawl egress. | `{ schemaVersion: 1, attestation: { appId, action, frontUrl, creatorId, challengeToken, expiresAt, nonce }, signature, reason?, contactEmail? }` | `202` `{ schemaVersion: 1, status: "accepted", claimId, reviewStatus: "pending", recordedAt }` |
+
+---
+
+### §2.5 Moderator Protocol (`/v1/moderator/*`)
+
+**Auth:** `Authorization: Bearer <USER_TOKEN>` (`vrcp_usr_<64-hex>`). Requires moderator authority (`isModerator: true`) and age verification (`ageVerified: true`).  
+**Handler:** `src-worker/src/api/moderator_handler.ts` · **Schema:** `moderator.ts`
+
+| Method | Path | Status | Description | Request / Query | Response (2xx) |
+|---|---|:---:|---|---|---|
+| `GET` | `/v1/moderator/ratings` | ✅ | Lists package content ratings with cursor pagination for review. | Query: `rating?`, `limit?`, `cursor?` | `200` `{ schemaVersion: 1, ratings[], nextCursor }` |
+| `POST` | `/v1/moderator/ratings/{canonicalId}` | ✅ | Adjusts package content rating with required audit reason. | `{ schemaVersion: 1, newRating, reason }` | `200` `{ schemaVersion: 1, canonicalId, previousRating, newRating, adjustedBy, updatedAt }` |
+| `GET` | `/v1/moderator/apps` | ✅ | Lists high-intensity application candidates flagged for review. | Query: `candidateStatus?`, `limit?`, `cursor?` | `200` `{ schemaVersion: 1, apps[], nextCursor }` |
+| `POST` | `/v1/moderator/apps/{appId}/candidate-review` | ✅ | Records moderator review verdict for candidate application. | `{ schemaVersion: 1, candidateStatus, grantDelegation?, notes? }` | `200` `{ schemaVersion: 1, appId, candidateStatus, candidateFlags[], delegationAllowed, permissions[], reviewedAt }` |
 
 ---
 
 ## 3. Role × Route Access Matrix
 
-| Route                                            | Admin Operator | User | Downstream App | Crawler Node | Public Anonymous |
-| ------------------------------------------------ | :------------: | :--: | :------------: | :----------: | :--------------: |
-| `POST /v1/node/jobs/claim`                       |       —        |  —   |       —        |      ✅       |        —         |
-| `POST /v1/node/heartbeat`                        |       —        |  —   |       —        |      ✅       |        —         |
-| `POST /v1/node/jobs/result`                      |       —        |  —   |       —        |      ✅       |        —         |
-| `GET /v1/operator/leads`                         |       ✅        |  —   |       —        |      —       |        —         |
-| `POST /v1/operator/init`                         |       ✅        |  —   |       —        |      —       |        —         |
-| `POST /v1/operator/jobs`                         |       ✅        |  —   |       —        |      —       |        —         |
-| `POST /v1/operator/leads/{key}/approve`          |       ✅        |  —   |       —        |      —       |        —         |
-| `POST /v1/operator/leads/{key}/reject`           |       ✅        |  —   |       —        |      —       |        —         |
-| `GET /v1/operator/source-profiles`               |       ✅        |  —   |       —        |      —       |        —         |
-| `POST /v1/operator/source-profiles`              |       ✅        |  —   |       —        |      —       |        —         |
-| `POST /v1/operator/source-profiles/{id}/disable` |       ✅        |  —   |       —        |      —       |        —         |
-| `GET /v1/operator/autoqueue-rules`               |       ✅        |  —   |       —        |      —       |        —         |
-| `POST /v1/operator/autoqueue-rules`              |       ✅        |  —   |       —        |      —       |        —         |
-| `POST /v1/operator/autoqueue-rules/{id}/disable` |       ✅        |  —   |       —        |      —       |        —         |
-| `POST /v1/operator/nodes`                        |       ✅        |  —   |       —        |      —       |        —         |
-| `POST /v1/operator/nodes/{nodeId}/revoke`        |       ✅        |  —   |       —        |      —       |        —         |
-| `GET /v1/operator/catalog`                       |       ✅        |  —   |       —        |      —       |        —         |
-| `GET /v1/operator/takedowns`                     |       ✅        |  —   |       —        |      —       |        —         |
-| `POST /v1/operator/takedowns/{id}/verify`        |       ✅        |  —   |       —        |      —       |        —         |
-| `GET /v1/user/apps`                              |       —        |  ✅   |       —        |      —       |        —         |
-| `GET /v1/user/apps/{appId}`                      |       —        |  ✅   |       —        |      —       |        —         |
-| `GET /v1/user/nodes` 🔲                          |       —        |  ✅   |       —        |      —       |        —         |
-| `GET /v1/user/nodes/{nodeId}` 🔲                 |       —        |  ✅   |       —        |      —       |        —         |
-| `GET /v1/user` 🔲                                |       —        |  ✅   |       —        |      —       |        —         |
-| `DELETE /v1/user/nodes/{id}` 🔲                  |       —        |  ✅   |       —        |      —       |        —         |
-| `DELETE /v1/user/apps/{id}` 🔲                   |       —        |  ✅   |       —        |      —       |        —         |
-| `POST /v1/app/register`                          |       ✅        |  ✅   |       —        |      —       |        —         |
-| `GET /v1/app/index`                              |       —        |  —   |       —        |      —       |        ✅         |
-| `GET /v1/app/index/delta`                        |       —        |  —   |       —        |      —       |        ✅         |
-| `POST /v1/app/index/search`                      |       —        |  —   |       ✅        |      —       |        —         |
-| `POST /v1/app/report`                            |       —        |  —   |       ✅        |      —       |        —         |
+| Route                                            | Admin Operator | Moderator | User | Downstream App | Crawler Node | Public Anonymous |
+| ------------------------------------------------ | :------------: | :-------: | :--: | :------------: | :----------: | :--------------: |
+| `POST /v1/node/jobs/claim`                       |       —        |     —     |  —   |       —        |      ✅       |        —         |
+| `POST /v1/node/heartbeat`                        |       —        |     —     |  —   |       —        |      ✅       |        —         |
+| `POST /v1/node/jobs/result`                      |       —        |     —     |  —   |       —        |      ✅       |        —         |
+| `POST /v1/node/jobs/results`                     |       —        |     —     |  —   |       —        |      ✅       |        —         |
+| `POST /v1/node/robots/claim`                     |       —        |     —     |  —   |       —        |      ✅       |        —         |
+| `POST /v1/node/robots/result`                    |       —        |     —     |  —   |       —        |      ✅       |        —         |
+| `GET /v1/operator/leads`                         |       ✅        |     —     |  —   |       —        |      —       |        —         |
+| `POST /v1/operator/init`                         |       ✅        |     —     |  —   |       —        |      —       |        —         |
+| `POST /v1/operator/jobs`                         |       ✅        |     —     |  —   |       —        |      —       |        —         |
+| `POST /v1/operator/leads/{key}/approve`          |       ✅        |     —     |  —   |       —        |      —       |        —         |
+| `POST /v1/operator/leads/{key}/reject`           |       ✅        |     —     |  —   |       —        |      —       |        —         |
+| `GET /v1/operator/source-profiles`               |       ✅        |     —     |  —   |       —        |      —       |        —         |
+| `POST /v1/operator/source-profiles`              |       ✅        |     —     |  —   |       —        |      —       |        —         |
+| `POST /v1/operator/source-profiles/{id}/disable` |       ✅        |     —     |  —   |       —        |      —       |        —         |
+| `GET /v1/operator/autoqueue-rules`               |       ✅        |     —     |  —   |       —        |      —       |        —         |
+| `POST /v1/operator/autoqueue-rules`              |       ✅        |     —     |  —   |       —        |      —       |        —         |
+| `POST /v1/operator/autoqueue-rules/{id}/disable` |       ✅        |     —     |  —   |       —        |      —       |        —         |
+| `POST /v1/operator/nodes`                        |       ✅        |     —     |  —   |       —        |      —       |        —         |
+| `POST /v1/operator/nodes/{nodeId}/revoke`        |       ✅        |     —     |  —   |       —        |      —       |        —         |
+| `GET /v1/operator/catalog`                       |       ✅        |     —     |  —   |       —        |      —       |        —         |
+| `GET /v1/operator/takedowns`                     |       ✅        |     —     |  —   |       —        |      —       |        —         |
+| `POST /v1/operator/takedowns/{id}/verify`        |       ✅        |     —     |  —   |       —        |      —       |        —         |
+| `GET /v1/operator/claims`                        |       ✅        |     —     |  —   |       —        |      —       |        —         |
+| `POST /v1/operator/claims/{id}/verify`           |       ✅        |     —     |  —   |       —        |      —       |        —         |
+| `GET /v1/operator/apps`                          |       ✅        |     —     |  —   |       —        |      —       |        —         |
+| `POST /v1/operator/apps/{appId}/delegation`      |       ✅        |     —     |  —   |       —        |      —       |        —         |
+| `POST /v1/operator/apps/{appId}/candidate-review`|       ✅        |     —     |  —   |       —        |      —       |        —         |
+| `GET /v1/moderator/ratings`                      |       —        |     ✅     |  —   |       —        |      —       |        —         |
+| `POST /v1/moderator/ratings/{id}`                |       —        |     ✅     |  —   |       —        |      —       |        —         |
+| `GET /v1/moderator/apps`                         |       —        |     ✅     |  —   |       —        |      —       |        —         |
+| `POST /v1/moderator/apps/{appId}/candidate-review`|      —        |     ✅     |  —   |       —        |      —       |        —         |
+| `GET /v1/user/apps`                              |       —        |     —     |  ✅   |       —        |      —       |        —         |
+| `GET /v1/user/apps/{appId}`                      |       —        |     —     |  ✅   |       —        |      —       |        —         |
+| `GET /v1/user/nodes` 🔲                          |       —        |     —     |  ✅   |       —        |      —       |        —         |
+| `GET /v1/user/nodes/{nodeId}` 🔲                 |       —        |     —     |  ✅   |       —        |      —       |        —         |
+| `GET /v1/user` 🔲                                |       —        |     —     |  ✅   |       —        |      —       |        —         |
+| `DELETE /v1/user/nodes/{id}` 🔲                  |       —        |     —     |  ✅   |       —        |      —       |        —         |
+| `DELETE /v1/user/apps/{id}` 🔲                   |       —        |     —     |  ✅   |       —        |      —       |        —         |
+| `POST /v1/app/register`                          |       ✅        |     —     |  ✅   |       —        |      —       |        —         |
+| `GET /v1/app/index`                              |       —        |     —     |  —   |       —        |      —       |        ✅         |
+| `GET /v1/app/index/delta`                        |       —        |     —     |  —   |       —        |      —       |        ✅         |
+| `POST /v1/app/index/search`                      |       —        |     —     |  —   |       ✅        |      —       |        —         |
+| `POST /v1/app/report`                            |       —        |     —     |  —   |       ✅        |      —       |        —         |
+| `POST /v1/app/claims/intake`                     |       —        |     —     |  —   |       ✅        |      —       |        —         |
 
 ---
 

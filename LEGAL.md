@@ -5,7 +5,7 @@
 **Governing Law:** Substantive Laws of the Republic of the Philippines  
 **Judicial Forum:** Courts of the Republic of the Philippines  
 
-> **Implementation status (2026-09-27):** This document states the intended terms and safeguards for Project-controlled public catalog services. The new multi-node coordinator is currently a local simulation and Cloudflare Worker runtime target, not an open contributor network. Technical conformance and capability gates are tracked separately in [docs/scratch/IMPLEMENTATION_PLAN.md](docs/scratch/IMPLEMENTATION_PLAN.md) and [docs/source/DATABASE_SCHEMAS.md](docs/source/DATABASE_SCHEMAS.md); a covenant here is not evidence that every corresponding code path has been implemented or independently reviewed. Source-platform permissions, retention, and public text rules remain subject to source-specific research and legal review before a public launch.
+> **Implementation status (2026-09-27):** This document states the intended terms and safeguards for Project-controlled public catalog services. The new multi-node coordinator is currently a local simulation and Cloudflare Worker runtime target, not an open contributor network. Technical conformance and capability gates are tracked separately in [docs/scratch-legal-research/IMPLEMENTATION_PLAN.md](docs/scratch-legal-research/IMPLEMENTATION_PLAN.md) and [docs/source/schemas/coordinator_d1.md](docs/source/schemas/coordinator_d1.md); a covenant here is not evidence that every corresponding code path has been implemented or independently reviewed. Source-platform permissions, retention, and public text rules remain subject to source-specific research and legal review before a public launch.
 
 The software, tools, APIs, catalogs, and documentation in this repository (collectively, the "**Project**") are developed by SlamTheDragon, an individual open-source developer ("**Maintainer**"). The Maintainer resides in the Republic of the Philippines. The Maintainer does not operate as a commercial entity.
 
@@ -128,7 +128,7 @@ The Project indexes public metadata using standard web discovery practices:
 - **(f) VRCArena:** The Project avoids HTML DOM scraping against VRCArena servers to minimize infrastructure burden. It uses bilateral API federation or curated static dataset dumps.
 
 5.3. **Platform Matrix.**  
-Detailed platform access terms, robot directives, and risk classifications appear in [PLATFORM-MATRIX.md](docs/research/markets/PLATFORM-MATRIX.md).
+Detailed platform access terms, robot directives, and risk classifications appear in [platform_clearance_matrix.md](./docs/research/markets/platform_clearance_matrix.md).
 
 5.4. **Disclaimer of Corporate Affiliation.**  
 The Project has no corporate or contractual relationship with any indexed platform. References to platforms serve compatibility and attribution purposes only.
@@ -507,3 +507,14 @@ These Terms constitute the entire agreement between the Maintainer and users reg
 ### 8. Trademarks and Nominative Fair Use
 - *New Kids on the Block v. News America Publishing, Inc.*, 971 F.2d 302 (9th Cir. 1992). Formulated the nominative fair use test under U.S. trademark law, permitting reference to a third-party mark where: (1) the product or service is not readily identifiable without use of the mark, (2) only so much of the mark is used as is reasonably necessary, and (3) user does nothing suggesting sponsorship or endorsement.
 - Republic Act No. 8293, Section 148 (Phil.). Establishes that trademark registration does not entitle the owner to prohibit third-party bona fide use of indications for purely informative or identification purposes.
+
+
+## Draft Proposals Pending Counsel Review
+
+> **DRAFT. Not legal advice. No counsel has reviewed this section. It creates no compliance claim and no covenant until the owner adopts it.**
+
+1. **Age and personal data.** Treat age-verification status and any stored age threshold as sensitive personal information (see [RA 10173 section 3](https://privacy.gov.ph/data-privacy-act/)). Store only a boolean flag, never a date of birth or identity document. Applicability of [RA 11930 section 35](https://lawphil.net/statutes/repacts/ra2022/ra_11930_2022.html) to this metadata service is unresolved.
+2. **VRChat integration.** Do not collect VRChat credentials. VRChat terms restrict automated access (section 13.2(j)) and state no OAuth. A community practice or profile badge does not grant permission. Any use of the unofficial `/api/1/auth/user` fields needs separate review first.
+3. **Publication and withdrawal.** Fetch permission, publication permission and withdrawal are separate. Withdrawal must reach downstream copies through a delta-feed tombstone. The retention period for withdrawn identifiers is undecided.
+4. **Restricted content reports.** Do not expose restricted material to collect classification votes. Suspected illegal material follows a separate incident path with its own retention and reporting steps, to be set with counsel.
+5. **Moderator access.** Volunteer reviewers must be registered and age-verified. Their access, appeal rights and abuse controls remain to be drafted.

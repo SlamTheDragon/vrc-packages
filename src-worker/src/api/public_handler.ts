@@ -10,12 +10,21 @@ import {
   type CatalogPackage
 } from "vrc-packages-api";
 import { workerLogger } from "../worker_logger.ts";
+import {
+  extractClientIp,
+  RATE_LIMIT_POLICIES,
+  rateLimitResponse,
+  applyRateLimitHeaders,
+  defaultRateLimiter,
+  type IRateLimiter
+} from "./rate_limiter.ts";
 
 export interface PublicCatalogStore {
   getCatalogEpoch(): Promise<string> | string;
   listCanonicalPackagesPage(
     limit: number,
-    cursor: CatalogCursor | null
+    cursor: CatalogCursor | null,
+    options?: { includeAllRatings?: boolean }
   ): Promise<{ packages: CatalogPackage[]; nextCursor: string | null }> |
      { packages: CatalogPackage[]; nextCursor: string | null };
   listCatalogDeltasPage(
@@ -30,7 +39,7 @@ function json(body: unknown, status = 200): Response {
     status,
     headers: {
       "content-type": "application/json; charset=utf-8",
-      "cache-control": "public, max-age=60",
+      "cache-control": status < 400 ? "public, max-age=60" : "no-store",
       "access-control-allow-origin": "*"
     }
   });
@@ -42,7 +51,8 @@ function failure(status: number, code: string, message: string): Response {
 
 export async function handlePublicCatalogRequest(
   request: Request,
-  store: PublicCatalogStore
+  store: PublicCatalogStore,
+  rateLimiter: IRateLimiter = defaultRateLimiter
 ): Promise<Response> {
   const url = new URL(request.url);
   const isCatalog = request.method === "GET" && url.pathname === "/v1/app/index";
@@ -50,6 +60,13 @@ export async function handlePublicCatalogRequest(
 
   if (!isCatalog && !isDelta) {
     return failure(404, "not_found", "Route not found");
+  }
+
+  const clientIp = extractClientIp(request);
+  const rateResult = await rateLimiter.check(`public:${clientIp}`, RATE_LIMIT_POLICIES.PUBLIC_CATALOG);
+  if (!rateResult.allowed) {
+    workerLogger.warn("Public catalog rate limit exceeded", { path: url.pathname, clientIp });
+    return rateLimitResponse(rateResult, CATALOG_PROTOCOL_VERSION, "Rate limit exceeded for public catalog endpoints. Please retry later.");
   }
 
   const limitParam = url.searchParams.get("limit");
@@ -70,10 +87,10 @@ export async function handlePublicCatalogRequest(
         return failure(400, "invalid_query", "Catalog cursor is invalid");
       }
       const page = await store.listCanonicalPackagesPage(limit, cursor);
-      return json(PublicCatalogListResponseSchema.parse({
+      return applyRateLimitHeaders(json(PublicCatalogListResponseSchema.parse({
         schemaVersion: CATALOG_PROTOCOL_VERSION,
         ...page
-      }));
+      })), rateResult);
     }
 
     // isDelta
@@ -82,21 +99,24 @@ export async function handlePublicCatalogRequest(
       return failure(400, "invalid_query", "Delta cursor is invalid");
     }
     const deltaPage = await store.listCatalogDeltasPage(limit, deltaCursor);
-    return json(CatalogDeltaResponseSchema.parse({
+    return applyRateLimitHeaders(json(CatalogDeltaResponseSchema.parse({
       schemaVersion: CATALOG_PROTOCOL_VERSION,
       ...deltaPage
-    }));
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "Public catalog query failed";
-    workerLogger.error("Public catalog request failed", error, { path: url.pathname });
-    return failure(500, "internal_error", message);
+    })), rateResult);
+  } catch {
+    // Storage and schema failures can contain private rows or credentials.
+    workerLogger.error("Public catalog request failed", undefined, { path: url.pathname });
+    return failure(500, "internal_error", "Public catalog query failed");
   }
 }
 
-export function createPublicCatalogHandler(store: PublicCatalogStore): (request: Request) => Promise<Response | null> {
+export function createPublicCatalogHandler(
+  store: PublicCatalogStore,
+  rateLimiter: IRateLimiter = defaultRateLimiter
+): (request: Request) => Promise<Response | null> {
   return async (request: Request): Promise<Response | null> => {
     const path = new URL(request.url).pathname;
     if (path !== "/v1/app/index" && path !== "/v1/app/index/delta") return null;
-    return handlePublicCatalogRequest(request, store);
+    return handlePublicCatalogRequest(request, store, rateLimiter);
   };
 }

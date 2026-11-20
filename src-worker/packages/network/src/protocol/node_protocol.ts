@@ -20,10 +20,19 @@ export const NodeIdSchema = IssueNodeCredentialSchema.shape.nodeId;
 const JobIdSchema = z.string().min(1).max(120);
 const HttpsUrlSchema = z.url().refine((value) => new URL(value).protocol === "https:", "HTTPS URL required");
 
+export const MAX_JOB_URL_LENGTH = 2048;
+export const MAX_ORIGIN_URL_LENGTH = 255;
+export const MAX_ETAG_LENGTH = 256;
+export const MAX_LAST_MODIFIED_LENGTH = 128;
+export const MAX_COORDINATOR_RESPONSE_BYTES = 2 * 1024 * 1024; // 2 MiB
+export const MAX_CLAIM_JOBS = 10;
+export const MAX_BATCH_RESULTS = 10;
+
 export const ClaimRequestSchema = z.strictObject({
   schemaVersion: z.literal(PROTOCOL_VERSION),
   nodeId: NodeIdSchema,
-  capabilities: z.array(PlatformSchema).min(1).max(PlatformSchema.options.length)
+  capabilities: z.array(PlatformSchema).min(1).max(PlatformSchema.options.length),
+  maxJobs: z.number().int().min(1).max(MAX_CLAIM_JOBS).optional()
 });
 export type ClaimRequest = z.infer<typeof ClaimRequestSchema>;
 
@@ -32,17 +41,22 @@ export const CrawlJobSchema = z.strictObject({
   leaseId: z.uuid(),
   platform: PlatformSchema,
   purpose: JobPurposeSchema,
-  url: HttpsUrlSchema,
-  origin: HttpsUrlSchema,
+  url: HttpsUrlSchema.refine((value) => value.length <= MAX_JOB_URL_LENGTH, `URL exceeds max length of ${MAX_JOB_URL_LENGTH}`),
+  origin: HttpsUrlSchema.refine((value) => value.length <= MAX_ORIGIN_URL_LENGTH, `Origin exceeds max length of ${MAX_ORIGIN_URL_LENGTH}`),
   leaseExpiresAt: z.iso.datetime(),
   retainClasses: z.array(EvidenceClassSchema).min(1).max(4),
-  etag: z.string().nullable(),
-  lastModified: z.string().nullable()
+  etag: z.string().max(MAX_ETAG_LENGTH).nullable(),
+  lastModified: z.string().max(MAX_LAST_MODIFIED_LENGTH).nullable()
 });
 export type CrawlJob = z.infer<typeof CrawlJobSchema>;
 
 export const ClaimResponseSchema = z.discriminatedUnion("status", [
-  z.strictObject({ schemaVersion: z.literal(PROTOCOL_VERSION), status: z.literal("leased"), job: CrawlJobSchema }),
+  z.strictObject({
+    schemaVersion: z.literal(PROTOCOL_VERSION),
+    status: z.literal("leased"),
+    job: CrawlJobSchema,
+    jobs: z.array(CrawlJobSchema).min(1).max(MAX_CLAIM_JOBS).optional()
+  }),
   z.strictObject({ schemaVersion: z.literal(PROTOCOL_VERSION), status: z.literal("empty"), retryAfterMs: z.number().int().min(0).max(300000) })
 ]);
 export type ClaimResponse = z.infer<typeof ClaimResponseSchema>;
@@ -112,24 +126,27 @@ export const DiscoveryLeadSchema = z.strictObject({
 });
 export type DiscoveryLead = z.infer<typeof DiscoveryLeadSchema>;
 
+export const ResultOutcomeSchema = z.discriminatedUnion("kind", [
+  z.strictObject({ kind: z.literal("changed"), observation: ObservationSchema }),
+  z.strictObject({ kind: z.literal("batch"), observations: z.array(ObservationSchema).min(1).max(100) }),
+  z.strictObject({ kind: z.literal("partial_batch"), observations: z.array(ObservationSchema).max(100),
+    issues: z.array(VpmListingIssueSchema).min(1).max(100) }),
+  z.strictObject({ kind: z.literal("discovery"), leads: z.array(DiscoveryLeadSchema).max(100) }),
+  z.strictObject({ kind: z.literal("unchanged") }),
+  z.strictObject({ kind: z.literal("gone") }),
+  z.strictObject({ kind: z.literal("temporary_failure"), reason: z.string().min(1).max(300) }),
+  z.strictObject({ kind: z.literal("rate_limited"), retryAfterSeconds: z.number().int().min(1).max(86400) }),
+  z.strictObject({ kind: z.literal("blocked"), reason: z.string().min(1).max(300) })
+]);
+export type ResultOutcome = z.infer<typeof ResultOutcomeSchema>;
+
 export const ResultRequestSchema = z.strictObject({
   schemaVersion: z.literal(PROTOCOL_VERSION),
   nodeId: NodeIdSchema,
   jobId: JobIdSchema,
   leaseId: z.uuid(),
   idempotencyKey: z.string().min(16).max(150),
-  outcome: z.discriminatedUnion("kind", [
-    z.strictObject({ kind: z.literal("changed"), observation: ObservationSchema }),
-    z.strictObject({ kind: z.literal("batch"), observations: z.array(ObservationSchema).min(1).max(100) }),
-    z.strictObject({ kind: z.literal("partial_batch"), observations: z.array(ObservationSchema).max(100),
-      issues: z.array(VpmListingIssueSchema).min(1).max(100) }),
-    z.strictObject({ kind: z.literal("discovery"), leads: z.array(DiscoveryLeadSchema).max(100) }),
-    z.strictObject({ kind: z.literal("unchanged") }),
-    z.strictObject({ kind: z.literal("gone") }),
-    z.strictObject({ kind: z.literal("temporary_failure"), reason: z.string().min(1).max(300) }),
-    z.strictObject({ kind: z.literal("rate_limited"), retryAfterSeconds: z.number().int().min(1).max(86400) }),
-    z.strictObject({ kind: z.literal("blocked"), reason: z.string().min(1).max(300) })
-  ])
+  outcome: ResultOutcomeSchema
 });
 export type ResultRequest = z.infer<typeof ResultRequestSchema>;
 
@@ -142,10 +159,48 @@ export const ResultResponseSchema = z.strictObject({
 });
 export type ResultResponse = z.infer<typeof ResultResponseSchema>;
 
+export const BatchResultItemSchema = z.strictObject({
+  jobId: JobIdSchema,
+  leaseId: z.uuid(),
+  idempotencyKey: z.string().min(16).max(150),
+  outcome: ResultOutcomeSchema
+});
+export type BatchResultItem = z.infer<typeof BatchResultItemSchema>;
+
+export const BatchResultRequestSchema = z.strictObject({
+  schemaVersion: z.literal(PROTOCOL_VERSION),
+  nodeId: NodeIdSchema,
+  results: z.array(BatchResultItemSchema).min(1).max(MAX_BATCH_RESULTS)
+});
+export type BatchResultRequest = z.infer<typeof BatchResultRequestSchema>;
+
+export const BatchResultReceiptSchema = z.discriminatedUnion("status", [
+  z.strictObject({
+    status: z.literal("accepted"),
+    jobId: JobIdSchema,
+    duplicate: z.boolean(),
+    sourceVersionCreated: z.boolean()
+  }),
+  z.strictObject({
+    status: z.literal("rejected"),
+    jobId: JobIdSchema,
+    terminal: z.boolean(),
+    error: z.string().min(1).max(500),
+    code: z.enum(["bad_json", "invalid_payload", "unauthorized", "forbidden", "conflict", "not_found", "internal_error", "lease_expired"])
+  })
+]);
+export type BatchResultReceipt = z.infer<typeof BatchResultReceiptSchema>;
+
+export const BatchResultResponseSchema = z.strictObject({
+  schemaVersion: z.literal(PROTOCOL_VERSION),
+  receipts: z.array(BatchResultReceiptSchema).min(1).max(MAX_BATCH_RESULTS)
+});
+export type BatchResultResponse = z.infer<typeof BatchResultResponseSchema>;
+
 export const ProtocolErrorSchema = z.strictObject({
   schemaVersion: z.literal(PROTOCOL_VERSION),
   error: z.string().min(1),
-  code: z.enum(["bad_json", "invalid_payload", "unauthorized", "forbidden", "conflict", "not_found", "internal_error"])
+  code: z.enum(["bad_json", "invalid_payload", "unauthorized", "forbidden", "conflict", "not_found", "internal_error", "lease_expired"])
 });
 
 /** These schemas are exported for documentation and non-TypeScript consumers. */
@@ -156,5 +211,7 @@ export const NODE_API_JSON_SCHEMAS = {
   heartbeatResponse: z.toJSONSchema(HeartbeatResponseSchema),
   resultRequest: z.toJSONSchema(ResultRequestSchema),
   resultResponse: z.toJSONSchema(ResultResponseSchema),
+  batchResultRequest: z.toJSONSchema(BatchResultRequestSchema),
+  batchResultResponse: z.toJSONSchema(BatchResultResponseSchema),
   error: z.toJSONSchema(ProtocolErrorSchema)
 } as const;

@@ -358,6 +358,18 @@ export function diagnoseFailure(context = {}) {
   const failedJobs = jobs.filter(j => ["failure", "cancelled", "timed_out", "action_required", "startup_failure"].includes(j.conclusion));
   const failedNames = failedJobs.map(j => j.name);
 
+  // Partial publication failure (published outputs or release assets exist remotely)
+  const isPostPublication = Boolean(context.hasPublishedOutputs || context.published || context.artifactsVerified);
+  if (isPostPublication) {
+    return {
+      category: "partial-publication",
+      severity: "high",
+      continuity: "requires-reconciliation",
+      rootCause: `Published outputs or release assets exist remotely for ${context.tag || "tag"}; tag deletion is forbidden: ${errorMsg || "partial publication failure"}`,
+      suggestedActions: ["reconcile", "sync-versions"]
+    };
+  }
+
   // Transient failure detection (network glitch, timeout, runner shutdown)
   const isTransientError = /timeout|timed out|ETIMEDOUT|ECONNRESET|socket hang up|rate limit|fetch failed|network|503|502|runner_listener|startup_failure/i.test(errorMsg);
   const isTransientJob = failedJobs.some(j => j.conclusion === "timed_out" || j.conclusion === "startup_failure");
@@ -429,10 +441,49 @@ export async function revertDeliveryTag(tag, options = {}) {
   const { workspace = root, readGit = git, deleteRemote = false, repository = "SlamTheDragon/vrc-packages", token = options.token || getGitHubToken(workspace), fetchFn = fetch } = options;
   let localDeleted = false;
   let remoteDeleted = false;
-  try {
-    readGit(workspace, "tag", "-d", tag);
-    localDeleted = true;
-  } catch {}
+
+  // Verify absence of remote publication before authorizing any local or remote tag deletion.
+  if (token) {
+    const relResp = await fetchFn(`https://api.github.com/repos/${repository}/releases/tags/${encodeURIComponent(tag)}`, {
+      headers: {
+        authorization: `Bearer ${token}`,
+        "user-agent": "VRCPDelivery",
+        accept: "application/vnd.github+json"
+      }
+    });
+    if (relResp.ok && relResp.status === 200) {
+      const releaseData = await relResp.json().catch(() => null);
+      if (releaseData && (releaseData.assets?.length > 0 || !releaseData.draft)) {
+        throw new Error(`Cannot revert tag ${tag}: remote publication exists with published assets. Deleting published tags is forbidden; use a patch version.`);
+      }
+    } else if (!relResp.ok && relResp.status !== 404 && relResp.status !== 204) {
+      throw new Error(`Failed to verify absence of remote release for ${tag}: HTTP ${relResp.status}`);
+    }
+  }
+
+  // If remote deletion was not requested, check whether the tag exists on remote.
+  // Local-only deletion when remote tag exists leads to desynchronization and is blocked.
+  if (!deleteRemote) {
+    let remoteTagExists = false;
+    if (token) {
+      try {
+        const refResp = await fetchFn(`https://api.github.com/repos/${repository}/git/refs/tags/${encodeURIComponent(tag)}`, {
+          headers: { authorization: `Bearer ${token}`, "user-agent": "VRCPDelivery", accept: "application/vnd.github+json" }
+        });
+        if (refResp.ok || refResp.status === 200) remoteTagExists = true;
+      } catch {}
+    } else {
+      try {
+        const remoteRef = readGit(workspace, "ls-remote", "origin", `refs/tags/${tag}`);
+        if (remoteRef && remoteRef.includes(tag)) remoteTagExists = true;
+      } catch {}
+    }
+    if (remoteTagExists) {
+      throw new Error(`Cannot delete local tag ${tag}: remote tag exists on remote repository. Reverting requires explicit deleteRemote: true and verified absence of published outputs.`);
+    }
+  }
+
+  // Fail before any deletion: a missing credential or rejected remote delete must keep local refs intact.
   if (deleteRemote) {
     if (!token) throw new Error("Deleting remote tag requires a GitHub token with write permission.");
     const response = await fetchFn(`https://api.github.com/repos/${repository}/git/refs/tags/${encodeURIComponent(tag)}`, {
@@ -449,6 +500,10 @@ export async function revertDeliveryTag(tag, options = {}) {
       throw new Error(`Failed to delete remote tag ${tag}: HTTP ${response.status}`);
     }
   }
+  try {
+    readGit(workspace, "tag", "-d", tag);
+    localDeleted = true;
+  } catch {}
   return { status: "tag-reverted", tag, local: localDeleted, remote: remoteDeleted };
 }
 
@@ -458,7 +513,7 @@ export function createPatchBranch(product, version, options = {}) {
     readGit = git,
     baseBranch,
     tag = productTagPrefixes[product] ? `${productTagPrefixes[product]}/v${version}` : undefined,
-    deleteTag = true
+    deleteTag = false
   } = options;
   if (!product || !version) throw new Error("createPatchBranch requires product and version");
   const branchName = `release/patch/${product}/v${version}`;

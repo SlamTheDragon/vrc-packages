@@ -46,15 +46,17 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Typecheck Worker
         run: bun run --cwd src-worker check
-      - name: Test Worker
-        continue-on-error: ${{ steps.route.outputs.channel == 'preview' }}
-        run: |
-          bun run --cwd src-worker test
-          bun run --cwd src-worker test:runtime
       - name: Build Worker target
         run: node scripts/delivery.mjs build '${{ steps.route.outputs.channel }}' worker --ci
         env:
           VRCP_WORKER_BUILD_CHANNEL: ${{ steps.route.outputs.channel }}
+      - name: Test Worker
+        continue-on-error: ${{ steps.route.outputs.channel == 'preview' }}
+        env:
+          VRCP_WORKER_BUILD_CHANNEL: ${{ steps.route.outputs.channel }}
+        run: |
+          bun run --cwd src-worker test
+          bun run --cwd src-worker test:runtime
       - uses: actions/upload-artifact@v4
         with:
           name: worker-${{ steps.route.outputs.channel }}-bundle
@@ -119,3 +121,12 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           OPERATOR_TOKEN: ${{ secrets.OPERATOR_TOKEN }}
+      - name: Prepare checked distributed preview dependencies
+        run: bun run prepare:dev preview worker
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - name: Initialize preview D1 schema and seeds
+        run: bun run worker:preview:init --execute --seed
+        env:
+          OPERATOR_TOKEN: ${{ secrets.OPERATOR_TOKEN }}
+          VRCP_WORKER_OPERATION_ENV: cloudflare-preview

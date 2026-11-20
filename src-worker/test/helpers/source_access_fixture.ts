@@ -12,7 +12,7 @@ export function approveFixtureSource(store: LocalCoordinatorStore, target: strin
     exactQuery: url.search ? url.search.slice(1) : undefined, method: "GET", purpose,
     minDelayMs: 1000, expiresAt: "2099-01-01T00:00:00.000Z",
     reviewReference: "offline-fixture-only", reason: "Synthetic local test target",
-    retainClasses: ["normalized_facts", "creator_prose"], publishClasses: []
+    retainClasses: ["normalized_facts", "creator_prose"], publishClasses: ["normalized_facts"]
   }, "test-fixture");
 }
 

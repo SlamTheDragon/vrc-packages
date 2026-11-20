@@ -1,5 +1,8 @@
 import { describe, expect, it } from "bun:test";
+import crypto from "node:crypto";
 import { LocalCoordinatorStore } from "./support/local_sqlite.js";
+import { PROTOCOL_VERSION } from "vrc-packages-network/node";
+import { seedApprovedFixtureJob } from "./helpers/source_access_fixture.js";
 
 describe("Gate 2 Identity Links and Canonical Packages", () => {
   it("upserts and retrieves canonical packages correctly", () => {
@@ -216,6 +219,167 @@ describe("Gate 2 Identity Links and Canonical Packages", () => {
       const remainingLinks = store.getIdentityLinksForCanonical("canon-pkg");
       expect(remainingLinks).toHaveLength(1);
       expect(remainingLinks[0].linkId).toBe(link1.linkId);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("auto-links high-confidence storefront leads discovered from package manifests without operator review (R13-C9-IDENTITY)", () => {
+    const store = new LocalCoordinatorStore(":memory:");
+    try {
+      // 1. Establish canonical package and source item
+      store.upsertCanonicalPackage({
+        canonicalId: "com.example.manifest-pkg",
+        umbrella: "tools",
+        category: "Utility",
+        lifecycle: "active",
+        displayName: "Manifest Package"
+      });
+      store.upsertSourceItem({
+        sourceKey: "vpm:https://vpm.example.com/index.json:com.example.manifest-pkg",
+        platform: "vpm",
+        sourceUrl: "https://vpm.example.com/index.json",
+        latestDigest: "sha256:vpm1"
+      });
+      store.createIdentityLink({
+        sourceKey: "vpm:https://vpm.example.com/index.json:com.example.manifest-pkg",
+        canonicalId: "com.example.manifest-pkg",
+        evidenceKind: "vpm_id",
+        confidence: 1.0,
+        reviewState: "accepted"
+      });
+
+      // 2. Setup a high-confidence storefront lead declared from the package manifest
+      seedApprovedFixtureJob(store, "https://vpm.example.com/index.json", "vpm");
+      const vpmJob = (store as any).db.prepare("SELECT job_id FROM crawl_jobs WHERE url='https://vpm.example.com/index.json'").get() as { job_id: string };
+
+      const boothUrl = "https://booth.pm/ja/items/99901";
+      seedApprovedFixtureJob(store, boothUrl, "booth", 60_000);
+      store.recordRobotsSnapshot("https://booth.pm", 404);
+
+      // Record lead in source_leads pointing to this package
+      const leadId = "lead-booth-99901";
+      (store as any).db.prepare(`
+        INSERT INTO source_leads (lead_key, discovered_from_url, discovered_from_job_id, discovered_from_item_key, kind, target_url, claimed_package_id, status, first_seen_at, last_seen_at)
+        VALUES (?, 'https://vpm.example.com/index.json', ?, 'com.example.manifest-pkg', 'storefront_product', ?, 'com.example.manifest-pkg', 'approved', datetime('now'), datetime('now'))
+      `).run(leadId, vpmJob.job_id, boothUrl);
+
+      const nodeId = "booth-worker-node";
+      const token = store.createNodeCredential(nodeId, ["booth"]);
+      const principal = store.authenticate(nodeId, token)!;
+
+      const claim = store.claim({ schemaVersion: PROTOCOL_VERSION, nodeId, capabilities: ["booth"] }, principal);
+      expect(claim.status).toBe("leased");
+      if (claim.status !== "leased") return;
+
+      const submitRes = store.submit({
+        schemaVersion: PROTOCOL_VERSION,
+        nodeId,
+        jobId: claim.job.jobId,
+        leaseId: claim.job.leaseId,
+        idempotencyKey: crypto.randomUUID(),
+        outcome: {
+          kind: "changed",
+          observation: {
+            sourceItemKey: "booth-99901",
+            title: "Manifest Item on BOOTH",
+            author: "Author",
+            summary: "Direct storefront lead from package manifest",
+            outboundLinks: [],
+            originUpdatedAt: null,
+            price: 1500,
+            currency: "JPY",
+            availability: "available"
+          }
+        }
+      }, principal);
+      expect(submitRes.status).toBe("accepted");
+
+      // Verify identity link was auto-passed (accepted with confidence 0.95 and reviewedAt set)
+      const links = store.getIdentityLinksForCanonical("com.example.manifest-pkg");
+      const boothLink = links.find(l => l.evidenceKind === "cross_storefront_link");
+      expect(boothLink).toBeDefined();
+      expect(boothLink?.reviewState).toBe("accepted");
+      expect(boothLink?.confidence).toBe(0.95);
+      expect(boothLink?.reviewedAt).toBeDefined();
+
+      // Front is projected
+      const fronts = store.getPackageFrontsForCanonical("com.example.manifest-pkg");
+      expect(fronts).toHaveLength(1);
+      expect(fronts[0].platform).toBe("booth");
+      expect(fronts[0].price).toBe(1500);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("keeps unverified heuristic outbound storefront links provisional until reviewed (R13-C9-IDENTITY)", () => {
+    const store = new LocalCoordinatorStore(":memory:");
+    try {
+      store.upsertCanonicalPackage({
+        canonicalId: "com.example.heuristic-pkg",
+        umbrella: "tools",
+        category: "Utility",
+        lifecycle: "active",
+        displayName: "Heuristic Package"
+      });
+      store.upsertSourceItem({
+        sourceKey: "vpm:https://vpm.example.com/other.json:com.example.heuristic-pkg",
+        platform: "vpm",
+        sourceUrl: "https://vpm.example.com/other.json",
+        latestDigest: "sha256:vpm2"
+      });
+      store.createIdentityLink({
+        sourceKey: "vpm:https://vpm.example.com/other.json:com.example.heuristic-pkg",
+        canonicalId: "com.example.heuristic-pkg",
+        evidenceKind: "vpm_id",
+        confidence: 1.0,
+        reviewState: "accepted"
+      });
+
+      // No manifest declaration in source_leads; storefront only links to VPM in its outboundLinks
+      const boothUrl = "https://booth.pm/ja/items/99902";
+      seedApprovedFixtureJob(store, boothUrl, "booth", 60_000);
+      store.recordRobotsSnapshot("https://booth.pm", 404);
+
+      const nodeId = "booth-heuristic-node";
+      const token = store.createNodeCredential(nodeId, ["booth"]);
+      const principal = store.authenticate(nodeId, token)!;
+
+      const claim = store.claim({ schemaVersion: PROTOCOL_VERSION, nodeId, capabilities: ["booth"] }, principal);
+      expect(claim.status).toBe("leased");
+      if (claim.status !== "leased") return;
+
+      const submitRes = store.submit({
+        schemaVersion: PROTOCOL_VERSION,
+        nodeId,
+        jobId: claim.job.jobId,
+        leaseId: claim.job.leaseId,
+        idempotencyKey: crypto.randomUUID(),
+        outcome: {
+          kind: "changed",
+          observation: {
+            sourceItemKey: "booth-99902",
+            title: "Heuristic Item on BOOTH",
+            author: "Author",
+            summary: "Heuristic match via outbound links",
+            outboundLinks: ["https://vpm.example.com/other.json"],
+            originUpdatedAt: null,
+            price: 2000,
+            currency: "JPY",
+            availability: "available"
+          }
+        }
+      }, principal);
+      expect(submitRes.status).toBe("accepted");
+
+      // Verify identity link remains provisional
+      const links = store.getIdentityLinksForCanonical("com.example.heuristic-pkg");
+      const boothLink = links.find(l => l.evidenceKind === "cross_storefront_link");
+      expect(boothLink).toBeDefined();
+      expect(boothLink?.reviewState).toBe("provisional");
+      expect(boothLink?.confidence).toBe(0.8);
+      expect(boothLink?.reviewedAt == null).toBe(true);
     } finally {
       store.close();
     }

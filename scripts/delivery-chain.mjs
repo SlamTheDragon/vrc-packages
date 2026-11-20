@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, rmSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { relative, resolve } from "node:path";
@@ -241,7 +241,13 @@ export async function planDelivery(channel, product, workspace = root, now = new
   const refs = git(workspace, "ls-remote", "origin", `refs/heads/${branch}`, "refs/heads/main",
     ...(releaseBranch ? [`refs/heads/${releaseBranch}`] : []), `refs/tags/${productTagPrefixes[product]}/v*`).split("\n");
   const head = git(workspace, "rev-parse", "HEAD");
-  if (!refs.includes(`${head}\trefs/heads/${branch}`)) blockers.push("Origin branch differs from HEAD or does not exist");
+  const remoteHead = refs.find(line => line.endsWith(`\trefs/heads/${branch}`))?.split("\t")[0];
+  let originCompatible = remoteHead === head;
+  if (!originCompatible && channel === "preview" && /^[a-f0-9]{40}$/.test(remoteHead ?? "")) {
+    try { originCompatible = git(workspace, "merge-base", remoteHead, head) === remoteHead; }
+    catch { /* Unknown ancestry must fail closed; fetch the remote branch before retrying. */ }
+  }
+  if (!originCompatible) blockers.push("Origin branch differs from HEAD or does not exist; preview requires a fetched ancestor of HEAD");
   if (refs.some(line => line.endsWith(`\trefs/tags/${tag}`))) blockers.push("Remote tag already exists");
   if (releaseBranch && refs.some(line => line.endsWith(`\trefs/heads/${releaseBranch}`))) {
     blockers.push("Remote release preparation branch exists; review or recover it instead of allocating again");
@@ -311,7 +317,7 @@ function checkpointPendingPreview(plan, workspace, git) {
   }
   try { git(workspace, "push", "--no-follow-tags", "origin", `HEAD:refs/heads/${plan.branch}`); }
   catch {
-    throw new Error(`Pending preview checkpoint ${commit} is retained on ${JSON.stringify(plan.branch)}. Recover on that same branch with git push --no-follow-tags origin ${JSON.stringify(`HEAD:refs/heads/${plan.branch}`)} before rerunning preview delivery. No version bump ran.`);
+    throw new Error(`Pending preview checkpoint ${commit} is retained on ${JSON.stringify(plan.branch)}. Inspect it, then retry bun run publish:preview ${plan.product} --execute on that same branch. The executor rechecks origin ancestry and predecessor proof before writes. No version bump ran.`);
   }
   return { branch: plan.branch, commit, paths, status: "pushed" };
 }
@@ -373,27 +379,55 @@ export async function startDelivery(channel, product, execute = false, workspace
       git(workspace, "symbolic-ref", "--short", "HEAD") !== plan.branch) {
     throw new Error("Repository changed after planning");
   }
-  if (channel === "release" && !force) git(workspace, "checkout", "-b", plan.releaseBranch);
-  const result = await bumpVersion(channel, product, increment, workspace, now);
-  if (result.version !== plan.version) throw new Error("Config changed after planning. Inspect it before retrying.");
-  const metadata = await versionFiles("sync", channel, product, workspace);
-  const changelogResult = extractProductChangelog(channel, product, plan.version, workspace);
-  const changelogPaths = changelogResult?.file ? [relative(workspace, changelogResult.file).replace(/\\/g, "/")] : [];
-  const paths = [plan.configPath, ...metadata.changed, ...changelogPaths];
-  git(workspace, "add", "--", ...paths);
-  const commitMessages = [`${channel === "release" ? "Prepare" : "Deliver"} ${product} ${channel} ${plan.version}`];
-  if (changelogResult?.section && changelogResult.section !== "- none currently") commitMessages.push(changelogResult.section);
-  if (channel === "release") {
-    commitMessages.push(`VRCP-Release-Product: ${product}\nVRCP-Release-Version: ${plan.version}${force ? "\nVRCP-Release-Direct: true" : ""}\nVRCP-Release-Base: ${plan.head}`);
+  extractProductChangelog(channel, product, plan.version, workspace, true);
+  const createdReleaseBranch = channel === "release" && !force;
+  if (createdReleaseBranch) git(workspace, "checkout", "-b", plan.releaseBranch);
+  let createdArchiveFile = null;
+  const rollbackPreparation = () => {
+    try { git(workspace, "reset", "HEAD"); } catch {}
+    try { git(workspace, "checkout", "HEAD", "--", "."); } catch {}
+    try { git(workspace, "clean", "-fd"); } catch {}
+    if (createdArchiveFile) {
+      try {
+        if (existsSync(createdArchiveFile)) rmSync(createdArchiveFile, { force: true });
+      } catch {}
+    }
+    if (createdReleaseBranch) {
+      try {
+        git(workspace, "checkout", plan.branch);
+        git(workspace, "branch", "-D", plan.releaseBranch);
+      } catch {}
+    }
+  };
+
+  let changelogResult;
+  let paths;
+  try {
+    const result = await bumpVersion(channel, product, increment, workspace, now);
+    if (result.version !== plan.version) throw new Error("Config changed after planning. Inspect it before retrying.");
+    const metadata = await versionFiles("sync", channel, product, workspace);
+    changelogResult = extractProductChangelog(channel, product, plan.version, workspace);
+    createdArchiveFile = changelogResult?.file ?? null;
+    const changelogPaths = (changelogResult?.changed ?? []).map(file => relative(workspace, file).replace(/\\/g, "/"));
+    paths = [plan.configPath, ...metadata.changed, ...changelogPaths];
+    git(workspace, "add", "--", ...paths);
+    const commitMessages = [`${channel === "release" ? "Prepare" : "Deliver"} ${product} ${channel} ${plan.version}`];
+    if (changelogResult?.section && changelogResult.section !== "- none currently") commitMessages.push(changelogResult.section);
+    if (channel === "release") {
+      commitMessages.push(`VRCP-Release-Product: ${product}\nVRCP-Release-Version: ${plan.version}${force ? "\nVRCP-Release-Direct: true" : ""}\nVRCP-Release-Base: ${plan.head}`);
+    }
+    git(workspace, "commit", "--only", ...commitMessages.flatMap(m => ["-m", m]), "--", ...paths);
+  } catch (error) {
+    rollbackPreparation();
+    throw error;
   }
-  git(workspace, "commit", "--only", ...commitMessages.flatMap(m => ["-m", m]), "--", ...paths);
   if (channel === "release" && !force) return retryReleasePreparation(plan.releaseBranch, workspace, git);
   if (channel === "release" && force) {
     const commit = git(workspace, "rev-parse", "HEAD");
     git(workspace, "tag", "-a", plan.tag, commit, "-m", `VRC Packages ${product} release ${plan.version}\n\nVRCP-Release-Direct: true\nVRCP-Release-Head: ${commit}\nVRCP-Release-Base: ${plan.head}\nVRCP-Previous-Version: ${plan.previous}`);
     const tagObject = git(workspace, "rev-parse", `refs/tags/${plan.tag}`);
     git(workspace, "push", "--atomic", "--no-follow-tags", "origin", "HEAD:refs/heads/main", `refs/tags/${plan.tag}`);
-    return { ...plan, commit, tagObject, status: "pushed", next: [`bun run delivery:status ${plan.tag}`, `bun run delivery:check ${plan.tag}`] };
+    return { ...plan, commit, tagObject, status: "pushed", next: [`bun run publish:status ${plan.tag}`, `bun run publish:check ${plan.tag}`] };
   }
   git(workspace, "tag", "-a", plan.tag, "-m", `VRC Packages ${product} ${channel} ${plan.version}\n\nVRCP-Previous-Version: ${plan.previous}`);
   return { ...retryDelivery(plan.tag, workspace, git), ...(pendingCheckpoint ? { pendingCheckpoint } : {}) };
@@ -432,7 +466,7 @@ export async function retryReleasePreparation(branch, workspace = root, git = ru
     status: remote ? "preparation-already-pushed-awaiting-review" : "preparation-pushed-awaiting-review",
     pullRequestURL: `https://github.com/${repository}/compare/main...${encodeURIComponent(branch)}?expand=1`,
     next: ["Create and manually review a version promotion PR into main. Do not merge an evergreen tracking PR.",
-      `bun run delivery:finalize ${match[1]} <merged-pr-number> <merged-main-commit> --execute`] };
+      `bun run publish:finalize ${match[1]} <merged-pr-number> <merged-main-commit> --execute`] };
 }
 
 function releaseTagProof(tag, workspace, git) {
@@ -478,7 +512,7 @@ export async function finalizeRelease(product, prNumber, commit, execute = false
   const remote = refs.find(line => line.endsWith(`\trefs/tags/${tag}`));
   if (remote && (!tagObject || remote !== `${tagObject}\trefs/tags/${tag}`)) throw new Error("Remote release tag differs; never replace it automatically");
   const result = { ...selected, repository, tag, commit, prNumber, head: proof.head, base: proof.base, changed: metadata.changed,
-    status: remote ? "already-pushed" : execute ? "pushed" : "finalization-plan-only", next: [`bun run delivery:status ${tag}`, `bun run delivery:check ${tag}`] };
+    status: remote ? "already-pushed" : execute ? "pushed" : "finalization-plan-only", next: [`bun run publish:status ${tag}`, `bun run publish:check ${tag}`] };
   if (!execute || remote) return { ...result, ...(tagObject ? { tagObject } : {}) };
   const previous = JSON.parse(git(workspace, "show", `${proof.base}:config.versions.json`))[`release-${product}`];
   await requirePublicationProof("release", product, previous, workspace, publicationProof);
@@ -529,7 +563,7 @@ export function retryDelivery(tag, workspace = root, git = runGit) {
     git(workspace, "push", "--atomic", "--no-follow-tags", "origin", `HEAD:refs/heads/${branch}`, `refs/tags/${tag}`);
   }
   return { ...selected, repository, status: remote ? "already-pushed" : "pushed",
-    next: [`bun run delivery:status ${tag}`, `bun run delivery:check ${tag}`] };
+    next: [`bun run publish:status ${tag}`, `bun run publish:check ${tag}`] };
 }
 
 export async function requirePublicationProof(channel, product, version, workspace = root, inspect = inspectDelivery) {
@@ -611,7 +645,10 @@ export function deliveryTroubleshooting(result) {
       : failedJobs.some(name => name.includes("publish")) ? "publication" : "build-or-runtime-check";
     next.unshift("Inspect the exact failed jobs. Note: Rerunning a workflow executes the frozen tagged commit, not new code on your branch.");
     if (runId) next.unshift(`[Transient Retry] bun run recovery rerun ${runId}`);
-    if (channel === "preview") {
+    const isPostPublication = stage === "release-attachment" || stage === "publication" || Boolean(result.release) || Boolean(result.artifactsVerified);
+    if (isPostPublication) {
+      next.unshift("[Reconciliation] bun run publish:reconcile (Partial publication detected; do NOT revert tag)");
+    } else if (channel === "preview") {
       next.unshift(`[If Patched] bun run recovery revert-tag ${tag} --remote && bun run publish:preview ${product}`);
     } else {
       next.unshift(`[If Patched] bun run recovery patch-branch create ${product} ${result.version || "version"}`);
@@ -1215,12 +1252,12 @@ export async function promptInteractiveDelivery(options = {}) {
     if (isInteractiveTTY) {
       p.note("Changelog Preparedness Self-Check", "Preparedness");
       const summaryWritten = await p.confirm({
-        message: `Is the section summary for ${product} written in CHANGELOG.md?`,
+        message: `Is the section summary for ${product} written in docs/source/CHANGELOG.md?`,
         initialValue: true
       });
       if (p.isCancel(summaryWritten) || !summaryWritten) {
         p.cancel("Delivery aborted: Please write a summary in CHANGELOG.md.");
-        throw new Error("Delivery aborted: Please write a summary for the release in CHANGELOG.md before proceeding.");
+        throw new Error("Delivery aborted: Please write a summary for the release in docs/source/CHANGELOG.md before proceeding.");
       }
 
       const writtenChanges = await p.confirm({
@@ -1231,9 +1268,9 @@ export async function promptInteractiveDelivery(options = {}) {
 
     } else {
       onProgress(`${style.dim}─── ${style.reset}${style.cyan}❯ Changelog Preparedness Self-Check${style.reset} ${style.dim}───────────────────────────${style.reset}`);
-      const summaryWritten = await askBinary(ask, `Is the section summary for ${product} written in CHANGELOG.md?`, true);
+      const summaryWritten = await askBinary(ask, `Is the section summary for ${product} written in docs/source/CHANGELOG.md?`, true);
       if (!summaryWritten) {
-        throw new Error("Delivery aborted: Please write a summary for the release in CHANGELOG.md before proceeding.");
+        throw new Error("Delivery aborted: Please write a summary for the release in docs/source/CHANGELOG.md before proceeding.");
       }
 
       const hasFeatures = await askBinary(ask, "Were there new features added?", false);
@@ -1489,7 +1526,17 @@ export const main = defineCommand({
               `Reruns the FROZEN tagged commit (use ONLY if failure was network/timeout/CDN delay)`
             ]);
           }
-          if (isPreview) {
+          const isPostPublication = result.stage === "release-attachment" || result.stage === "publication" || Boolean(result.artifactsVerified);
+          if (isPostPublication) {
+            remediationEntries.push([
+              "2. Reconcile Publication",
+              "bun run publish:reconcile"
+            ]);
+            remediationEntries.push([
+              "   ↳ Scope",
+              "Partial publication detected; do NOT revert tag. Reconcile existing version assets."
+            ]);
+          } else if (isPreview) {
             remediationEntries.push([
               "2. Patched Preview",
               `bun run recovery revert-tag ${tag} --remote && bun run publish:preview ${prod}`
