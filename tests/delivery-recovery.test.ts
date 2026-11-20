@@ -619,5 +619,125 @@ test("deliveryTroubleshooting recommends reconciliation and avoids revert-tag wh
   expect(troubleshooting.next.some(n => n.includes("revert-tag"))).toBe(false);
 });
 
+test("recoveryIdentity, checkRecoveryRun, and requireRecoveryCI support R50-C31 preview crawler build-smoke recovery", async () => {
+  const tag = "vrcp-crawler/v2026.10.10-pre";
+  const identity = recoveryIdentity(tag);
+  expect(identity.product).toBe("crawler");
+  expect(identity.version).toBe("2026.10.10-pre");
+  expect(identity.failedRun).toBe(38308127484);
+  expect(identity.failedStage).toBe("build-smoke");
+
+  const prefix = `/repos/${identity.repository}`;
+  const toolingCommit = "f".repeat(40);
+  const run = {
+    id: 9001,
+    event: "workflow_dispatch",
+    head_branch: "main",
+    head_sha: toolingCommit,
+    head_repository: { full_name: identity.repository },
+    path: ".github/workflows/node-docker.yml",
+    display_title: `Recover crawler ${tag}`,
+    actor: { login: "SlamTheDragon", type: "User" }
+  };
+  const manifestContent = Buffer.from(readFileSync(new URL("../.github/delivery-recoveries.json", import.meta.url))).toString("base64");
+  const buildLinuxSteps = [
+    { number: 1, name: "Set up job", status: "completed", conclusion: "success" },
+    { number: 2, name: "Checkout repository", status: "completed", conclusion: "success" },
+    { number: 3, name: "Build and verify crawler node", status: "completed", conclusion: "failure" },
+    { number: 4, name: "Post Checkout repository", status: "completed", conclusion: "success" },
+    { number: 5, name: "Complete job", status: "completed", conclusion: "success" }
+  ];
+  const jobsPayload = {
+    total_count: 5,
+    jobs: [
+      { name: "route", status: "completed", conclusion: "success" },
+      { name: "build-linux", status: "completed", conclusion: "failure", steps: buildLinuxSteps },
+      { name: "standalone-windows", status: "completed", conclusion: "success" },
+      { name: "publish-container", status: "completed", conclusion: "skipped" },
+      { name: "release-assets", status: "completed", conclusion: "skipped" }
+    ]
+  };
+  const api = async (path: string) => {
+    if (path === `${prefix}/compare/${toolingCommit}...main`) {
+      return { status: "identical", base_commit: { sha: toolingCommit }, merge_base_commit: { sha: toolingCommit } };
+    }
+    if (path === `${prefix}/contents/.github/delivery-recoveries.json?ref=${toolingCommit}`) {
+      return { type: "file", path: ".github/delivery-recoveries.json", encoding: "base64", content: manifestContent };
+    }
+    if (path === `${prefix}/actions/runs/${identity.failedRun}`) {
+      return {
+        id: identity.failedRun,
+        event: "push",
+        head_branch: tag,
+        head_sha: identity.commit,
+        path: ".github/workflows/node-docker.yml",
+        head_repository: { full_name: identity.repository },
+        status: "completed",
+        conclusion: "failure"
+      };
+    }
+    if (path === `${prefix}/actions/runs/${identity.failedRun}/jobs?per_page=100`) return jobsPayload;
+    if (path === `${prefix}/actions/runs/${identity.failedRun}/artifacts?per_page=100`) {
+      return { total_count: 1, artifacts: [{ name: "crawler-2026.10.10-pre-windows-x64", size_in_bytes: 1024 }] };
+    }
+    if (path === `${prefix}/actions/runs/9001`) return run;
+    if (path === `${prefix}/git/ref/tags/${encodeURIComponent(tag)}`) {
+      return { ref: `refs/tags/${tag}`, object: { type: "tag", sha: identity.tagObject } };
+    }
+    if (path === `${prefix}/git/tags/${identity.tagObject}`) {
+      return { sha: identity.tagObject, object: { type: "commit", sha: identity.commit } };
+    }
+    throw new Error(`Unexpected recovery API lookup: ${path}`);
+  };
+
+  const checked = await checkRecoveryRun(run, identity, api);
+  expect(checked.failedStage).toBe("build-smoke");
+
+  const env = {
+    VRCP_RECOVERY_TAG: tag,
+    GITHUB_ACTIONS: "true",
+    GITHUB_EVENT_NAME: "workflow_dispatch",
+    GITHUB_REF: "refs/heads/main",
+    GITHUB_REPOSITORY: identity.repository,
+    GITHUB_SHA: toolingCommit,
+    GITHUB_RUN_ID: "9001"
+  };
+  await expect(requireRecoveryCI("crawler", "release", env, ".", api, (_ws: string, ...args: string[]) => args[0] === "rev-parse" ? identity.commit : ""))
+    .rejects.toThrow("dedicated owner-dispatched");
+  const recoveryProof = await requireRecoveryCI("crawler", "preview", env, ".", api, (_ws: string, ...args: string[]) => args[0] === "rev-parse" ? identity.commit : "");
+  expect(recoveryProof.version).toBe("2026.10.10-pre");
+});
+
+test("delivery-recovery CLI patch-branch defaults omitted action to create", () => {
+  const missing = spawnSync(process.execPath, ["scripts/delivery-recovery.mjs", "patch-branch"], {
+    encoding: "utf8",
+    timeout: 15_000
+  });
+  expect(missing.status).not.toBe(0);
+  expect(missing.stderr).toContain("[create|merge]");
+
+  const omittedAction = spawnSync(process.execPath, ["scripts/delivery-recovery.mjs", "patch-branch", "package"], {
+    encoding: "utf8",
+    timeout: 15_000
+  });
+  expect(omittedAction.status).not.toBe(0);
+  expect(omittedAction.stderr).toContain("[create|merge]");
+
+  const dir = mkdtempSync(join(tmpdir(), "vrcp-patch-cli-"));
+  try {
+    spawnSync("git", ["init", "-b", "main"], { cwd: dir, stdio: "pipe" });
+    spawnSync("git", ["config", "user.name", "VRCP Test"], { cwd: dir, stdio: "pipe" });
+    spawnSync("git", ["config", "user.email", "test@example.invalid"], { cwd: dir, stdio: "pipe" });
+    writeFileSync(join(dir, "README.md"), "base\n");
+    spawnSync("git", ["add", "."], { cwd: dir, stdio: "pipe" });
+    spawnSync("git", ["commit", "-m", "init"], { cwd: dir, stdio: "pipe" });
+    const res = createPatchBranch("package", "0.0.1", { workspace: dir });
+    expect(res.previousBranch).toBe("main");
+    expect(res.branch).toBe("release/patch/package/v0.0.1");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 
 

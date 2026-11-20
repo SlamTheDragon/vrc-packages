@@ -5,15 +5,15 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import semver from "semver";
-import { checkReleaseSource, requireCI, resolveTag, validateCIArtifact } from "./delivery.mjs";
-import { productDirectories, sdkPackageNames } from "./versioning.mjs";
-import { checkRecoveryReceipts, checkRecoveryRun, ciSourceCommit, recoveryIdentity, recoveryRunMatches } from "./delivery-recovery.mjs";
+import { checkReleaseSource, checkRemoteTag, resolveTag, validateCIArtifact } from "./pipeline-utils.mjs";
+import { productDirectories, productWorkflows, sdkPackageNames } from "./versioning.mjs";
+import { checkRecoveryReceipts, checkRecoveryRun, ciSourceCommit, recoveryIdentity, recoveryRunMatches, requireCI } from "./delivery-recovery.mjs";
 import { findProductChangelogSection } from "./changelog.mjs";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const hash = bytes => createHash("sha256").update(bytes).digest("hex");
-const workflowNames = { package: "vrc-packages-api", network: "network",
-  crawler: "node-docker", "crawler-client": "node-client", web: "web" };
+
+export { checkRemoteTag };
 
 /** Preserve receipts authored before the owner renamed this same repository. */
 export function sourceRunID(link, repository) {
@@ -131,15 +131,6 @@ export function releaseSummary(repository, tag, draft) {
   return `\n[${draft ? "Draft GitHub Release (publication pending)" : "GitHub Release"}](https://github.com/${repository}/releases/tag/${encodeURIComponent(tag)})\n`;
 }
 
-const changelogHeadings = {
-  crawler: "vrcp-crawler-node",
-  "crawler-client": "vrcp-crawler-client",
-  package: "vrcp-packages-api",
-  network: "vrcp-packages-network",
-  worker: "vrcp-worker",
-  web: "vrcp-web",
-};
-
 export function milestoneNotes(markdown, product, selected, commit, runURL, status, packageName) {
   checkedPackageName(packageName);
   const found = findProductChangelogSection(markdown, selected?.channel ?? "preview", product);
@@ -158,7 +149,7 @@ function checkedPackageName(name) {
 
 export function checkSourceRun(run, jobs, tag, repository, product) {
   if (product === "worker") throw new Error("Worker bundles are CI-only, not GitHub Release assets");
-  const workflow = workflowNames[product];
+  const workflow = productWorkflows[product];
   const required = product === "crawler" ? [tag.startsWith("crawler/v") ? "build-and-push" : "build-linux", "standalone-windows"] : ["build"];
   const recovery = run.event === "workflow_dispatch" &&
     recoveryRunMatches(run, recoveryIdentity(tag)) && repository === "SlamTheDragon/vrc-packages";
@@ -169,26 +160,6 @@ export function checkSourceRun(run, jobs, tag, repository, product) {
         job.status === "completed" && ["success", "skipped"].includes(job.conclusion)))) {
     throw new Error("Release source is not the checked product-tag build");
   }
-}
-
-/** Bind a remote ref to its checked source, with bounded annotated-tag peeling. */
-export async function checkRemoteTag(api, repository, tag, commit, expectedTagObject) {
-  const ref = await api("GET", `/repos/${repository}/git/ref/tags/${encodeURIComponent(tag)}`);
-  const validObject = object => object && /^[a-f0-9]{40}$/.test(object.sha ?? "") && ["tag", "commit"].includes(object.type);
-  if (!/^[a-f0-9]{40}$/.test(commit ?? "") || ref?.ref !== `refs/tags/${tag}` || !validObject(ref.object)) {
-    throw new Error("Invalid remote tag binding");
-  }
-  const tagObject = ref.object.sha;
-  if (expectedTagObject && tagObject !== expectedTagObject) throw new Error("Remote tag object differs from the checked tag");
-  let object = ref.object;
-  for (let depth = 0; object.type === "tag"; depth++) {
-    if (depth >= 4) throw new Error("Remote annotated tag chain exceeds its bound");
-    const annotation = await api("GET", `/repos/${repository}/git/tags/${object.sha}`);
-    if (annotation?.sha !== object.sha || !validObject(annotation.object)) throw new Error("Invalid remote annotated tag object");
-    object = annotation.object;
-  }
-  if (object.sha !== commit) throw new Error("Remote tag differs from the checked source commit");
-  return { tagObject, commit };
 }
 
 // GitHub can detach a draft when PATCH omits tag_name. Its checked title retains the intended SDK tag.

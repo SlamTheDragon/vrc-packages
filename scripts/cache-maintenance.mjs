@@ -7,8 +7,14 @@ import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const repository = "SlamTheDragon/vrc-packages";
-const projects = { root: ".", package: "src-package", network: "src-worker/packages/network",
-  crawler: "src-crawler", "crawler-client": "src-crawler-client", worker: "src-worker" };
+const projects = {
+  root: ".",
+  package: "src-package",
+  network: "src-worker/packages/network",
+  crawler: "src-crawler",
+  "crawler-client": "src-crawler-client",
+  worker: "src-worker"
+};
 const dependencyFields = ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies"];
 
 /** Cache public downloads only. Distributed project contracts still pass normal delivery checks. */

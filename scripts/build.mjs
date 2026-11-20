@@ -3,19 +3,10 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { defineCommand, runMain } from "citty";
+import { loadRootEnv } from "./pipeline-utils.mjs";
 import { productDirectories } from "./versioning.mjs";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
-
-function loadRootEnv(workspace = root) {
-  const envFile = resolve(workspace, ".env");
-  if (existsSync(envFile) && typeof process.loadEnvFile === "function") {
-    try { process.loadEnvFile(envFile); } catch {}
-  } else if (typeof process.loadEnvFile === "function") {
-    try { process.loadEnvFile(); } catch {}
-  }
-}
-
 loadRootEnv(root);
 
 export const buildTargets = {

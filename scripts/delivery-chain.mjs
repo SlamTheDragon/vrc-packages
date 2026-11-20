@@ -6,8 +6,39 @@ import { fileURLToPath } from "node:url";
 import readline from "node:readline/promises";
 import { stdin as defaultInput, stdout as defaultOutput } from "node:process";
 import semver from "semver";
-import { bumpVersion, networkArchiveURL, nextVersion, productDirectories, productTagPrefixes, readVersionConfig, sdkPackageNames, versionFiles } from "./versioning.mjs";
-import { checkReleaseMetadata, checkReviewedRelease, checkSDKPublicationVersion, readGitHubAPI, readReleaseTagProof, selectTag } from "./delivery.mjs";
+import {
+  bumpVersion,
+  leadBranches,
+  networkArchiveURL,
+  nextVersion,
+  productDirectories,
+  productTagPrefixes,
+  productWorkflows,
+  readVersionConfig,
+  sdkPackageNames,
+  versionFiles
+} from "./versioning.mjs";
+import {
+  askBinary,
+  checkReleaseMetadata,
+  checkReleaseSource,
+  checkReviewedRelease,
+  checkSDKPublicationVersion,
+  formatBytes,
+  loadRootEnv,
+  notifyNative,
+  readGitHubAPI,
+  readReleaseTagProof,
+  renderCardTable,
+  renderProgressBar,
+  renderTable,
+  repositoryFromRemote,
+  resolveGitHubToken,
+  runGit,
+  selectTag,
+  style,
+  symbols
+} from "./pipeline-utils.mjs";
 import { allowedBinary, checkedAssetBytes, checkSourceRun, checkRemoteTag, sameSourceRunLink, sourceRunID } from "./release-assets.mjs";
 import { checkWorkerArtifacts, downloadActionsArchive } from "./worker-artifacts.mjs";
 import { checkRecoveryReceipts, checkRecoveryRun, recoveryIdentity } from "./delivery-recovery.mjs";
@@ -15,178 +46,24 @@ import { extractProductChangelog } from "./changelog.mjs";
 import * as p from "@clack/prompts";
 import { defineCommand, runMain } from "citty";
 
+export {
+  askBinary,
+  formatBytes,
+  loadRootEnv,
+  notifyNative,
+  renderCardTable,
+  renderProgressBar,
+  renderTable,
+  repositoryFromRemote,
+  resolveGitHubToken,
+  style,
+  symbols
+};
+
 const root = fileURLToPath(new URL("../", import.meta.url));
+loadRootEnv(root);
 
-const isColorSupported = !process.env.NO_COLOR && (process.stdout?.isTTY || process.env.FORCE_COLOR);
-export const style = {
-  reset: isColorSupported ? "\x1b[0m" : "",
-  bold: isColorSupported ? "\x1b[1m" : "",
-  dim: isColorSupported ? "\x1b[2m" : "",
-  cyan: isColorSupported ? "\x1b[36m" : "",
-  blue: isColorSupported ? "\x1b[34m" : "",
-  green: isColorSupported ? "\x1b[32m" : "",
-  yellow: isColorSupported ? "\x1b[33m" : "",
-  red: isColorSupported ? "\x1b[31m" : "",
-  magenta: isColorSupported ? "\x1b[35m" : ""
-};
-
-export const symbols = {
-  diamond: "◆",
-  pointer: "❯",
-  check: "✔",
-  cross: "✖",
-  warn: "⚠",
-  info: "ℹ"
-};
-
-export async function askBinary(ask, query, defaultYes = true) {
-  const hint = defaultYes ? "(Y/n)" : "(y/N)";
-  const raw = await ask(`${query} ${hint}: `);
-  const trimmed = raw.trim().toLowerCase();
-  if (!trimmed) return defaultYes;
-  return trimmed === "y" || trimmed === "yes";
-}
-
-export function formatBytes(bytes) {
-  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
-  const units = ["B", "KB", "MB", "GB"];
-  const i = Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)));
-  return `${(bytes / Math.pow(1024, i)).toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
-}
-
-export function renderProgressBar(current, total, label = "", barWidth = 24) {
-  const percent = Math.min(100, Math.round((current / total) * 100));
-  const filled = Math.min(barWidth, Math.round((current / total) * barWidth));
-  const empty = Math.max(0, barWidth - filled);
-  const bar = "█".repeat(filled) + "░".repeat(empty);
-  const line = `  ${style.cyan}[${bar}]${style.reset} ${String(percent).padStart(3)}% (${current}/${total}) ${style.dim}${label}${style.reset}`;
-  if (process.stdout.isTTY && !process.env.CI) {
-    process.stdout.write(`\r\x1b[K${line}`);
-    if (current >= total) process.stdout.write("\n");
-  } else {
-    console.log(line);
-  }
-}
-
-export function renderTable(headers, rows) {
-  if (!rows || !rows.length) return;
-  const stripAnsi = str => String(str ?? "").replace(/\x1b\[[0-9;]*m/g, "");
-  const colWidths = headers.map((h, i) => {
-    const cellLens = rows.map(r => stripAnsi(r[i]).length);
-    return Math.max(stripAnsi(h).length, ...cellLens);
-  });
-
-  const sep = (left, mid, right, line) =>
-    left + colWidths.map(w => line.repeat(w + 2)).join(mid) + right;
-
-  const top = sep("┌", "┬", "┐", "─");
-  const mid = sep("├", "┼", "┤", "─");
-  const bot = sep("└", "┴", "┘", "─");
-
-  const formatRow = cells =>
-    "│ " + cells.map((c, i) => {
-      const pad = " ".repeat(Math.max(0, colWidths[i] - stripAnsi(c).length));
-      return `${c}${pad} │`;
-    }).join(" ");
-
-  console.log(top);
-  console.log(formatRow(headers.map(h => `${style.bold}${h}${style.reset}`)));
-  console.log(mid);
-  for (const row of rows) {
-    console.log(formatRow(row));
-  }
-  console.log(bot);
-}
-
-export function renderCardTable(title, entries) {
-  const stripAnsi = str => String(str ?? "").replace(/\x1b\[[0-9;]*m/g, "");
-  const maxKeyLen = Math.max(4, ...entries.map(([k]) => stripAnsi(k).length));
-  const maxValLen = Math.max(4, ...entries.map(([_, v]) => stripAnsi(v).length));
-  const totalInner = Math.max(stripAnsi(title).length + 4, maxKeyLen + maxValLen + 5);
-
-  console.log(`\n┌─ ${style.bold}${style.cyan}${title}${style.reset} ${"─".repeat(Math.max(0, totalInner - stripAnsi(title).length - 3))}┐`);
-  for (const [k, v] of entries) {
-    const padKey = " ".repeat(Math.max(0, maxKeyLen - stripAnsi(k).length));
-    const padVal = " ".repeat(Math.max(0, totalInner - maxKeyLen - stripAnsi(v).length - 5));
-    console.log(`│  ${style.dim}${k}${style.reset}${padKey} : ${v}${padVal} │`);
-  }
-  console.log(`└${"─".repeat(totalInner + 2)}┘\n`);
-}
-
-export function notifyNative(title, message) {
-  try { process.stdout.write("\x07"); } catch {}
-  if (process.platform === "win32") {
-    try {
-      const script = `
-        Add-Type -AssemblyName System.Windows.Forms
-        $notify = New-Object System.Windows.Forms.NotifyIcon
-        $notify.Icon = [System.Drawing.SystemIcons]::Information
-        $notify.Visible = $true
-        $notify.ShowBalloonTip(5000, '${title.replace(/'/g, "''")}', '${message.replace(/'/g, "''")}', [System.Windows.Forms.ToolTipIcon]::Info)
-      `.replace(/\n\s*/g, " ");
-      execFileSync("powershell", ["-NoProfile", "-NonInteractive", "-Command", script], {
-        stdio: "ignore",
-        timeout: 5000
-      });
-    } catch {}
-  } else if (process.platform === "linux") {
-    try {
-      execFileSync("notify-send", [title, message], { stdio: "ignore", timeout: 5000 });
-    } catch {}
-  } else if (process.platform === "darwin") {
-    try {
-      execFileSync("osascript", ["-e", `display notification "${message.replace(/"/g, '\\"')}" with title "${title.replace(/"/g, '\\"')}"`], { stdio: "ignore", timeout: 5000 });
-    } catch {}
-  }
-}
-
-export function loadRootEnv(workspace = root) {
-  const envFile = resolve(workspace, ".env");
-  if (existsSync(envFile) && typeof process.loadEnvFile === "function") {
-    try { process.loadEnvFile(envFile); } catch {}
-  } else if (typeof process.loadEnvFile === "function") {
-    try { process.loadEnvFile(); } catch {}
-  }
-}
-
-loadRootEnv();
-
-export function resolveGitHubToken(workspace = root) {
-  loadRootEnv(workspace);
-  if (process.env.GH_TOKEN !== undefined) return process.env.GH_TOKEN || undefined;
-  if (process.env.GITHUB_TOKEN !== undefined) return process.env.GITHUB_TOKEN || undefined;
-  if (process.env.RELEASE_TOKEN !== undefined) return process.env.RELEASE_TOKEN || undefined;
-  if (resolve(workspace) === resolve(root)) {
-    try {
-      const out = execFileSync("git", ["credential", "fill"], {
-        cwd: workspace,
-        input: "protocol=https\nhost=github.com\n\n",
-        stdio: ["pipe", "pipe", "ignore"],
-        encoding: "utf8",
-        env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GCM_INTERACTIVE: "Never" }
-      });
-      const token = out.split("\n").find(l => l.startsWith("password="))?.slice(9).trim();
-      if (token) return token;
-    } catch {}
-  }
-  return undefined;
-}
-const workflows = { package: "vrc-packages-api", network: "network", crawler: "node-docker",
-  "crawler-client": "node-client", worker: "cloudflare-worker" };
-
-function runGit(workspace, ...args) {
-  try {
-    const output = execFileSync("git", args, { cwd: workspace, encoding: "utf8", timeout: 60_000,
-      stdio: "pipe", env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GCM_INTERACTIVE: "Never" } });
-    return args.includes("-z") ? output : output.trim();
-  } catch { throw new Error(`Git ${args[0]} failed. Inspect repository state before retrying; no rollback or tag replacement ran.`); }
-}
-
-export function repositoryFromRemote(remote) {
-  const match = /^(?:https:\/\/github\.com\/|git@github\.com:)([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+?)(?:\.git)?$/.exec(remote);
-  if (!match) throw new Error("Delivery requires a GitHub origin without embedded credentials");
-  return match[1];
-}
+const workflows = Object.fromEntries(Object.entries(productWorkflows).filter(([key]) => key !== "web"));
 
 function newerRemoteVersion(channel, product, version, refs) {
   const prefix = `refs/tags/${productTagPrefixes[product]}/v`;
@@ -212,7 +89,7 @@ function mainVersionBlocker(channel, product, version, refs, workspace, git) {
 }
 
 /** Read-only planning. Release execution prepares a version PR, not a direct main push. */
-export async function planDelivery(channel, product, workspace = root, now = new Date(), git = runGit, force = false, skipTests = false, increment = "patch") {
+export async function planDelivery(channel, product, workspace = root, now = new Date(), git = runGit, force = false, skipTests = false, increment = "patch", publicationProof = null) {
   if (!Object.hasOwn(workflows, product)) throw new Error("Product delivery is disabled or unknown. Website hosting remains deferred.");
   const { config, configPath } = await readVersionConfig(channel, workspace);
   const previous = config[`${channel}-${product}`];
@@ -223,6 +100,8 @@ export async function planDelivery(channel, product, workspace = root, now = new
   const repository = repositoryFromRemote(git(workspace, "remote", "get-url", "origin"));
   const tag = `${productTagPrefixes[product]}/v${version}`;
   const releaseBranch = channel === "release" && !force ? `release/candidate/${product}/v${version}` : undefined;
+  const leadBranch = leadBranches[product];
+  const isLeadBranch = Boolean(leadBranch && branch === leadBranch);
   const blockers = [];
   const skipTestsRequested = Boolean(
     skipTests ||
@@ -238,8 +117,14 @@ export async function planDelivery(channel, product, workspace = root, now = new
   if (releaseBranch && git(workspace, "for-each-ref", "--format=%(refname)", `refs/heads/${releaseBranch}`)) {
     blockers.push("Release preparation branch already exists; inspect it instead of allocating again");
   }
-  const refs = git(workspace, "ls-remote", "origin", `refs/heads/${branch}`, "refs/heads/main",
-    ...(releaseBranch ? [`refs/heads/${releaseBranch}`] : []), `refs/tags/${productTagPrefixes[product]}/v*`).split("\n");
+  const lsRemoteRefs = [...new Set([
+    `refs/heads/${branch}`,
+    "refs/heads/main",
+    ...(channel === "preview" && leadBranch ? [`refs/heads/${leadBranch}`] : []),
+    ...(releaseBranch ? [`refs/heads/${releaseBranch}`] : []),
+    `refs/tags/${productTagPrefixes[product]}/v*`
+  ])];
+  const refs = git(workspace, "ls-remote", "origin", ...lsRemoteRefs).split("\n");
   const head = git(workspace, "rev-parse", "HEAD");
   const remoteHead = refs.find(line => line.endsWith(`\trefs/heads/${branch}`))?.split("\t")[0];
   let originCompatible = remoteHead === head;
@@ -248,6 +133,17 @@ export async function planDelivery(channel, product, workspace = root, now = new
     catch { /* Unknown ancestry must fail closed; fetch the remote branch before retrying. */ }
   }
   if (!originCompatible) blockers.push("Origin branch differs from HEAD or does not exist; preview requires a fetched ancestor of HEAD");
+  if (channel === "preview" && leadBranch && !isLeadBranch) {
+    const remoteLeadHead = refs.find(line => line.endsWith(`\trefs/heads/${leadBranch}`))?.split("\t")[0];
+    if (/^[a-f0-9]{40}$/.test(remoteLeadHead ?? "")) {
+      let containsLead = false;
+      try { containsLead = git(workspace, "merge-base", remoteLeadHead, head) === remoteLeadHead; }
+      catch {}
+      if (!containsLead) {
+        blockers.push(`Preview branch ${branch} does not include latest lead branch (${leadBranch}); merge origin/${leadBranch} before bumping`);
+      }
+    }
+  }
   if (refs.some(line => line.endsWith(`\trefs/tags/${tag}`))) blockers.push("Remote tag already exists");
   if (releaseBranch && refs.some(line => line.endsWith(`\trefs/heads/${releaseBranch}`))) {
     blockers.push("Remote release preparation branch exists; review or recover it instead of allocating again");
@@ -257,7 +153,24 @@ export async function planDelivery(channel, product, workspace = root, now = new
   if (mainBlocker) blockers.push(mainBlocker);
   const other = (await readVersionConfig(channel === "preview" ? "release" : "preview", workspace)).config;
   if (other[`${channel === "preview" ? "release" : "preview"}-${product}`] === version) blockers.push("Channel tag would be ambiguous");
-  return { channel, product, previous, version, tag, branch, repository, head, configPath, blockers, ...(releaseBranch ? { releaseBranch } : {}),
+  let predecessorProof;
+  const isInitialPrevious = previous === "0.0.0" || previous === "0.0.0-pre" ||
+    /^26\.10\.0-pre$/.test(previous) || /^2026\.10\.0(-pre)?$/.test(previous);
+  if (publicationProof && !isInitialPrevious) {
+    try {
+      const checked = publicationProof === inspectDelivery
+        ? await inspectPredecessorAssets(channel, product, previous, workspace, undefined, git)
+        : await requirePublicationProof(channel, product, previous, workspace, publicationProof);
+      predecessorProof = { verified: true, tag: `${productTagPrefixes[product]}/v${previous}`, status: checked.status };
+    } catch (error) {
+      blockers.push(`Predecessor publication proof failed for ${productTagPrefixes[product]}/v${previous}: ${error instanceof Error ? error.message : String(error)}`);
+      predecessorProof = { verified: false, tag: `${productTagPrefixes[product]}/v${previous}` };
+    }
+  }
+  return { channel, product, previous, version, tag, branch, repository, head, configPath, blockers,
+    ...(leadBranch ? { leadBranch, isLeadBranch } : {}),
+    ...(predecessorProof ? { predecessorProof } : {}),
+    ...(releaseBranch ? { releaseBranch } : {}),
     workflow: `${workflows[product]}.yml`, purpose: "plan-only",
     ...(skipTestsRequested ? { skipTests: true } : {}),
     delivery: channel === "release" ? (force ? "direct-main-tag" : "version-pr-then-reviewed-main-tag") : "tagged-delivery",
@@ -333,7 +246,8 @@ export async function startDelivery(channel, product, execute = false, workspace
   if (skipTestsRequested && channel === "release") {
     throw new Error("Tests cannot be disabled on release/production routes");
   }
-  let plan = await planDelivery(channel, product, workspace, now, git, force, skipTests, increment);
+  let plan = await planDelivery(channel, product, workspace, now, git, force, skipTests, increment,
+    execute ? null : (typeof publicationProof === "function" ? publicationProof : null));
   if (!execute) return plan;
   const blockers = plan.blockers.filter(blocker => channel !== "preview" || blocker !== "Worktree or index is dirty");
   if (blockers.length) throw new Error(`Delivery blocked: ${blockers.join("; ")}`);
@@ -513,9 +427,9 @@ export async function finalizeRelease(product, prNumber, commit, execute = false
   if (remote && (!tagObject || remote !== `${tagObject}\trefs/tags/${tag}`)) throw new Error("Remote release tag differs; never replace it automatically");
   const result = { ...selected, repository, tag, commit, prNumber, head: proof.head, base: proof.base, changed: metadata.changed,
     status: remote ? "already-pushed" : execute ? "pushed" : "finalization-plan-only", next: [`bun run publish:status ${tag}`, `bun run publish:check ${tag}`] };
-  if (!execute || remote) return { ...result, ...(tagObject ? { tagObject } : {}) };
   const previous = JSON.parse(git(workspace, "show", `${proof.base}:config.versions.json`))[`release-${product}`];
   await requirePublicationProof("release", product, previous, workspace, publicationProof);
+  if (!execute || remote) return { ...result, ...(tagObject ? { tagObject } : {}) };
   if (git(workspace, "status", "--porcelain") || git(workspace, "rev-parse", "HEAD") !== main ||
       !git(workspace, "ls-remote", "origin", "refs/heads/main").split("\n").includes(`${main}\trefs/heads/main`)) {
     throw new Error("Main changed after release proof; no tag push ran");
@@ -564,6 +478,68 @@ export function retryDelivery(tag, workspace = root, git = runGit) {
   }
   return { ...selected, repository, status: remote ? "already-pushed" : "pushed",
     next: [`bun run publish:status ${tag}`, `bun run publish:check ${tag}`] };
+}
+
+export async function inspectPredecessorAssets(channel, product, version, workspace = root,
+    api = githubReader(workspace), git = runGit) {
+  if (!Object.hasOwn(workflows, product) || !["release", "preview"].includes(channel) || semver.valid(version) !== version) {
+    throw new Error("Invalid predecessor identity");
+  }
+  const tag = `${productTagPrefixes[product]}/v${version}`;
+  const repository = repositoryFromRemote(git(workspace, "remote", "get-url", "origin"));
+  const base = `/repos/${repository}`;
+  const ref = await api(`${base}/git/ref/tags/${encodeURIComponent(tag)}`);
+  if (!/^[a-f0-9]{40}$/.test(ref?.object?.sha ?? "") || ref?.ref !== `refs/tags/${tag}`) {
+    throw new Error(`Predecessor tag ${tag} missing or malformed remotely`);
+  }
+  let object = ref.object;
+  for (let depth = 0; object.type === "tag"; depth++) {
+    if (depth >= 4) throw new Error("Remote annotated tag chain exceeds its bound");
+    const annotation = await api(`${base}/git/tags/${object.sha}`);
+    if (!/^[a-f0-9]{40}$/.test(annotation?.object?.sha ?? "")) throw new Error("Invalid remote annotated tag object");
+    object = annotation.object;
+  }
+  const commit = object.sha;
+  if (!/^[a-f0-9]{40}$/.test(commit ?? "")) throw new Error(`Predecessor tag ${tag} lacks a commit`);
+  const listing = await api(`${base}/actions/workflows/${workflows[product]}.yml/runs?event=push&head_sha=${commit}&per_page=20`);
+  const run = listing?.workflow_runs?.find(r => r.head_sha === commit && r.head_branch === tag && r.status === "completed" && r.conclusion === "success");
+  if (!run) throw new Error(`Predecessor CI run has not succeeded for ${tag}`);
+  if (product === "worker") {
+    const runArtifacts = await api(`${base}/actions/runs/${run.id}/artifacts?per_page=100`);
+    const bundleArtifact = runArtifacts?.artifacts?.find(a => a.name === `worker-${channel}-bundle` && Number.isSafeInteger(a.size_in_bytes) && a.size_in_bytes > 0);
+    if (!bundleArtifact) throw new Error(`Predecessor Worker CI bundle artifact missing for ${tag}`);
+    return {
+      tag, product, channel, version, commit, run: run.id,
+      status: channel === "preview" ? "preview-deployed-no-release-assets" : "release-build-only-no-production-deployment",
+      artifactsVerified: true,
+      publicationPath: `${base}/actions/runs/${run.id}/artifacts`,
+      assets: [bundleArtifact.name]
+    };
+  }
+  const release = await api(`${base}/releases/tags/${encodeURIComponent(tag)}`, true);
+  if (!release || release.draft || release.prerelease !== (channel === "preview") || !Number.isSafeInteger(release.id)) {
+    throw new Error(`Predecessor GitHub Release missing, draft, or wrong channel for ${tag}`);
+  }
+  const assets = await api(`${base}/releases/${release.id}/assets?per_page=100`);
+  if (!Array.isArray(assets) || !assets.length) throw new Error(`Predecessor release assets missing for ${tag}`);
+  for (const asset of assets) {
+    const downloadUrl = new URL(asset.browser_download_url);
+    if (downloadUrl.origin !== "https://github.com" ||
+        !decodeURIComponent(downloadUrl.pathname).startsWith(`/${repository}/releases/download/${tag}/`) ||
+        !Number.isSafeInteger(asset.size) || asset.size < 1 || !/^sha256:[a-f0-9]{64}$/.test(asset.digest ?? "")) {
+      throw new Error(`Predecessor release asset path or metadata invalid for ${tag}: ${asset?.name ?? "unknown"}`);
+    }
+  }
+  if (!assets.some(a => a.name === "CHANGELOG.md") || !assets.some(a => a.name === "CHECKSUMS.sha256")) {
+    throw new Error(`Predecessor release lacks required metadata/checksum assets for ${tag}`);
+  }
+  return {
+    tag, product, channel, version, commit, run: run.id,
+    status: "release-artifacts-verified",
+    artifactsVerified: true,
+    publicationPath: release.html_url ?? `https://github.com/${repository}/releases/tag/${encodeURIComponent(tag)}`,
+    assets: assets.map(a => a.name)
+  };
 }
 
 export async function requirePublicationProof(channel, product, version, workspace = root, inspect = inspectDelivery) {
@@ -1058,6 +1034,9 @@ export async function trackDeliveryPipeline(tag, options = {}) {
 
   onProgress(`Verifying published artifacts for ${tag}...`);
   const inspected = await inspect(tag, true, workspace, api);
+  if (inspected?.artifactsVerified !== true) {
+    throw new Error(`Published artifacts verification failed for ${tag} (${inspected?.status ?? "unknown"})`);
+  }
   onProgress(`Verification complete: ${tag} (${inspected.status})`);
   notifyNative("VRCP Delivery Complete", `Verification complete: ${tag} (${inspected.status})`);
   return inspected;
@@ -1431,9 +1410,11 @@ export const main = defineCommand({
     execute: { type: "boolean", default: false, description: "Execute remote mutation" }
   },
   async run() {
-    const [rawAction = "execute", first, second, ...extra] = process.argv.slice(2);
+    const rawArgs = process.argv.slice(2);
+    const asJson = rawArgs.includes("--json");
+    const positionalArgs = rawArgs.filter(arg => arg !== "--json");
+    const [rawAction = "execute", first, second, ...extra] = positionalArgs;
     const action = rawAction.toLowerCase();
-    const asJson = extra.includes("--json") || process.argv.includes("--json");
     try {
       let result;
       if (["diagnose-configured", "check-configured"].includes(action) && !first && !second && !extra.length) {
@@ -1459,7 +1440,7 @@ export const main = defineCommand({
         const skipTests = extra.includes("--skip-tests");
         const noWatch = extra.includes("--no-watch");
         const interactive = extra.includes("--interactive") || extra.includes("-i");
-        const unknownFlags = extra.filter(arg => !["--force", "--skip-tests", "--no-watch", "--watch", "--interactive", "-i", "--json"].includes(arg));
+        const unknownFlags = extra.filter(arg => !["--force", "--skip-tests", "--no-watch", "--watch", "--interactive", "-i"].includes(arg));
         if (unknownFlags.length) throw new Error(`Unknown option(s): ${unknownFlags.join(", ")}`);
         result = await executeDelivery(first, second, { force, skipTests, watch: !noWatch, interactive: !first || !second || interactive });
       } else if (action === "reconcile" && !first && !second && !extra.length) {
@@ -1468,7 +1449,7 @@ export const main = defineCommand({
         const force = extra.includes("--force");
         const execute = extra.includes("--execute");
         const skipTests = extra.includes("--skip-tests");
-        const unknownFlags = extra.filter(arg => !["--force", "--execute", "--skip-tests", "--json"].includes(arg));
+        const unknownFlags = extra.filter(arg => !["--force", "--execute", "--skip-tests"].includes(arg));
         if (unknownFlags.length) throw new Error(`Unknown option(s): ${unknownFlags.join(", ")}`);
         result = await startDelivery(first, second, execute, root, new Date(), runGit, inspectDelivery, force, skipTests);
       } else if (action === "finalize" && (extra.length === 1 || extra.length === 2 && extra[1] === "--execute") && /^[1-9][0-9]*$/.test(second ?? "")) {
@@ -1543,7 +1524,7 @@ export const main = defineCommand({
             ]);
             remediationEntries.push([
               "   ↳ Scope",
-              `Any branch ahead of origin can publish preview; reverts unverified tag & tags current code`
+              `Lead branch (or branches merged from it) ahead of origin can publish preview; reverts unverified tag & tags current code`
             ]);
           } else {
             remediationEntries.push([

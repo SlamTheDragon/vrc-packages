@@ -2,21 +2,11 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { style as c } from "./pipeline-utils.mjs";
 import { productDirectories } from "./versioning.mjs";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 
-const useColor = !process.env.NO_COLOR && (process.stdout.isTTY ?? true);
-const c = {
-  reset: useColor ? "\x1b[0m" : "",
-  bold: useColor ? "\x1b[1m" : "",
-  dim: useColor ? "\x1b[2m" : "",
-  cyan: useColor ? "\x1b[36m" : "",
-  green: useColor ? "\x1b[32m" : "",
-  yellow: useColor ? "\x1b[33m" : "",
-  red: useColor ? "\x1b[31m" : "",
-  magenta: useColor ? "\x1b[35m" : ""
-};
 
 export const setupProjects = {
   root: ".",

@@ -16,6 +16,7 @@ function isAllowedDocDir(name: string): boolean {
 }
 
 function visit(dir: string): void {
+  if (dir === join(root, "docs", "changelogs")) return;
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     if (entry.isDirectory() && ignored.has(entry.name)) continue;
     const target = join(dir, entry.name);

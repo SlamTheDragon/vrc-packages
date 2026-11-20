@@ -23,7 +23,6 @@ concurrency:
 env:
   GH_TOKEN: ${{ github.token }}
 jobs:
-  # trust check is no longer being ran, should we clean this up?
   preview-trust-check:
     if: github.event_name == 'workflow_dispatch' && inputs.diagnose-preview-oidc
     runs-on: ubuntu-latest

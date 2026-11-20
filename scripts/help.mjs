@@ -1,27 +1,8 @@
 import { defineCommand, runMain } from "citty";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { isColorSupported, style, symbols } from "./pipeline-utils.mjs";
 
-const isColorSupported = !process.env.NO_COLOR && (process.stdout?.isTTY || process.env.FORCE_COLOR);
-export const style = {
-  reset: isColorSupported ? "\x1b[0m" : "",
-  bold: isColorSupported ? "\x1b[1m" : "",
-  dim: isColorSupported ? "\x1b[2m" : "",
-  cyan: isColorSupported ? "\x1b[36m" : "",
-  blue: isColorSupported ? "\x1b[34m" : "",
-  green: isColorSupported ? "\x1b[32m" : "",
-  yellow: isColorSupported ? "\x1b[33m" : "",
-  red: isColorSupported ? "\x1b[31m" : "",
-  magenta: isColorSupported ? "\x1b[35m" : ""
-};
-
-export const symbols = {
-  diamond: "◆",
-  pointer: "❯",
-  check: "✔",
-  cross: "✖",
-  warn: "⚠",
-  info: "ℹ"
-};
+export { style, symbols };
 
 export const categories = {
   setup: {
@@ -171,16 +152,9 @@ export function getHelpOverviewLines() {
     `${style.bold}${style.cyan}=================================================${style.reset}`,
     "",
     `${style.bold}Core Principles & Branch Layout:${style.reset}`,
-    `  ${symbols.diamond} ${style.bold}Preview Channel:${style.reset} Fast iteration. Any branch ahead of origin can publish.`,
+    `  ${symbols.diamond} ${style.bold}Preview Channel:${style.reset} Fast iteration on designated lead branches (or merged from them).`,
     `  ${symbols.diamond} ${style.bold}Release Channel:${style.reset} Strict governance. Requires clean main and owner-merged PR.`,
-    `  ${symbols.diamond} ${style.bold}Repository Branches:${style.reset}`,
-    `      • ${style.green}main${style.reset} (production / release)`,
-    `      • ${style.green}preview/crawler-network${style.reset} (src-worker, src-crawler, src-worker/packages/network)`,
-    `      • ${style.green}preview/desktop-client${style.reset} (src-crawler-client)`,
-    `      • ${style.green}preview/web${style.reset} (src-web, src-web-search)`,
-    `      • ${style.green}preview/workers-api${style.reset} (src-package)`,
-    `      • ${style.green}release/patch/*${style.reset} (short-lived patch branches)`,
-    `      • ${style.green}release/candidate/*${style.reset} (short-lived candidate PRs on main)`,
+    `  ${symbols.diamond} ${style.bold}Branch Layout:${style.reset} Canonical sector-to-branch mapping lives in docs/source/SYSTEM_MAP.md.`,
     `  ${symbols.diamond} ${style.bold}Interactive Defaults:${style.reset} Running scripts with no arguments starts interactive wizard.`,
     `  ${symbols.diamond} ${style.bold}Sub-command Help:${style.reset} Pass ${style.yellow}--help${style.reset} to any command (e.g., bun run publish --help).`,
     "",

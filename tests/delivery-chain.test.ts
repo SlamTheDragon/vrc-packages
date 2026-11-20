@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, readFile, realpath, rename, rm, writeFile } from "node:
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { tmpdir } from "node:os";
-import { askBinary, executeDelivery, finalizeRelease as checkedFinalizeRelease, inspectConfiguredDeliveries, inspectDelivery, loadRootEnv, planDelivery, promptInteractiveDelivery, readHostedAsset, readNetworkDistribution, repositoryFromRemote, requirePublicationProof, resolveGitHubToken, retryDelivery, retryReleasePreparation, startDelivery as checkedStartDelivery, summarizeRun, trackDeliveryPipeline, triggerReconcile, verifyPredecessor } from "../scripts/delivery-chain.mjs";
+import { askBinary, executeDelivery, finalizeRelease as checkedFinalizeRelease, inspectConfiguredDeliveries, inspectDelivery, inspectPredecessorAssets, loadRootEnv, planDelivery, promptInteractiveDelivery, readHostedAsset, readNetworkDistribution, repositoryFromRemote, requirePublicationProof, resolveGitHubToken, retryDelivery, retryReleasePreparation, startDelivery as checkedStartDelivery, summarizeRun, trackDeliveryPipeline, triggerReconcile, verifyPredecessor } from "../scripts/delivery-chain.mjs";
 import { networkArchiveURL, productDirectories, productTagPrefixes } from "../scripts/versioning.mjs";
 import { checkReleaseMetadata } from "../scripts/delivery.mjs";
 import { createHash } from "node:crypto";
@@ -1424,6 +1424,140 @@ test("startDelivery rolls back unstaged version and changelog modifications if c
     expect((await readFile(resolve(workspace, "docs/source/CHANGELOG.md"), "utf8")).replace(/\r\n/g, "\n")).toBe(changelogContent.replace(/\r\n/g, "\n"));
   });
 }, 60_000);
+
+test("inspectPredecessorAssets verifies release and worker CI metadata without streaming binary assets", async () => {
+  await fixture(async (workspace, git) => {
+    const commit = git(workspace, "rev-parse", "HEAD");
+    const tagObject = "1".repeat(40);
+    const shaDigest = `sha256:${"a".repeat(64)}`;
+    const mockApi = async (path: string) => {
+      if (path.endsWith("/git/ref/tags/vrcp-crawler%2Fv0.0.1")) {
+        return { ref: "refs/tags/vrcp-crawler/v0.0.1", object: { type: "tag", sha: tagObject } };
+      }
+      if (path.endsWith(`/git/tags/${tagObject}`)) {
+        return { object: { type: "commit", sha: commit } };
+      }
+      if (path.includes("/actions/workflows/node-docker.yml/runs")) {
+        return { workflow_runs: [{ id: 101, head_sha: commit, head_branch: "vrcp-crawler/v0.0.1", status: "completed", conclusion: "success" }] };
+      }
+      if (path.endsWith("/releases/tags/vrcp-crawler%2Fv0.0.1")) {
+        return { id: 202, draft: false, prerelease: false, html_url: "https://github.com/example/fixture/releases/tag/vrcp-crawler%2Fv0.0.1" };
+      }
+      if (path.endsWith("/releases/202/assets?per_page=100")) {
+        return [
+          { name: "CHANGELOG.md", size: 128, digest: shaDigest, browser_download_url: "https://github.com/example/fixture/releases/download/vrcp-crawler/v0.0.1/CHANGELOG.md" },
+          { name: "CHECKSUMS.sha256", size: 64, digest: shaDigest, browser_download_url: "https://github.com/example/fixture/releases/download/vrcp-crawler/v0.0.1/CHECKSUMS.sha256" }
+        ];
+      }
+      if (path.endsWith("/git/ref/tags/cloudflare-worker%2Fv2026.10.1-pre")) {
+        return { ref: "refs/tags/cloudflare-worker/v2026.10.1-pre", object: { type: "commit", sha: commit } };
+      }
+      if (path.includes("/actions/workflows/cloudflare-worker.yml/runs")) {
+        return { workflow_runs: [{ id: 303, head_sha: commit, head_branch: "cloudflare-worker/v2026.10.1-pre", status: "completed", conclusion: "success" }] };
+      }
+      if (path.endsWith("/actions/runs/303/artifacts?per_page=100")) {
+        return { artifacts: [{ name: "worker-preview-bundle", size_in_bytes: 4096 }] };
+      }
+      throw new Error(`Unexpected API lookup: ${path}`);
+    };
+    const crawlerProof = await inspectPredecessorAssets("release", "crawler", "0.0.1", workspace, mockApi, git);
+    expect(crawlerProof.artifactsVerified).toBe(true);
+    expect(crawlerProof.assets).toEqual(["CHANGELOG.md", "CHECKSUMS.sha256"]);
+
+    const workerProof = await inspectPredecessorAssets("preview", "worker", "2026.10.1-pre", workspace, mockApi, git);
+    expect(workerProof.artifactsVerified).toBe(true);
+    expect(workerProof.status).toBe("preview-deployed-no-release-assets");
+  });
+}, 60_000);
+
+test("finalizeRelease execute=false enforces predecessor proof and trackDeliveryPipeline refuses unverified artifacts", async () => {
+  await fixture(async (workspace, git) => {
+    const reviewed = await reviewedFixture(workspace, git, "worker");
+    await expect(checkedFinalizeRelease("worker", 7, reviewed.commit, false, workspace, git, reviewed.api,
+      async tag => ({ ...(await fixturePublication(tag)), artifactsVerified: false, status: "ci-failed" })))
+      .rejects.toThrow("publication/artifact proof");
+
+    const trackPreviewCfgPath = resolve(workspace, "config.preview.versions.json");
+    const trackPreviewCfg = JSON.parse(await readFile(trackPreviewCfgPath, "utf8"));
+    trackPreviewCfg["preview-crawler"] = "2026.10.1-pre";
+    await writeFile(trackPreviewCfgPath, JSON.stringify(trackPreviewCfg, null, 2) + "\n");
+    git(workspace, "add", "config.preview.versions.json");
+    git(workspace, "commit", "-m", "Prepare crawler preview config for track test");
+    const commit = git(workspace, "rev-parse", "HEAD");
+    git(workspace, "tag", "-a", "vrcp-crawler/v2026.10.1-pre", commit, "-m", "track gate test");
+    const mockApi = async (path: string) => {
+      if (path.includes("/runs?")) {
+        return { workflow_runs: [{ id: 55, head_sha: commit, head_branch: "vrcp-crawler/v2026.10.1-pre", status: "completed", conclusion: "success", html_url: "https://github.com/example/fixture/actions/runs/55" }] };
+      }
+      if (path.endsWith("/runs/55")) return { id: 55, status: "completed", conclusion: "success", html_url: "https://github.com/example/fixture/actions/runs/55" };
+      if (path.endsWith("/runs/55/jobs?per_page=100")) return { jobs: [{ name: "build-linux", status: "completed", conclusion: "success" }] };
+      throw new Error(`Unexpected track path: ${path}`);
+    };
+    await expect(trackDeliveryPipeline("vrcp-crawler/v2026.10.1-pre", {
+      workspace,
+      git,
+      api: mockApi,
+      pollIntervalMs: 0,
+      onProgress: () => {},
+      inspect: async (tag: string) => ({ tag, product: "crawler", channel: "preview", version: "2026.10.1-pre", artifactsVerified: false, status: "released-artifacts-unverified" })
+    })).rejects.toThrow("verification failed");
+  });
+}, 60_000);
+
+test("planDelivery enforces lead-branch preview ancestry when origin lead branch exists and optional predecessor proof", async () => {
+  await fixture(async (workspace, git) => {
+    const baseHead = git(workspace, "rev-parse", "HEAD");
+    git(workspace, "checkout", "-b", "preview/crawler-network");
+    await writeFile(resolve(workspace, "lead.txt"), "Lead branch update\n");
+    git(workspace, "add", "lead.txt");
+    git(workspace, "commit", "-m", "Lead branch advance");
+    git(workspace, "push", "-u", "origin", "preview/crawler-network");
+
+    const leadPlan = await planDelivery("preview", "crawler", workspace, now, git);
+    expect(leadPlan.isLeadBranch).toBe(true);
+    expect(leadPlan.blockers).toEqual([]);
+
+    git(workspace, "checkout", "-b", "feature-stale-fork", baseHead);
+    git(workspace, "push", "-u", "origin", "feature-stale-fork");
+    const nonLeadPlan = await planDelivery("preview", "crawler", workspace, now, git);
+    expect(nonLeadPlan.isLeadBranch).toBe(false);
+    expect(nonLeadPlan.blockers.some((b: string) => b.includes("merge origin/preview/crawler-network"))).toBe(true);
+
+    git(workspace, "merge", "--no-ff", "preview/crawler-network", "-m", "Merge latest lead branch");
+    git(workspace, "push", "origin", "feature-stale-fork");
+    const mergedPlan = await planDelivery("preview", "crawler", workspace, now, git);
+    expect(mergedPlan.blockers).toEqual([]);
+
+    const cfgPath = resolve(workspace, "config.preview.versions.json");
+    const cfg = JSON.parse(await readFile(cfgPath, "utf8"));
+    cfg["preview-crawler"] = "2026.10.1-pre";
+    await writeFile(cfgPath, JSON.stringify(cfg, null, 2) + "\n");
+    git(workspace, "add", "config.preview.versions.json");
+    git(workspace, "commit", "-m", "Advance preview version");
+    git(workspace, "push", "origin", "feature-stale-fork");
+    const unverifiedPredecessorPlan = await planDelivery("preview", "crawler", workspace, now, git, false, false, "patch",
+      async (tag: string) => ({ ...(await fixturePublication(tag)), artifactsVerified: false, status: "ci-failed" }));
+    expect(unverifiedPredecessorPlan.blockers.some((b: string) => b.includes("Predecessor publication proof failed"))).toBe(true);
+  });
+}, 60_000);
+
+test("delivery-chain CLI strips --json from any position before validating positional arguments", () => {
+  for (const args of [
+    ["scripts/delivery-chain.mjs", "status", "invalid-tag", "--json"],
+    ["scripts/delivery-chain.mjs", "--json", "status", "invalid-tag"],
+    ["scripts/delivery-chain.mjs", "check", "invalid-tag", "--json"],
+    ["scripts/delivery-chain.mjs", "diagnose", "invalid-tag", "--json"]
+  ]) {
+    let stderr = "";
+    try {
+      execFileSync(process.execPath, args, { encoding: "utf8", stdio: "pipe", timeout: 15_000 });
+    } catch (err: any) {
+      stderr = String(err?.stderr ?? "");
+    }
+    expect(stderr).toContain("Expected an exact product tag");
+    expect(stderr).not.toContain("Use execute");
+  }
+});
 
 
 

@@ -130,3 +130,15 @@ jobs:
         env:
           OPERATOR_TOKEN: ${{ secrets.OPERATOR_TOKEN }}
           VRCP_WORKER_OPERATION_ENV: cloudflare-preview
+      - name: Prepare and build Linux crawler node for live preview proof
+        run: |
+          bun install --cwd src-crawler --no-save --ignore-scripts
+          bun run prepare:dev preview crawler
+          bun run --cwd src-crawler build:node:linux
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - name: Verify live crawling against preview deployment
+        run: bun run worker:preview:live-crawl --execute
+        env:
+          OPERATOR_TOKEN: ${{ secrets.OPERATOR_TOKEN }}
+          VRCP_WORKER_OPERATION_ENV: cloudflare-preview

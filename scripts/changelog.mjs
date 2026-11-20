@@ -57,7 +57,10 @@ export function findProductChangelogSection(markdown, channel, product) {
   let end = lines.findIndex((l, i) => i > start && (l.startsWith("## ") || l.startsWith("# ") || l === "---"));
   if (end < 0) end = lines.length;
 
-  const rawSection = lines.slice(start + 1, end).join("\n");
+  const rawSection = lines
+    .slice(start + 1, end)
+    .filter((line) => !/^See full history at\b/i.test(line.trim()))
+    .join("\n");
   const section = stripMarkdownComments(rawSection);
   return { start, end, heading: lines[start], folder, identifier, section: section || "- none currently" };
 }

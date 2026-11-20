@@ -2,76 +2,47 @@ import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { checkReleaseSource, readGitHubAPI, selectTag } from "./delivery.mjs";
-import { productDirectories, productTagPrefixes } from "./versioning.mjs";
-import { checkRemoteTag } from "./release-assets.mjs";
+import { defineCommand } from "citty";
+import semver from "semver";
+import {
+  checkReleaseSource,
+  checkRemoteTag,
+  readGit as pipelineReadGit,
+  readGitHubAPI,
+  renderCardTable,
+  resolveGitHubToken,
+  resolveTag,
+  selectTag,
+  style as c
+} from "./pipeline-utils.mjs";
+import { productDirectories, productTagPrefixes, productWorkflows } from "./versioning.mjs";
 
-const defineCommand = def => def;
+export { renderCardTable };
 
 const root = fileURLToPath(new URL("../", import.meta.url));
-
-const useColor = !process.env.NO_COLOR && (process.stdout.isTTY ?? true);
-const c = {
-  reset: useColor ? "\x1b[0m" : "",
-  bold: useColor ? "\x1b[1m" : "",
-  dim: useColor ? "\x1b[2m" : "",
-  cyan: useColor ? "\x1b[36m" : "",
-  green: useColor ? "\x1b[32m" : "",
-  yellow: useColor ? "\x1b[33m" : "",
-  red: useColor ? "\x1b[31m" : "",
-  magenta: useColor ? "\x1b[35m" : ""
-};
-
-export function renderCardTable(title, entries) {
-  const stripAnsi = str => String(str ?? "").replace(/\x1b\[[0-9;]*m/g, "");
-  const maxKeyLen = Math.max(4, ...entries.map(([k]) => stripAnsi(k).length));
-  const maxValLen = Math.max(4, ...entries.map(([_, v]) => stripAnsi(v).length));
-  const totalInner = Math.max(stripAnsi(title).length + 4, maxKeyLen + maxValLen + 5);
-
-  console.log(`\n┌─ ${c.bold}${c.cyan}${title}${c.reset} ${"─".repeat(Math.max(0, totalInner - stripAnsi(title).length - 3))}┐`);
-  for (const [k, v] of entries) {
-    const padKey = " ".repeat(Math.max(0, maxKeyLen - stripAnsi(k).length));
-    const padVal = " ".repeat(Math.max(0, totalInner - maxKeyLen - stripAnsi(v).length - 5));
-    console.log(`│  ${c.dim}${k}${c.reset}${padKey} : ${v}${padVal} │`);
-  }
-  console.log(`└${"─".repeat(totalInner + 2)}┘\n`);
-}
-
 const manifestPath = ".github/delivery-recoveries.json";
-const recoveryWorkflows = { crawler: "node-docker", network: "network", "crawler-client": "node-client" };
+const recoveryWorkflows = {
+  crawler: productWorkflows.crawler,
+  network: productWorkflows.network,
+  "crawler-client": productWorkflows["crawler-client"]
+};
 const workflowFor = identity => `.github/workflows/${recoveryWorkflows[identity.product]}.yml`;
 const sha = value => /^[a-f0-9]{40}$/.test(value ?? "");
 const git = (workspace, ...args) => execFileSync("git", args, {
   cwd: workspace, encoding: "utf8", timeout: 30_000, stdio: "pipe",
   env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GCM_INTERACTIVE: "Never" } });
 
-function getGitHubToken(workspace = root) {
-  if (process.env.GH_TOKEN) return process.env.GH_TOKEN;
-  if (process.env.GITHUB_TOKEN) return process.env.GITHUB_TOKEN;
-  if (process.env.RELEASE_TOKEN) return process.env.RELEASE_TOKEN;
-  try {
-    const out = execFileSync("git", ["credential", "fill"], {
-      cwd: workspace,
-      input: "protocol=https\nhost=github.com\n\n",
-      stdio: ["pipe", "pipe", "ignore"],
-      encoding: "utf8",
-      env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GCM_INTERACTIVE: "Never" }
-    });
-    const token = out.split("\n").find(l => l.startsWith("password="))?.slice(9).trim();
-    if (token) return token;
-  } catch {}
-  return undefined;
-}
+const getGitHubToken = (workspace = root) => resolveGitHubToken(workspace);
 
-function builderStepFailed(jobs, expectedStepName) {
+function builderStepFailed(jobs, expectedStepName, allowWindowsSuccess = false) {
   const isExpectedStep = typeof expectedStepName === "function"
     ? expectedStepName
     : name => name === expectedStepName || (expectedStepName === "Run bun test ./tests" && name === "Test crawler node");
   const expected = new Map([["route", "success"], ["build-linux", "failure"],
-    ["standalone-windows", "failure"], ["publish-container", "skipped"], ["release-assets", "skipped"]]);
+    ["standalone-windows", allowWindowsSuccess ? "success" : "failure"], ["publish-container", "skipped"], ["release-assets", "skipped"]]);
   return jobs.length === expected.size && jobs.every(job => {
     if (expected.get(job.name) !== job.conclusion || !expected.delete(job.name)) return false;
-    if (!["build-linux", "standalone-windows"].includes(job.name)) return true;
+    if (job.name !== "build-linux" && !(job.name === "standalone-windows" && !allowWindowsSuccess)) return true;
     const steps = job.steps;
     if (!Array.isArray(steps) || !steps.length || steps.some((step, index) =>
       !Number.isSafeInteger(step.number) || step.number < 1 || index > 0 && step.number <= steps[index - 1].number)) return false;
@@ -91,11 +62,18 @@ function builderStepFailed(jobs, expectedStepName) {
 export function recoveryIdentity(tag, workspace = root) {
   const manifest = JSON.parse(readFileSync(resolve(workspace, manifestPath), "utf8"));
   const identity = Object.hasOwn(manifest.tags ?? {}, tag ?? "") ? manifest.tags[tag] : undefined;
+  const crawlerValid = identity?.product === "crawler" &&
+    (/^0\.0\.[0-9]+$/.test(identity.version ?? "") || /^\d{4}\.(?:[1-9]|1[0-2])\.\d+-pre$/.test(identity.version ?? ""));
+  const allowedStage = identity?.product === "crawler" && (
+    identity.failedStage === undefined ||
+    ["dependency-prepare", "test-failed"].includes(identity.failedStage) ||
+    (identity.failedStage === "build-smoke" && /^\d{4}\.(?:[1-9]|1[0-2])\.\d+-pre$/.test(identity.version ?? ""))
+  );
   if (manifest.schemaVersion !== 1 || manifest.repository !== "SlamTheDragon/vrc-packages" ||
       !Object.hasOwn(recoveryWorkflows, identity?.product ?? "") || tag !== `${productTagPrefixes[identity.product]}/v${identity.version}` ||
-      !(identity.product === "crawler" ? /^0\.0\.[0-9]+$/ : identity.product === "network" ? /^\d{4}\.(?:[1-9]|1[0-2])\.\d+$/ : /^\d{2}\.(?:[1-9]|1[0-2])\.\d+-pre$/).test(identity.version) ||
+      !(crawlerValid || (identity.product === "network" ? /^\d{4}\.(?:[1-9]|1[0-2])\.\d+$/ : /^\d{2}\.(?:[1-9]|1[0-2])\.\d+-pre$/).test(identity.version)) ||
       !sha(identity.commit) || !sha(identity.tagObject) ||
-      (identity.failedStage !== undefined && (identity.product !== "crawler" || !["dependency-prepare", "test-failed"].includes(identity.failedStage))) ||
+      (identity.failedStage !== undefined && !allowedStage) ||
       !Number.isSafeInteger(identity.failedRun) || identity.failedRun < 1) {
     throw new Error("Recovery requires an exact owner-reviewed product identity. No version or tag changes are permitted.");
   }
@@ -150,10 +128,16 @@ export async function checkRecoveryRun(run, identity, api = readGitHubAPI()) {
     }
   }
   let failedStageMatches;
+  let artifactsAllowed = artifacts.total_count === 0 && Array.isArray(artifacts.artifacts) && artifacts.artifacts.length === 0;
   if (identity.failedStage === "dependency-prepare") {
     failedStageMatches = builderStepFailed(workflowJobs, "Run node scripts/delivery.mjs prepare 'release' crawler --ci");
   } else if (identity.failedStage === "test-failed") {
     failedStageMatches = builderStepFailed(workflowJobs, "Run bun test ./tests");
+  } else if (identity.failedStage === "build-smoke") {
+    failedStageMatches = builderStepFailed(workflowJobs, "Build and verify crawler node", true);
+    const partialArtifactName = `crawler-${identity.version}-windows-x64`;
+    artifactsAllowed = Array.isArray(artifacts.artifacts) && artifacts.total_count === artifacts.artifacts.length &&
+      artifacts.artifacts.length <= 1 && artifacts.artifacts.every(item => item?.name === partialArtifactName);
   } else {
     const failedJob = identity.product === "crawler" ? "route" : "build";
     failedStageMatches = workflowJobs.some(job => job.name === failedJob && job.conclusion === "failure") &&
@@ -163,7 +147,7 @@ export async function checkRecoveryRun(run, identity, api = readGitHubAPI()) {
       failed.path !== workflowFor(identity) || failed.head_repository?.full_name !== identity.repository ||
       failed.status !== "completed" || failed.conclusion !== "failure" ||
       !failedStageMatches ||
-      artifacts.total_count !== 0 || !Array.isArray(artifacts.artifacts) || artifacts.artifacts.length !== 0) {
+      !artifactsAllowed) {
     throw new Error("Recovery requires the authorized failed job with no publication or artifact output.");
   }
   return { ...identity, toolingCommit: run.head_sha, recoveryRun: run.id };
@@ -189,7 +173,10 @@ export function checkRecoveryReceipts(files, proof) {
 
 export async function requireRecoveryCI(product, channel, env, workspace, api, readGit = git) {
   const identity = recoveryIdentity(env.VRCP_RECOVERY_TAG, workspace);
-  if (product !== identity.product || channel !== (identity.product === "crawler" ? "release" : "preview") || env.GITHUB_ACTIONS !== "true" ||
+  const expectedChannel = identity.product === "crawler"
+    ? (semver.prerelease(identity.version) ? "preview" : "release")
+    : "preview";
+  if (product !== identity.product || channel !== expectedChannel || env.GITHUB_ACTIONS !== "true" ||
       env.GITHUB_EVENT_NAME !== "workflow_dispatch" || env.GITHUB_REF !== "refs/heads/main" ||
       env.GITHUB_REPOSITORY !== identity.repository || !sha(env.GITHUB_SHA) || !/^[1-9][0-9]*$/.test(env.GITHUB_RUN_ID ?? "")) {
     throw new Error("Recovery execution requires the dedicated owner-dispatched main workflow.");
@@ -204,6 +191,32 @@ export async function requireRecoveryCI(product, channel, env, workspace, api, r
   if (channel === "release") await checkReleaseSource({ product, channel, version: identity.version }, identity, api, readGit, workspace);
   else await checkRemoteTag((_method, path) => api(path), identity.repository, identity.tag, identity.commit, identity.tagObject);
   return proof;
+}
+
+export async function requireCI(product, channel, env = process.env, workspace = root, api = readGitHubAPI(env), readGit = pipelineReadGit) {
+  if (env.VRCP_RECOVERY_TAG) {
+    await requireRecoveryCI(product, channel, env, workspace, api, readGit);
+    const selected = await resolveTag(env.VRCP_RECOVERY_TAG, workspace);
+    if (selected.product !== product || selected.channel !== channel) throw new Error("Recovery selects another product/channel.");
+    return selected;
+  }
+  if (env.GITHUB_ACTIONS !== "true" || env.GITHUB_EVENT_NAME !== "push" ||
+      !env.GITHUB_REF?.startsWith(`refs/tags/${productTagPrefixes[product]}/v`) || !/^[a-f0-9]{40}$/.test(env.GITHUB_SHA ?? "")) {
+    throw new Error("Release artifacts and remote actions require a matching GitHub tag-push job. Local output is development-only.");
+  }
+  const tag = env.GITHUB_REF.slice("refs/tags/".length);
+  const selected = await resolveTag(tag, workspace);
+  if (selected.product !== product || selected.channel !== channel) throw new Error("CI tag selects another product/channel");
+  if (channel === "release") {
+    if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(env.GITHUB_REPOSITORY ?? "") || !/^[1-9][0-9]*$/.test(env.GITHUB_RUN_ID ?? "")) {
+      throw new Error("Release CI requires repository and original Actions run identity");
+    }
+    const run = await api(`/repos/${env.GITHUB_REPOSITORY}/actions/runs/${env.GITHUB_RUN_ID}`);
+    if (String(run?.id) !== env.GITHUB_RUN_ID) throw new Error("Release source Actions run identity differs");
+    await checkReleaseSource(selected, { repository: env.GITHUB_REPOSITORY, commit: env.GITHUB_SHA, tag,
+      actor: run.actor, context: run }, api, readGit, workspace);
+  }
+  return selected;
 }
 
 /** A manual retry can use repaired tooling only when every earlier attempt failed without outputs. */
@@ -221,7 +234,8 @@ export async function checkRecoveryRetry(attempts, identity, toolingCommit, api 
         jobs.jobs.some(job => !["success", "failure", "skipped"].includes(job.conclusion)) ||
         jobs.jobs.some(job => /publish|release-assets|attach|announce/i.test(job.name) && job.conclusion !== "skipped") ||
         (identity.failedStage === "dependency-prepare" && !builderStepFailed(jobs.jobs, "Run node scripts/delivery.mjs prepare 'release' crawler --ci")) ||
-        (identity.failedStage === "test-failed" && !builderStepFailed(jobs.jobs, "Run bun test ./tests"))) {
+        (identity.failedStage === "test-failed" && !builderStepFailed(jobs.jobs, "Run bun test ./tests")) ||
+        (identity.failedStage === "build-smoke" && !builderStepFailed(jobs.jobs, "Build and verify crawler node", true))) {
       throw new Error("Retry cannot rebuild an attempt with publication activity or incomplete evidence.");
     }
   }
@@ -805,7 +819,14 @@ export const main = defineCommand({
           ]);
         }
       } else if (subcommand === "patch-branch") {
-        const [action, product, version] = rest.filter(arg => arg !== "--json");
+        const patchArgs = rest.filter(arg => arg !== "--json");
+        let action, product, version;
+        if (["create", "merge"].includes(patchArgs[0])) {
+          [action, product, version] = patchArgs;
+        } else if (patchArgs.length === 2) {
+          action = "create";
+          [product, version] = patchArgs;
+        }
         if (action === "create") {
           const res = createPatchBranch(product, version);
           if (asJson) {
@@ -814,7 +835,7 @@ export const main = defineCommand({
             renderCardTable("Recovery Patch Branch Created", [
               ["Action", "create"],
               ["Branch", res.branch || "N/A"],
-              ["Base Branch", res.base || "N/A"],
+              ["Base Branch", res.previousBranch || "N/A"],
               ["Status", `${c.green}✔ ${res.status || "created"}${c.reset}`],
               ["Next Steps", "Make fixes, commit, merge with: patch-branch merge <product> <version>"]
             ]);
@@ -827,13 +848,13 @@ export const main = defineCommand({
             renderCardTable("Recovery Patch Branch Merged", [
               ["Action", "merge"],
               ["Merged Branch", res.branch || "N/A"],
-              ["Target Branch", res.target || "N/A"],
+              ["Target Branch", res.mergedInto || "N/A"],
               ["Status", `${c.green}✔ ${res.status || "merged & deleted"}${c.reset}`],
               ["Next Steps", "Restart delivery pipeline with clean tree"]
             ]);
           }
         } else {
-          throw new Error("Use: delivery-recovery.mjs patch-branch <create|merge> <product> <version>");
+          throw new Error("Use: delivery-recovery.mjs patch-branch [create|merge] <product> <version>");
         }
       } else if (subcommand === "rerun") {
         const [runId, ...flags] = rest.filter(arg => arg !== "--json");
@@ -858,8 +879,8 @@ export const main = defineCommand({
         } else {
           renderCardTable("Reverted Delivery Tag", [
             ["Tag", tag],
-            ["Local Tag", res.localDeleted ? `${c.green}✔ Deleted${c.reset}` : `${c.yellow}Not found${c.reset}`],
-            ["Remote Tag", res.remoteDeleted ? `${c.green}✔ Deleted${c.reset}` : flags.includes("--remote") ? `${c.red}Failed / Not found${c.reset}` : `${c.dim}Skipped (no --remote)${c.reset}`],
+            ["Local Tag", res.local ? `${c.green}✔ Deleted${c.reset}` : `${c.yellow}Not found${c.reset}`],
+            ["Remote Tag", res.remote ? `${c.green}✔ Deleted${c.reset}` : flags.includes("--remote") ? `${c.red}Failed / Not found${c.reset}` : `${c.dim}Skipped (no --remote)${c.reset}`],
             ["Status", `${c.green}✔ ${res.status || "completed"}${c.reset}`]
           ]);
         }
@@ -885,8 +906,8 @@ export const main = defineCommand({
             ["Target", tag || "N/A"],
             ["Category", res.category || "N/A"],
             ["Severity", res.severity || "N/A"],
-            ["Suggested Action", res.action || "N/A"],
-            ["Description", res.description || "N/A"]
+            ["Suggested Action", res.suggestedActions?.join(", ") || "N/A"],
+            ["Description", res.rootCause || "N/A"]
           ]);
         }
       } else if (subcommand === "recover" || subcommand?.includes("/v")) {

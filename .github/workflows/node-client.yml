@@ -56,7 +56,6 @@ jobs:
       - run: node scripts/versioning.mjs sync '${{ steps.route.outputs.channel }}'
       - run: node scripts/delivery.mjs prepare '${{ steps.route.outputs.channel }}' crawler-client --ci
       - name: Check crawler client
-        continue-on-error: ${{ steps.route.outputs.channel == 'preview' }}
         run: bun run --cwd src-crawler-client check
       - run: node scripts/delivery.mjs build '${{ steps.route.outputs.channel }}' crawler-client --ci
       - run: node scripts/release-assets.mjs stamp '${{ steps.route.outputs.channel }}' crawler-client src-crawler-client/src-tauri/target/release/bundle
@@ -87,4 +86,3 @@ jobs:
     uses: ./.github/workflows/release-assets.yml
     with:
       tag: ${{ inputs.recovery-tag || '' }}
-# ensure output only expose msi installer or exe installer if ever defined, if not, set up build configs in related source code

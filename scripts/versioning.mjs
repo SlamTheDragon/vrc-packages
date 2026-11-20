@@ -13,6 +13,18 @@ export const productTagPrefixes = {
   package: "vrcp-api", network: "vrcp-network", worker: "cloudflare-worker",
   crawler: "vrcp-crawler", "crawler-client": "vrcp-crawler-client", web: "web"
 };
+export const productWorkflows = {
+  package: "vrc-packages-api", network: "network", crawler: "node-docker",
+  "crawler-client": "node-client", worker: "cloudflare-worker", web: "web"
+};
+export const productTitles = {
+  package: "VRC Packages API", crawler: "VRCP Crawler", "crawler-client": "VRCP Crawler Client",
+  worker: "VRCP Worker", network: "VRCP Network", web: "VRCP Web"
+};
+export const leadBranches = {
+  crawler: "preview/crawler-network", network: "preview/crawler-network", worker: "preview/crawler-network",
+  "crawler-client": "preview/desktop-client", package: "preview/workers-api", web: "preview/web"
+};
 const products = Object.keys(productDirectories);
 const distributedProducts = { "vrc-packages-api": "package", "vrc-packages-network": "network" };
 export const sdkPackageNames = { release: "vrc-packages-api", preview: "vrc-packages-api-preview" };
@@ -207,17 +219,7 @@ export async function versionFiles(mode, channel, product = "all", workspace = r
   }
   if (product === "network") {
     // Advance only the network dependency. Preserve each consumer's runtime and SDK channel.
-    for (const consumer of ["crawler", "worker"]) {
-      const path = resolve(workspace, productDirectories[consumer], "package.json");
-      const text = await readFile(path, "utf8");
-      const manifest = JSON.parse(text);
-      const archive = networkArchiveURL(preview["preview-network"]);
-      if (Object.hasOwn(manifest.dependencies ?? {}, "vrc-packages-network") && manifest.dependencies["vrc-packages-network"] !== archive) {
-        manifest.dependencies["vrc-packages-network"] = archive;
-        const indent = text.match(/\n([\t ]+)"/)?.[1] ?? "  ";
-        edits.push({ path, content: JSON.stringify(manifest, null, indent) + "\n" });
-      }
-    }
+    edits.push(...await prepareNetworkConsumerEdits(preview["preview-network"], workspace, false));
   }
   if (mode === "check" && edits.length) {
     throw new Error(`Version metadata differs from ${channel} config: ${edits.map(edit => edit.path).join(", ")}`);
@@ -301,31 +303,37 @@ export async function checkSync(options = {}) {
   };
 }
 
+async function prepareNetworkConsumerEdits(networkVersion, workspace = root, ignoreMissing = false) {
+  const archive = networkArchiveURL(networkVersion);
+  const edits = [];
+  for (const consumer of ["crawler", "worker"]) {
+    const path = resolve(workspace, productDirectories[consumer], "package.json");
+    try {
+      const text = await readFile(path, "utf8");
+      const manifest = JSON.parse(text);
+      if (Object.hasOwn(manifest.dependencies ?? {}, "vrc-packages-network") && manifest.dependencies["vrc-packages-network"] !== archive) {
+        manifest.dependencies["vrc-packages-network"] = archive;
+        const indent = text.match(/\n([\t ]+)"/)?.[1] ?? "  ";
+        edits.push({ path, content: JSON.stringify(manifest, null, indent) + "\n" });
+      }
+    } catch (error) {
+      if (!ignoreMissing) throw error;
+    }
+  }
+  return edits;
+}
+
 export async function syncInternalDependencies(workspace = root) {
   const { config: previewConfig } = await readVersionConfig("preview", workspace);
   const networkVersion = previewConfig["preview-network"];
-  const archive = networkArchiveURL(networkVersion);
-  const updated = [];
-
-  for (const consumer of ["crawler", "worker"]) {
-    const manifestPath = resolve(workspace, productDirectories[consumer], "package.json");
-    try {
-      const text = await readFile(manifestPath, "utf8");
-      const manifest = JSON.parse(text);
-      if (manifest.dependencies?.["vrc-packages-network"] && manifest.dependencies["vrc-packages-network"] !== archive) {
-        manifest.dependencies["vrc-packages-network"] = archive;
-        const indent = text.match(/\n([\t ]+)"/)?.[1] ?? "  ";
-        await writeFile(manifestPath, JSON.stringify(manifest, null, indent) + "\n");
-        updated.push(manifestPath);
-      }
-    } catch {}
-  }
+  const edits = await prepareNetworkConsumerEdits(networkVersion, workspace, true);
+  for (const edit of edits) await writeFile(edit.path, edit.content);
 
   return {
     status: "internal-deps-synced",
     networkVersion,
-    archiveURL: archive,
-    updated
+    archiveURL: networkArchiveURL(networkVersion),
+    updated: edits.map(edit => edit.path)
   };
 }
 

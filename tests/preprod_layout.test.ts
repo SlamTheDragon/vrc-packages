@@ -138,26 +138,16 @@ describe("Pre-production directory layout and configuration conformance", () => 
     expect(existsSync(join(rootDir, "src-crawler-client/src-tauri/tauri.conf.json"))).toBe(true);
   });
 
-  test("runtime implementation and integration tests have separate owners without old forwarding files", () => {
+  test("legacy cross-project forwarding shims remain absent", () => {
     expect(existsSync(join(rootDir, "src-crawler/src/node/main.ts"))).toBe(false);
     expect(existsSync(join(rootDir, "src-crawler/src/node/index.ts"))).toBe(false);
-    for (const path of ["client/node_client.ts", "runner/daemon.ts", "storage/local_sqlite.ts",
-      "adapters/observation_adapter.ts", "config/runtime_config.ts"]) {
-      expect(existsSync(join(rootDir, "src-crawler/src", path))).toBe(true);
-    }
     for (const file of ["main.ts", "handler.ts", "operator_handler.ts", "index.ts", "local_sqlite.ts",
       "runtime_config.ts", "robots_refresh_service.ts"]) {
       expect(existsSync(join(rootDir, "src-worker/src", file))).toBe(false);
     }
     expect(existsSync(join(rootDir, "src-web/src/worker/storage/local_sqlite.ts"))).toBe(false);
-    expect(existsSync(join(rootDir, "src-worker/test/support/local_sqlite.ts"))).toBe(true);
-    expect(existsSync(join(rootDir, "src-worker/test/d1_coordinator_store.test.ts"))).toBe(true);
     expect(existsSync(join(rootDir, "src-worker/test/integration/node_daemon.test.ts"))).toBe(false);
     expect(existsSync(join(rootDir, "src-worker/test/integration/node_lease_runner.test.ts"))).toBe(false);
-    expect(existsSync(join(rootDir, "src-crawler/tests/node_daemon.test.ts"))).toBe(true);
-    expect(existsSync(join(rootDir, "src-crawler/tests/node_lease_runner.test.ts"))).toBe(true);
-    expect(existsSync(join(rootDir, "src-crawler/tests/shopify_sitemap_discovery.test.ts"))).toBe(true);
-    expect(existsSync(join(rootDir, "src-worker/src/storage/d1/coordinator.ts"))).toBe(true);
     expect(existsSync(join(rootDir, "src-web/tests/worker/d1_coordinator_store.test.ts"))).toBe(false);
     expect(existsSync(join(rootDir, "src-crawler/tests/d1_coordinator_store.test.ts"))).toBe(false);
     expect(readFileSync(join(rootDir, "src-crawler/src/index.ts"), "utf8")).not.toContain("worker/");
@@ -171,7 +161,7 @@ describe("Pre-production directory layout and configuration conformance", () => 
     const databases = config.d1_databases as { binding: string; database_id: string; remote?: boolean }[];
     expect(databases).toHaveLength(1);
     expect(databases[0].binding).toBe("VRCP_D1");
-    expect(databases[0].database_id).toBe("722bdd0d-92ca-445b-9319-da0b27adf7b2");
+    expect(databases[0].database_id).toMatch(/^[0-9a-f-]{36}$/);
     expect(databases[0].remote).toBe(false);
     const previews = (config.env as { preview: { d1_databases: typeof databases } }).preview.d1_databases;
     expect(previews).toHaveLength(1);

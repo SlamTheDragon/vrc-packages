@@ -20,6 +20,7 @@ test("publication snapshots source, consumes only selected notes and preserves i
     expect(readFileSync(join(dir, "CHANGELOG.md"), "utf8")).toBe("old snapshot");
     const result = extractProductChangelog("preview", "crawler", "2026.10.1-pre", dir)!;
     expect(result.changed).toHaveLength(3);
+    expect(readFileSync(result.file, "utf8")).not.toContain("See full history at");
     expect(readFileSync(join(dir, "CHANGELOG.md"), "utf8")).toBe(source);
     const remaining = readFileSync(join(dir, "docs/source/CHANGELOG.md"), "utf8");
     expect(remaining).not.toContain("Pending summary");

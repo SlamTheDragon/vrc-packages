@@ -7,25 +7,18 @@ import semver from "semver";
 import { checkRemoteTag, checkSourceRun, sameSourceRunLink } from "./release-assets.mjs";
 import { downloadActionsArchive } from "./worker-artifacts.mjs";
 import { checkRecoveryRun, recoveryIdentity } from "./delivery-recovery.mjs";
+import { loadRootEnv } from "./pipeline-utils.mjs";
+import { productTagPrefixes, productTitles } from "./versioning.mjs";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
+loadRootEnv(root);
 
-if (typeof process.loadEnvFile === "function") {
-  const envFile = resolve(root, ".env");
-  if (existsSync(envFile)) {
-    try { process.loadEnvFile(envFile); } catch {}
-  } else {
-    try { process.loadEnvFile(); } catch {}
-  }
-}
-
-const products = {
-  package: { prefix: "vrcp-api", title: "VRC Packages API" },
-  crawler: { prefix: "vrcp-crawler", title: "VRCP Crawler" },
-  "crawler-client": { prefix: "vrcp-crawler-client", title: "VRCP Crawler Client" },
-  worker: { prefix: "cloudflare-worker", title: "VRCP Worker" },
-  network: { prefix: "vrcp-network", title: "VRCP Network" }
-};
+const products = Object.fromEntries(
+  ["package", "crawler", "crawler-client", "worker", "network"].map(key => [
+    key,
+    { prefix: productTagPrefixes[key], title: productTitles[key] }
+  ])
+);
 const sourcePaths = ["vrc-packages-api", "node-docker", "node-client", "release-assets"].map(name => `.github/workflows/${name}.yml`);
 
 /** Receipt data is never executed. Check its size and exact shape before use. */

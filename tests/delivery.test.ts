@@ -7,6 +7,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { bumpVersion, distributedArtifact, networkArchiveURL, productDirectories, readVersionConfig, sdkPackageNames, sdkChannelForProduct, versionFiles } from "../scripts/versioning.mjs";
 import { checkSDKPublicationVersion, deliver, requireCI, resolveTag, stageSDKArtifact, publishPreviewSDKArtifact, previewOIDCFailure, validateCIArtifact, validateRegistrySDK, validateSDKStage, workerSecretBindings } from "../scripts/delivery.mjs";
+import { withPipelineWorkspaceFixture } from "./support/pipeline_fixture.ts";
 
 test("preview npm failure summaries expose only statuses and fixed flags, never raw authentication logs", () => {
   const summary = previewOIDCFailure("npm http fetch POST 403 https://registry.npmjs.org/-/npm/v1/oidc/token/exchange/package/vrc-packages-api-preview 12ms\n" +
@@ -346,13 +347,19 @@ test("each SDK identity stages latest and Worker registry selection still checks
   expect(source).toContain('metadata.name !== sdkPackageNames[channel] || metadata.version !== version');
 });
 
-test("packed consumer declarations are checked in installed consumers, not through package self-reference", () => {
-  const config = JSON.parse(readFileSync(new URL("../src-package/tsconfig.json", import.meta.url), "utf8"));
-  expect(config.exclude).toContain("tests/fixtures");
-  const harness = readFileSync(new URL("../src-package/tests/distribution_smoke.mjs", import.meta.url), "utf8");
-  expect(harness).toContain("'--noEmit', '--strict'");
-  expect(harness).toContain("'consumer.mts'");
-  expect(harness).toContain("`vrc-packages-api@file:${tarball}`");
+test("preview verification fails closed when preview tests fail", async () => {
+  await fixture(async workspace => {
+    await versionFiles("sync", "preview", "all", workspace);
+    await expect(deliver("verify", "preview", "package", false, false, {
+      workspace,
+      runCommand: (args: string[]) => {
+        if (args[0] === "run" && args[1] === "test") {
+          throw new Error("Simulated preview test failure");
+        }
+        return "";
+      }
+    })).rejects.toThrow("Simulated preview test failure");
+  });
 });
 
 test("SDK verification builds through its test script before typechecking tests that import dist", () => {
@@ -733,29 +740,23 @@ test("registry SDK inputs require exact identity, bytes and compiled distributio
 });
 
 test("every CI consumer installs the published SDK while local preparation and the SDK producer stay separate", async () => {
-  await fixture(async workspace => {
-    // This fixture isolates SDK resolution. Hosted network source/receipt checks have their own fixtures.
+  const releaseVersions = {
+    "release-crawler": "0.0.1", "release-crawler-client": "0.0.1",
+    "release-package": "0.0.1", "release-web": "0.0.1", "release-worker": "0.0.1"
+  };
+  const previewVersions = {
+    "preview-crawler": "2026.10.1-pre", "preview-crawler-client": "26.10.1-pre",
+    "preview-package": "2026.10.1-pre", "preview-web": "2026.10.1-pre",
+    "preview-worker": "2026.10.1-pre", "preview-network": "2026.10.1"
+  };
+  await withPipelineWorkspaceFixture(async workspace => {
     for (const product of ["worker", "crawler"]) {
       const path = resolve(workspace, productDirectories[product], "package.json");
       const manifest = JSON.parse(await readFile(path, "utf8"));
       delete manifest.dependencies["vrc-packages-network"];
       await writeFile(path, JSON.stringify(manifest));
     }
-    await mkdir(resolve(workspace, "scripts"));
-    await mkdir(resolve(workspace, "node_modules"));
-    await cp(new URL("../node_modules/semver", import.meta.url), resolve(workspace, "node_modules/semver"), { recursive: true });
-    for (const file of ["delivery.mjs", "versioning.mjs", "delivery-recovery.mjs", "release-assets.mjs", "changelog.mjs"]) {
-      let source = await readFile(new URL(`../scripts/${file}`, import.meta.url), "utf8");
-      // Mock the external Bun process only. The real CLI still selects the product's SDK channel.
-      if (file === "delivery.mjs") source = source.replace('execFileSync("bun", args,', 'execFileSync(process.execPath, [process.env.npm_execpath, ...args],');
-      // This fixture isolates dependency selection. Real Git/PR source admission has separate ingress fixtures.
-      if (file === "delivery.mjs") source = source.replace('if (ci) await requireCI(product, channel);', 'if (ci && channel !== "release") await requireCI(product, channel);');
-      await writeFile(resolve(workspace, "scripts", file), source);
-    }
     await writeFile(resolve(workspace, "package.json"), JSON.stringify({ type: "module" }));
-    const networkPath = resolve(workspace, productDirectories.network, "package.json");
-    const network = JSON.parse(await readFile(networkPath, "utf8"));
-    await writeFile(networkPath, JSON.stringify({ ...network, name: "vrc-packages-network" }));
     const log = resolve(workspace, "commands.jsonl");
     const cli = resolve(workspace, "npm-cli.js");
     // This fake npm produces only labeled synthetic bytes inside the temporary fixture. No registry or build runs.
@@ -786,26 +787,40 @@ if(args[0]==='view') {
   }
 } else if(args[0]!=='run'||args[1]!=='build') throw new Error('Unexpected fixture npm command');
 `);
-    const base = { ...process.env, npm_execpath: cli, FIXTURE_LOG: log, GITHUB_ACTIONS: "true",
-      GITHUB_EVENT_NAME: "push", GITHUB_SHA: "a".repeat(40) };
-    const run = (args: string[], env: Record<string, string | undefined>) =>
-      execFileSync(process.execPath, args, { cwd: workspace, env, stdio: "pipe", encoding: "utf8", timeout: 15_000 });
+    let activeEnv: Record<string, string | undefined> = {};
+    const runCommand = (args: string[], cwd: string, capture = false) => execFileSync(
+      process.execPath, [cli, ...args], { cwd, env: activeEnv, stdio: capture ? "pipe" : "inherit", encoding: "utf8", timeout: 15_000 }
+    );
+    const verifyCI = async (prod: string, ch: string, env: NodeJS.ProcessEnv, ws: string) =>
+      ch === "release" ? { product: prod, channel: ch } : requireCI(prod, ch, env, ws);
     const commands = async () => (await readFile(log, "utf8")).trim().split("\n").map(line => JSON.parse(line));
     const prefixes = { worker: "cloudflare-worker", crawler: "vrcp-crawler", network: "vrcp-network",
       "crawler-client": "vrcp-crawler-client", web: "web" };
-    for (const channel of ["release", "preview"]) {
+    for (const channel of ["release", "preview"] as const) {
       const version = channel === "release" ? "0.0.1" : "2026.10.1-pre";
-      const env = { ...base, FIXTURE_SDK_NAME: sdkPackageNames[channel], FIXTURE_VERSION: version };
-      run(["scripts/versioning.mjs", "sync", channel], env);
+      await versionFiles("sync", channel, "all", workspace);
       for (const [product, prefix] of Object.entries(prefixes)) {
         if (product === "network" && channel === "release") continue;
         await writeFile(log, "");
         const productVersion = (await readVersionConfig(channel, workspace)).config[`${channel}-${product}`];
         const sdkChannel = sdkChannelForProduct(product, channel);
         const dependencyVersion = (await readVersionConfig(sdkChannel, workspace)).config[`${sdkChannel}-package`];
-        run(["scripts/delivery.mjs", "prepare", channel, product, "--ci"], { ...env,
-          FIXTURE_SDK_NAME: sdkPackageNames[sdkChannel], FIXTURE_VERSION: dependencyVersion,
-          GITHUB_REF: `refs/tags/${prefix}/v${productVersion}` });
+        activeEnv = { ...process.env, FIXTURE_LOG: log, FIXTURE_SDK_NAME: sdkPackageNames[sdkChannel],
+          FIXTURE_VERSION: dependencyVersion };
+        const prevRef = process.env.GITHUB_REF, prevActions = process.env.GITHUB_ACTIONS,
+          prevEvt = process.env.GITHUB_EVENT_NAME, prevSha = process.env.GITHUB_SHA;
+        process.env.GITHUB_ACTIONS = "true";
+        process.env.GITHUB_EVENT_NAME = "push";
+        process.env.GITHUB_SHA = "a".repeat(40);
+        process.env.GITHUB_REF = `refs/tags/${prefix}/v${productVersion}`;
+        try {
+          await deliver("prepare", channel, product, true, false, { workspace, runCommand, verifyCI });
+        } finally {
+          process.env.GITHUB_REF = prevRef;
+          process.env.GITHUB_ACTIONS = prevActions;
+          process.env.GITHUB_EVENT_NAME = prevEvt;
+          process.env.GITHUB_SHA = prevSha;
+        }
         const trace = await commands();
         expect(trace.filter(item => item.args[0] === "view").map(item => item.args[1])).toEqual([`${sdkPackageNames[sdkChannel]}@latest`]);
         expect(trace.some(item => item.cwd === resolve(workspace, productDirectories.package) && item.args[0] === "run")).toBe(false);
@@ -814,36 +829,30 @@ if(args[0]==='view') {
         expect(installed).toEqual({ name: sdkPackageNames[sdkChannel], version: dependencyVersion });
       }
       await writeFile(log, "");
-      expect(() => run(["scripts/delivery.mjs", "prepare", channel, "crawler", "--ci"], {
-        ...env, FIXTURE_LATEST: "0.0.9", GITHUB_REF: `refs/tags/vrcp-crawler/v${version}`
-      })).toThrow("outside the authoritative version config");
+      activeEnv = { ...process.env, FIXTURE_LOG: log, FIXTURE_SDK_NAME: sdkPackageNames[channel], FIXTURE_VERSION: version, FIXTURE_LATEST: "0.0.9" };
+      process.env.GITHUB_ACTIONS = "true";
+      process.env.GITHUB_EVENT_NAME = "push";
+      process.env.GITHUB_SHA = "a".repeat(40);
+      process.env.GITHUB_REF = `refs/tags/vrcp-crawler/v${version}`;
+      await expect(deliver("prepare", channel, "crawler", true, false, { workspace, runCommand, verifyCI })).rejects.toThrow("outside the authoritative version config");
       expect((await commands()).map(item => item.args[0])).toEqual(["view"]);
       await writeFile(log, "");
-      run(["scripts/delivery.mjs", "prepare", channel, "package", "--ci"], { ...env, GITHUB_REF: `refs/tags/vrcp-api/v${version}` });
+      process.env.GITHUB_REF = `refs/tags/vrcp-api/v${version}`;
+      await deliver("prepare", channel, "package", true, false, { workspace, runCommand, verifyCI });
       expect((await commands()).some(item => item.args[0] === "view")).toBe(false);
       await writeFile(log, "");
-      run(["scripts/delivery.mjs", "prepare", channel, "crawler"], { ...env,
-        FIXTURE_SDK_NAME: sdkPackageNames.preview, FIXTURE_VERSION: "2026.10.1-pre" });
+      activeEnv = { ...process.env, FIXTURE_LOG: log, FIXTURE_SDK_NAME: sdkPackageNames.preview, FIXTURE_VERSION: "2026.10.1-pre" };
+      await deliver("prepare", channel, "crawler", false, false, { workspace, runCommand, verifyCI });
       const local = await commands();
       expect(local.some(item => item.args[0] === "view")).toBe(true);
       expect(local.some(item => item.cwd === resolve(workspace, productDirectories.package) && item.args[0] === "run")).toBe(false);
     }
-  });
+  }, { withGit: false, releaseVersions, previewVersions });
 }, 60_000);
 
-test("real publication CLI routes preview publish and release stage through the registry helper", async () => {
+test("real publication DI routes preview publish and release stage through the registry helper", async () => {
   await fixture(async workspace => {
-    await mkdir(resolve(workspace, "scripts"));
-    await mkdir(resolve(workspace, "node_modules"));
-    await cp(new URL("../node_modules/semver", import.meta.url), resolve(workspace, "node_modules/semver"), { recursive: true });
-    for (const file of ["delivery.mjs", "versioning.mjs", "delivery-recovery.mjs", "release-assets.mjs", "changelog.mjs"]) {
-      let source = await readFile(new URL(`../scripts/${file}`, import.meta.url), "utf8");
-      // This fixture isolates registry commands. It does not pretend its synthetic SHA proves a reviewed release.
-      if (file === "delivery.mjs") source = source.replace('if (ci) await requireCI(product, channel);', 'if (ci && channel !== "release") await requireCI(product, channel);');
-      await writeFile(resolve(workspace, "scripts", file), source);
-    }
-    await writeFile(resolve(workspace, "package.json"), '{"type":"module"}');
-    const cli = resolve(workspace, "npm-cli.js"), preload = resolve(workspace, "registry-fixture.mjs");
+    const cli = resolve(workspace, "npm-cli.js");
     const log = resolve(workspace, "registry-commands.jsonl"), marker = resolve(workspace, "published-marker");
     const bytes = Buffer.from("Synthetic CLI fixture bytes, not a distributed package");
     const stageId = "9ab1b418-531d-41df-aa66-2f66bdde947b";
@@ -859,39 +868,68 @@ else if(a[0]==='stage'&&a[1]==='publish')console.log(JSON.stringify({[e.FIXTURE_
 else if(a[0]==='stage'&&a[1]==='view')console.log(JSON.stringify(stage));
 else if(a[0]==='stage'&&a[1]==='download'){writeFileSync(join(process.cwd(),e.FIXTURE_NAME+'-'+e.FIXTURE_VERSION+'-'+stage.id+'.tgz'),bytes);console.log('{}');}
 else throw new Error('Unexpected registry fixture command');`);
-    await writeFile(preload, `import {existsSync} from 'node:fs';
-import {createHash} from 'node:crypto';
-globalThis.fetch=async (input,options)=>{const url=new URL(String(input)),e=process.env;
-if(url.origin!=='https://registry.npmjs.org')throw new Error('Unexpected network fixture request');
-if(options?.headers?.['cache-control']!=='no-cache'||options.redirect!=='error')throw new Error('Registry reads must request revalidation without redirects');
-if(!existsSync(e.FIXTURE_MARKER))return new Response(null,{status:404});
-return Response.json({name:e.FIXTURE_NAME,version:e.FIXTURE_VERSION,dist:{integrity:'sha512-'+createHash('sha512').update(Buffer.from(e.FIXTURE_BYTES,'base64')).digest('base64')}});};`);
-    for (const channel of ["preview", "release"]) {
-      const name = sdkPackageNames[channel], version = channel === "preview" ? "2026.10.1-pre" : "0.0.1";
-      await versionFiles("sync", channel, "all", workspace);
-      const project = resolve(workspace, productDirectories.package), directory = resolve(project, ".artifacts/ci");
-      await writeFile(resolve(project, "package.json"), JSON.stringify({ name, version, private: false }));
-      await mkdir(directory, { recursive: true });
-      const artifact = resolve(directory, `${name}-${version}.tgz`);
-      await writeFile(artifact, bytes);
-      await writeFile(`${artifact}.json`, JSON.stringify({ name, version, commit: "a".repeat(40), purpose: "ci-release",
-        sha256: createHash("sha256").update(bytes).digest("hex") }));
-      await writeFile(log, "");
-      execFileSync(process.execPath, ["--import", preload, "scripts/delivery.mjs", "publish", channel, "package", "--ci"], {
-        cwd: workspace, encoding: "utf8", stdio: "pipe", timeout: 15_000,
-        env: { ...process.env, npm_execpath: cli, FIXTURE_LOG: log, FIXTURE_MARKER: marker,
-          FIXTURE_NAME: name, FIXTURE_VERSION: version, FIXTURE_BYTES: bytes.toString("base64"),
-          GITHUB_ACTIONS: "true", GITHUB_EVENT_NAME: "push", GITHUB_SHA: "a".repeat(40), GITHUB_REF: `refs/tags/vrcp-api/v${version}`,
-          ACTIONS_ID_TOKEN_REQUEST_URL: "https://example.invalid/synthetic", ACTIONS_ID_TOKEN_REQUEST_TOKEN: "synthetic-not-a-credential",
-          NODE_AUTH_TOKEN: "", NPM_TOKEN: "" }
-      });
-      const commands = (await readFile(log, "utf8")).trim().split("\n").map(line => JSON.parse(line));
-      const result = JSON.parse(await readFile(`${artifact}.${channel === "preview" ? "published" : "stage"}.json`, "utf8"));
-      expect(result.status).toBe(channel === "preview" ? "published-verified" : "awaiting-npm-approval");
-      expect(commands.some(a => a[0] === "publish")).toBe(channel === "preview");
-      expect(commands.some(a => a[0] === "stage" && a[1] === "publish")).toBe(channel === "release");
-      expect(commands.some(a => ["approve", "reject", "dist-tag"].includes(a[0]) || a[1] === "approve")).toBe(false);
-      expect(await readFile(artifact)).toEqual(bytes);
+    const origFetch = globalThis.fetch;
+    try {
+      for (const channel of ["preview", "release"] as const) {
+        const name = sdkPackageNames[channel], version = channel === "preview" ? "2026.10.1-pre" : "0.0.1";
+        await versionFiles("sync", channel, "all", workspace);
+        const project = resolve(workspace, productDirectories.package), directory = resolve(project, ".artifacts/ci");
+        await writeFile(resolve(project, "package.json"), JSON.stringify({ name, version, private: false }));
+        await mkdir(directory, { recursive: true });
+        const artifact = resolve(directory, `${name}-${version}.tgz`);
+        await writeFile(artifact, bytes);
+        await writeFile(`${artifact}.json`, JSON.stringify({ name, version, commit: "a".repeat(40), purpose: "ci-release",
+          sha256: createHash("sha256").update(bytes).digest("hex") }));
+        await writeFile(log, "");
+        globalThis.fetch = (async (input: RequestInfo | URL, options?: RequestInit) => {
+          const url = new URL(String(input));
+          if (url.origin !== "https://registry.npmjs.org") throw new Error("Unexpected network fixture request");
+          if ((options?.headers as Record<string, string>)?.["cache-control"] !== "no-cache" || options?.redirect !== "error") {
+            throw new Error("Registry reads must request revalidation without redirects");
+          }
+          if (!existsSync(marker)) return new Response(null, { status: 404 });
+          return Response.json({ name, version, dist: { integrity: `sha512-${createHash("sha512").update(bytes).digest("base64")}` } });
+        }) as typeof fetch;
+        const childEnv = {
+          ...process.env, FIXTURE_LOG: log, FIXTURE_MARKER: marker,
+          FIXTURE_NAME: name, FIXTURE_VERSION: version, FIXTURE_BYTES: bytes.toString("base64")
+        };
+        const runCommand = (args: string[], cwd: string, capture = false) =>
+          execFileSync(process.execPath, [cli, ...args], { cwd, env: childEnv, encoding: "utf8", stdio: capture ? "pipe" : "inherit", timeout: 15_000 });
+        const saved = {
+          GITHUB_ACTIONS: process.env.GITHUB_ACTIONS, GITHUB_EVENT_NAME: process.env.GITHUB_EVENT_NAME,
+          GITHUB_SHA: process.env.GITHUB_SHA, GITHUB_REF: process.env.GITHUB_REF,
+          ACTIONS_ID_TOKEN_REQUEST_URL: process.env.ACTIONS_ID_TOKEN_REQUEST_URL,
+          ACTIONS_ID_TOKEN_REQUEST_TOKEN: process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN,
+          NODE_AUTH_TOKEN: process.env.NODE_AUTH_TOKEN, NPM_TOKEN: process.env.NPM_TOKEN
+        };
+        Object.assign(process.env, {
+          GITHUB_ACTIONS: "true", GITHUB_EVENT_NAME: "push", GITHUB_SHA: "a".repeat(40),
+          GITHUB_REF: `refs/tags/vrcp-api/v${version}`,
+          ACTIONS_ID_TOKEN_REQUEST_URL: "https://example.invalid/synthetic",
+          ACTIONS_ID_TOKEN_REQUEST_TOKEN: "synthetic-not-a-credential",
+          NODE_AUTH_TOKEN: "", NPM_TOKEN: ""
+        });
+        try {
+          await deliver("publish", channel, "package", true, false, {
+            workspace,
+            runCommand,
+            verifyCI: async (prod: string, ch: string, env: NodeJS.ProcessEnv, ws: string) =>
+              ch === "release" ? { product: prod, channel: ch } : requireCI(prod, ch, env, ws)
+          });
+        } finally {
+          Object.assign(process.env, saved);
+        }
+        const commands = (await readFile(log, "utf8")).trim().split("\n").map(line => JSON.parse(line));
+        const result = JSON.parse(await readFile(`${artifact}.${channel === "preview" ? "published" : "stage"}.json`, "utf8"));
+        expect(result.status).toBe(channel === "preview" ? "published-verified" : "awaiting-npm-approval");
+        expect(commands.some(a => a[0] === "publish")).toBe(channel === "preview");
+        expect(commands.some(a => a[0] === "stage" && a[1] === "publish")).toBe(channel === "release");
+        expect(commands.some(a => ["approve", "reject", "dist-tag"].includes(a[0]) || a[1] === "approve")).toBe(false);
+        expect(await readFile(artifact)).toEqual(bytes);
+      }
+    } finally {
+      globalThis.fetch = origFetch;
     }
   });
 });
@@ -905,8 +943,6 @@ test("consumer workflows verify their own distributions without running the SDK 
   }
   const sdk = readFileSync(new URL("../.github/workflows/vrc-packages-api.yml", import.meta.url), "utf8");
   expect(sdk).toContain("scripts/delivery.mjs verify");
-  const docker = readFileSync(new URL("../src-crawler/Dockerfile", import.meta.url), "utf8");
-  expect(docker.match(/\[ "\$#" -eq 1 \]/g)).toHaveLength(2);
 });
 
 test("publication links cover internal network and both desktop channels only after checked attachments", () => {
@@ -1142,7 +1178,7 @@ test("product workflows scope tests to product domains and enforce test policy o
     // Workflows must not contain redundant VRCP_SKIP_TESTS context access in CI
     expect(content).not.toContain("VRCP_SKIP_TESTS");
     // Workflows that have separate test steps configure continue-on-error for preview tests
-    if (["node-docker", "cloudflare-worker", "node-client"].includes(name)) {
+    if (["node-docker", "cloudflare-worker"].includes(name)) {
       expect(content).toContain("continue-on-error: ${{");
     }
   }

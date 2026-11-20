@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { unzipSync } from "fflate";
-import { validateCIArtifact } from "./delivery.mjs";
+import { validateCIArtifact } from "./pipeline-utils.mjs";
 
 const archiveLimit = 16 * 1024 ** 2;
 const fileLimits = { "worker_entry.js": archiveLimit, "worker_entry.js.json": 2 * 1024 ** 2 };
