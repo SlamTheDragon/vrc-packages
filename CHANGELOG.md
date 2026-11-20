@@ -8,7 +8,7 @@ Here are the latest changelogs of each package and applications. For a full hist
 ## What Changed
 
 <!-- MASTER_SUMMARY -->
-Consolidate D1 tables, bound SDK pagination, harden public errors and honor coordinator idle waits. Preview notes describe each changed product.
+Delegate robots.txt preflight fetching to crawler nodes under coordinator leases. Preserve evidence, settled outbox results and URL resource distinctions. Broadcast crawler activities and findings to the dedicated log file. Auto-link approved high-confidence storefront leads into accepted identity links while isolating heuristic outbound links for operator review. Support distributed Cloudflare KV rate limiting for coordinator endpoints. Calibrate fixed coordinator crawl job leases to 120 seconds. Scale crawler heartbeat pulse intervals dynamically between 5 and 30 seconds based on origin duration. Gate creator takedown submissions on trusted registered application status and route requests into moderator review queues. Emit delist tombstones on package withdrawal. Enforce source access profile publication rights in public catalog and delta feeds. Configure initial approved VPM community seeds and classify Ko-fi storefront leads into operator review. Verify multi-platform crawler fleet ingestion across VPM, GitHub, Booth, and Ko-fi drivers under lease isolation and crash recovery. Verify coordinator failure paths and multi-node fleet allocation in native workerd runtime. Bound claim candidate scans with explicit invocation budgets to protect Cloudflare quotas. Remove Watchtower from crawler Docker configuration and require isolated fleet data volumes. Automate preview D1 schema verification and non-production seed population in Cloudflare Worker preview delivery. Add atomic preparation rollback and enforce publication preconditions before tag deletion in delivery recovery tooling. Support catalog search rating filters and strict credential and path validation in the TypeScript SDK. Consolidate internal SDK protocol schemas and test fixture hygiene.
 <!-- MASTER_SUMMARY -->
 
 ## Table of Contents
@@ -147,38 +147,41 @@ See full history at [docs/changelogs/vrcp-crawler-client/preview](https://github
 ## VRC Packages Crawler - `vrcp-crawler-node-preview`
 
 <!-- vrcp-crawler-node-preview-DESCRIPTION_SUMMARY -->
-Honor coordinator retry floors and bound idle jitter. Retain existing outbox and lease safeguards.
+Execute delegated robots.txt preflight refreshes during empty job claims using pinned DNS lookups and SSRF defenses. Scale heartbeat pulse intervals dynamically between 5 and 30 seconds based on origin duration. Remove Watchtower and host socket mounts from Docker compose. Require pinned image digests and isolate multi-node data volumes. Verify multi-platform fleet crawl simulation under concurrent node leases and crash recovery. Document environment variables.
 <!-- vrcp-crawler-node-preview-DESCRIPTION_SUMMARY -->
-
 ### Added
-- **Outbox Quota Flow Control**: Paused job claims when pending outbox entries exceed configured limits to avoid memory and disk saturation.
-- **Startup Crash Recovery**: Reset interrupted outbox submissions to pending status on daemon start to resume deliveries safely.
-- **Periodic Storage Pruning**: Added background TTL maintenance intervals to remove old acknowledged entries during active runs.
-- **Batched Outbox Flush**: Updated `flushOutbox` to submit up to 10 results in one request using `submitBatch`.
-- **Per-Item Receipt Tracking**: Processed individual accepted and rejected receipts to isolate failures during batch flushes.
-- **Batched Claim Support**: Added optional `maxJobs` parameter to `CoordinatorClient.claim` to request multiple jobs.
-- **Durable Result Outbox**: Added SQLite WAL-backed `node_outbox` table in `LocalNodeStore` with automatic 24-hour TTL and 50MB disk quota pruning.
-- **Crash Recovery & Replay**: Added startup and reconnection outbox flush in `CrawlerNodeDaemon` to replay unacknowledged results without data loss across process crashes or network interruptions.
-- **Adaptive Idle Backoff Ladder**: Added exponential idle backoff with jitter. Coordinator wait floors override the local cap; leased jobs reset the ladder.
-- **Envelope Wire Bounds**: Enforced 2MB streaming response limits in `CoordinatorClient` and strict length bounds on job URLs, origin URLs, ETags, and Last-Modified headers.
-
+- **Dynamic Heartbeat Scaling**: Scale crawler heartbeat intervals dynamically between 5 and 30 seconds based on origin response durations (R54-C39B). Reduces coordinator subrequest traffic while maintaining lease authority during slow fetches.
+- **Fleet Crawl Simulation Suite**: Verify concurrent multi-node lease isolation, multi-driver ingestion (VPM, GitHub, Booth, Ko-fi), outbox edge retry, and crash-restart recovery (FLEET-S4).
+- **Delegated Robots Preflight Ingestion**: Ingest leased robots.txt preflight refresh tasks when job claims return empty (R24-C21). Retrieve snapshots using SSRF-safe pinned metadata transport and submit results to coordinator.
+- **Batch Claim Queueing**: Queue multiple claimed jobs from coordinator responses to prevent abandoned leases in daemon execution.
+- **Clock Offset Calibration**: Calibrate local lease deadlines against coordinator serverTime received in heartbeats and date headers.
+- **Activity and Finding Broadcast**: Broadcast operational activities and discovery findings with dedicated tags to the node log file.
+- **Recovery Checks**: Exercise abrupt process termination over loopback HTTP and actual SQLite-full rollback without filling host disks.
 ### Bugs Fixed
-- **Coordinator Retry Floors**: Prevented idle jitter and local backoff caps from shortening coordinator-requested waits. Capped positive jitter at the effective maximum.
-- **Fleet Claim Polling**: Fixed unbounded fleet claim polling by eliminating aggressive 1s spin loops on empty queues, mitigating Cloudflare request allowance exhaustion.
-
+- **Zero-Binary Ingestion**: Reject URL targets with binary extensions and responses with binary content types before socket or body processing.
+- **Timestamp Provenance**: Removed the storefront creation-date fallback from modification evidence. Valid modification metadata remains available.
+- **Outbox Settlement**: Ignore late failures for sent or terminal entries. Repeated acknowledgments preserve the first receipt and completion metrics.
+- **Lease Deadline**: Abort source work when the lease expires, even if a heartbeat is pending. An expired lease starts no fetch.
 ### Changes
-- **Headless `.env` Execution**: Removed interactive CLI tooling (`init`, `help`, `printSetupGuide()`) and `node.config.json` setup wizard; daemon now starts directly from environment variables / `.env` (`NODE_ID`, `NODE_TOKEN`, and optional `COORDINATOR_URL`, `NODE_CAPABILITIES`, `NODE_DB_PATH`).
-- **Fail-Fast Configuration Validation**: Updated runtime configuration error reporting to fail fast with concise guidance pointing to `.env` variables instead of CLI setup commands. Preserved `--version` and `--once` execution modes.
-
+- **Docker Fleet Configuration**: Removed unverified Watchtower updater and host Docker socket bindings. Required pinned container image digests and documented multi-node volume isolation.
+- **Environment Template**: Rewrote .env.example with documented configuration values for headless node and Docker fleet deployments.
+- **Runbook Reconciliation**: Updated node and network specifications to reflect environment-variable configuration, activity logging, and delta tombstones.
 See full history at [docs/changelogs/vrcp-crawler-node/preview](https://github.com/SlamTheDragon/vrc-packages/tree/main/docs/changelogs/vrcp-crawler-node/preview)
 
 ## VRC Packages API - `vrcp-packages-api-preview`
 
 <!-- vrcp-packages-api-preview-DESCRIPTION_SUMMARY -->
+Support catalog search rating filters, strict registration credential checks, safe canonical ID paths, explicit JSON error wrapping, and shared protocol schema validation.
 <!-- vrcp-packages-api-preview-DESCRIPTION_SUMMARY -->
 ### Added
+- **Search Rating Filter**: Add optional rating filter support to `CatalogSearchParams` and `client.index.search`.
 ### Bugs Fixed
+- **Registration Credentials**: Validate `RegisterAppRequestSchema` first in `client.app.register`, require explicit `auth` when two tokens exist, and return status 401 when tokens are missing.
+- **Canonical ID Paths**: Reject dot segments and blank-trimmed strings on `canonicalId` in `client.moderator.ratings.adjust`.
+- **Success JSON Parsing**: Wrap invalid `2xx` JSON parse failures inside `VRCPApiError`.
 ### Changes
+- **Schema Consolidation and Validation**: Share internal URL, token, umbrella, and candidate schemas, and enforce `PackageFrontSchema`, `LeadRowSchema`, strict init, and rule origin checks.
+- **Package and Fixture Hygiene**: Remove the unused root stub and compiler flags, clean temporary test folders, and split protocol test files.
 See full history at [docs/changelogs/vrcp-packages-api/preview](https://github.com/SlamTheDragon/vrc-packages/tree/main/docs/changelogs/vrcp-packages-api/preview)
 
 ---
@@ -198,10 +201,42 @@ See full history at [docs/changelogs/vrcp-web/preview](https://github.com/SlamTh
 ## VRC Packages Worker - `vrcp-worker-preview`
 
 <!-- vrcp-worker-preview-DESCRIPTION_SUMMARY -->
+Add initial seed jobs and pre-configured approved VPM community profiles. Classify Ko-fi storefront leads into pending operator review. Auto-link approved high-confidence storefront leads into accepted identity links while isolating heuristic outbound links for operator review. Gate creator takedown submissions on trusted registered application status and route them into moderator queues. Partition application reports into rating calibration disputes for moderator review and safety quarantine tickets for operator intake. Delegate robots.txt preflight fetching to crawler nodes under leased origin pacing. Enforce source access profile publication rights in public catalog and delta feeds. Enforce distributed Cloudflare KV and binding inbound 429 rate limiting. Calibrate fixed coordinator crawl job leases to 120 seconds. Bound claim candidate scans by an explicit page budget. Verify coordinator failure paths and multi-node fleet allocation in native workerd runtime. Use unique catalog epochs, preserve evidence and URL distinctions, withhold provisional fronts, and emit delist tombstones. Automate preview D1 schema verification and non-production seed population during preview delivery.
 <!-- vrcp-worker-preview-DESCRIPTION_SUMMARY -->
 ### Added
+- **Automated Preview D1 Initialization**: Automate preview D1 schema verification and non-production seed population during preview delivery (R58-PREVIEW-INIT). Support explicit seed flags with fail-closed operator token checks.
+- **Trusted Application Takedown Ingestion**: Gate creator takedown submissions on trusted registered application status (R54-C38A / R54-C38R / R54-C38B). Route accepted takedown requests into catalog tickets as pending removal reports for moderator review.
+- **Fixed Lease Calibration**: Calibrate crawl job leases to a fixed 120 seconds in coordinator D1 and SQLite stores (R54-C39B). Prevents zombie reservations and provides a predictable window for dynamic heartbeat scaling.
+- **Distributed KV Rate Limiting**: Implement distributed Cloudflare KV and native rate limit bindings for inbound coordinator protection (R54-C39C-RATE-LIMIT). Support KV sliding windows with in-memory fallback.
+- **High-Confidence Storefront Auto-Linking**: Auto-link approved high-confidence storefront leads directly into accepted identity links without operator review (R13-C9-IDENTITY). Unverified heuristic outbound links remain provisional.
+- **Initial Seed and Storefront Classification**: Add pre-configured approved VPM community listing profiles and Ko-fi storefront seed jobs (FLEET-S2). Route Ko-fi product leads into operator pending review.
+- **Report Intake Partitioning**: Partition application report intake between rating calibration disputes and safety quarantine tickets (R56-C56C). Rating disputes route to volunteer moderator review while suspected unlawful content is quarantined for operator-only intake.
+- **Delegated Robots Preflight Protocol**: Added /v1/node/robots/claim and /v1/node/robots/result endpoints (R24-C21). Worker leases due origin preflights to crawler nodes and ingests RFC 9309 snapshots.
+- **Publication Rights Enforcement**: Enforce source access profile publication classes in catalog projection and delta streaming (R13-C3 / Q-PUBLICATION). Withhold packages whose source profile sets publishClasses: [] and emit delist tombstones.
+- **Inbound Rate Limiting**: Enforce per-isolate inbound 429 rate limiting with RFC-compliant headers across public, node, and downstream routes.
+- **Downstream Permission Enforcement**: Verify application permissions for catalog search and demand feedback, returning 403 on missing permissions.
+- **D1 High-Frequency Indexes**: Add ten query indexes for canonical packages, crawl jobs, source leads, items, fronts, and apps.
+- **Statement Batch Chunking**: Chunk large D1 batch executions into fifty statements to protect subrequest budgets.
+- **Source Access Profile Memoization**: Cache active source profile lookups to remove duplicate D1 queries during claims.
+- **Claim Invocation Budgets**: Bound candidate scans to three pages per claim invocation. Measured and asserted empty and leased claim D1 statement budgets in native workerd runtime.
+- **Runtime Verification Harness**: Extended the native coordinator harness to test capability mismatch, lease expiry, cross-node lease isolation, and multi-node fleet concurrency.
 ### Bugs Fixed
+- **Capability Token Authentication**: Fail closed when bearer tokens do not match the capability format.
+- **Claim Loop Budget**: Prevented unbounded claim candidate pagination when deferred jobs occur.
+- **Delta Feed Tombstones**: Record tombstones and emit delist deltas when packages leave the public general catalog via rating withdrawal or deletion.
+- **Provisional Fronts**: Filter provisional cross-source storefront links from public catalog packages until explicit operator review.
+- **Publication Confidence**: Stopped metadata-only canonical upserts from inventing observed confidence or downgrading confirmed publication evidence.
+- **Catalog Epochs**: Give fresh databases unique epochs. Concurrent initialization returns the stored winner and preserves existing epochs.
+- **Source Binding**: Reject substituted storefront IDs and URLs, empty catalog names and storefront fields from other source platforms.
+- **Batch Conflicts**: Keep release-evidence conflicts distinct from terminal lease expiry. Rejected metadata preserves its live job for correction.
+- **URL Associations**: Preserve generic path/query case and trailing slashes. Keep case-insensitive repository matching scoped to GitHub sources.
+- **Lead Identities**: Deduplicate serialized host/default-port aliases for new leads without changing retained observation links.
 ### Changes
+- **Database Schema Reconciliation**: Reconcile DATABASE_SCHEMAS.md with D1 tables, views, ten query indexes, and node outbox storage.
+- **API Route Documentation**: Align AGENTS.md route reference path and document batched job results and operator app delegation endpoints.
+- **Fixture Typechecks**: Include Bun TypeScript tests and support in Worker checks. Preserve separate Cloudflare Vitest typing and native runtime verification.
+- **D1 Fixtures**: Check the SQLite adapter against generated bindings. Reject unsupported operations and foreign batch statements instead of reporting synthetic success.
+- **Specification Reconciliation**: Reconciled API routes, network specifications, and database schemas with delivered claim scan budgets, operator app candidate review, and moderator protocol.
 See full history at [docs/changelogs/vrcp-worker/preview](https://github.com/SlamTheDragon/vrc-packages/tree/main/docs/changelogs/vrcp-worker/preview)
 
 ---
