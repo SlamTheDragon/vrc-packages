@@ -1,11 +1,11 @@
 # Coordinator Cloudflare D1 Schema (Agreed Storage Contract)
 
-> **Executable Authority:** `src-worker/src/storage/d1/utils.ts` (`D1_SCHEMA_SQL`, lines 34–118)  
+> **Executable Authority:** `src-worker/src/storage/d1/schema/` (aggregated via `src-worker/src/storage/d1/utils.ts` `D1_SCHEMA_SQL`)  
 > **Binding:** `VRCP_D1` (`src-worker/wrangler.toml`)  
 > **Owning Sector:** Sector 1 (`crawler-network`)  
 > **Inventory:** **26 tables**, **10 compatibility views**, **46 indexes**
 
-This document is the 1:1 verified schema contract for the Cloudflare D1 coordinator database. `src-worker/test/support/local_sqlite.ts` mirrors this DDL for Bun unit fixtures only; it is not a production coordinator service.
+This document defines the 1:1 schema contract for the Cloudflare D1 coordinator database. Each subsection matches one module inside `src-worker/src/storage/d1/schema/`. No external local clone mirrors this schema.
 
 ## 1. Entity-Relationship Overview
 
@@ -33,7 +33,9 @@ erDiagram
 
 ## 2. Exact D1 Tables (26 Tables)
 
-### 2.1 Node Workforce, Leasing, Robots, and Operator Policy (11 Tables)
+### 2.1 Node Workforce, Leasing, and Robots Plane (6 Tables)
+
+Defined in `src-worker/src/storage/d1/schema/workforce_and_leasing.ts`. These six tables store node credentials, node heartbeats, crawl job leases, origin pacing locks, cached robots snapshots, and job receipts.
 
 | Table | Primary Key | Columns and Constraints |
 | :--- | :--- | :--- |
@@ -42,14 +44,22 @@ erDiagram
 | `crawl_jobs` | `job_id` | `platform`, `url` (`UNIQUE`), `origin`, `state` (`CHECK IN ('pending','leased','done','backoff','blocked')`), `next_fetch_at`, `claimed_by` (FK `node_credentials`), `lease_id`, `lease_expires_at`, `etag`, `last_modified`, `created_at`, `robots_deferred_until`, `source_rule_id`, `job_purpose` (`DEFAULT 'metadata'`, `CHECK IN ('discovery','metadata')`), `lease_profile_id` |
 | `origin_leases` | `origin` | `active_job_id` (FK `crawl_jobs`), `lease_expires_at`, `next_allowed_at`, `min_delay_ms` |
 | `origin_robots` | `origin` | `snapshot_id`, `status_code`, `body`, `fetched_at`, `expires_at`, `refresh_lease_id`, `refresh_lease_expires_at` |
-| `suppressed_urls` | `url` | `reason`, `suppressed_at` |
-| `source_access_profiles` | `profile_id` | `platform`, `origin`, `path_scope`, `query_scope`, `method` (`CHECK (method='GET')`), `purpose` (`CHECK IN ('discovery','metadata')`), `min_delay_ms`, `expires_at`, `review_reference`, `reason`, `retain_classes_json` (`EvidenceClass[]`), `publish_classes_json` (`EvidenceClass[]`), `created_at`, `disabled_at` |
-| `lead_autoqueue_rules` | `rule_id` | `lead_kind` (for example `'vpm_listing'`), `origin`, `path_scope`, `min_delay_ms`, `expires_at`, `review_reference`, `reason`, `created_at`, `disabled_at` |
 | `job_results` | `lease_id` | `job_id` (FK `crawl_jobs`), `node_id`, `idempotency_key`, `request_digest`, `response_json`, `submitted_at` |
-| `operator_audit_log` | `action_id` (`INTEGER PK AUTOINCREMENT`) | `entity_type` (`CHECK IN ('node','lead','job','rule','profile')`), `entity_id`, `actor`, `action`, `reason`, `occurred_at` |
-| `coordinator_meta` | `key` | `value` |
 
-### 2.2 Observation Lake and Discovery Leads (4 Tables)
+### 2.2 Operator Governance Plane (4 Tables)
+
+Defined in `src-worker/src/storage/d1/schema/operator_governance.ts`. These four tables store operator audit records, suppressed target URLs, automatic lead promotion rules, and scoped source-access profiles.
+
+| Table | Primary Key | Columns and Constraints |
+| :--- | :--- | :--- |
+| `operator_audit_log` | `action_id` (`INTEGER PK AUTOINCREMENT`) | `entity_type` (`CHECK IN ('node','lead','job','rule','profile','app')`), `entity_id`, `actor`, `action`, `reason`, `occurred_at` |
+| `suppressed_urls` | `url` | `reason`, `suppressed_at` |
+| `lead_autoqueue_rules` | `rule_id` | `lead_kind` (for example `'vpm_listing'`), `origin`, `path_scope`, `min_delay_ms`, `expires_at`, `review_reference`, `reason`, `created_at`, `disabled_at` |
+| `source_access_profiles` | `profile_id` | `platform`, `origin`, `path_scope`, `query_scope`, `method` (`CHECK (method='GET')`), `purpose` (`CHECK IN ('discovery','metadata')`), `min_delay_ms`, `expires_at`, `review_reference`, `reason`, `retain_classes_json` (`EvidenceClass[]`), `publish_classes_json` (`EvidenceClass[]`), `created_at`, `disabled_at` |
+
+### 2.3 Observation Lake and Discovery Leads (5 Tables)
+
+Defined in `src-worker/src/storage/d1/schema/observation_lake.ts`. These five tables store raw source observations, versioned payloads, crawl events, validation issues, and candidate discovery leads.
 
 | Table | Primary Key | Columns and Constraints |
 | :--- | :--- | :--- |
@@ -59,20 +69,23 @@ erDiagram
 | `source_issues` | `issue_id` (`INTEGER PK AUTOINCREMENT`) | `job_id` (FK `crawl_jobs`), `source_item_key`, `version_key`, `code`, `observed_at`, `contributor_node_id`, `submission_lease_id`, `source_profile_id` |
 | `source_leads` | `lead_key` (SHA-256 of JSON identity tuple) | `discovered_from_url`, `discovered_from_job_id` (FK `crawl_jobs`), `discovered_from_item_key`, `kind`, `target_url`, `claimed_package_id`, `status` (`CHECK IN ('pending_review','approved','rejected')`), `first_seen_at`, `last_seen_at`, `first_seen_node_id`, `first_seen_lease_id`, `first_seen_profile_id`, `last_seen_node_id`, `last_seen_lease_id`, `last_seen_profile_id` |
 
-*(Count note: 5 observation/lead tables above + 11 workforce/policy tables = 16; 6 canonical tables + 4 downstream/ticket tables below = 26 total.)*
+### 2.4 Canonical Catalog Graph and Delta Tombstones (7 Tables)
 
-### 2.3 Canonical Catalog Graph and Delta Tombstones (6 Tables)
+Defined in `src-worker/src/storage/d1/schema/catalog_graph.ts`. These seven tables store canonical catalog records, epoch metadata, and delta tombstones. They also store identity links, storefront fronts, avatar compatibility facts, and desktop tool evidence.
 
 | Table | Primary Key | Columns and Constraints |
 | :--- | :--- | :--- |
 | `canonical_packages` | `canonical_id` | `umbrella` (`CHECK IN ('tools','assets','avatars')`), `category`, `lifecycle` (`CHECK IN ('active','deprecated','quarantined','delisted')`), `display_name`, `vpm_id`, `created_at`, `updated_at`, `published_at`, `timestamp_confidence`, `content_rating` (`DEFAULT 'general'`) |
+| `coordinator_meta` | `key` | `value` |
 | `catalog_tombstones` | `(canonical_id, recorded_at)` | `canonical_id`, `reason` (`CHECK IN ('rating_withdrawn','deleted','delisted')`), `recorded_at` |
 | `identity_links` | `link_id` | `source_key` (FK `source_items`), `canonical_id` (FK `canonical_packages`), `evidence_kind` (`CHECK IN ('vpm_id','repository_match','cross_storefront_link','curator_verified','simhash_match')`), `confidence` (`CHECK (confidence >= 0.0 AND confidence <= 1.0)`), `review_state` (`CHECK IN ('provisional','accepted','rejected')`), `created_at`, `reviewed_at` |
 | `package_fronts` | `front_id` | `canonical_id` (FK `canonical_packages` `ON DELETE CASCADE`), `source_key` (FK `source_items` `ON DELETE CASCADE`), `platform`, `storefront_url`, `price`, `currency`, `availability` (`DEFAULT 'available'`), `observed_at`, `UNIQUE(canonical_id, source_key)` |
 | `avatar_compatibilities` | `compatibility_id` | `source_key` (FK `source_items` `ON DELETE CASCADE`), `target_avatar_base`, `scope` (`CHECK IN ('named_base','universal','uncertain')`), `confidence` (`CHECK IN ('creator_declared','keyword_inferred','unverified')`), `evidence_source`, `created_at` |
 | `desktop_tool_evidence` | `canonical_id` (FK `canonical_packages` `ON DELETE CASCADE`) | `tool_subtype` (`CHECK IN ('companion_client','osc_control','tracking_bridge','streaming_accessibility','utility')`), `supported_os`, `particular_vrchat_target` (`CHECK IN (0,1)`), `evidence_url`, `publisher_claim`, `confidence`, `created_at` |
 
-### 2.4 Downstream Principals, Demand, and Unified Tickets (4 Tables)
+### 2.5 Downstream Principals, Demand, and Unified Tickets (4 Tables)
+
+Defined in `src-worker/src/storage/d1/schema/downstream_and_tickets.ts`. These four tables store user and app principals plus demand signals. They also store unified opt-out, claim, dispute, and issue tickets.
 
 | Table | Primary Key | Columns and Constraints |
 | :--- | :--- | :--- |
@@ -83,7 +96,7 @@ erDiagram
 
 ## 3. Compatibility Read Views (10 Views)
 
-Consolidated under `G18` so audit, ownership, robots refresh, and ticket tables share unified storage without breaking read queries:
+Compatibility views expose filtered projections over audit, app ownership, robots refresh, and ticket tables. Downstream tests and operators query these read views instead of repeating filter predicates.
 
 | View Name | Underlying Table and Filter |
 | :--- | :--- |
@@ -99,6 +112,8 @@ Consolidated under `G18` so audit, ownership, robots refresh, and ticket tables 
 | `catalog_reports` | `catalog_tickets WHERE ticket_type IN ('removal_report','rating_dispute','safety_quarantine','metadata_issue')` |
 
 ## 4. Exact Index Inventory (46 Indexes)
+
+The schema creates 46 named indexes across the five modules. These indexes support keyset pagination, due-job scanning, provenance lookups, and ticket deduplication.
 
 | Table | Indexes |
 | :--- | :--- |

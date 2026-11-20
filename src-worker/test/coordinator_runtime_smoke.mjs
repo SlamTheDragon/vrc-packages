@@ -526,6 +526,17 @@ try {
   });
   assert.equal(anonymousRegistration.status, 401);
   const reportApp = await post('/v1/app/register', { schemaVersion: 1, appName: 'Operator native app' }, operatorToken);
+  const untrustedRemoval = await runtime.dispatchFetch('https://offline.test/v1/app/report', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: 'Bearer ' + reportApp.appToken },
+    body: JSON.stringify({ schemaVersion: 1, reportType: 'removal_request', canonicalId: 'native-receipt-target', reason: 'Untrusted removal probe' })
+  });
+  assert.equal(untrustedRemoval.status, 403);
+  await post(`/v1/operator/apps/${reportApp.appId}/candidate-review`, {
+    schemaVersion: 1,
+    candidateStatus: 'trusted',
+    notes: 'Native runtime smoke trust promotion'
+  }, operatorToken);
   const reportStatuses = [];
   const reportingClient = new VRCPackageClient({ baseUrl: 'https://offline.test', appToken: reportApp.appToken,
     fetch: async (input, init) => {
@@ -543,11 +554,21 @@ try {
     assert.deepEqual(Object.keys(receipt).sort(), ['schemaVersion', 'status', 'reportId', 'recordedAt'].sort());
     if (report.reportType === 'issue_report') {
       const db = await runtime.getD1Database('VRCP_D1');
-      const row = await db.prepare('SELECT metadata_json FROM downstream_demand_signals WHERE signal_id=?').bind(receipt.reportId).first();
-      const metadata = JSON.parse(row.metadata_json);
-      assert.equal(metadata.reason, report.reason.trim());
-      assert.equal(metadata.source, 'native-fixture');
-      assert.equal(metadata.canonicalId, report.canonicalId);
+      const row = await db.prepare('SELECT app_id, ticket_type, canonical_id, reason, payload_json FROM catalog_tickets WHERE ticket_id=?').bind(receipt.reportId).first();
+      assert.equal(row.app_id, reportApp.appId);
+      assert.equal(row.ticket_type, 'metadata_issue');
+      assert.equal(row.canonical_id, report.canonicalId);
+      assert.equal(row.reason, report.reason.trim());
+      const payload = JSON.parse(row.payload_json);
+      assert.equal(payload.metadata.source, 'native-fixture');
+      assert.equal(payload.canonicalId, report.canonicalId);
+    } else if (report.reportType === 'removal_request') {
+      const db = await runtime.getD1Database('VRCP_D1');
+      const row = await db.prepare('SELECT app_id, ticket_type, canonical_id, review_status FROM catalog_tickets WHERE ticket_id=?').bind(receipt.reportId).first();
+      assert.equal(row.app_id, reportApp.appId);
+      assert.equal(row.ticket_type, 'removal_report');
+      assert.equal(row.canonical_id, report.canonicalId);
+      assert.equal(row.review_status, 'pending');
     }
   }
   assert.deepEqual(reportStatuses, [200, 200, 202]);

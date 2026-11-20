@@ -1,9 +1,12 @@
 import {
   ClaimRequestSchema, ClaimResponseSchema, HeartbeatRequestSchema, HeartbeatResponseSchema,
   ResultRequestSchema, ResultResponseSchema, BatchResultRequestSchema, BatchResultResponseSchema,
+  NodeRobotsClaimRequestSchema, NodeRobotsClaimResponseSchema,
+  NodeRobotsResultRequestSchema, NodeRobotsResultResponseSchema,
   PROTOCOL_VERSION, MAX_COORDINATOR_RESPONSE_BYTES,
   type Platform, type ClaimResponse, type HeartbeatRequest, type HeartbeatResponse,
-  type ResultRequest, type ResultResponse, type BatchResultItem, type BatchResultResponse
+  type ResultRequest, type ResultResponse, type BatchResultItem, type BatchResultResponse,
+  type NodeRobotsClaimResponse, type NodeRobotsResultResponse
 } from "vrc-packages-network/node";
 
 import { logger } from "../utils/logging/logger.ts";
@@ -212,23 +215,24 @@ export class CoordinatorClient {
     return BatchResultResponseSchema.parse(await this.post("/v1/node/jobs/results", payload));
   }
 
-  async claimRobotsRefresh(): Promise<{ status: "leased"; origin: string; leaseId: string } | { status: "empty"; retryAfterMs: number }> {
-    const payload = { schemaVersion: PROTOCOL_VERSION, nodeId: this.nodeId };
-    return await this.post("/v1/node/robots/claim", payload) as
-      | { status: "leased"; origin: string; leaseId: string }
-      | { status: "empty"; retryAfterMs: number };
+  async claimRobotsRefresh(): Promise<NodeRobotsClaimResponse> {
+    const payload = NodeRobotsClaimRequestSchema.parse({
+      schemaVersion: PROTOCOL_VERSION,
+      nodeId: this.nodeId
+    });
+    return NodeRobotsClaimResponseSchema.parse(await this.post("/v1/node/robots/claim", payload));
   }
 
-  async submitRobotsResult(origin: string, leaseId: string, statusCode: number, body = ""): Promise<{ status: "accepted"; origin: string }> {
-    const payload = {
+  async submitRobotsResult(origin: string, leaseId: string, statusCode: number, body = ""): Promise<NodeRobotsResultResponse> {
+    const payload = NodeRobotsResultRequestSchema.parse({
       schemaVersion: PROTOCOL_VERSION,
       nodeId: this.nodeId,
       origin,
       leaseId,
       statusCode,
       body
-    };
-    return await this.post("/v1/node/robots/result", payload) as { status: "accepted"; origin: string };
+    });
+    return NodeRobotsResultResponseSchema.parse(await this.post("/v1/node/robots/result", payload));
   }
 }
 

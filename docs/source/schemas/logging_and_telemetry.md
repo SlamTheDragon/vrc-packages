@@ -1,6 +1,6 @@
 # Logging and Telemetry Schema Contract
 
-> **Executable Authorities:** `src-worker/src/utils/worker_logger.ts` and `src-crawler/src/utils/logging/logger.ts`  
+> **Executable Authorities:** `src-worker/src/worker_logger.ts` and `src-crawler/src/utils/logging/logger.ts`  
 > **Owning Sector:** Sector 1 (`crawler-network`)
 
 Coordinator edge logs and Crawler Node file logs intentionally use different emission formats matched to their runtime environments. Never assume the node writes pure NDJSON to `latest.log`.
@@ -18,7 +18,7 @@ Coordinator edge logs and Crawler Node file logs intentionally use different emi
 | `message` | `string` | Yes | Human-readable event summary. |
 | `meta` | `object` | No | Optional structured context (route, request status, counts). |
 | `error` | `string` | No | Error summary (never expose secrets or rejected catalog rows in public HTTP responses). |
-| `stack` | `string` | No | Diagnostic stack trace (internal Worker logs only; never returned in HTTP bodies). |
+| `stack` | `string` | No | Diagnostic stack trace (internal Worker logs only, never returned in HTTP bodies). |
 
 Public catalog and delta error logs record the failing route without leaking underlying exceptions or rejected rows to callers.
 
@@ -31,7 +31,7 @@ Public catalog and delta error logs record the failing route without leaking und
 ```
 
 ### Supported Log Tags (7 Tags)
-- `[DEBUG]`: Verbose diagnostic traces (enabled when `DEBUG` is set or `LOG_LEVEL=debug`).
+- `[DEBUG]`: Verbose diagnostic traces (active when `DEBUG` exists or `LOG_LEVEL=debug`).
 - `[INFO]`: General lifecycle notices.
 - `[ACTIVITY]`: Operational daemon broadcasts (startup, shutdown, job claim, outbox settlement, lease expiry).
 - `[FINDING]`: Package discovery broadcasts (observed metadata, discovered leads, batch submissions, delistings).
@@ -52,4 +52,4 @@ Public catalog and delta error logs record the failing route without leaking und
         - Linux: `$XDG_STATE_HOME/vrcp-crawler/logs` (fallback `~/.local/state/vrcp-crawler/logs`)
 3. **File rotation and optional session files**:
    - `latest.log` (`enableLatestLog = true` default): rotates at midnight or clean shutdown into `archive/<date>[-index].log.gz` (gzip level 9).
-   - Optional session logs (`enableSessionLogs = false` default): `session_<sessionId>_<date>.log`, `session_<sessionId>_<date>_ratelimits.log`, `session_<sessionId>_<date>_errors.log`. Session-only mode does not clear or rotate an existing `latest.log`.
+   - Optional session logs (`enableSessionLogs = false` default) write `session_<sessionId>_<date>.log`, `session_<sessionId>_<date>_ratelimits.log`, and `session_<sessionId>_<date>_errors.log`. Session-only mode preserves any existing `latest.log`.

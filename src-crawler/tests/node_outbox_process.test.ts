@@ -90,7 +90,7 @@ describe("outbox recovery after abrupt process termination over loopback HTTP", 
             ] }));
           }
           case "/v1/node/robots/claim":
-            return Response.json({ schemaVersion: 1, status: "empty" });
+            return Response.json({ schemaVersion: 1, status: "empty", retryAfterMs: 1000 });
           default: throw new Error("Unexpected protocol route");
         }
       } catch (error) {

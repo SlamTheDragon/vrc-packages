@@ -6,20 +6,17 @@ import {
   SetRatingAdjustmentRequestSchema,
   SetRatingAdjustmentResponseSchema,
   decodeModeratorRatingCursor,
-  type ContentRating,
-  type ModeratorRatingRecord,
   ModeratorAppRecordSchema,
   ModeratorAppListQuerySchema,
   ModeratorAppListResponseSchema,
   ModeratorReviewAppCandidateRequestSchema,
   ModeratorReviewAppCandidateResponseSchema,
-  decodeOperatorAppCursor,
-  type OperatorAppCursor,
-  type OperatorAppRecord
+  decodeOperatorAppCursor
 } from "vrc-packages-api";
 import { workerLogger } from "../worker_logger.ts";
-import { readJson, CoordinatorConflict } from "./handler.ts";
-import type { UserPrincipal } from "./user_handler.ts";
+import { readJson } from "./handler.ts";
+import { UnsupportedMediaTypeError, type ModeratorStore } from "../domain/ports/stores.ts";
+import { extractBearerToken, parseIntegerQueryParam } from "./auth.ts";
 import {
   RATE_LIMIT_POLICIES,
   rateLimitResponse,
@@ -28,50 +25,7 @@ import {
   type IRateLimiter
 } from "./rate_limiter.ts";
 
-export interface ModeratorStore {
-  authenticateUser(token: string): Promise<UserPrincipal | null> | UserPrincipal | null;
-  listModeratorRatingsPage(
-    rating?: ContentRating,
-    limit?: number,
-    cursor?: { updatedAt: string; canonicalId: string } | null
-  ): Promise<{
-    ratings: ModeratorRatingRecord[];
-    nextCursor: string | null;
-  }> | {
-    ratings: ModeratorRatingRecord[];
-    nextCursor: string | null;
-  };
-  adjustPackageRating(
-    canonicalId: string,
-    newRating: ContentRating,
-    adjustedBy: string,
-    reason: string
-  ): Promise<{
-    canonicalId: string;
-    previousRating: ContentRating;
-    newRating: ContentRating;
-    adjustedBy: string;
-    updatedAt: string;
-  } | null> | {
-    canonicalId: string;
-    previousRating: ContentRating;
-    newRating: ContentRating;
-    adjustedBy: string;
-    updatedAt: string;
-  } | null;
-  listOperatorAppsPage?(
-    limit?: number,
-    cursor?: OperatorAppCursor | null,
-    candidateStatus?: string
-  ): Promise<{ apps: OperatorAppRecord[]; nextCursor: string | null }> |
-    { apps: OperatorAppRecord[]; nextCursor: string | null };
-  reviewAppCandidate?(
-    appId: string,
-    input: { candidateStatus: "none" | "reviewed" | "trusted"; grantDelegation?: boolean; notes?: string },
-    actor: string
-  ): Promise<{ appId: string; candidateStatus: "none" | "review_pending" | "reviewed" | "trusted"; candidateFlags: string[]; delegationAllowed: boolean; permissions: string[]; reviewedAt: string }> |
-    { appId: string; candidateStatus: "none" | "review_pending" | "reviewed" | "trusted"; candidateFlags: string[]; delegationAllowed: boolean; permissions: string[]; reviewedAt: string };
-}
+export type { ModeratorStore };
 
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -98,25 +52,23 @@ export async function handleModeratorRequest(
   const isRatingsList = request.method === "GET" && path === "/v1/moderator/ratings";
   const ratingAdjustMatch = request.method === "POST" ? /^\/v1\/moderator\/ratings\/([^/]+)$/.exec(path) : null;
   const isAppsList = request.method === "GET" && path === "/v1/moderator/apps";
-  const appCandidateReviewMatch = request.method === "POST" ? /^\/v1\/moderator\/apps\/([^/]+)\/candidate-review$/.exec(path) : null;
+  const appCandidateReviewMatch =
+    request.method === "POST" ? /^\/v1\/moderator\/apps\/([^/]+)\/candidate-review$/.exec(path) : null;
 
   if (!isRatingsList && !ratingAdjustMatch && !isAppsList && !appCandidateReviewMatch) {
     return failure(404, "not_found", "Route not found");
   }
 
-  // Moderator routes require vrcp_usr_ bearer auth
-  const authHeader = request.headers.get("authorization") || "";
-  if (!authHeader.startsWith("Bearer ")) {
+  const token = extractBearerToken(request);
+  if (!token) {
     return failure(401, "unauthorized", "User bearer credential required (vrcp_usr_)");
   }
-  const token = authHeader.slice(7).trim();
   const user = await store.authenticateUser(token);
   if (!user) {
     workerLogger.warn("Invalid user token on moderator route", { path });
     return failure(401, "unauthorized", "Invalid user credential");
   }
 
-  // Check moderator authority and verified age
   if (!user.isModerator || !user.ageVerified) {
     workerLogger.warn("User lacks moderator authority or verified age", {
       path,
@@ -130,13 +82,21 @@ export async function handleModeratorRequest(
   const modRate = await rateLimiter.check(`moderator:${user.userId}`, RATE_LIMIT_POLICIES.MODERATOR_ROUTES);
   if (!modRate.allowed) {
     workerLogger.warn("Moderator route rate limit exceeded", { path, userId: user.userId });
-    return rateLimitResponse(modRate, MODERATOR_PROTOCOL_VERSION, "Rate limit exceeded for moderator requests. Please retry later.");
+    return rateLimitResponse(
+      modRate,
+      MODERATOR_PROTOCOL_VERSION,
+      "Rate limit exceeded for moderator requests. Please retry later."
+    );
   }
+  const ok = (body: unknown, status = 200) => applyRateLimitHeaders(json(body, status), modRate);
 
   if (isRatingsList) {
-    const rawParams = Object.fromEntries(url.searchParams);
+    const rawParams: Record<string, unknown> = Object.fromEntries(url.searchParams);
+    if (url.searchParams.has("limit")) {
+      rawParams.limit = parseIntegerQueryParam(url.searchParams.get("limit"));
+    }
     const parsedQuery = ModeratorRatingListQuerySchema.safeParse(rawParams);
-    if (!parsedQuery.success || [...url.searchParams.keys()].some(key => url.searchParams.getAll(key).length > 1)) {
+    if (!parsedQuery.success || [...url.searchParams.keys()].some((key) => url.searchParams.getAll(key).length > 1)) {
       return failure(400, "invalid_query", "Invalid moderator ratings query");
     }
 
@@ -145,11 +105,13 @@ export async function handleModeratorRequest(
 
     try {
       const page = await store.listModeratorRatingsPage(rating, limit, decodedCursor);
-      return json(ModeratorRatingListResponseSchema.parse({
-        schemaVersion: MODERATOR_PROTOCOL_VERSION,
-        ratings: page.ratings,
-        nextCursor: page.nextCursor
-      }));
+      return ok(
+        ModeratorRatingListResponseSchema.parse({
+          schemaVersion: MODERATOR_PROTOCOL_VERSION,
+          ratings: page.ratings,
+          nextCursor: page.nextCursor
+        })
+      );
     } catch (error) {
       workerLogger.error("Failed to list moderator ratings", error, { path, userId: user.userId });
       return failure(500, "internal_error", "Failed to list moderator ratings");
@@ -169,7 +131,7 @@ export async function handleModeratorRequest(
       payload = await readJson(request);
     } catch (cause) {
       if (cause instanceof RangeError) return failure(413, "invalid_payload", "Payload exceeds limit");
-      if (cause instanceof CoordinatorConflict) return failure(415, "invalid_payload", "Content-Type must be application/json");
+      if (cause instanceof UnsupportedMediaTypeError) return failure(cause.status, "invalid_payload", cause.message);
       return failure(400, "bad_json", "Request body must be valid JSON");
     }
 
@@ -197,14 +159,16 @@ export async function handleModeratorRequest(
         reason: parsedBody.data.reason
       });
 
-      return json(SetRatingAdjustmentResponseSchema.parse({
-        schemaVersion: MODERATOR_PROTOCOL_VERSION,
-        canonicalId: adjustment.canonicalId,
-        previousRating: adjustment.previousRating,
-        newRating: adjustment.newRating,
-        adjustedBy: adjustment.adjustedBy,
-        updatedAt: adjustment.updatedAt
-      }));
+      return ok(
+        SetRatingAdjustmentResponseSchema.parse({
+          schemaVersion: MODERATOR_PROTOCOL_VERSION,
+          canonicalId: adjustment.canonicalId,
+          previousRating: adjustment.previousRating,
+          newRating: adjustment.newRating,
+          adjustedBy: adjustment.adjustedBy,
+          updatedAt: adjustment.updatedAt
+        })
+      );
     } catch (error) {
       workerLogger.error("Failed to adjust package rating", error, { path, canonicalId, userId: user.userId });
       return failure(500, "internal_error", "Failed to adjust package rating");
@@ -215,7 +179,7 @@ export async function handleModeratorRequest(
     if (!store.listOperatorAppsPage) {
       return failure(501, "not_implemented", "App candidate listing not supported");
     }
-    const rawLimit = Number(url.searchParams.get("limit") || "100");
+    const rawLimit = parseIntegerQueryParam(url.searchParams.get("limit"), 100);
     const rawCursor = url.searchParams.get("cursor");
     const candidateStatusParam = url.searchParams.get("candidateStatus");
     const parsedQuery = ModeratorAppListQuerySchema.safeParse({
@@ -223,11 +187,13 @@ export async function handleModeratorRequest(
       cursor: rawCursor || undefined,
       candidateStatus: candidateStatusParam || undefined
     });
-    if (!parsedQuery.success ||
-        url.searchParams.getAll("limit").length > 1 ||
-        url.searchParams.getAll("cursor").length > 1 ||
-        url.searchParams.getAll("candidateStatus").length > 1 ||
-        [...url.searchParams.keys()].some(key => !["limit", "cursor", "candidateStatus"].includes(key))) {
+    if (
+      !parsedQuery.success ||
+      url.searchParams.getAll("limit").length > 1 ||
+      url.searchParams.getAll("cursor").length > 1 ||
+      url.searchParams.getAll("candidateStatus").length > 1 ||
+      [...url.searchParams.keys()].some((key) => !["limit", "cursor", "candidateStatus"].includes(key))
+    ) {
       return failure(400, "invalid_query", "Invalid moderator apps query");
     }
 
@@ -235,12 +201,18 @@ export async function handleModeratorRequest(
     const decodedCursor = cursor ? decodeOperatorAppCursor(cursor) : null;
 
     try {
-      const page = await store.listOperatorAppsPage(limit, decodedCursor ? { ...decodedCursor, appId: decodedCursor.appId.toLowerCase() } : null, candidateStatus);
-      return json(ModeratorAppListResponseSchema.parse({
-        schemaVersion: MODERATOR_PROTOCOL_VERSION,
-        apps: page.apps,
-        nextCursor: page.nextCursor
-      }));
+      const page = await store.listOperatorAppsPage(
+        limit,
+        decodedCursor ? { ...decodedCursor, appId: decodedCursor.appId.toLowerCase() } : null,
+        candidateStatus
+      );
+      return ok(
+        ModeratorAppListResponseSchema.parse({
+          schemaVersion: MODERATOR_PROTOCOL_VERSION,
+          apps: page.apps,
+          nextCursor: page.nextCursor
+        })
+      );
     } catch (error) {
       workerLogger.error("Failed to list candidate apps for moderator", error, { path, userId: user.userId });
       return failure(500, "internal_error", "Failed to list candidate apps");
@@ -263,7 +235,7 @@ export async function handleModeratorRequest(
       payload = await readJson(request);
     } catch (cause) {
       if (cause instanceof RangeError) return failure(413, "invalid_payload", "Payload exceeds limit");
-      if (cause instanceof CoordinatorConflict) return failure(415, "invalid_payload", "Content-Type must be application/json");
+      if (cause instanceof UnsupportedMediaTypeError) return failure(cause.status, "invalid_payload", cause.message);
       return failure(400, "bad_json", "Request body must be valid JSON");
     }
 
@@ -273,11 +245,7 @@ export async function handleModeratorRequest(
     }
 
     try {
-      const result = await store.reviewAppCandidate(
-        appId,
-        parsedBody.data,
-        `moderator:${user.userId}`
-      );
+      const result = await store.reviewAppCandidate(appId, parsedBody.data, `moderator:${user.userId}`);
       workerLogger.info("Moderator reviewed app candidate", {
         appId,
         candidateStatus: result.candidateStatus,
@@ -285,10 +253,12 @@ export async function handleModeratorRequest(
         reviewedBy: user.userId
       });
 
-      return json(ModeratorReviewAppCandidateResponseSchema.parse({
-        schemaVersion: MODERATOR_PROTOCOL_VERSION,
-        ...result
-      }));
+      return ok(
+        ModeratorReviewAppCandidateResponseSchema.parse({
+          schemaVersion: MODERATOR_PROTOCOL_VERSION,
+          ...result
+        })
+      );
     } catch (error) {
       const message = error instanceof Error ? error.message : "App candidate review failed";
       const missing = message === "App not found";

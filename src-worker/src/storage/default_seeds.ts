@@ -90,7 +90,7 @@ export const DEFAULT_APPROVED_SOURCE_PROFILES: DefaultApprovedProfile[] = [
     expiresInDays: 365,
     reviewReference: "COMMUNITY-VPM-TEMPLATE",
     reason: "Approved open VPM community template package listing",
-    retainClasses: ["normalized_facts"],
+    retainClasses: ["normalized_facts", "creator_prose"],
     publishClasses: ["normalized_facts"]
   },
   {

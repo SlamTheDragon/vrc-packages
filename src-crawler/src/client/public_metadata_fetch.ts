@@ -2,14 +2,12 @@ import dns from "node:dns/promises";
 import https from "node:https";
 import { isPrivateOrReservedIp } from "vrc-packages-network/ip-policy";
 import { isItchSearchUrl } from "vrc-packages-network/source-paths";
+import { ARCHIVE_BINARY_EXTENSIONS, hasArchiveBinaryExtension, isArchiveOrBinaryUrl } from "vrc-packages-network/source-targets";
 import { logger } from "../utils/logging/logger.ts";
 
 const MAX_METADATA_BYTES = 2_000_000;
 
-export const PROHIBITED_BINARY_EXTENSIONS = [
-  ".zip", ".unitypackage", ".exe", ".tar", ".gz", ".tgz",
-  ".7z", ".rar", ".iso", ".bin", ".dll", ".dylib", ".so", ".msi"
-];
+export { ARCHIVE_BINARY_EXTENSIONS, hasArchiveBinaryExtension, isArchiveOrBinaryUrl };
 
 export const PROHIBITED_BINARY_CONTENT_TYPES = [
   "application/zip",
@@ -41,8 +39,7 @@ export async function fetchPublicMetadata(
     logger.warn(`Rejected itch.io /search URL: ${target.href}`);
     throw new UnsafeMetadataTarget("itch.io /search is disallowed by published robots rules");
   }
-  const pathnameLower = target.pathname.toLowerCase();
-  if (PROHIBITED_BINARY_EXTENSIONS.some((ext) => pathnameLower.endsWith(ext))) {
+  if (hasArchiveBinaryExtension(target.pathname) || isArchiveOrBinaryUrl(target.href)) {
     logger.warn(`Rejected binary metadata target URL: ${target.href}`);
     throw new UnsafeMetadataTarget("Metadata target must not point to an archive or executable binary");
   }

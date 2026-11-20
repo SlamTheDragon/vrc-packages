@@ -2,10 +2,8 @@ import { describe, expect, test } from "bun:test";
 import {
   InMemoryRateLimiter,
   KvRateLimiter,
-  CloudflareBindingRateLimiter,
   createRateLimiter,
   type IKVNamespace,
-  type CloudflareRateLimiterBinding,
   extractClientIp,
   rateLimitResponse,
   applyRateLimitHeaders,
@@ -14,7 +12,7 @@ import {
 import { handlePublicCatalogRequest } from "../src/api/public_handler.ts";
 import { handleNodeRequest } from "../src/api/handler.ts";
 import { handleDownstreamRequest } from "../src/api/downstream_handler.ts";
-import { LocalCoordinatorStore } from "./support/local_sqlite.js";
+import { createInitializedD1Coordinator } from "./support/d1_test_fixtures.ts";
 import { CATALOG_PROTOCOL_VERSION } from "vrc-packages-api";
 
 describe("Inbound 429 Rate Limiter & Abuse Protection", () => {
@@ -37,7 +35,6 @@ describe("Inbound 429 Rate Limiter & Abuse Protection", () => {
       expect(r3.allowed).toBe(true);
       expect(r3.remaining).toBe(0);
 
-      // Exceeded
       const r4 = limiter.check(key, policy, 4000);
       expect(r4.allowed).toBe(false);
       expect(r4.remaining).toBe(0);
@@ -56,7 +53,6 @@ describe("Inbound 429 Rate Limiter & Abuse Protection", () => {
       const r3 = limiter.check(key, policy, 3000);
       expect(r3.allowed).toBe(false);
 
-      // Advance time past the 10s window (1000 + 10000 = 11000)
       const r4 = limiter.check(key, policy, 12000);
       expect(r4.allowed).toBe(true);
       expect(r4.remaining).toBe(1);
@@ -116,104 +112,110 @@ describe("Inbound 429 Rate Limiter & Abuse Protection", () => {
 
   describe("Public Catalog Endpoint Rate Limiting", () => {
     test("rejects with 429 when public catalog policy is exceeded", async () => {
-      const store = new LocalCoordinatorStore();
+      const store = await createInitializedD1Coordinator();
       const limiter = new InMemoryRateLimiter();
+      try {
+        const testIp = "192.168.1.100";
+        for (let i = 0; i < RATE_LIMIT_POLICIES.PUBLIC_CATALOG.limit; i++) {
+          const req = new Request("http://localhost/v1/app/index", {
+            method: "GET",
+            headers: { "cf-connecting-ip": testIp }
+          });
+          const res = await handlePublicCatalogRequest(req, store, limiter);
+          expect(res.status).toBe(200);
+          expect(res.headers.get("X-RateLimit-Remaining")).toBe(
+            String(RATE_LIMIT_POLICIES.PUBLIC_CATALOG.limit - 1 - i)
+          );
+        }
 
-      // Exhaust limit of 60 requests
-      const testIp = "192.168.1.100";
-      for (let i = 0; i < RATE_LIMIT_POLICIES.PUBLIC_CATALOG.limit; i++) {
-        const req = new Request("http://localhost/v1/app/index", {
+        const blockedReq = new Request("http://localhost/v1/app/index", {
           method: "GET",
           headers: { "cf-connecting-ip": testIp }
         });
-        const res = await handlePublicCatalogRequest(req, store, limiter);
-        expect(res.status).toBe(200);
-        expect(res.headers.get("X-RateLimit-Remaining")).toBe(String(RATE_LIMIT_POLICIES.PUBLIC_CATALOG.limit - 1 - i));
+        const blockedRes = await handlePublicCatalogRequest(blockedReq, store, limiter);
+        expect(blockedRes.status).toBe(429);
+        expect(blockedRes.headers.get("Retry-After")).toBeDefined();
+        const body = await blockedRes.json();
+        expect(body).toMatchObject({ code: "rate_limited", schemaVersion: CATALOG_PROTOCOL_VERSION });
+
+        const otherReq = new Request("http://localhost/v1/app/index", {
+          method: "GET",
+          headers: { "cf-connecting-ip": "192.168.1.101" }
+        });
+        const otherRes = await handlePublicCatalogRequest(otherReq, store, limiter);
+        expect(otherRes.status).toBe(200);
+      } finally {
+        store.close();
       }
-
-      // Next request must be throttled with 429
-      const blockedReq = new Request("http://localhost/v1/app/index", {
-        method: "GET",
-        headers: { "cf-connecting-ip": testIp }
-      });
-      const blockedRes = await handlePublicCatalogRequest(blockedReq, store, limiter);
-      expect(blockedRes.status).toBe(429);
-      expect(blockedRes.headers.get("Retry-After")).toBeDefined();
-      const body = await blockedRes.json();
-      expect(body).toMatchObject({ code: "rate_limited", schemaVersion: CATALOG_PROTOCOL_VERSION });
-
-      // A different IP is still permitted
-      const otherReq = new Request("http://localhost/v1/app/index", {
-        method: "GET",
-        headers: { "cf-connecting-ip": "192.168.1.101" }
-      });
-      const otherRes = await handlePublicCatalogRequest(otherReq, store, limiter);
-      expect(otherRes.status).toBe(200);
     });
   });
 
   describe("Node Endpoint Rate Limiting (Pre-Stream Check)", () => {
     test("rejects rogue node with 429 before stream parsing when limit exceeded", async () => {
-      const store = new LocalCoordinatorStore();
+      const store = await createInitializedD1Coordinator();
       const limiter = new InMemoryRateLimiter();
-      const testIp = "10.10.10.1";
-      const bearer = "Bearer vrcp_node_valid_credential_1234567890abcdef";
-      const tokenPrefix = "vrcp_node_valid_";
+      try {
+        const testIp = "10.10.10.1";
+        const bearer = "Bearer vrcp_node_valid_credential_1234567890abcdef";
+        const tokenPrefix = "vrcp_node_valid_";
 
-      for (let i = 0; i < RATE_LIMIT_POLICIES.NODE_CLAIM.limit; i++) {
-        limiter.check(`node:claim:${testIp}:${tokenPrefix}`, RATE_LIMIT_POLICIES.NODE_CLAIM);
+        for (let i = 0; i < RATE_LIMIT_POLICIES.NODE_CLAIM.limit; i++) {
+          limiter.check(`node:claim:${testIp}:${tokenPrefix}`, RATE_LIMIT_POLICIES.NODE_CLAIM);
+        }
+
+        const blockedReq = new Request("http://localhost/v1/node/jobs/claim", {
+          method: "POST",
+          headers: {
+            authorization: bearer,
+            "content-type": "application/json",
+            "cf-connecting-ip": testIp
+          },
+          body: JSON.stringify({ nodeId: "node-1" })
+        });
+
+        const blockedRes = await handleNodeRequest(blockedReq, store, limiter);
+        expect(blockedRes.status).toBe(429);
+        const body = await blockedRes.json();
+        expect(body).toMatchObject({ code: "rate_limited" });
+        expect(blockedRes.headers.get("Retry-After")).toBeDefined();
+      } finally {
+        store.close();
       }
-
-      // Next node claim request must receive 429 immediately
-      const blockedReq = new Request("http://localhost/v1/node/jobs/claim", {
-        method: "POST",
-        headers: {
-          "authorization": bearer,
-          "content-type": "application/json",
-          "cf-connecting-ip": testIp
-        },
-        body: JSON.stringify({ nodeId: "node-1" })
-      });
-
-      const blockedRes = await handleNodeRequest(blockedReq, store, limiter);
-      expect(blockedRes.status).toBe(429);
-      const body = await blockedRes.json();
-      expect(body).toMatchObject({ code: "rate_limited" });
-      expect(blockedRes.headers.get("Retry-After")).toBeDefined();
     });
   });
 
   describe("Downstream Search Rate Limiting", () => {
     test("rejects downstream app with 429 when search rate limit exceeded", async () => {
-      const store = new LocalCoordinatorStore();
+      const store = await createInitializedD1Coordinator();
       const limiter = new InMemoryRateLimiter();
+      try {
+        const registerRes = await store.registerApp({
+          schemaVersion: 1,
+          appName: "Search Rate Test App"
+        });
+        const appToken = registerRes.appToken;
+        const appId = registerRes.appId;
 
-      // Register an app first
-      const registerRes = await store.registerApp({
-        schemaVersion: 1,
-        appName: "Search Rate Test App"
-      });
-      const appToken = registerRes.appToken;
-      const appId = registerRes.appId;
+        for (let i = 0; i < RATE_LIMIT_POLICIES.APP_SEARCH.limit; i++) {
+          limiter.check(`app:search:${appId}`, RATE_LIMIT_POLICIES.APP_SEARCH);
+        }
 
-      // Exhaust search quota (120 req/min)
-      for (let i = 0; i < RATE_LIMIT_POLICIES.APP_SEARCH.limit; i++) {
-        limiter.check(`app:search:${appId}`, RATE_LIMIT_POLICIES.APP_SEARCH);
+        const blockedReq = new Request("http://localhost/v1/app/index/search", {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${appToken}`,
+            "content-type": "application/json"
+          },
+          body: JSON.stringify({ schemaVersion: 1, query: "avatar" })
+        });
+
+        const blockedRes = await handleDownstreamRequest(blockedReq, store, "", limiter);
+        expect(blockedRes.status).toBe(429);
+        const body = await blockedRes.json();
+        expect(body).toMatchObject({ code: "rate_limited" });
+      } finally {
+        store.close();
       }
-
-      const blockedReq = new Request("http://localhost/v1/app/index/search", {
-        method: "POST",
-        headers: {
-          "authorization": `Bearer ${appToken}`,
-          "content-type": "application/json"
-        },
-        body: JSON.stringify({ schemaVersion: 1, query: "avatar" })
-      });
-
-      const blockedRes = await handleDownstreamRequest(blockedReq, store, "", limiter);
-      expect(blockedRes.status).toBe(429);
-      const body = await blockedRes.json();
-      expect(body).toMatchObject({ code: "rate_limited" });
     });
   });
 
@@ -255,7 +257,6 @@ describe("Inbound 429 Rate Limiter & Abuse Protection", () => {
       expect(r3.allowed).toBe(true);
       expect(r3.remaining).toBe(0);
 
-      // Exceeded
       const r4 = await limiter.check(key, policy, now + 3000);
       expect(r4.allowed).toBe(false);
       expect(r4.remaining).toBe(0);
@@ -276,7 +277,6 @@ describe("Inbound 429 Rate Limiter & Abuse Protection", () => {
       const r3 = await limiter.check(key, policy, bucket0Now + 2000);
       expect(r3.allowed).toBe(false);
 
-      // Advance time into next window bucket
       const bucket1Now = 65_000;
       const r4 = await limiter.check(key, policy, bucket1Now);
       expect(r4.allowed).toBe(true);
@@ -300,61 +300,39 @@ describe("Inbound 429 Rate Limiter & Abuse Protection", () => {
     });
 
     test("enforces 429 when plugged into handlePublicCatalogRequest", async () => {
-      const store = new LocalCoordinatorStore();
-      const mockKv = createMockKv();
-      const limiter = new KvRateLimiter(mockKv);
+      const store = await createInitializedD1Coordinator();
+      try {
+        const mockKv = createMockKv();
+        const limiter = new KvRateLimiter(mockKv);
 
-      const now = Date.now();
-      const bucket = Math.floor(now / 60000);
-      await mockKv.put(`rl:public:198.51.100.99:${bucket}`, "60");
+        const now = Date.now();
+        const bucket = Math.floor(now / 60000);
+        await mockKv.put(`rl:public:198.51.100.99:${bucket}`, "60");
 
-      const req = new Request("http://localhost/v1/app/index", {
-        headers: { "cf-connecting-ip": "198.51.100.99" }
-      });
-      const res = await handlePublicCatalogRequest(req, store, limiter);
-      expect(res.status).toBe(429);
-      expect(res.headers.get("Retry-After")).toBeDefined();
-      const body = await res.json();
-      expect(body).toMatchObject({ code: "rate_limited" });
+        const req = new Request("http://localhost/v1/app/index", {
+          headers: { "cf-connecting-ip": "198.51.100.99" }
+        });
+        const res = await handlePublicCatalogRequest(req, store, limiter);
+        expect(res.status).toBe(429);
+        expect(res.headers.get("Retry-After")).toBeDefined();
+        const body = await res.json();
+        expect(body).toMatchObject({ code: "rate_limited" });
+      } finally {
+        store.close();
+      }
     });
   });
 
-  describe("CloudflareBindingRateLimiter & Factory Unit Tests", () => {
-    test("CloudflareBindingRateLimiter forwards to native limit binding", async () => {
-      let passedKey = "";
-      const mockBinding: CloudflareRateLimiterBinding = {
-        async limit(options) {
-          passedKey = options.key;
-          return { success: options.key.includes("allow") };
-        }
-      };
-      const limiter = new CloudflareBindingRateLimiter(mockBinding);
-      const policy = { limit: 10, windowSeconds: 60 };
-
-      const r1 = await limiter.check("test:allow:1", policy);
-      expect(r1.allowed).toBe(true);
-      expect(passedKey).toBe("test:allow:1");
-
-      const r2 = await limiter.check("test:block:1", policy);
-      expect(r2.allowed).toBe(false);
-      expect(passedKey).toBe("test:block:1");
-    });
-
+  describe("Factory Unit Tests", () => {
     test("createRateLimiter selects KvRateLimiter when RATE_LIMIT_KV is present", () => {
       const mockKv: IKVNamespace = {
-        async get() { return null; },
+        async get() {
+          return null;
+        },
         async put() {}
       };
       const limiter = createRateLimiter({ RATE_LIMIT_KV: mockKv });
       expect(limiter).toBeInstanceOf(KvRateLimiter);
-    });
-
-    test("createRateLimiter selects CloudflareBindingRateLimiter when RATE_LIMITER is present", () => {
-      const mockBinding: CloudflareRateLimiterBinding = {
-        async limit() { return { success: true }; }
-      };
-      const limiter = createRateLimiter({ RATE_LIMITER: mockBinding });
-      expect(limiter).toBeInstanceOf(CloudflareBindingRateLimiter);
     });
 
     test("createRateLimiter defaults to InMemoryRateLimiter when no bindings are present", () => {
@@ -363,4 +341,3 @@ describe("Inbound 429 Rate Limiter & Abuse Protection", () => {
     });
   });
 });
-

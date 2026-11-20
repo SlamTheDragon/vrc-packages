@@ -17,7 +17,7 @@ export const APPROVED_PREVIEW_VPM_PROFILES = [
     expiresInDays: 7,
     reviewReference: "COMMUNITY-VPM-TEMPLATE",
     reason: "Approved open VPM community template package listing",
-    retainClasses: ["normalized_facts"],
+    retainClasses: ["normalized_facts", "creator_prose"],
     publishClasses: ["normalized_facts"]
   },
   {
@@ -79,14 +79,44 @@ function minimalNodeEnvironment(baseEnv, overrides) {
   return { ...safe, ...overrides, NO_COLOR: "1" };
 }
 
+export function sanitizeBinaryErrorOutput(raw) {
+  if (typeof raw !== "string" || !raw) return "";
+  return raw
+    .replace(/Bearer\s+\S+/gi, "Bearer [REDACTED]")
+    .replace(/vrcp_[A-Za-z0-9_]+/gi, "[REDACTED]")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 400);
+}
+
+function readBoundedProcessStream(stream) {
+  if (typeof stream === "string") return stream;
+  if (Buffer.isBuffer(stream)) return stream.toString("utf8");
+  return "";
+}
+
 function defaultRunBinary(binaryPath, args, { cwd, env }) {
-  return execFileSync(binaryPath, args, {
-    cwd,
-    env,
-    encoding: "utf8",
-    timeout: 60_000,
-    stdio: ["ignore", "pipe", "pipe"]
-  });
+  try {
+    return execFileSync(binaryPath, args, {
+      cwd,
+      env,
+      encoding: "utf8",
+      timeout: 60_000,
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+  } catch (error) {
+    const status = typeof error?.status === "number" ? error.status : "unknown";
+    const stderr = sanitizeBinaryErrorOutput(readBoundedProcessStream(error?.stderr));
+    const stdout = sanitizeBinaryErrorOutput(readBoundedProcessStream(error?.stdout));
+    const excerpt = stderr || stdout || sanitizeBinaryErrorOutput(error instanceof Error ? error.message : String(error));
+    throw new Error(`Crawler binary exited with status ${status}${excerpt ? `: ${excerpt}` : ""}`);
+  }
+}
+
+function sameClassSet(actual, expected) {
+  const left = [...new Set(Array.isArray(actual) ? actual : [])].sort();
+  const right = [...new Set(Array.isArray(expected) ? expected : [])].sort();
+  return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
 export async function runPreviewLiveCrawl(Client, options = {}) {
@@ -95,7 +125,7 @@ export async function runPreviewLiveCrawl(Client, options = {}) {
     request = fetch,
     baseUrl = previewOrigin,
     binaryPath = defaultCrawlerBinaryPath(),
-    maxCycles = 6,
+    maxCycles = 8,
     cycleDelayMs = 1500,
     requireGuard = requirePreviewInitialization,
     runBinary = defaultRunBinary,
@@ -118,17 +148,46 @@ export async function runPreviewLiveCrawl(Client, options = {}) {
     fetch: previewCrawlFetch(request, new URL(baseUrl).origin)
   });
 
-  const existingProfiles = await client.operator.sourceProfiles.list({ limit: 50 });
-  const activeProfiles = new Set(
-    (existingProfiles.items ?? [])
-      .filter(p => p.status === "active")
-      .map(p => `${p.platform}|${p.origin}|${p.pathScope}|${p.purpose}`)
-  );
+  const existingList = [];
+  let profileCursor;
+  for (let page = 0; page < 5; page++) {
+    const existingProfiles = await client.operator.sourceProfiles.list({
+      limit: 100,
+      ...(profileCursor ? { cursor: profileCursor } : {})
+    });
+    if (Array.isArray(existingProfiles?.profiles)) {
+      existingList.push(...existingProfiles.profiles);
+    }
+    if (!existingProfiles?.nextCursor) break;
+    profileCursor = existingProfiles.nextCursor;
+  }
 
+  const nowMs = Date.now();
   for (const profile of APPROVED_PREVIEW_VPM_PROFILES) {
-    const key = `${profile.platform}|${profile.origin}|${profile.pathScope}|${profile.purpose}`;
-    if (!activeProfiles.has(key)) {
-      await client.operator.sourceProfiles.create({ schemaVersion: 1, ...profile });
+    const activeMatches = existingList.filter(
+      p => p.disabledAt === null &&
+        Date.parse(p.expiresAt) > nowMs &&
+        !p.exactQuery &&
+        p.platform === profile.platform &&
+        p.origin === profile.origin &&
+        p.pathScope === profile.pathScope &&
+        p.purpose === profile.purpose
+    );
+    const reusable = activeMatches.find(
+      match =>
+        profile.retainClasses.every(c => (match.retainClasses ?? []).includes(c)) &&
+        sameClassSet(match.publishClasses, profile.publishClasses)
+    );
+    if (!reusable) {
+      for (const stale of activeMatches) {
+        await client.operator.sourceProfiles.disable(
+          stale.profileId,
+          "Replacing preview live crawl profile with required retention and publication classes"
+        );
+      }
+      const { expiresInDays, ...profilePayload } = profile;
+      const expiresAt = new Date(Date.now() + expiresInDays * 24 * 60 * 60 * 1000).toISOString();
+      await client.operator.sourceProfiles.create({ schemaVersion: 1, ...profilePayload, expiresAt });
     }
   }
 
@@ -149,9 +208,9 @@ export async function runPreviewLiveCrawl(Client, options = {}) {
   const scratchDir = mkdtempSync(join(tmpdir(), "vrcp-live-crawl-"));
   const dbPath = join(scratchDir, "node.db");
   let cyclesRun = 0;
-  let indexResult = { items: [] };
-  let deltaResult = { entries: [] };
-  let leadsResult = { items: [] };
+  let indexResult = { packages: [] };
+  let deltaResult = { deltas: [] };
+  let leadsResult = { leads: [] };
   let nodeRevoked = false;
 
   try {
@@ -170,7 +229,10 @@ export async function runPreviewLiveCrawl(Client, options = {}) {
       indexResult = await client.index.query({ limit: 50 });
       deltaResult = await client.index.syncDeltas({ limit: 50 });
       leadsResult = await client.operator.leads.list({ limit: 50 });
-      if (cycle >= 2 && (indexResult.items?.length ?? 0) > 0 && (deltaResult.entries?.length ?? 0) > 0) {
+      if (cycle >= 2 &&
+          (indexResult.packages?.length ?? 0) > 0 &&
+          (deltaResult.deltas?.length ?? 0) > 0 &&
+          (leadsResult.leads?.length ?? 0) > 0) {
         break;
       }
       if (cycle < maxCycles && cycleDelayMs > 0) {
@@ -187,8 +249,8 @@ export async function runPreviewLiveCrawl(Client, options = {}) {
     rmSync(scratchDir, { recursive: true, force: true });
   }
 
-  if (!(indexResult.items?.length > 0) || !(deltaResult.entries?.length > 0)) {
-    throw new Error(`Preview live crawl produced insufficient canonical data (packages=${indexResult.items?.length ?? 0}, deltas=${deltaResult.entries?.length ?? 0})`);
+  if (!(indexResult.packages?.length > 0) || !(deltaResult.deltas?.length > 0)) {
+    throw new Error(`Preview live crawl produced insufficient canonical data (packages=${indexResult.packages?.length ?? 0}, deltas=${deltaResult.deltas?.length ?? 0})`);
   }
 
   return {
@@ -198,9 +260,9 @@ export async function runPreviewLiveCrawl(Client, options = {}) {
     nodeId,
     nodeRevoked,
     enqueuedJobs,
-    canonicalPackages: indexResult.items.map(item => ({ canonicalId: item.canonicalId, displayName: item.displayName })),
-    deltaCount: deltaResult.entries.length,
-    leadsCount: leadsResult.items?.length ?? 0
+    canonicalPackages: indexResult.packages.map(item => ({ canonicalId: item.canonicalId, displayName: item.displayName })),
+    deltaCount: deltaResult.deltas.length,
+    leadsCount: leadsResult.leads?.length ?? 0
   };
 }
 

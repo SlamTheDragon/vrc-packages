@@ -1,49 +1,53 @@
-import { z } from "zod";
 import {
-  ClaimRequestSchema, ClaimResponseSchema, HeartbeatRequestSchema, HeartbeatResponseSchema, PROTOCOL_VERSION,
-  ResultRequestSchema, ResultResponseSchema, BatchResultRequestSchema, BatchResultResponseSchema, NodeIdSchema,
-  type ClaimRequest, type ClaimResponse, type HeartbeatRequest, type HeartbeatResponse,
-  type ResultRequest, type ResultResponse, type BatchResultRequest, type BatchResultResponse,
-  type Platform
+  ClaimRequestSchema,
+  ClaimResponseSchema,
+  HeartbeatRequestSchema,
+  HeartbeatResponseSchema,
+  PROTOCOL_VERSION,
+  ResultRequestSchema,
+  ResultResponseSchema,
+  BatchResultRequestSchema,
+  BatchResultResponseSchema,
+  NodeRobotsClaimRequestSchema,
+  NodeRobotsClaimResponseSchema,
+  NodeRobotsResultRequestSchema,
+  NodeRobotsResultResponseSchema,
+  type ClaimRequest,
+  type ClaimResponse,
+  type HeartbeatRequest,
+  type HeartbeatResponse,
+  type ResultRequest,
+  type ResultResponse,
+  type BatchResultRequest,
+  type BatchResultResponse,
+  type NodeRobotsResultRequest
 } from "vrc-packages-network/node";
+import {
+  CoordinatorConflict,
+  UnsupportedMediaTypeError,
+  type CoordinatorStore,
+  type NodePrincipal
+} from "../domain/ports/stores.ts";
+import { workerLogger } from "../worker_logger.ts";
+import {
+  extractClientIp,
+  RATE_LIMIT_POLICIES,
+  rateLimitResponse,
+  applyRateLimitHeaders,
+  defaultRateLimiter,
+  type IRateLimiter
+} from "./rate_limiter.ts";
 
-export interface NodePrincipal {
-  nodeId: string;
-  capabilities: Platform[];
-  /** Opaque credential generation used to reject auth/lease races after rotation. */
-  credentialVersion: string;
-}
-
-export const NodeRobotsClaimRequestSchema = z.strictObject({
-  schemaVersion: z.literal(PROTOCOL_VERSION),
-  nodeId: NodeIdSchema
-});
-
-export const NodeRobotsResultRequestSchema = z.strictObject({
-  schemaVersion: z.literal(PROTOCOL_VERSION),
-  nodeId: NodeIdSchema,
-  origin: z.string().url().refine((val) => {
-    try { return new URL(val).origin === val; } catch { return false; }
-  }, "Canonical HTTPS origin required"),
-  leaseId: z.string().uuid(),
-  statusCode: z.number().int().min(100).max(599),
-  body: z.string().max(512 * 1024).default("")
-});
-
-/** Runtime-neutral storage boundary. A local SQLite adapter implements this first. */
-export interface CoordinatorStore {
-  authenticate(nodeId: string, bearer: string): Promise<NodePrincipal | null> | NodePrincipal | null;
-  claim(request: ClaimRequest, principal: NodePrincipal): Promise<ClaimResponse> | ClaimResponse;
-  heartbeat(request: HeartbeatRequest, principal: NodePrincipal): Promise<HeartbeatResponse> | HeartbeatResponse;
-  submit(request: ResultRequest, principal: NodePrincipal): Promise<ResultResponse> | ResultResponse;
-  submitBatch(request: BatchResultRequest, principal: NodePrincipal): Promise<BatchResultResponse> | BatchResultResponse;
-  claimDueRobotsRefresh?(): Promise<{ origin: string; leaseId: string } | null> | { origin: string; leaseId: string } | null;
-  completeRobotsRefresh?(origin: string, leaseId: string, statusCode: number, body?: string): Promise<boolean> | boolean;
-}
-
-export class CoordinatorConflict extends Error {
-  constructor(message: string, public readonly status: 400 | 403 | 404 | 409 = 409) { super(message); }
-}
+export {
+  CoordinatorConflict,
+  UnsupportedMediaTypeError,
+  NodeRobotsClaimRequestSchema,
+  NodeRobotsClaimResponseSchema,
+  NodeRobotsResultRequestSchema,
+  NodeRobotsResultResponseSchema,
+  type CoordinatorStore,
+  type NodePrincipal
+};
 
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -59,7 +63,7 @@ function failure(status: number, code: string, message: string): Response {
 /** Bound bytes before parsing, regardless of Content-Length accuracy. */
 export async function readJson(request: Request): Promise<unknown> {
   if (!request.headers.get("content-type")?.toLowerCase().startsWith("application/json")) {
-    throw new CoordinatorConflict("Content-Type must be application/json", 403);
+    throw new UnsupportedMediaTypeError("Content-Type must be application/json");
   }
   const reader = request.body?.getReader();
   if (!reader) throw new SyntaxError("Missing JSON body");
@@ -77,21 +81,13 @@ export async function readJson(request: Request): Promise<unknown> {
   }
   const combined = new Uint8Array(size);
   let offset = 0;
-  for (const part of parts) { combined.set(part, offset); offset += part.byteLength; }
+  for (const part of parts) {
+    combined.set(part, offset);
+    offset += part.byteLength;
+  }
   return JSON.parse(new TextDecoder().decode(combined));
 }
 
-import { workerLogger } from "../worker_logger.ts";
-import {
-  extractClientIp,
-  RATE_LIMIT_POLICIES,
-  rateLimitResponse,
-  applyRateLimitHeaders,
-  defaultRateLimiter,
-  type IRateLimiter
-} from "./rate_limiter.ts";
-
-/** Same handler is used in-process, by local Bun HTTP, and later by a Worker adapter. */
 export async function handleNodeRequest(
   request: Request,
   store: CoordinatorStore,
@@ -99,8 +95,12 @@ export async function handleNodeRequest(
 ): Promise<Response> {
   const path = new URL(request.url).pathname;
   const ALLOWED_NODE_ROUTES = [
-    "/v1/node/jobs/claim", "/v1/node/jobs/result", "/v1/node/jobs/results",
-    "/v1/node/heartbeat", "/v1/node/robots/claim", "/v1/node/robots/result"
+    "/v1/node/jobs/claim",
+    "/v1/node/jobs/result",
+    "/v1/node/jobs/results",
+    "/v1/node/heartbeat",
+    "/v1/node/robots/claim",
+    "/v1/node/robots/result"
   ];
   if (request.method !== "POST" || !ALLOWED_NODE_ROUTES.includes(path)) {
     return failure(404, "not_found", "Route not found");
@@ -142,17 +142,24 @@ export async function handleNodeRequest(
   } catch (error) {
     workerLogger.warn("Failed to parse node request JSON", { path }, error);
     if (error instanceof RangeError) return failure(413, "invalid_payload", error.message);
-    if (error instanceof CoordinatorConflict) return failure(415, "invalid_payload", error.message);
+    if (error instanceof UnsupportedMediaTypeError) return failure(error.status, "invalid_payload", error.message);
     return failure(400, "bad_json", "Request body must be valid JSON");
   }
 
-  const isBatchResult = path.endsWith("/results") || (path.endsWith("/result") && !isRobotsResult && Array.isArray((payload as Record<string, unknown> | null)?.results));
-  const parsed = isRobotsClaim ? NodeRobotsClaimRequestSchema.safeParse(payload) :
-    isRobotsResult ? NodeRobotsResultRequestSchema.safeParse(payload) :
-    isClaim ? ClaimRequestSchema.safeParse(payload) :
-    isHeartbeat ? HeartbeatRequestSchema.safeParse(payload) :
-    isBatchResult ? BatchResultRequestSchema.safeParse(payload) :
-    ResultRequestSchema.safeParse(payload);
+  const isBatchResult =
+    path.endsWith("/results") ||
+    (path.endsWith("/result") && !isRobotsResult && Array.isArray((payload as Record<string, unknown> | null)?.results));
+  const parsed = isRobotsClaim
+    ? NodeRobotsClaimRequestSchema.safeParse(payload)
+    : isRobotsResult
+    ? NodeRobotsResultRequestSchema.safeParse(payload)
+    : isClaim
+    ? ClaimRequestSchema.safeParse(payload)
+    : isHeartbeat
+    ? HeartbeatRequestSchema.safeParse(payload)
+    : isBatchResult
+    ? BatchResultRequestSchema.safeParse(payload)
+    : ResultRequestSchema.safeParse(payload);
   if (!parsed.success) {
     workerLogger.warn("Invalid payload schema for node request", { path, issues: parsed.error.issues });
     return failure(400, "invalid_payload", parsed.error.issues.map((issue) => issue.path.join(".") || "body").join(", "));
@@ -172,36 +179,59 @@ export async function handleNodeRequest(
       }
       const due = await store.claimDueRobotsRefresh();
       if (!due) {
-        return applyRateLimitHeaders(json({
-          schemaVersion: PROTOCOL_VERSION,
-          status: "empty",
-          retryAfterMs: 60000
-        }), rateResult);
+        return applyRateLimitHeaders(
+          json(
+            NodeRobotsClaimResponseSchema.parse({
+              schemaVersion: PROTOCOL_VERSION,
+              status: "empty",
+              retryAfterMs: 60000
+            })
+          ),
+          rateResult
+        );
       }
       workerLogger.info("Node claimed robots refresh", { nodeId: principal.nodeId, origin: due.origin, leaseId: due.leaseId });
-      return applyRateLimitHeaders(json({
-        schemaVersion: PROTOCOL_VERSION,
-        status: "leased",
-        origin: due.origin,
-        leaseId: due.leaseId
-      }), rateResult);
+      return applyRateLimitHeaders(
+        json(
+          NodeRobotsClaimResponseSchema.parse({
+            schemaVersion: PROTOCOL_VERSION,
+            status: "leased",
+            origin: due.origin,
+            leaseId: due.leaseId
+          })
+        ),
+        rateResult
+      );
     }
     if (isRobotsResult) {
       if (!store.completeRobotsRefresh) {
         return failure(501, "not_implemented", "Robots refresh not supported by store");
       }
-      const data = parsed.data as z.infer<typeof NodeRobotsResultRequestSchema>;
+      const data = parsed.data as NodeRobotsResultRequest;
       const completed = await store.completeRobotsRefresh(data.origin, data.leaseId, data.statusCode, data.body);
       if (!completed) {
-        workerLogger.warn("Robots refresh completion rejected", { nodeId: principal.nodeId, origin: data.origin, leaseId: data.leaseId });
+        workerLogger.warn("Robots refresh completion rejected", {
+          nodeId: principal.nodeId,
+          origin: data.origin,
+          leaseId: data.leaseId
+        });
         return failure(403, "forbidden", "Robots refresh lease expired or was replaced");
       }
-      workerLogger.info("Node submitted robots result", { nodeId: principal.nodeId, origin: data.origin, statusCode: data.statusCode });
-      return applyRateLimitHeaders(json({
-        schemaVersion: PROTOCOL_VERSION,
-        status: "accepted",
-        origin: data.origin
-      }), rateResult);
+      workerLogger.info("Node submitted robots result", {
+        nodeId: principal.nodeId,
+        origin: data.origin,
+        statusCode: data.statusCode
+      });
+      return applyRateLimitHeaders(
+        json(
+          NodeRobotsResultResponseSchema.parse({
+            schemaVersion: PROTOCOL_VERSION,
+            status: "accepted",
+            origin: data.origin
+          })
+        ),
+        rateResult
+      );
     }
     if (isClaim) {
       const response = await store.claim(parsed.data as ClaimRequest, principal);
@@ -214,15 +244,26 @@ export async function handleNodeRequest(
     }
     if (isBatchResult) {
       const response = await store.submitBatch(parsed.data as BatchResultRequest, principal);
-      workerLogger.info("Node submitted batch results", { nodeId: principal.nodeId, count: (parsed.data as BatchResultRequest).results.length });
+      workerLogger.info("Node submitted batch results", {
+        nodeId: principal.nodeId,
+        count: (parsed.data as BatchResultRequest).results.length
+      });
       return applyRateLimitHeaders(json(BatchResultResponseSchema.parse(response)), rateResult);
     }
     const response = await store.submit(parsed.data as ResultRequest, principal);
-    workerLogger.info("Node submitted job result", { nodeId: principal.nodeId, jobId: (parsed.data as ResultRequest).jobId });
+    workerLogger.info("Node submitted job result", {
+      nodeId: principal.nodeId,
+      jobId: (parsed.data as ResultRequest).jobId
+    });
     return applyRateLimitHeaders(json(ResultResponseSchema.parse(response)), rateResult);
   } catch (error) {
     if (error instanceof CoordinatorConflict) {
-      workerLogger.warn("Coordinator conflict", { path, nodeId: principal.nodeId, status: error.status, message: error.message });
+      workerLogger.warn("Coordinator conflict", {
+        path,
+        nodeId: principal.nodeId,
+        status: error.status,
+        message: error.message
+      });
       const code = error.status === 403 ? "forbidden" : error.status === 404 ? "not_found" : "conflict";
       return failure(error.status, code, error.message);
     }

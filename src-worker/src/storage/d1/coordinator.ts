@@ -1,60 +1,68 @@
-import { type CrawlerRules, compileRobotsText } from "@trybyte/robotstxt-parser";
-import { EnqueueJobRequestSchema, type EnqueueJobRequest,
-  RevokeNodeRequestSchema, RevokeNodeResponseSchema, type RevokeNodeRequest,
-  type AutoQueueRule, AutoQueueRuleSchema, type IssueNodeCredential, IssueNodeCredentialSchema,
-  type RuleCursor, encodeRuleCursor, type CreateAutoQueueRule, CreateAutoQueueRuleSchema,
-  type CatalogCursor, type CatalogPackage, type CatalogIdentityLink, type PackageFront,
-  encodeCatalogCursor, decodeCatalogCursor, type CatalogDelta, type CatalogDeltaCursor,
-  encodeCatalogDeltaCursor, type ContentRating,
-  encodeModeratorRatingCursor, type ModeratorRatingRecord, type ModeratorRatingCursor } from "vrc-packages-api";
-import { ROBOTS_RESTRICTION_TOKENS } from "vrc-packages-network/identity";
-import { isPrivateOrReservedIp } from "vrc-packages-network/ip-policy";
-import { type Platform, type HeartbeatRequest, type HeartbeatResponse, PROTOCOL_VERSION, type ClaimRequest, type ClaimResponse, type ResultRequest, type ResultResponse, type CrawlJob, type BatchResultRequest, type BatchResultResponse, type BatchResultReceipt, observationMatchesPlatform, ClaimRequestSchema, PlatformSchema, type DiscoveryLead } from "vrc-packages-network/node";
-import { type LeadCursor, type LeadRow, encodeLeadCursor,
-  encodeTakedownCursor, type TakedownCursor, type TakedownRecord,
-  encodeDelegatedClaimCursor, type DelegatedClaimCursor, type DelegatedClaimRecord,
-  encodeOperatorAppCursor, type OperatorAppCursor, type OperatorAppRecord } from "../../api/protocol/operator_protocol.js";
-import { robotsResultAllowsMissingFile, OriginRobotsSnapshotSchema, ROBOTS_REFRESH_LEASE_MS, type OriginRobotsSnapshot } from "vrc-packages-network/robots";
-import { type SourceAccessProfile, SourceAccessProfileSchema, sourceAccessProfileMatches, type SourcePurpose, type ProfileCursor, encodeProfileCursor, type CreateSourceAccessProfile, CreateSourceAccessProfileSchema, sourcePathScopesOverlap } from "../../domain/access/source_access_profile.js";
-import { isItchSearchUrl } from "vrc-packages-network/source-paths";
-import { isBoothBrowseTarget, boothItemIdentity, isShopifyProductSitemapTarget, shopifyProductLead, githubApiRepositoryIdentity, isSellfyProductTarget } from "vrc-packages-network/source-targets";
-import { type CoordinatorStore, type NodePrincipal, CoordinatorConflict } from "../../api/handler.ts";
-import type { OperatorStore } from "../../api/operator_handler.ts";
-import type { PublicCatalogStore } from "../../api/public_handler.ts";
-import { formatCapabilityToken, parseCapabilityToken, isCapabilityToken } from "../../domain/security/capability_token.js";
-import {
-  RegisterAppRequestSchema,
-  UserAppListQuerySchema, UserAppSchema, type UserAppListResponse,
-  ReportSubmissionRequestSchema,
-  type ReportSubmissionRequest,
-  type ReportSubmissionResponse,
-  DownstreamFeedbackRequestSchema,
-  CatalogSearchRequestSchema,
-  DOWNSTREAM_PROTOCOL_VERSION,
-  type RegisterAppRequest,
-  type RegisterAppResponse,
-  type DownstreamFeedbackRequest,
-  type DownstreamFeedbackResponse,
-  type CatalogSearchRequest,
-  type CatalogSearchResponse,
-  CreatorClaimIntakeRequestSchema,
-  type CreatorClaimIntakeRequest,
-  type CreatorClaimIntakeResponse
+import type {
+  EnqueueJobRequest,
+  RevokeNodeRequest,
+  AutoQueueRule,
+  IssueNodeCredential,
+  RuleCursor,
+  CreateAutoQueueRule,
+  CatalogCursor,
+  CatalogPackage,
+  PackageFront,
+  CatalogDelta,
+  CatalogDeltaCursor,
+  ContentRating,
+  ModeratorRatingRecord,
+  LeadCursor,
+  LeadRow,
+  TakedownCursor,
+  TakedownRecord,
+  DelegatedClaimCursor,
+  DelegatedClaimRecord,
+  OperatorAppCursor,
+  OperatorAppRecord,
+  UserAppListResponse,
+  ReportSubmissionRequest,
+  ReportSubmissionResponse,
+  RegisterAppRequest,
+  RegisterAppResponse,
+  CatalogSearchRequest,
+  CatalogSearchResponse,
+  CreatorClaimIntakeRequest,
+  CreatorClaimIntakeResponse
 } from "vrc-packages-api";
-import type { UserStore } from "../../api/user_handler.ts";
-import type { ModeratorStore } from "../../api/moderator_handler.ts";
-import { D1_SCHEMA_SQL, sha256Hex, timingSafeEqual, generateToken, isIp } from "./utils.js";
-import { deriveCategoryFromTags, deriveUmbrellaFromTags, classifyDesktopTool, inferSupportedOS, type DesktopToolEvidence } from "../../domain/classification/taxonomy.ts";
-import { extractAvatarCompatibility, type AvatarCompatibility } from "../../domain/classification/avatar_compatibility.ts";
-import { cleanTitle, cleanTrackingParams } from "vrc-packages-network/catalog-hygiene";
-import { STOREFRONT_PLATFORMS } from "vrc-packages-network/node";
-export const CRAWL_JOB_LEASE_MS = 120 * 1000; // 120s fixed lease per author direction (R54-C39B)
-import { DEFAULT_SEED_JOBS, DEFAULT_APPROVED_SOURCE_PROFILES } from "../default_seeds.js";
+import type {
+  Platform,
+  HeartbeatRequest,
+  HeartbeatResponse,
+  ClaimRequest,
+  ClaimResponse,
+  ResultRequest,
+  ResultResponse,
+  BatchResultRequest,
+  BatchResultResponse
+} from "vrc-packages-network/node";
+import { classifyOutboundLeadKind } from "vrc-packages-network/source-targets";
+import type {
+  SourceAccessProfile,
+  SourcePurpose,
+  ProfileCursor,
+  CreateSourceAccessProfile
+} from "../../domain/access/source_access_profile.ts";
+import type {
+  CoordinatorStore,
+  NodePrincipal,
+  OperatorStore,
+  PublicCatalogStore,
+  DownstreamStore,
+  UserStore,
+  ModeratorStore,
+  DemandFeedbackInput,
+  DemandFeedbackReceipt
+} from "../../domain/ports/stores.ts";
+import type { DesktopToolEvidence } from "../../domain/classification/taxonomy.ts";
+import type { AvatarCompatibility } from "../../domain/classification/avatar_compatibility.ts";
 import type {
   D1Database,
-  D1PreparedStatement,
-  JobRow,
-  AutoQueueRuleRow,
   SourceAccessProfileRow,
   CanonicalUmbrella,
   CanonicalLifecycle,
@@ -62,1938 +70,258 @@ import type {
   LinkReviewState,
   CanonicalPackage,
   IdentityLink
-} from "./definitions.js";
+} from "./definitions.ts";
+import {
+  D1PlaneContext,
+  CRAWL_JOB_LEASE_MS,
+  type OperatorAuditLogRow
+} from "./planes/shared_context.ts";
+import { WorkforcePlane } from "./planes/workforce_plane.ts";
+import { ObservationPlane } from "./planes/observation_plane.ts";
+import { CatalogPlane } from "./planes/catalog_plane.ts";
+import { OperatorPlane } from "./planes/operator_plane.ts";
+import { DownstreamAndModerationPlane } from "./planes/downstream_and_moderation_plane.ts";
 
-export interface OperatorAuditLogRow {
-  action_id: number;
-  entity_type: "node" | "lead" | "job" | "rule" | "profile";
-  entity_id: string;
-  actor: string;
-  action: string;
-  reason: string;
-  occurred_at: string;
-}
+export { classifyOutboundLeadKind, CRAWL_JOB_LEASE_MS, type OperatorAuditLogRow };
 
-export function classifyOutboundLeadKind(targetUrl: string): DiscoveryLead["kind"] | null {
-  try {
-    const url = new URL(targetUrl);
-    if (url.protocol !== "https:") return null;
-    if (url.username || url.password || (url.port && url.port !== "443")) return null;
-    const pathLower = url.pathname.toLowerCase();
-    if (pathLower.endsWith(".zip") || pathLower.endsWith(".unitypackage") || pathLower.endsWith(".tar.gz")) {
-      return null;
-    }
-    if (url.hostname === "github.com") {
-      const match = /^\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)(?:\/.*)?$/.exec(url.pathname);
-      if (match && match[1] !== "." && match[2] !== ".") {
-        return "github_repository";
-      }
-    }
-    if (url.hostname === "booth.pm" || url.hostname === "gumroad.com" ||
-        url.hostname === "jinxxy.com" || url.hostname.endsWith(".itch.io") ||
-        url.hostname === "sellfy.com" || url.hostname === "payhip.com" ||
-        url.hostname === "ko-fi.com") {
-      return "storefront_product";
-    }
-    if (!url.hostname.includes("localhost") && !url.hostname.endsWith(".internal") &&
-        !url.hostname.endsWith(".local") && url.hostname.includes(".")) {
-      return "publisher_site";
-    }
-    return null;
-  } catch {
-    return null;
-  }
-}
-
-/** SQL predicates are repeated inside atomic writes, not just candidate reads. */
-function approvedRobotsJobDelaySql(origin: string, now: string): string {
-  return `(SELECT MAX(p.min_delay_ms) FROM crawl_jobs j JOIN source_access_profiles p
-    ON p.platform=j.platform AND p.origin=j.origin AND p.purpose=j.job_purpose
-    WHERE j.origin=${origin} AND j.next_fetch_at<=${now}
-      AND (j.state IN ('pending','done','backoff') OR (j.state='leased' AND j.lease_expires_at<=${now}))
-      AND NOT EXISTS (SELECT 1 FROM suppressed_urls s WHERE s.url=j.url)
-      AND (j.source_rule_id IS NULL OR EXISTS (SELECT 1 FROM lead_autoqueue_rules ar
-        WHERE ar.rule_id=j.source_rule_id AND ar.disabled_at IS NULL AND ar.expires_at>${now}))
-      AND p.disabled_at IS NULL AND p.expires_at>${now} AND instr(j.url,'#')=0
-      AND ((p.query_scope IS NOT NULL AND j.url=p.origin||p.path_scope||'?'||p.query_scope)
-        OR (p.query_scope IS NULL AND instr(j.url,'?')=0 AND
-          (j.url=p.origin||p.path_scope OR (substr(p.path_scope,-1)='/' AND
-            substr(j.url,1,length(p.origin||p.path_scope))=p.origin||p.path_scope)))))`;
-}
-
-export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatalogStore, UserStore, ModeratorStore {
-  private readonly robotsMatchers = new Map<string, { snapshotId: string; matchers: readonly CrawlerRules[]; }>();
+export class Coordinator
+  implements CoordinatorStore, OperatorStore, PublicCatalogStore, DownstreamStore, UserStore, ModeratorStore
+{
+  private readonly ctx: D1PlaneContext;
+  private readonly workforce: WorkforcePlane;
+  private readonly observation: ObservationPlane;
+  private readonly catalog: CatalogPlane;
+  private readonly operator: OperatorPlane;
+  private readonly downstream: DownstreamAndModerationPlane;
 
   constructor(
     readonly db: D1Database,
     readonly now: () => number = Date.now
-  ) { }
-
-  async seedInitialJobs(): Promise<void> {
-    for (const job of DEFAULT_SEED_JOBS) {
-      const existing = await this.db.prepare(`SELECT 1 FROM crawl_jobs WHERE url=?
-        UNION ALL SELECT 1 FROM suppressed_urls WHERE url=? LIMIT 1`).bind(job.url, job.url).first();
-      if (!existing) await this.seedJob(job.url, job.platform, job.minDelayMs, undefined, job.purpose);
-    }
-  }
-
-  async seedInitialProfiles(actor: string = "system-bootstrap"): Promise<void> {
-    const nowMs = this.now();
-    for (const p of DEFAULT_APPROVED_SOURCE_PROFILES) {
-      const expiresAt = new Date(nowMs + p.expiresInDays * 24 * 60 * 60 * 1000).toISOString();
-      const existing = await this.db.prepare(`SELECT 1 FROM source_access_profiles
-        WHERE platform=? AND origin=? AND path_scope=? AND purpose=? AND disabled_at IS NULL AND expires_at>? LIMIT 1`)
-        .bind(p.platform, p.origin, p.pathScope, p.purpose, new Date(nowMs).toISOString()).first();
-      if (!existing) {
-        await this.createSourceAccessProfile({
-          schemaVersion: 1,
-          platform: p.platform,
-          origin: p.origin,
-          pathScope: p.pathScope,
-          method: p.method,
-          purpose: p.purpose,
-          minDelayMs: p.minDelayMs,
-          expiresAt,
-          reviewReference: p.reviewReference,
-          reason: p.reason,
-          retainClasses: p.retainClasses,
-          publishClasses: p.publishClasses
-        }, actor);
-      }
-    }
-  }
-
-  async initSchema(autoSeed: boolean = false): Promise<void> {
-    await this.db.exec(D1_SCHEMA_SQL);
-    if (autoSeed) {
-      await this.seedInitialJobs();
-    }
-  }
-
-  private autoQueueRuleFromRow(row: AutoQueueRuleRow): AutoQueueRule {
-    return AutoQueueRuleSchema.parse({
-      ruleId: row.rule_id,
-      leadKind: row.lead_kind,
-      origin: row.origin,
-      pathScope: row.path_scope,
-      minDelayMs: row.min_delay_ms,
-      expiresAt: row.expires_at,
-      reviewReference: row.review_reference,
-      reason: row.reason,
-      createdAt: row.created_at,
-      disabledAt: row.disabled_at
-    });
-  }
-
-  private sourceAccessProfileFromRow(row: SourceAccessProfileRow): SourceAccessProfile {
-    return SourceAccessProfileSchema.parse({
-      schemaVersion: 1,
-      profileId: row.profile_id,
-      platform: row.platform,
-      origin: row.origin,
-      pathScope: row.path_scope,
-      exactQuery: row.query_scope ?? undefined,
-      method: row.method,
-      purpose: row.purpose,
-      minDelayMs: row.min_delay_ms,
-      expiresAt: row.expires_at,
-      reviewReference: row.review_reference,
-      reason: row.reason,
-      retainClasses: JSON.parse(row.retain_classes_json),
-      publishClasses: JSON.parse(row.publish_classes_json),
-      createdAt: row.created_at,
-      disabledAt: row.disabled_at
-    });
-  }
-
-  private async assertCurrentPrincipal(principal: NodePrincipal): Promise<void> {
-    const current = await this.db.prepare(
-      "SELECT 1 FROM node_credentials WHERE node_id=? AND token_hash=? AND revoked_at IS NULL"
-    ).bind(principal.nodeId, principal.credentialVersion).first();
-    if (!current) throw new CoordinatorConflict("Node credential changed or revoked", 403);
-  }
-
-  private async leaseProfileAllowsJob(job: JobRow): Promise<SourceAccessProfile | null> {
-    if (!job.lease_profile_id) return null;
-    const row = await this.db.prepare("SELECT * FROM source_access_profiles WHERE profile_id=?")
-      .bind(job.lease_profile_id).first<SourceAccessProfileRow>();
-    if (!row) return null;
-    const profile = this.sourceAccessProfileFromRow(row);
-    return sourceAccessProfileMatches(profile, job.platform, job.url, job.job_purpose, this.now()) ?
-      profile : null;
-  }
-
-  private robotsAllows(job: JobRow & { robots_snapshot_id: string; robots_status_code: number; robots_body: string; }): boolean {
-    if (robotsResultAllowsMissingFile(job.robots_status_code)) return true;
-    if (job.robots_status_code < 200 || job.robots_status_code >= 300) return false;
-    let cached = this.robotsMatchers.get(job.origin);
-    if (!cached || cached.snapshotId !== job.robots_snapshot_id) {
-      const rules = compileRobotsText(job.robots_body, { policy: "rfc9309" });
-      cached = {
-        snapshotId: job.robots_snapshot_id,
-        matchers: ROBOTS_RESTRICTION_TOKENS.map(token => rules.forCrawler(token))
-      };
-      this.robotsMatchers.set(job.origin, cached);
-    }
-    return cached.matchers.every(matcher => matcher.isAllowed(job.url));
-  }
-
-  private async executeBatchChunked<T = unknown>(statements: D1PreparedStatement[], chunkSize = 50): Promise<D1Result<T>[]> {
-    if (statements.length === 0) return [];
-    if (statements.length <= chunkSize) {
-      return (await this.db.batch(statements)) as D1Result<T>[];
-    }
-    const results: D1Result<T>[] = [];
-    for (let i = 0; i < statements.length; i += chunkSize) {
-      const chunk = statements.slice(i, i + chunkSize);
-      const res = (await this.db.batch(chunk)) as D1Result<T>[];
-      results.push(...res);
-    }
-    return results;
-  }
-
-  async activeSourceAccessProfileForTarget(platform: Platform, target: string, purpose: SourcePurpose, cache?: Map<string, SourceAccessProfileRow[]>): Promise<SourceAccessProfile | null> {
-    let origin: string;
-    try { origin = new URL(target).origin; } catch { return null; }
-    const nowMs = this.now();
-    const now = new Date(nowMs).toISOString();
-    const cacheKey = `${platform}:${origin}:${purpose}`;
-    let rows: SourceAccessProfileRow[];
-    if (cache && cache.has(cacheKey)) {
-      rows = cache.get(cacheKey)!;
-    } else {
-      const res = await this.db.prepare(`SELECT * FROM source_access_profiles
-        WHERE platform=? AND origin=? AND purpose=? AND disabled_at IS NULL AND expires_at>?
-        ORDER BY length(path_scope) DESC,created_at ASC,profile_id ASC`)
-        .bind(platform, origin, purpose, now).all<SourceAccessProfileRow>();
-      rows = res.results || [];
-      if (cache) cache.set(cacheKey, rows);
-    }
-    for (const row of rows) {
-      const profile = this.sourceAccessProfileFromRow(row);
-      if (sourceAccessProfileMatches(profile, platform, target, purpose, nowMs)) return profile;
-    }
-    return null;
-  }
-
-  private async activeAutoQueueRuleForLead(kind: string, url: string): Promise<AutoQueueRule | null> {
-    if (kind !== "vpm_listing") return null;
-    let target: URL;
-    try { target = new URL(url); } catch { return null; }
-    if (target.protocol !== "https:" || target.username || target.password || target.hash || target.search ||
-      target.port || target.hostname.endsWith(".")) return null;
-    const res = await this.db.prepare(`SELECT * FROM lead_autoqueue_rules
-      WHERE lead_kind=? AND origin=? AND disabled_at IS NULL AND expires_at>?
-      ORDER BY length(path_scope) DESC,created_at DESC`)
-      .bind(kind, target.origin, new Date(this.now()).toISOString()).all<AutoQueueRuleRow>();
-    const rows = res.results || [];
-    const match = rows.find((row) => row.path_scope.endsWith("/") ?
-      target.pathname.startsWith(row.path_scope) : target.pathname === row.path_scope);
-    return match ? this.autoQueueRuleFromRow(match) : null;
-  }
-
-  private async approvedDueProfileDelayForOrigin(origin: string, now: string): Promise<number | null> {
-    const res = await this.db.prepare(`SELECT j.* FROM crawl_jobs j WHERE j.origin=?
-      AND j.state!='blocked' AND j.next_fetch_at<=?
-      AND (j.source_rule_id IS NULL OR EXISTS (SELECT 1 FROM lead_autoqueue_rules ar
-        WHERE ar.rule_id=j.source_rule_id AND ar.disabled_at IS NULL AND ar.expires_at>?))`)
-      .bind(origin, now, now).all<JobRow>();
-    const rows = res.results || [];
-    let delay: number | null = null;
-    const profileCache = new Map<string, SourceAccessProfileRow[]>();
-    for (const job of rows) {
-      const profile = await this.activeSourceAccessProfileForTarget(job.platform, job.url, job.job_purpose, profileCache);
-      if (profile) delay = Math.max(delay ?? 0, profile.minDelayMs);
-    }
-    return delay;
-  }
-
-  // --- CoordinatorStore Methods ---
-  async authenticate(nodeId: string, bearer: string): Promise<NodePrincipal | null> {
-    const row = await this.db.prepare(
-      "SELECT token_hash,capabilities_json,revoked_at FROM node_credentials WHERE node_id = ?"
-    ).bind(nodeId).first<{ token_hash: string; capabilities_json: string; revoked_at: string | null; }>();
-    if (!row || row.revoked_at) return null;
-
-    const suppliedHash = await sha256Hex(bearer);
-    if (!timingSafeEqual(suppliedHash, row.token_hash)) return null;
-
-    const storedCapabilities = JSON.parse(row.capabilities_json) as Platform[];
-    if (!isCapabilityToken(bearer)) return null;
-      const parsed = parseCapabilityToken(bearer);
-      if (!parsed) return null;
-      const parsedSet = new Set(parsed.capabilities);
-      const storedSet = new Set(storedCapabilities);
-      if (parsedSet.size !== storedSet.size || [...parsedSet].some((c) => !storedSet.has(c))) {
-        return null;
-      }
-
-
-    return {
-      nodeId,
-      capabilities: storedCapabilities,
-      credentialVersion: row.token_hash
-    };
-  }
-
-  async heartbeat(request: HeartbeatRequest, principal: NodePrincipal): Promise<HeartbeatResponse> {
-    if (request.nodeId !== principal.nodeId ||
-      request.capabilities.some((capability) => !principal.capabilities.includes(capability))) {
-      throw new CoordinatorConflict("Node identity or capability mismatch", 403);
-    }
-    await this.assertCurrentPrincipal(principal);
-    if (request.state === "fetching") {
-      const now = new Date(this.now()).toISOString();
-      const live = await this.db.prepare(`SELECT * FROM crawl_jobs WHERE job_id=? AND claimed_by=? AND lease_id=?
-        AND state='leased' AND lease_expires_at>?
-        AND (source_rule_id IS NULL OR EXISTS (SELECT 1 FROM lead_autoqueue_rules r
-          WHERE r.rule_id=source_rule_id AND r.disabled_at IS NULL AND r.expires_at>?))`)
-        .bind(request.activeJobId, principal.nodeId, request.activeLeaseId, now, now).first<JobRow>();
-      if (!live || !(await this.leaseProfileAllowsJob(live))) {
-        throw new CoordinatorConflict("Node does not hold an authorized active job", 403);
-      }
-    }
-    const now = new Date(this.now()).toISOString();
-    await this.db.prepare(`INSERT INTO node_heartbeats(node_id,last_seen_at,state,active_job_id) VALUES (?,?,?,?)
-      ON CONFLICT(node_id) DO UPDATE SET last_seen_at=excluded.last_seen_at,
-        state=excluded.state,active_job_id=excluded.active_job_id`)
-      .bind(principal.nodeId, now, request.state, request.state === "fetching" ? request.activeJobId : null).run();
-    return { schemaVersion: PROTOCOL_VERSION, status: "alive" as const, serverTime: now };
-  }
-
-  async claim(request: ClaimRequest, principal: NodePrincipal): Promise<ClaimResponse> {
-    if (request.nodeId !== principal.nodeId) throw new CoordinatorConflict("Node identity mismatch", 403);
-    if (request.capabilities.some((capability) => !principal.capabilities.includes(capability))) {
-      throw new CoordinatorConflict("Capability not granted to node", 403);
-    }
-    const nowMs = this.now();
-    const now = new Date(nowMs).toISOString();
-    await this.assertCurrentPrincipal(principal);
-
-    const placeholders = request.capabilities.map(() => "?").join(",");
-    const eligibleFrom = `FROM crawl_jobs j
-      JOIN origin_leases o ON o.origin = j.origin
-      JOIN origin_robots r ON r.origin = j.origin AND r.expires_at > ?
-        AND (r.refresh_lease_expires_at IS NULL OR r.refresh_lease_expires_at <= ?)
-      WHERE j.platform IN (${placeholders})
-        AND j.next_fetch_at <= ?
-        AND (j.state IN ('pending','done','backoff') OR (j.state='leased' AND j.lease_expires_at <= ?))
-        AND o.next_allowed_at <= ?
-        AND (o.active_job_id IS NULL OR o.lease_expires_at <= ?)
-        AND (j.source_rule_id IS NULL OR EXISTS (SELECT 1 FROM lead_autoqueue_rules ar
-          WHERE ar.rule_id=j.source_rule_id AND ar.disabled_at IS NULL AND ar.expires_at>?))
-        AND EXISTS (SELECT 1 FROM source_access_profiles p
-          WHERE p.platform=j.platform AND p.origin=j.origin AND p.purpose=j.job_purpose
-            AND p.disabled_at IS NULL AND p.expires_at>?
-            AND instr(j.url,'#')=0 AND
-            ((p.query_scope IS NOT NULL AND
-                j.url=p.origin||p.path_scope||'?'||p.query_scope) OR
-              (p.query_scope IS NULL AND instr(j.url,'?')=0 AND
-                (j.url=p.origin||p.path_scope OR
-                  (substr(p.path_scope,-1)='/' AND
-                    substr(j.url,1,length(p.origin||p.path_scope))=p.origin||p.path_scope)))))
-    `;
-    const eligibilityParams = (at: string) => [at, at, ...request.capabilities, at, at, at, at, at, at];
-    const query = `SELECT j.*,r.snapshot_id AS robots_snapshot_id,r.status_code AS robots_status_code,
-      r.body AS robots_body,r.expires_at AS robots_expires_at ${eligibleFrom}
-      ORDER BY j.next_fetch_at ASC, j.created_at ASC, j.job_id ASC LIMIT 100 OFFSET ?`;
-
-    const maxJobs = Math.max(1, Math.min(request.maxJobs ?? 1, 10));
-    const leasedJobs: CrawlJob[] = [];
-    const reservedOrigins = new Set<string>();
-    const profileCache = new Map<string, SourceAccessProfileRow[]>();
-
-    const MAX_CLAIM_SCAN_PAGES = 3;
-    let pagesScanned = 0;
-    let offset = 0;
-    for (; ;) {
-      if (pagesScanned++ >= MAX_CLAIM_SCAN_PAGES) break;
-      const bindParams = [...eligibilityParams(now), offset];
-      const res = await this.db.prepare(query).bind(...bindParams).all<JobRow & {
-        robots_snapshot_id: string; robots_status_code: number; robots_body: string; robots_expires_at: string;
-      }>();
-      const candidates = res.results || [];
-      if (candidates.length === 0) break;
-      let deferred = false;
-      for (const job of candidates) {
-        if (reservedOrigins.has(job.origin)) continue;
-        const profile = await this.activeSourceAccessProfileForTarget(job.platform, job.url, job.job_purpose, profileCache);
-        if (!profile) continue;
-        if (!this.robotsAllows(job)) {
-          await this.db.prepare(`UPDATE crawl_jobs SET next_fetch_at=?,robots_deferred_until=?,
-            state=CASE WHEN state='leased' THEN 'pending' ELSE state END,
-            claimed_by=NULL,lease_id=NULL,lease_expires_at=NULL WHERE job_id=? AND job_id IN (
-              SELECT j.job_id ${eligibleFrom} AND j.job_id=? AND r.snapshot_id=?)`)
-            .bind(job.robots_expires_at, job.robots_expires_at, job.job_id,
-              ...eligibilityParams(new Date(this.now()).toISOString()), job.job_id, job.robots_snapshot_id).run();
-          deferred = true;
-          continue;
-        }
-        const lease = await this.db.prepare("SELECT * FROM origin_leases WHERE origin = ?").bind(job.origin).first<{
-          active_job_id: string | null; lease_expires_at: string | null;
-          next_allowed_at: string; min_delay_ms: number;
-        }>();
-        if (!lease) continue;
-        if (lease.next_allowed_at > now || (lease.active_job_id && lease.lease_expires_at && lease.lease_expires_at > now)) continue;
-        const reservationMs = this.now();
-        const reservationTime = new Date(reservationMs).toISOString();
-        const expires = new Date(reservationMs + CRAWL_JOB_LEASE_MS).toISOString();
-        const leaseId = crypto.randomUUID();
-        const nextAllowed = new Date(reservationMs + Math.max(lease.min_delay_ms, profile.minDelayMs)).toISOString();
-
-        // D1 batches are transactional. Recheck eligibility inside the write, not only
-        // in preceding reads; the origin update belongs exclusively to this lease.
-        const reservation = await this.db.batch([
-          this.db.prepare(`UPDATE crawl_jobs SET state='leased',claimed_by=?,lease_id=?,
-            lease_expires_at=?,lease_profile_id=? WHERE job_id=? AND job_id IN (
-              SELECT j.job_id ${eligibleFrom} AND j.job_id=? AND r.snapshot_id=? AND o.min_delay_ms=?
-                AND EXISTS (SELECT 1 FROM source_access_profiles p WHERE p.profile_id=?
-                  AND p.disabled_at IS NULL AND p.expires_at>?)
-                AND EXISTS (SELECT 1 FROM node_credentials c WHERE c.node_id=?
-                  AND c.token_hash=? AND c.revoked_at IS NULL))`)
-            .bind(principal.nodeId, leaseId, expires, profile.profileId, job.job_id,
-              ...eligibilityParams(reservationTime), job.job_id, job.robots_snapshot_id,
-              lease.min_delay_ms, profile.profileId, reservationTime, principal.nodeId, principal.credentialVersion),
-          this.db.prepare(`UPDATE origin_leases SET active_job_id=?,lease_expires_at=?,next_allowed_at=?
-            WHERE origin=? AND EXISTS (SELECT 1 FROM crawl_jobs j WHERE j.job_id=?
-              AND j.state='leased' AND j.lease_id=? AND j.claimed_by=?)`)
-            .bind(job.job_id, expires, nextAllowed, job.origin, job.job_id, leaseId, principal.nodeId)
-        ]);
-        if ((reservation[0]?.meta as { changes?: number } | undefined)?.changes !== 1) continue;
-        reservedOrigins.add(job.origin);
-        leasedJobs.push({
-          jobId: job.job_id, leaseId, platform: job.platform, purpose: job.job_purpose,
-          url: job.url, origin: job.origin,
-          leaseExpiresAt: expires, retainClasses: profile.retainClasses,
-          etag: job.etag, lastModified: job.last_modified
-        });
-        if (leasedJobs.length >= maxJobs) {
-          return {
-            schemaVersion: PROTOCOL_VERSION, status: "leased" as const,
-            job: leasedJobs[0],
-            jobs: leasedJobs
-          };
-        }
-      }
-      if (deferred) offset = 0;
-      else offset += candidates.length;
-    }
-    if (leasedJobs.length > 0) {
-      return {
-        schemaVersion: PROTOCOL_VERSION, status: "leased" as const,
-        job: leasedJobs[0],
-        jobs: leasedJobs
-      };
-    }
-    return { schemaVersion: PROTOCOL_VERSION, status: "empty" as const, retryAfterMs: 5000 };
-  }
-
-  async submit(request: ResultRequest, principal: NodePrincipal): Promise<ResultResponse> {
-    if (request.nodeId !== principal.nodeId) throw new CoordinatorConflict("Node identity mismatch", 403);
-    const nowMs = this.now();
-    const now = new Date(nowMs).toISOString();
-    const requestDigest = await sha256Hex(JSON.stringify(request));
-    await this.assertCurrentPrincipal(principal);
-
-    const prior = await this.db.prepare(
-      "SELECT job_id,node_id,idempotency_key,request_digest,response_json FROM job_results WHERE lease_id=?"
-    ).bind(request.leaseId).first<{
-      job_id: string; node_id: string; idempotency_key: string; request_digest: string; response_json: string;
-    }>();
-    if (prior) {
-      if (prior.job_id !== request.jobId || prior.node_id !== principal.nodeId ||
-        prior.idempotency_key !== request.idempotencyKey || prior.request_digest !== requestDigest) {
-        throw new CoordinatorConflict("Job already submitted with a different identity or key");
-      }
-      return { ...JSON.parse(prior.response_json), duplicate: true } as ResultResponse;
-    }
-
-    const job = await this.db.prepare("SELECT * FROM crawl_jobs WHERE job_id=?").bind(request.jobId).first<JobRow>();
-    if (!job) throw new CoordinatorConflict("Job not found", 404);
-    if (!principal.capabilities.includes(job.platform)) throw new CoordinatorConflict("Capability not granted to node", 403);
-    if (request.outcome.kind === "batch" && job.platform !== "vpm") {
-      throw new CoordinatorConflict("Multi-item batches require a VPM job");
-    }
-    if (request.outcome.kind === "partial_batch" && job.platform !== "vpm") {
-      throw new CoordinatorConflict("Listing diagnostics require a VPM job");
-    }
-    if (job.source_rule_id) {
-      const activeRule = await this.db.prepare(`SELECT 1 FROM lead_autoqueue_rules
-        WHERE rule_id=? AND disabled_at IS NULL AND expires_at>?`).bind(job.source_rule_id, now).first();
-      if (!activeRule) {
-        throw new CoordinatorConflict("Auto-queue rule no longer authorizes this job", 403);
-      }
-    }
-    if (job.state !== "leased" || job.claimed_by !== principal.nodeId ||
-      job.lease_id !== request.leaseId || !job.lease_expires_at || job.lease_expires_at <= now) {
-      throw new CoordinatorConflict("Node does not hold a live lease for this job", 403);
-    }
-    const sourceProfile = await this.leaseProfileAllowsJob(job);
-    if (!sourceProfile) throw new CoordinatorConflict("Source profile no longer authorizes this job", 403);
-    const robots = await this.db.prepare(`SELECT snapshot_id AS robots_snapshot_id,status_code AS robots_status_code,
-      body AS robots_body,expires_at AS robots_expires_at FROM origin_robots WHERE origin=?`)
-      .bind(job.origin).first<{
-        robots_snapshot_id: string; robots_status_code: number;
-        robots_body: string; robots_expires_at: string;
-      }>();
-    if (!robots || robots.robots_expires_at <= now || !this.robotsAllows({ ...job, ...robots })) {
-      throw new CoordinatorConflict("Origin robots policy no longer allows this job", 403);
-    }
-
-    let sourceVersionCreated = false;
-    const outcome = request.outcome;
-    if (job.platform === "booth" && job.job_purpose === "discovery") {
-      if (!isBoothBrowseTarget(job.url) ||
-        outcome.kind === "changed" || outcome.kind === "batch" || outcome.kind === "partial_batch") {
-        throw new CoordinatorConflict("BOOTH browse jobs can report leads, not product observations");
-      }
-      if (outcome.kind === "discovery" && outcome.leads.some(lead => {
-        const id = boothItemIdentity(lead.url);
-        return lead.kind !== "storefront_product" || !id ||
-          lead.url !== `https://booth.pm/ja/items/${id}` ||
-          lead.discoveredFromItemKey !== undefined || lead.claimedPackageId !== undefined;
-      })) {
-        throw new CoordinatorConflict("BOOTH browse leads require canonical BOOTH product URLs");
-      }
-    }
-    if (job.platform === "shopify" && job.job_purpose === "discovery") {
-      if (!isShopifyProductSitemapTarget(job.url) ||
-        outcome.kind === "changed" || outcome.kind === "batch" || outcome.kind === "partial_batch") {
-        throw new CoordinatorConflict("Shopify product sitemap jobs can report leads, not product observations");
-      }
-      if (outcome.kind === "discovery" && outcome.leads.some(lead => lead.kind !== "storefront_product" || !shopifyProductLead(lead.url, job.origin) ||
-        lead.discoveredFromItemKey !== undefined || lead.claimedPackageId !== undefined)) {
-        throw new CoordinatorConflict("Shopify sitemap leads require same-origin product URLs");
-      }
-    }
-    if (job.platform === "curated" && job.job_purpose === "discovery") {
-      if (outcome.kind === "changed" || outcome.kind === "batch" || outcome.kind === "partial_batch") {
-        throw new CoordinatorConflict("Curated discovery jobs report discovery leads, not product observations");
-      }
-    }
-
-    const observations = outcome.kind === "changed" ? [outcome.observation] :
-      outcome.kind === "batch" || outcome.kind === "partial_batch" ? outcome.observations : [];
-    if (observations.some(observation => !observationMatchesPlatform(job.platform, observation))) {
-      throw new CoordinatorConflict("Release evidence does not match the leased platform");
-    }
-    if (observations.some(observation => !cleanTitle(observation.title))) {
-      throw new CoordinatorConflict("Observation requires a nonempty catalog title");
-    }
-    const isStorefront = STOREFRONT_PLATFORMS.has(job.platform);
-    if (isStorefront) {
-      // Match the shipped parser: hints and outbound links cannot replace the assigned item.
-      const target = new URL(job.url);
-      const sourceItemKey = `${target.host}${target.pathname}`;
-      if (observations.some(observation => observation.sourceItemKey !== sourceItemKey)) {
-        throw new CoordinatorConflict("Storefront identity does not match the assigned source");
-      }
-      if (observations.some(observation => observation.storefrontUrl !== undefined &&
-        cleanTrackingParams(observation.storefrontUrl) !== cleanTrackingParams(target.href))) {
-        throw new CoordinatorConflict("Storefront URL does not match the assigned source");
-      }
-    } else if (observations.some(observation => observation.price !== undefined ||
-      observation.currency !== undefined || observation.availability !== undefined || observation.storefrontUrl !== undefined)) {
-      throw new CoordinatorConflict("Storefront fields require a storefront source");
-    }
-    if ((observations.length > 0 || outcome.kind === "discovery" || outcome.kind === "partial_batch") &&
-      !sourceProfile.retainClasses.includes("normalized_facts")) {
-      throw new CoordinatorConflict("Source profile does not permit retaining normalized evidence", 403);
-    }
-    if (observations.some(observation => observation.summary.length > 0) &&
-      !sourceProfile.retainClasses.includes("creator_prose")) {
-      throw new CoordinatorConflict("Source profile does not permit retaining creator prose", 403);
-    }
-    if (new Set(observations.map((observation) => observation.sourceItemKey)).size !== observations.length) {
-      throw new CoordinatorConflict("Result batch contains duplicate source identities");
-    }
-
-    const batchStmts: D1PreparedStatement[] = [];
-
-    for (const observation of observations) {
-      const sourceKey = `${job.platform}:${job.url}:${observation.sourceItemKey}`;
-      let versionId: string | null = null;
-      const payload = JSON.stringify(observation);
-      const digest = await sha256Hex(payload);
-      const complete = outcome.kind !== "partial_batch" ||
-        !outcome.issues.some((issue) => issue.sourceItemKey === observation.sourceItemKey);
-      const previous = await this.db.prepare(`SELECT i.latest_digest,i.latest_version_no,i.gone_at,v.complete
-        FROM source_items i JOIN source_versions v ON v.source_key=i.source_key AND v.version_no=i.latest_version_no
-        WHERE i.source_key=?`)
-        .bind(sourceKey).first<{ latest_digest: string; latest_version_no: number; gone_at: string | null; complete: number; }>();
-
-      if (!previous || previous.latest_digest !== digest || (complete && previous.complete === 0)) {
-        const versionNo = (previous?.latest_version_no || 0) + 1;
-        versionId = crypto.randomUUID();
-        batchStmts.push(
-          this.db.prepare(`INSERT INTO source_items(source_key,platform,source_url,latest_digest,latest_version_no)
-            VALUES (?,?,?,?,?) ON CONFLICT(source_key) DO UPDATE SET source_url=excluded.source_url,
-              latest_digest=excluded.latest_digest,latest_version_no=excluded.latest_version_no,
-              gone_at=CASE WHEN ? THEN NULL ELSE source_items.gone_at END`)
-            .bind(sourceKey, job.platform, job.url, digest, versionNo, complete ? 1 : 0),
-          this.db.prepare(`INSERT INTO source_versions
-            (version_id,source_key,version_no,digest,payload_json,observed_at,complete,
-              contributor_node_id,submission_lease_id,source_profile_id)
-            VALUES (?,?,?,?,?,?,?,?,?,?)`).bind(versionId, sourceKey, versionNo, digest, payload, now,
-            complete ? 1 : 0, principal.nodeId, request.leaseId, sourceProfile.profileId)
-        );
-        sourceVersionCreated = true;
-      } else {
-        batchStmts.push(
-          this.db.prepare("UPDATE source_items SET source_url=?,gone_at=CASE WHEN ? THEN NULL ELSE gone_at END WHERE source_key=?")
-            .bind(job.url, complete ? 1 : 0, sourceKey)
-        );
-      }
-
-      const avatarCompatibilities = extractAvatarCompatibility(
-        observation.title,
-        observation.summary,
-        observation.outboundLinks,
-        observation.platformTags ?? [],
-        observation.sourceItemKey
-      );
-      for (const compat of avatarCompatibilities) {
-        batchStmts.push(
-          this.db.prepare(`
-            INSERT OR REPLACE INTO avatar_compatibilities
-            (compatibility_id, source_key, target_avatar_base, scope, confidence, evidence_source, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-          `).bind(
-            compat.compatibilityId,
-            sourceKey,
-            compat.targetAvatarBase,
-            compat.scope,
-            compat.confidence,
-            compat.evidenceSource,
-            now
-          )
-        );
-      }
-
-      batchStmts.push(
-        this.db.prepare(`INSERT INTO source_events
-          (job_id,source_key,kind,observed_at,version_id,contributor_node_id,submission_lease_id,source_profile_id)
-          VALUES (?,?,?,?,?,?,?,?)`)
-          .bind(job.job_id, sourceKey, previous?.gone_at && complete ? "restored" : versionId ? "changed" : "unchanged", now, versionId,
-            principal.nodeId, request.leaseId, sourceProfile.profileId)
-      );
-
-      if (job.platform === "vpm" && complete) {
-        const vpmId = observation.sourceItemKey;
-        const umbrella = deriveUmbrellaFromTags(observation.platformTags, "tools");
-        // The observation records modification, not publication. Keep that evidence in source_versions.
-        batchStmts.push(
-          this.db.prepare(`INSERT INTO canonical_packages
-            (canonical_id,umbrella,category,lifecycle,display_name,vpm_id,created_at,updated_at,published_at,timestamp_confidence)
-            VALUES (?,?,?,?,?,?,?,?,?,?)
-            ON CONFLICT(canonical_id) DO UPDATE SET
-              display_name=excluded.display_name,
-              vpm_id=COALESCE(excluded.vpm_id,canonical_packages.vpm_id),
-              updated_at=excluded.updated_at`).bind(
-            vpmId, umbrella, deriveCategoryFromTags(observation.platformTags, "vpm_package"), "active", cleanTitle(observation.title), vpmId, now, now, null, null),
-          this.db.prepare(`INSERT OR IGNORE INTO identity_links
-            (link_id,source_key,canonical_id,evidence_kind,confidence,review_state,created_at,reviewed_at)
-            VALUES (?,?,?,'vpm_id',1.0,'accepted',?,?)`).bind(
-            crypto.randomUUID(), sourceKey, vpmId, now, now)
-        );
-
-        for (const outbound of observation.outboundLinks) {
-          const targetUrl = new URL(outbound).href;
-          const leadKind = classifyOutboundLeadKind(targetUrl);
-          if (leadKind) {
-            const identity = [job.url, vpmId, leadKind, targetUrl, vpmId];
-            const leadKey = await sha256Hex(JSON.stringify(identity));
-            batchStmts.push(
-              this.db.prepare(`INSERT INTO source_leads
-                (lead_key,discovered_from_url,discovered_from_job_id,discovered_from_item_key,
-                  kind,target_url,claimed_package_id,status,
-                  first_seen_at,last_seen_at,first_seen_node_id,first_seen_lease_id,first_seen_profile_id,
-                  last_seen_node_id,last_seen_lease_id,last_seen_profile_id)
-                VALUES (?,?,?,?,?,?,?,'pending_review',?,?,?,?,?,?,?,?)
-                ON CONFLICT(lead_key) DO UPDATE SET last_seen_at=excluded.last_seen_at,
-                  last_seen_node_id=excluded.last_seen_node_id,last_seen_lease_id=excluded.last_seen_lease_id,
-                  last_seen_profile_id=excluded.last_seen_profile_id`)
-                .bind(leadKey, job.url, job.job_id, vpmId,
-                  leadKind, targetUrl, vpmId,
-                  now, now, principal.nodeId, request.leaseId, sourceProfile.profileId,
-                  principal.nodeId, request.leaseId, sourceProfile.profileId)
-            );
-          }
-        }
-      }
-
-      if (job.platform === "github" && complete) {
-        const ownerRepo = job.url.match(/^https:\/\/api\.github\.com\/repos\/([^/]+\/[^/]+)/)?.[1];
-        if (ownerRepo) {
-          const normalizedHtmlUrl = `https://github.com/${ownerRepo}`.toLowerCase().replace(/\/+$/, "").replace(/\.git$/, "");
-          const linkedRes = await this.db.prepare(`
-            SELECT DISTINCT il.canonical_id
-            FROM source_leads sl
-            JOIN identity_links il ON (
-              (sl.discovered_from_item_key IS NOT NULL AND (
-                il.canonical_id = sl.discovered_from_item_key
-                OR il.source_key = sl.discovered_from_item_key
-                OR il.source_key = 'vpm:' || sl.discovered_from_url || ':' || sl.discovered_from_item_key
-              ))
-              OR (sl.claimed_package_id IS NOT NULL AND il.canonical_id = sl.claimed_package_id)
-            )
-            WHERE sl.kind = 'github_repository'
-              AND LOWER(RTRIM(CASE WHEN RTRIM(sl.target_url, '/') LIKE '%.git' THEN SUBSTR(RTRIM(sl.target_url, '/'), 1, LENGTH(RTRIM(sl.target_url, '/')) - 4) ELSE RTRIM(sl.target_url, '/') END, '/')) = ?
-              AND il.review_state = 'accepted'
-              AND il.evidence_kind = 'vpm_id'
-          `).bind(normalizedHtmlUrl).all<{ canonical_id: string; }>();
-          const linkedCanonicals = linkedRes.results || [];
-          for (const { canonical_id } of linkedCanonicals) {
-            batchStmts.push(
-              this.db.prepare(`INSERT OR IGNORE INTO identity_links
-                (link_id,source_key,canonical_id,evidence_kind,confidence,review_state,created_at)
-                VALUES (?,?,?,'repository_match',0.7,'provisional',?)`).bind(
-                crypto.randomUUID(), sourceKey, canonical_id, now)
-            );
-          }
-        }
-      }
-
-      // G2/G4 package_fronts relational projection:
-      // When an observation has an accepted or provisional identity link to a canonical package
-      // (or if it is a storefront platform with an outbound match), upsert a row into package_fronts.
-      const linkedCanonicalIds = new Set<string>();
-      const highConfidenceCanonicalIds = new Set<string>();
-      const existingLinksRes = await this.db.prepare(`
-        SELECT canonical_id FROM identity_links
-        WHERE source_key = ? AND review_state IN ('accepted', 'provisional')
-      `).bind(sourceKey).all<{ canonical_id: string; }>();
-      for (const { canonical_id } of existingLinksRes.results || []) {
-        linkedCanonicalIds.add(canonical_id);
-      }
-
-      if (isStorefront) {
-        // Outbound match 1: observation outbound links matching source items or leads linked to a canonical package
-        for (const outbound of observation.outboundLinks) {
-          // URL serialization normalizes the host, not case-sensitive path/query data.
-          const normalizedOutbound = new URL(outbound).href;
-          const matchesRes = await this.db.prepare(`
-            SELECT DISTINCT il.canonical_id
-            FROM identity_links il
-            JOIN source_items si ON si.source_key = il.source_key
-            WHERE si.source_url = ?
-              AND il.review_state IN ('accepted', 'provisional')
-          `).bind(normalizedOutbound).all<{ canonical_id: string; }>();
-          for (const { canonical_id } of matchesRes.results || []) {
-            linkedCanonicalIds.add(canonical_id);
-          }
-
-          const ghMatch = normalizedOutbound.match(/^https:\/\/github\.com\/([^/]+\/[^/]+)/);
-          if (ghMatch) {
-            const apiGhUrl = `https://api.github.com/repos/${ghMatch[1]}`.toLowerCase();
-            const ghMatchesRes = await this.db.prepare(`
-              SELECT DISTINCT il.canonical_id
-              FROM identity_links il
-              JOIN source_items si ON si.source_key = il.source_key
-              WHERE si.platform = 'github' AND LOWER(RTRIM(si.source_url, '/')) = ?
-                AND il.review_state IN ('accepted', 'provisional')
-            `).bind(apiGhUrl).all<{ canonical_id: string; }>();
-            for (const { canonical_id } of ghMatchesRes.results || []) {
-              linkedCanonicalIds.add(canonical_id);
-            }
-          }
-
-          const leadMatchesRes = await this.db.prepare(`
-            SELECT DISTINCT il.canonical_id
-            FROM source_leads sl
-            JOIN identity_links il ON (
-              (sl.discovered_from_item_key IS NOT NULL AND (
-                il.canonical_id = sl.discovered_from_item_key
-                OR il.source_key = sl.discovered_from_item_key
-                OR il.source_key = 'vpm:' || sl.discovered_from_url || ':' || sl.discovered_from_item_key
-              ))
-              OR (sl.claimed_package_id IS NOT NULL AND il.canonical_id = sl.claimed_package_id)
-            )
-            WHERE sl.target_url = ?
-              AND il.review_state IN ('accepted', 'provisional')
-          `).bind(normalizedOutbound).all<{ canonical_id: string; }>();
-          for (const { canonical_id } of leadMatchesRes.results || []) {
-            linkedCanonicalIds.add(canonical_id);
-          }
-        }
-
-        // Outbound match 2: source leads where target_url matches this job URL (e.g. storefront discovered from VPM)
-        const normalizedJobUrl = job.url;
-        const jobLeadMatchesRes = await this.db.prepare(`
-          SELECT DISTINCT il.canonical_id, sl.discovered_from_item_key, sl.claimed_package_id, sl.status as lead_status
-          FROM source_leads sl
-          JOIN identity_links il ON (
-            (sl.discovered_from_item_key IS NOT NULL AND (
-              il.canonical_id = sl.discovered_from_item_key
-              OR il.source_key = sl.discovered_from_item_key
-              OR il.source_key = 'vpm:' || sl.discovered_from_url || ':' || sl.discovered_from_item_key
-            ))
-            OR (sl.claimed_package_id IS NOT NULL AND il.canonical_id = sl.claimed_package_id)
-          )
-          WHERE sl.target_url = ?
-            AND il.review_state IN ('accepted', 'provisional')
-        `).bind(normalizedJobUrl).all<{
-          canonical_id: string;
-          discovered_from_item_key: string | null;
-          claimed_package_id: string | null;
-          lead_status: string;
-        }>();
-        for (const r of jobLeadMatchesRes.results || []) {
-          linkedCanonicalIds.add(r.canonical_id);
-          // High-confidence: approved lead (operator approved or high-confidence auto-pass) -> auto-link as accepted
-          if (r.lead_status === "approved") {
-            highConfidenceCanonicalIds.add(r.canonical_id);
-          }
-        }
-      }
-
-
-      if (isStorefront && complete && job.platform !== "vpm" && linkedCanonicalIds.size === 0) {
-        const canonicalId = observation.sourceItemKey;
-        const desktopClassification = classifyDesktopTool(
-          observation.title,
-          observation.summary,
-          observation.outboundLinks,
-          observation.platformTags ?? []
-        );
-        const umbrella = desktopClassification.isDesktopTool && desktopClassification.confidence >= 0.8
-          ? "tools"
-          : deriveUmbrellaFromTags(observation.platformTags, "assets");
-        const category = deriveCategoryFromTags(
-          observation.platformTags,
-          desktopClassification.isDesktopTool && desktopClassification.confidence >= 0.8 && desktopClassification.subtype
-            ? desktopClassification.subtype
-            : "storefront_package"
-        );
-        // No publication date exists in this wire observation. Do not substitute modification time.
-        batchStmts.push(
-          this.db.prepare(`INSERT INTO canonical_packages
-            (canonical_id,umbrella,category,lifecycle,display_name,vpm_id,created_at,updated_at,published_at,timestamp_confidence)
-            VALUES (?,?,?,?,?,NULL,?,?,?,?)
-            ON CONFLICT(canonical_id) DO UPDATE SET
-              display_name=excluded.display_name,
-              updated_at=excluded.updated_at`).bind(
-            canonicalId, umbrella, category, "active", cleanTitle(observation.title), now, now, null, null),
-          this.db.prepare(`INSERT OR IGNORE INTO identity_links
-            (link_id,source_key,canonical_id,evidence_kind,confidence,review_state,created_at,reviewed_at)
-            VALUES (?,?,?,'cross_storefront_link',1.0,'accepted',?,?)`).bind(
-            crypto.randomUUID(), sourceKey, canonicalId, now, now)
-        );
-        linkedCanonicalIds.add(canonicalId);
-      }
-
-      for (const canonicalId of linkedCanonicalIds) {
-        if (isStorefront) {
-          const isHighConfidence = highConfidenceCanonicalIds.has(canonicalId);
-          const alreadyLinked = (existingLinksRes.results || []).some(r => r.canonical_id === canonicalId) ||
-            canonicalId === observation.sourceItemKey;
-          if (!alreadyLinked) {
-            batchStmts.push(
-              this.db.prepare(`INSERT OR IGNORE INTO identity_links
-                (link_id,source_key,canonical_id,evidence_kind,confidence,review_state,created_at,reviewed_at)
-                VALUES (?,?,?,'cross_storefront_link',?,?,?,?)`).bind(
-                crypto.randomUUID(), sourceKey, canonicalId,
-                isHighConfidence ? 0.95 : 0.8,
-                isHighConfidence ? "accepted" : "provisional",
-                now,
-                isHighConfidence ? now : null
-              )
-            );
-          } else if (isHighConfidence) {
-            batchStmts.push(
-              this.db.prepare(`UPDATE identity_links
-                SET review_state='accepted', confidence=0.95, reviewed_at=?
-                WHERE source_key=? AND canonical_id=? AND review_state='provisional'`).bind(
-                now, sourceKey, canonicalId
-              )
-            );
-          }
-
-          const storefrontUrl = cleanTrackingParams(job.url);
-          const frontId = crypto.randomUUID();
-          const price = observation.price ?? null;
-          const currency = observation.currency ?? null;
-          const availability = observation.availability ?? "available";
-
-          batchStmts.push(
-            this.db.prepare(`
-              INSERT INTO package_fronts
-                (front_id, canonical_id, source_key, platform, storefront_url, price, currency, availability, observed_at)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-              ON CONFLICT(canonical_id, source_key) DO UPDATE SET
-                platform = excluded.platform,
-                storefront_url = excluded.storefront_url,
-                price = excluded.price,
-                currency = excluded.currency,
-                availability = excluded.availability,
-                observed_at = excluded.observed_at
-            `).bind(frontId, canonicalId, sourceKey, job.platform, storefrontUrl, price, currency, availability, now)
-          );
-        }
-      }
-
-      const desktopClassification = classifyDesktopTool(
-        observation.title,
-        observation.summary,
-        observation.outboundLinks,
-        observation.platformTags ?? []
-      );
-      if (desktopClassification.isDesktopTool && desktopClassification.confidence >= 0.8 && desktopClassification.subtype) {
-        const evidenceUrl = (observation as any).storefrontUrl || observation.outboundLinks[0] || `https://github.com/${observation.sourceItemKey}`;
-        const publisherClaim = observation.summary || observation.title;
-        const supportedOS = inferSupportedOS(`${observation.title} ${observation.summary} ${(observation.platformTags ?? []).join(" ")}`);
-        for (const canonicalId of linkedCanonicalIds) {
-          batchStmts.push(
-            this.db.prepare(`
-              INSERT INTO desktop_tool_evidence
-                (canonical_id, tool_subtype, supported_os, particular_vrchat_target, evidence_url, publisher_claim, confidence, created_at)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-              ON CONFLICT(canonical_id) DO UPDATE SET
-                tool_subtype = excluded.tool_subtype,
-                supported_os = excluded.supported_os,
-                particular_vrchat_target = excluded.particular_vrchat_target,
-                evidence_url = excluded.evidence_url,
-                publisher_claim = excluded.publisher_claim,
-                confidence = excluded.confidence
-            `).bind(
-              canonicalId,
-              desktopClassification.subtype,
-              JSON.stringify(supportedOS),
-              1,
-              evidenceUrl,
-              publisherClaim,
-              desktopClassification.confidence,
-              now
-            )
-          );
-        }
-      }
-    }
-
-    if (outcome.kind === "gone") {
-      const currentItemsRes = await this.db.prepare(`SELECT source_key FROM source_items
-        WHERE platform=? AND source_url=? AND gone_at IS NULL`).bind(job.platform, job.url).all<{ source_key: string; }>();
-      const currentItems = currentItemsRes.results || [];
-      for (const item of currentItems) {
-        batchStmts.push(
-          this.db.prepare("UPDATE source_items SET gone_at=? WHERE source_key=?").bind(now, item.source_key),
-          this.db.prepare("UPDATE package_fronts SET availability='delisted', observed_at=? WHERE source_key=?").bind(now, item.source_key),
-          this.db.prepare(`UPDATE canonical_packages SET lifecycle='delisted', updated_at=?
-            WHERE canonical_id IN (SELECT canonical_id FROM package_fronts WHERE source_key=?)
-              AND vpm_id IS NULL
-              AND NOT EXISTS (SELECT 1 FROM package_fronts pf2 WHERE pf2.canonical_id = canonical_packages.canonical_id AND pf2.availability = 'available')`)
-            .bind(now, item.source_key),
-          this.db.prepare(`INSERT INTO source_events
-            (job_id,source_key,kind,observed_at,version_id,contributor_node_id,submission_lease_id,source_profile_id)
-            VALUES (?,?,'gone',?,NULL,?,?,?)`)
-            .bind(job.job_id, item.source_key, now, principal.nodeId, request.leaseId, sourceProfile.profileId)
-        );
-      }
-    }
-
-    if (outcome.kind === "partial_batch") {
-      for (const issue of outcome.issues) {
-        batchStmts.push(
-          this.db.prepare(`INSERT INTO source_issues
-            (job_id,source_item_key,version_key,code,observed_at,contributor_node_id,submission_lease_id,source_profile_id)
-            VALUES (?,?,?,?,?,?,?,?)`).bind(job.job_id, issue.sourceItemKey, issue.version || null,
-            issue.code, now, principal.nodeId, request.leaseId, sourceProfile.profileId)
-        );
-      }
-      batchStmts.push(
-        this.db.prepare(`INSERT INTO source_events
-          (job_id,source_key,kind,observed_at,version_id,contributor_node_id,submission_lease_id,source_profile_id)
-          VALUES (?,NULL,'incomplete_listing',?,NULL,?,?,?)`)
-          .bind(job.job_id, now, principal.nodeId, request.leaseId, sourceProfile.profileId)
-      );
-    }
-
-    if (observations.length === 0 && outcome.kind !== "partial_batch") {
-      batchStmts.push(
-        this.db.prepare(`INSERT INTO source_events
-          (job_id,source_key,kind,observed_at,version_id,contributor_node_id,submission_lease_id,source_profile_id)
-          VALUES (?,NULL,?,?,NULL,?,?,?)`)
-          .bind(job.job_id, outcome.kind, now, principal.nodeId, request.leaseId, sourceProfile.profileId)
-      );
-    }
-
-    const discoveryLeads = outcome.kind === "discovery" ? await Promise.all(outcome.leads.map(async reportedLead => {
-      const lead = { ...reportedLead, url: new URL(reportedLead.url).href };
-      const identity = lead.discoveredFromItemKey ?
-        [job.url, lead.discoveredFromItemKey, lead.kind, lead.url, lead.claimedPackageId || null] :
-        [job.url, lead.kind, lead.url, lead.claimedPackageId || null];
-      return { lead, leadKey: await sha256Hex(JSON.stringify(identity)) };
-    })) : [];
-    for (const { lead, leadKey } of discoveryLeads) {
-      batchStmts.push(this.db.prepare(`INSERT INTO source_leads
-        (lead_key,discovered_from_url,discovered_from_job_id,discovered_from_item_key,
-          kind,target_url,claimed_package_id,status,
-          first_seen_at,last_seen_at,first_seen_node_id,first_seen_lease_id,first_seen_profile_id,
-          last_seen_node_id,last_seen_lease_id,last_seen_profile_id)
-        VALUES (?,?,?,?,?,?,?,'pending_review',?,?,?,?,?,?,?,?)
-        ON CONFLICT(lead_key) DO UPDATE SET last_seen_at=excluded.last_seen_at,
-          last_seen_node_id=excluded.last_seen_node_id,last_seen_lease_id=excluded.last_seen_lease_id,
-          last_seen_profile_id=excluded.last_seen_profile_id`)
-        .bind(leadKey, job.url, job.job_id, lead.discoveredFromItemKey || null,
-          lead.kind, lead.url, lead.claimedPackageId || null,
-          now, now, principal.nodeId, request.leaseId, sourceProfile.profileId,
-          principal.nodeId, request.leaseId, sourceProfile.profileId));
-    }
-
-    let state = "done";
-    let nextFetchAt = new Date(nowMs + 24 * 60 * 60 * 1000).toISOString();
-    if (outcome.kind === "rate_limited") {
-      state = "backoff";
-      nextFetchAt = new Date(nowMs + outcome.retryAfterSeconds * 1000).toISOString();
-    } else if (outcome.kind === "temporary_failure") {
-      state = "backoff";
-      nextFetchAt = new Date(nowMs + 15 * 60 * 1000).toISOString();
-    } else if (outcome.kind === "blocked") {
-      state = "blocked";
-      nextFetchAt = new Date(nowMs + 3 * 24 * 60 * 60 * 1000).toISOString();
-    }
-
-    const response: ResultResponse = {
-      schemaVersion: PROTOCOL_VERSION, status: "accepted", jobId: job.job_id,
-      duplicate: false, sourceVersionCreated
-    };
-
-    batchStmts.push(
-      this.db.prepare("UPDATE crawl_jobs SET state=?,next_fetch_at=?,claimed_by=NULL,lease_id=NULL,lease_expires_at=NULL WHERE job_id=?")
-        .bind(state, nextFetchAt, job.job_id),
-      this.db.prepare(`UPDATE origin_leases SET active_job_id=NULL,lease_expires_at=NULL,
-        next_allowed_at=MAX(next_allowed_at,?) WHERE origin=? AND active_job_id=?`)
-        .bind(outcome.kind === "rate_limited" || outcome.kind === "blocked" ? nextFetchAt : now, job.origin, job.job_id),
-      this.db.prepare("INSERT INTO job_results(lease_id,job_id,node_id,idempotency_key,request_digest,response_json,submitted_at) VALUES (?,?,?,?,?,?,?)")
-        .bind(request.leaseId, job.job_id, principal.nodeId, request.idempotencyKey, requestDigest, JSON.stringify(response), now)
+  ) {
+    this.ctx = new D1PlaneContext(db, now);
+    this.workforce = new WorkforcePlane(this.ctx, (input, actor) =>
+      this.operator.createSourceAccessProfile(input, actor)
     );
-
-    if (batchStmts.length > 0) {
-      await this.executeBatchChunked(batchStmts);
-    }
-
-    if (outcome.kind === "discovery") {
-      for (const { lead, leadKey } of discoveryLeads) {
-        const status = await this.db.prepare("SELECT status FROM source_leads WHERE lead_key=?")
-          .bind(leadKey).first<{ status: string; }>();
-        if (status?.status === "pending_review") {
-          const rule = await this.activeAutoQueueRuleForLead(lead.kind, lead.url);
-          if (rule) {
-            try {
-              await this.approveVpmListingLead(leadKey, rule.minDelayMs, `auto-rule:${rule.ruleId}`,
-                "Matched reviewed auto-queue rule", rule.ruleId);
-            } catch (cause) {
-              await this.db.prepare(`INSERT INTO operator_audit_log(entity_type,entity_id,actor,action,reason,occurred_at)
-                VALUES ('rule',?,'coordinator','promotion_failed',?,?)`)
-                .bind(rule.ruleId, cause instanceof Error ? cause.message.slice(0, 300) : "Unknown promotion failure", now).run();
-            }
-          }
-        }
-      }
-    }
-
-    return response;
-  }
-
-  async submitBatch(request: BatchResultRequest, principal: NodePrincipal): Promise<BatchResultResponse> {
-    if (request.nodeId !== principal.nodeId) throw new CoordinatorConflict("Node identity mismatch", 403);
-    const receipts: BatchResultReceipt[] = [];
-    for (const item of request.results) {
-      try {
-        const res = await this.submit({
-          schemaVersion: request.schemaVersion,
-          nodeId: request.nodeId,
-          jobId: item.jobId,
-          leaseId: item.leaseId,
-          idempotencyKey: item.idempotencyKey,
-          outcome: item.outcome
-        }, principal);
-        receipts.push({
-          status: "accepted",
-          jobId: item.jobId,
-          duplicate: res.duplicate,
-          sourceVersionCreated: res.sourceVersionCreated
-        });
-      } catch (error) {
-        if (error instanceof CoordinatorConflict) {
-          // A release-evidence conflict is not lease expiry. Do not classify by substrings.
-          const isLeaseExpired = error.status === 403 && error.message === "Node does not hold a live lease for this job";
-          const isTerminal = error.status === 403 || error.status === 404;
-          const code = isLeaseExpired ? "lease_expired" : error.status === 403 ? "forbidden" : error.status === 404 ? "not_found" : "conflict";
-          receipts.push({
-            status: "rejected",
-            jobId: item.jobId,
-            terminal: isTerminal,
-            error: error.message,
-            code
-          });
-        } else {
-          receipts.push({
-            status: "rejected",
-            jobId: item.jobId,
-            terminal: false,
-            error: error instanceof Error ? error.message : "Internal error",
-            code: "internal_error"
-          });
-        }
-      }
-    }
-    return {
-      schemaVersion: PROTOCOL_VERSION,
-      receipts
-    };
-  }
-
-  // --- OperatorStore Methods ---
-  async revokeNode(nodeId: string, input: RevokeNodeRequest, actor: string): Promise<void> {
-    RevokeNodeResponseSchema.shape.nodeId.parse(nodeId);
-    const parsed = RevokeNodeRequestSchema.parse(input);
-    if (!actor.trim() || actor.length > 100) throw new Error("Operator actor required");
-    const now = new Date(this.now()).toISOString();
-    const result = await this.db.batch([
-      this.db.prepare(`INSERT INTO operator_audit_log(entity_type,entity_id,actor,action,reason,occurred_at)
-        SELECT 'node',node_id,?,'revoke',?,? FROM node_credentials WHERE node_id=?`)
-        .bind(actor, parsed.reason, now, nodeId),
-      this.db.prepare("UPDATE node_credentials SET revoked_at=COALESCE(revoked_at,?) WHERE node_id=?").bind(now, nodeId)
-    ]);
-    if ((result[0]?.meta as { changes?: number } | undefined)?.changes !== 1) throw new Error("Node not found");
-  }
-
-  async createNodeCredential(nodeId: string, capabilities: Platform[],
-    audit?: { actor: string; reason: string }): Promise<string> {
-    ClaimRequestSchema.parse({ schemaVersion: PROTOCOL_VERSION, nodeId, capabilities });
-    if (audit && (!audit.actor.trim() || audit.actor.length > 100 ||
-        !audit.reason.trim() || audit.reason.length > 300)) throw new Error("Credential audit actor and reason required");
-    const token = formatCapabilityToken(capabilities);
-    const hash = await sha256Hex(token);
-    const writes = [this.db.prepare(`
-      INSERT INTO node_credentials(node_id,token_hash,capabilities_json,revoked_at)
-      VALUES (?,?,?,NULL)
-      ON CONFLICT(node_id) DO UPDATE SET token_hash=excluded.token_hash,
-        capabilities_json=excluded.capabilities_json, revoked_at=NULL
-    `).bind(nodeId, hash, JSON.stringify([...new Set(capabilities)]))];
-    if (audit) writes.push(this.db.prepare(`INSERT INTO operator_audit_log(entity_type,entity_id,actor,action,reason,occurred_at)
-      VALUES ('node',?,?, 'issue', ?, ?)`).bind(nodeId, audit.actor, audit.reason.trim(), new Date(this.now()).toISOString()));
-    await this.db.batch(writes);
-    return token;
-  }
-
-  /**
-   * Workforce Distribution Evaluator (Edge/D1):
-   * Balances workforce across platforms by comparing pending/stale jobs and downstream demand
-   * against active node coverage, preventing bot-net clustering on single platforms.
-   */
-  async evaluateWorkforceDistribution(candidateCapabilities?: Platform[]): Promise<Platform[]> {
-    const candidates = candidateCapabilities && candidateCapabilities.length > 0
-      ? [...new Set(candidateCapabilities)]
-      : [...PlatformSchema.options];
-    const now = new Date(this.now()).toISOString();
-    const activeCutoff = new Date(this.now() - 5 * 60 * 1000).toISOString();
-
-    const jobsByPlatform = new Map<string, number>();
-    const jobRes = await this.db.prepare(`
-      SELECT platform, COUNT(*) as cnt FROM crawl_jobs
-      WHERE (state IN ('pending', 'backoff') OR (state = 'done' AND next_fetch_at <= ?))
-      GROUP BY platform
-    `).bind(now).all<{ platform: string; cnt: number }>();
-    for (const row of (jobRes.results || [])) {
-      jobsByPlatform.set(row.platform, row.cnt);
-    }
-
-    const demandByPlatform = new Map<string, number>();
-    const demandRes = await this.db.prepare(`
-      SELECT requested_platform, COUNT(*) as cnt FROM downstream_demand_signals
-      WHERE resolved_at IS NULL AND requested_platform IS NOT NULL
-      GROUP BY requested_platform
-    `).all<{ requested_platform: string; cnt: number }>();
-    for (const row of (demandRes.results || [])) {
-      demandByPlatform.set(row.requested_platform, row.cnt);
-    }
-
-    const activeNodesByPlatform = new Map<string, number>();
-    const activeRes = await this.db.prepare(`
-      SELECT c.capabilities_json FROM node_heartbeats h
-      JOIN node_credentials c ON c.node_id = h.node_id
-      WHERE h.last_seen_at >= ? AND c.revoked_at IS NULL
-    `).bind(activeCutoff).all<{ capabilities_json: string }>();
-    for (const row of (activeRes.results || [])) {
-      try {
-        const caps = JSON.parse(row.capabilities_json) as string[];
-        for (const cap of caps) {
-          activeNodesByPlatform.set(cap, (activeNodesByPlatform.get(cap) || 0) + 1);
-        }
-      } catch {
-        // ignore
-      }
-    }
-
-    const scored = candidates.map((platform) => {
-      const pendingJobs = jobsByPlatform.get(platform) || 0;
-      const demandSignals = demandByPlatform.get(platform) || 0;
-      const activeWorkers = activeNodesByPlatform.get(platform) || 0;
-      const score = ((pendingJobs * 2) + (demandSignals * 5) + 1) / (activeWorkers + 1);
-      return { platform, score };
-    });
-
-    scored.sort((a, b) => b.score - a.score);
-
-    if (candidateCapabilities && candidateCapabilities.length > 0) {
-      return scored.map((s) => s.platform);
-    }
-    const count = Math.min(3, scored.length);
-    return scored.slice(0, count).map((s) => s.platform);
-  }
-
-  async issueNodeCredential(input: IssueNodeCredential, actor: string): Promise<string> {
-    const parsed = IssueNodeCredentialSchema.parse(input);
-    if (!actor.trim() || actor.length > 100) throw new Error("Operator actor required");
-    const capabilities = parsed.capabilities && parsed.capabilities.length > 0
-      ? await this.evaluateWorkforceDistribution(parsed.capabilities)
-      : await this.evaluateWorkforceDistribution();
-    return this.createNodeCredential(parsed.nodeId, capabilities, { actor, reason: parsed.reason });
-  }
-
-  async listLeadsPage(status: "pending_review" | "approved" | "rejected", limit: number,
-    cursor: LeadCursor | null): Promise<{ leads: LeadRow[]; nextCursor: string | null; }> {
-    if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error("Lead limit must be 1..100");
-    const after = cursor ? "AND (first_seen_at,lead_key)>(?,?)" : "";
-    const params = cursor ? [status, cursor.firstSeenAt, cursor.leadKey, limit + 1] : [status, limit + 1];
-    const res = await this.db.prepare(`SELECT lead_key,kind,target_url,claimed_package_id,discovered_from_url,
-      discovered_from_item_key,status,first_seen_at,last_seen_at FROM source_leads
-      WHERE status=? ${after} ORDER BY first_seen_at,lead_key LIMIT ?`)
-      .bind(...params).all<LeadRow>();
-    const rows = res.results || [];
-    const leads = rows.slice(0, limit);
-    const last = leads.at(-1);
-    return {
-      leads,
-      nextCursor: rows.length > limit && last ? encodeLeadCursor({
-        status,
-        firstSeenAt: last.first_seen_at,
-        leadKey: last.lead_key
-      }) : null
-    };
-  }
-
-  async approveVpmListingLead(leadKey: string, minDelayMs = 1000, actor = "local-cli",
-    reason = "Operator reviewed listing", sourceRuleId?: string): Promise<string> {
-    if (!reason.trim() || reason.length > 300) throw new Error("Approval reason required (at most 300 characters)");
-    const lead = await this.db.prepare("SELECT kind,status,target_url FROM source_leads WHERE lead_key=?")
-      .bind(leadKey).first<{ kind: string; status: string; target_url: string; }>();
-    if (!lead) throw new Error("Lead not found");
-    if (lead.status === "rejected") throw new Error("Rejected lead cannot be approved");
-    let platform: Platform = "vpm";
-    let purpose: SourcePurpose = "discovery";
-    let jobUrl = lead.target_url;
-    let delay = minDelayMs;
-
-    if (lead.kind === "vpm_listing") {
-      platform = "vpm";
-      purpose = "discovery";
-    } else if (lead.kind === "github_repository") {
-      platform = "github";
-      purpose = "metadata";
-      const match = lead.target_url.match(/^https:\/\/github\.com\/([^/]+\/[^/]+)/);
-      if (match) {
-        jobUrl = `https://api.github.com/repos/${match[1].replace(/\.git$/, "")}`;
-      }
-      delay = Math.max(delay, 60000);
-    } else if (lead.kind === "storefront_product") {
-      purpose = "metadata";
-      const urlObj = new URL(lead.target_url);
-      if (urlObj.hostname === "booth.pm") platform = "booth";
-      else if (urlObj.hostname === "gumroad.com") platform = "gumroad";
-      else if (urlObj.hostname === "jinxxy.com") platform = "jinxxy";
-      else if (urlObj.hostname === "sellfy.com") platform = "sellfy";
-      else if (urlObj.hostname === "ko-fi.com") {
-        platform = "custom_domain";
-        delay = Math.max(delay, 2000);
-      } else platform = "custom_domain";
-      delay = Math.max(delay, 1500);
-    } else if (lead.kind === "publisher_site") {
-      platform = "custom_domain";
-      purpose = "metadata";
-      delay = Math.max(delay, 2000);
-    } else {
-      throw new Error("Only published VPM listing leads can become VPM crawl jobs");
-    }
-
-    return this.seedJob(jobUrl, platform, delay, sourceRuleId, purpose, { actor, reason, leadKey });
-  }
-
-  async rejectLead(leadKey: string, actor: string, reason: string): Promise<void> {
-    if (!reason.trim() || reason.length > 300) throw new Error("Rejection reason required (at most 300 characters)");
-    const lead = await this.db.prepare("SELECT status FROM source_leads WHERE lead_key=?")
-      .bind(leadKey).first<{ status: string; }>();
-    if (!lead) throw new Error("Lead not found");
-    if (lead.status === "approved") throw new Error("Approved lead cannot be rejected without revoking its job");
-    if (lead.status === "rejected") return;
-    await this.db.batch([
-      this.db.prepare("UPDATE source_leads SET status='rejected' WHERE lead_key=?").bind(leadKey),
-      this.db.prepare(`INSERT INTO operator_audit_log(entity_type,entity_id,actor,action,reason,occurred_at)
-        VALUES ('lead',?,?,'reject_lead',?,?)`).bind(leadKey, actor, reason.trim(), new Date(this.now()).toISOString())
-    ]);
-  }
-
-  async listAutoQueueRulesPage(limit: number, cursor: RuleCursor | null): Promise<{ rules: AutoQueueRule[]; nextCursor: string | null; }> {
-    if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error("Rule limit must be 1..100");
-    const before = cursor ? "WHERE (created_at,rule_id)<(?,?)" : "";
-    const params = cursor ? [cursor.createdAt, cursor.ruleId, limit + 1] : [limit + 1];
-    const res = await this.db.prepare(`SELECT * FROM lead_autoqueue_rules ${before}
-      ORDER BY created_at DESC,rule_id DESC LIMIT ?`).bind(...params).all<AutoQueueRuleRow>();
-    const rows = res.results || [];
-    const visible = rows.slice(0, limit);
-    const last = visible.at(-1);
-    return {
-      rules: visible.map((row) => this.autoQueueRuleFromRow(row)),
-      nextCursor: rows.length > limit && last ? encodeRuleCursor({
-        createdAt: last.created_at,
-        ruleId: last.rule_id
-      }) : null
-    };
-  }
-
-  async createAutoQueueRule(input: CreateAutoQueueRule, actor: string): Promise<AutoQueueRule> {
-    const parsed = CreateAutoQueueRuleSchema.parse(input);
-    const now = new Date(this.now()).toISOString();
-    if (parsed.expiresAt <= now) throw new Error("Rule expiry must be in the future");
-    const existing = await this.db.prepare(`SELECT 1 FROM lead_autoqueue_rules
-      WHERE lead_kind=? AND origin=? AND path_scope=? AND disabled_at IS NULL AND expires_at>?`)
-      .bind(parsed.leadKind, parsed.origin, parsed.pathScope, now).first();
-    if (existing) throw new Error("An active rule already covers this exact scope");
-    const ruleId = crypto.randomUUID();
-    await this.db.batch([
-      this.db.prepare(`INSERT INTO lead_autoqueue_rules
-        (rule_id,lead_kind,origin,path_scope,min_delay_ms,expires_at,review_reference,reason,created_at)
-        VALUES (?,?,?,?,?,?,?,?,?)`).bind(ruleId, parsed.leadKind, parsed.origin, parsed.pathScope,
-        parsed.minDelayMs, parsed.expiresAt, parsed.reviewReference, parsed.reason, now),
-      this.db.prepare(`INSERT INTO operator_audit_log(entity_type,entity_id,actor,action,reason,occurred_at)
-        VALUES ('rule',?,?, 'create', ?, ?)`).bind(ruleId, actor, parsed.reason, now)
-    ]);
-    const row = await this.db.prepare("SELECT * FROM lead_autoqueue_rules WHERE rule_id=?")
-      .bind(ruleId).first<AutoQueueRuleRow>();
-    return this.autoQueueRuleFromRow(row!);
-  }
-
-  async disableAutoQueueRule(ruleId: string, actor: string, reason: string): Promise<AutoQueueRule> {
-    if (!reason.trim() || reason.length > 300) throw new Error("Disable reason required (at most 300 characters)");
-    const row = await this.db.prepare("SELECT * FROM lead_autoqueue_rules WHERE rule_id=?")
-      .bind(ruleId).first<AutoQueueRuleRow>();
-    if (!row) throw new Error("Rule not found");
-    if (!row.disabled_at) {
-      const now = new Date(this.now()).toISOString();
-      const leasedRes = await this.db.prepare(`SELECT job_id,origin FROM crawl_jobs
-        WHERE source_rule_id=? AND state='leased'`).bind(ruleId).all<{ job_id: string; origin: string; }>();
-      const leased = leasedRes.results || [];
-      const batchStmts = [
-        this.db.prepare("UPDATE lead_autoqueue_rules SET disabled_at=? WHERE rule_id=?").bind(now, ruleId)
-      ];
-      for (const job of leased) {
-        batchStmts.push(
-          this.db.prepare(`UPDATE crawl_jobs SET state='pending',claimed_by=NULL,lease_id=NULL,lease_expires_at=NULL
-            WHERE job_id=?`).bind(job.job_id),
-          this.db.prepare(`UPDATE origin_leases SET active_job_id=NULL,lease_expires_at=NULL
-            WHERE origin=? AND active_job_id=?`).bind(job.origin, job.job_id)
-        );
-      }
-      batchStmts.push(
-        this.db.prepare(`INSERT INTO operator_audit_log(entity_type,entity_id,actor,action,reason,occurred_at)
-          VALUES ('rule',?,?, 'disable', ?, ?)`).bind(ruleId, actor, reason.trim(), now)
-      );
-      await this.executeBatchChunked(batchStmts);
-      row.disabled_at = now;
-    }
-    return this.autoQueueRuleFromRow(row);
-  }
-
-  async listSourceAccessProfilesPage(limit: number, cursor: ProfileCursor | null): Promise<{ profiles: SourceAccessProfile[]; nextCursor: string | null; }> {
-    if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error("Profile limit must be 1..100");
-    const before = cursor ? "WHERE (created_at,profile_id)<(?,?)" : "";
-    const params = cursor ? [cursor.createdAt, cursor.profileId, limit + 1] : [limit + 1];
-    const res = await this.db.prepare(`SELECT * FROM source_access_profiles ${before}
-      ORDER BY created_at DESC,profile_id DESC LIMIT ?`).bind(...params).all<SourceAccessProfileRow>();
-    const rows = res.results || [];
-    const visible = rows.slice(0, limit);
-    const last = visible.at(-1);
-    return {
-      profiles: visible.map(row => this.sourceAccessProfileFromRow(row)),
-      nextCursor: rows.length > limit && last ? encodeProfileCursor({
-        createdAt: last.created_at, profileId: last.profile_id
-      }) : null
-    };
-  }
-
-  async createSourceAccessProfile(input: CreateSourceAccessProfile, actor: string): Promise<SourceAccessProfile> {
-    const parsed = CreateSourceAccessProfileSchema.parse(input);
-    const now = new Date(this.now()).toISOString();
-    if (parsed.expiresAt <= now) throw new Error("Source profile expiry must be in the future");
-    const profileId = crypto.randomUUID();
-    const existingRes = await this.db.prepare(`SELECT path_scope,query_scope FROM source_access_profiles
-      WHERE platform=? AND origin=? AND purpose=? AND disabled_at IS NULL AND expires_at>?`)
-      .bind(parsed.platform, parsed.origin, parsed.purpose, now).all<{ path_scope: string; query_scope: string | null; }>();
-    const existing = existingRes.results || [];
-    if (existing.some(row => sourcePathScopesOverlap(row.path_scope, parsed.pathScope,
-      row.query_scope ?? undefined, parsed.exactQuery))) {
-      throw new Error("Overlapping active source profile requires disabling the old grant first");
-    }
-    await this.db.batch([
-      this.db.prepare(`INSERT INTO source_access_profiles
-        (profile_id,platform,origin,path_scope,query_scope,method,purpose,min_delay_ms,expires_at,
-          review_reference,reason,retain_classes_json,publish_classes_json,created_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).bind(profileId, parsed.platform, parsed.origin,
-        parsed.pathScope, parsed.exactQuery ?? null, parsed.method, parsed.purpose, parsed.minDelayMs, parsed.expiresAt,
-        parsed.reviewReference, parsed.reason, JSON.stringify(parsed.retainClasses),
-        JSON.stringify(parsed.publishClasses), now),
-      this.db.prepare(`INSERT INTO operator_audit_log(entity_type,entity_id,actor,action,reason,occurred_at)
-        VALUES ('profile',?,?, 'create', ?, ?)`).bind(profileId, actor, parsed.reason, now)
-    ]);
-    const row = await this.db.prepare("SELECT * FROM source_access_profiles WHERE profile_id=?")
-      .bind(profileId).first<SourceAccessProfileRow>();
-    return this.sourceAccessProfileFromRow(row!);
-  }
-
-  async disableSourceAccessProfile(profileId: string, actor: string, reason: string): Promise<SourceAccessProfile> {
-    if (!reason.trim() || reason.length > 300) throw new Error("Disable reason required (at most 300 characters)");
-    const row = await this.db.prepare("SELECT * FROM source_access_profiles WHERE profile_id=?")
-      .bind(profileId).first<SourceAccessProfileRow>();
-    if (!row) throw new Error("Source profile not found");
-    if (row.disabled_at) return this.sourceAccessProfileFromRow(row);
-    const now = new Date(this.now()).toISOString();
-
-    const leasedRes = await this.db.prepare(`SELECT job_id,origin FROM crawl_jobs
-      WHERE lease_profile_id=? AND state='leased'`).bind(profileId).all<{ job_id: string; origin: string; }>();
-    const leased = leasedRes.results || [];
-
-    const batchStmts = [
-      this.db.prepare("UPDATE source_access_profiles SET disabled_at=? WHERE profile_id=?").bind(now, profileId)
-    ];
-    for (const job of leased) {
-      batchStmts.push(
-        this.db.prepare(`UPDATE crawl_jobs SET state='pending',claimed_by=NULL,lease_id=NULL,
-          lease_expires_at=NULL,lease_profile_id=NULL WHERE job_id=?`).bind(job.job_id),
-        this.db.prepare(`UPDATE origin_leases SET active_job_id=NULL,lease_expires_at=NULL
-          WHERE origin=? AND active_job_id=?`).bind(job.origin, job.job_id)
-      );
-    }
-    const dueDelay = await this.approvedDueProfileDelayForOrigin(row.origin, now);
-    if (dueDelay === null) {
-      batchStmts.push(this.db.prepare("UPDATE origin_robots SET refresh_lease_id=NULL, refresh_lease_expires_at=NULL WHERE origin=?").bind(row.origin));
-    }
-    batchStmts.push(
-      this.db.prepare(`INSERT INTO operator_audit_log(entity_type,entity_id,actor,action,reason,occurred_at)
-        VALUES ('profile',?,?, 'disable', ?, ?)`).bind(profileId, actor, reason.trim(), now)
+    this.operator = new OperatorPlane(this.ctx, (url, platform, minDelayMs, sourceRuleId, purpose, audit) =>
+      this.workforce.seedJob(url, platform, minDelayMs, sourceRuleId, purpose, audit)
     );
-    await this.executeBatchChunked(batchStmts);
-    const updatedRow = await this.db.prepare("SELECT * FROM source_access_profiles WHERE profile_id=?")
-      .bind(profileId).first<SourceAccessProfileRow>();
-    return this.sourceAccessProfileFromRow(updatedRow!);
+    this.observation = new ObservationPlane(
+      this.ctx,
+      (leadKey, minDelayMs, actor, reason, sourceRuleId) =>
+        this.approveDiscoveryLead(leadKey, minDelayMs, actor, reason, sourceRuleId)
+    );
+    this.catalog = new CatalogPlane(this.ctx);
+    this.downstream = new DownstreamAndModerationPlane(this.ctx);
   }
 
-  async listAuditLogs(options?: {
-    entityType?: "node" | "lead" | "job" | "rule" | "profile";
+  seedInitialJobs(): Promise<void> {
+    return this.workforce.seedInitialJobs();
+  }
+
+  seedInitialProfiles(actor = "system-bootstrap"): Promise<void> {
+    return this.workforce.seedInitialProfiles(actor);
+  }
+
+  initSchema(autoSeed = false): Promise<void> {
+    return this.workforce.initSchema(autoSeed);
+  }
+
+  activeSourceAccessProfileForTarget(
+    platform: Platform,
+    target: string,
+    purpose: SourcePurpose,
+    cache?: Map<string, SourceAccessProfileRow[]>
+  ): Promise<SourceAccessProfile | null> {
+    return this.ctx.activeSourceAccessProfileForTarget(platform, target, purpose, cache);
+  }
+
+  authenticate(nodeId: string, bearer: string): Promise<NodePrincipal | null> {
+    return this.workforce.authenticate(nodeId, bearer);
+  }
+
+  heartbeat(request: HeartbeatRequest, principal: NodePrincipal): Promise<HeartbeatResponse> {
+    return this.workforce.heartbeat(request, principal);
+  }
+
+  claim(request: ClaimRequest, principal: NodePrincipal): Promise<ClaimResponse> {
+    return this.workforce.claim(request, principal);
+  }
+
+  submit(request: ResultRequest, principal: NodePrincipal): Promise<ResultResponse> {
+    return this.observation.submit(request, principal);
+  }
+
+  submitBatch(request: BatchResultRequest, principal: NodePrincipal): Promise<BatchResultResponse> {
+    return this.observation.submitBatch(request, principal);
+  }
+
+  revokeNode(nodeId: string, input: RevokeNodeRequest, actor: string): Promise<void> {
+    return this.operator.revokeNode(nodeId, input, actor);
+  }
+
+  createNodeCredential(
+    nodeId: string,
+    capabilities: Platform[],
+    audit?: { actor: string; reason: string }
+  ): Promise<string> {
+    return this.operator.createNodeCredential(nodeId, capabilities, audit);
+  }
+
+  evaluateWorkforceDistribution(candidateCapabilities?: Platform[]): Promise<Platform[]> {
+    return this.operator.evaluateWorkforceDistribution(candidateCapabilities);
+  }
+
+  issueNodeCredential(input: IssueNodeCredential, actor: string): Promise<string> {
+    return this.operator.issueNodeCredential(input, actor);
+  }
+
+  listLeadsPage(
+    status: "pending_review" | "approved" | "rejected",
+    limit: number,
+    cursor: LeadCursor | null
+  ): Promise<{ leads: LeadRow[]; nextCursor: string | null }> {
+    return this.operator.listLeadsPage(status, limit, cursor);
+  }
+
+  approveDiscoveryLead(
+    leadKey: string,
+    minDelayMs = 1000,
+    actor = "local-cli",
+    reason = "Operator reviewed listing",
+    sourceRuleId?: string
+  ): Promise<string> {
+    return this.operator.approveDiscoveryLead(leadKey, minDelayMs, actor, reason, sourceRuleId);
+  }
+
+  approveVpmListingLead(
+    leadKey: string,
+    minDelayMs = 1000,
+    actor = "local-cli",
+    reason = "Operator reviewed listing",
+    sourceRuleId?: string
+  ): Promise<string> {
+    return this.approveDiscoveryLead(leadKey, minDelayMs, actor, reason, sourceRuleId);
+  }
+
+  rejectLead(leadKey: string, actor: string, reason: string): Promise<void> {
+    return this.operator.rejectLead(leadKey, actor, reason);
+  }
+
+  listAutoQueueRulesPage(
+    limit: number,
+    cursor: RuleCursor | null
+  ): Promise<{ rules: AutoQueueRule[]; nextCursor: string | null }> {
+    return this.operator.listAutoQueueRulesPage(limit, cursor);
+  }
+
+  createAutoQueueRule(input: CreateAutoQueueRule, actor: string): Promise<AutoQueueRule> {
+    return this.operator.createAutoQueueRule(input, actor);
+  }
+
+  disableAutoQueueRule(ruleId: string, actor: string, reason: string): Promise<AutoQueueRule> {
+    return this.operator.disableAutoQueueRule(ruleId, actor, reason);
+  }
+
+  listSourceAccessProfilesPage(
+    limit: number,
+    cursor: ProfileCursor | null
+  ): Promise<{ profiles: SourceAccessProfile[]; nextCursor: string | null }> {
+    return this.operator.listSourceAccessProfilesPage(limit, cursor);
+  }
+
+  createSourceAccessProfile(input: CreateSourceAccessProfile, actor: string): Promise<SourceAccessProfile> {
+    return this.operator.createSourceAccessProfile(input, actor);
+  }
+
+  disableSourceAccessProfile(profileId: string, actor: string, reason: string): Promise<SourceAccessProfile> {
+    return this.operator.disableSourceAccessProfile(profileId, actor, reason);
+  }
+
+  listAuditLogs(options?: {
+    entityType?: "node" | "lead" | "job" | "rule" | "profile" | "app";
     entityId?: string;
     limit?: number;
   }): Promise<OperatorAuditLogRow[]> {
-    const limit = Math.min(Math.max(options?.limit ?? 50, 1), 100);
-    let sql = "SELECT * FROM operator_audit_log";
-    const conditions: string[] = [];
-    const params: unknown[] = [];
-    if (options?.entityType) {
-      conditions.push("entity_type = ?");
-      params.push(options.entityType);
-    }
-    if (options?.entityId) {
-      conditions.push("entity_id = ?");
-      params.push(options.entityId);
-    }
-    if (conditions.length > 0) {
-      sql += ` WHERE ${conditions.join(" AND ")}`;
-    }
-    sql += " ORDER BY occurred_at DESC, action_id DESC LIMIT ?";
-    params.push(limit);
-    const res = await this.db.prepare(sql).bind(...params).all<OperatorAuditLogRow>();
-    return res.results || [];
+    return this.operator.listAuditLogs(options);
   }
 
-  async getCatalogEpoch(): Promise<string> {
-    const row = await this.db.prepare("SELECT value FROM coordinator_meta WHERE key='catalog_epoch'").first<{ value: string }>();
-    if (row) return row.value;
-    const initial = "epoch-d1-" + crypto.randomUUID();
-    await this.db.prepare("INSERT OR IGNORE INTO coordinator_meta(key, value) VALUES ('catalog_epoch', ?)").bind(initial).run();
-    const stored = await this.db.prepare("SELECT value FROM coordinator_meta WHERE key='catalog_epoch'").first<{ value: string }>();
-    if (!stored) throw new Error("Catalog epoch initialization failed");
-    return stored.value;
+  getCatalogEpoch(): Promise<string> {
+    return this.catalog.getCatalogEpoch();
   }
 
-  async resetCatalogEpoch(): Promise<string> {
-    const next = "epoch-d1-" + crypto.randomUUID();
-    await this.db.prepare("INSERT INTO coordinator_meta(key, value) VALUES ('catalog_epoch', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(next).run();
-    return next;
+  resetCatalogEpoch(): Promise<string> {
+    return this.catalog.resetCatalogEpoch();
   }
 
-  private async buildCatalogPackage(pkg: {
-    canonical_id: string; umbrella: string; category: string; lifecycle: string;
-    display_name: string; vpm_id: string | null; created_at: string; updated_at: string;
-    published_at?: string | null; timestamp_confidence?: string | null;
-    content_rating?: string | null;
-  }): Promise<CatalogPackage> {
-    const [result] = await this.buildCatalogPackagesBatch([pkg]);
-    return result;
+  buildCatalogPackagesBatch(
+    pkgRows: Array<{
+      canonical_id: string;
+      umbrella: string;
+      category: string;
+      lifecycle: string;
+      display_name: string;
+      vpm_id: string | null;
+      created_at: string;
+      updated_at: string;
+      published_at?: string | null;
+      timestamp_confidence?: string | null;
+      content_rating?: string | null;
+    }>
+  ): Promise<CatalogPackage[]> {
+    return this.catalog.buildCatalogPackagesBatch(pkgRows);
   }
 
-  async buildCatalogPackagesBatch(pkgRows: Array<{
-    canonical_id: string; umbrella: string; category: string; lifecycle: string;
-    display_name: string; vpm_id: string | null; created_at: string; updated_at: string;
-    published_at?: string | null; timestamp_confidence?: string | null;
-    content_rating?: string | null;
-  }>): Promise<CatalogPackage[]> {
-    if (pkgRows.length === 0) return [];
-    const canonicalIds = pkgRows.map((p) => p.canonical_id);
-    const placeholders = canonicalIds.map(() => "?").join(",");
-
-    const linkRes = await this.db.prepare(`SELECT il.link_id, il.canonical_id, il.source_key, il.evidence_kind, il.confidence, il.created_at,
-        sap.publish_classes_json
-      FROM identity_links il
-      LEFT JOIN (
-        SELECT sv.source_key, sap_inner.publish_classes_json
-        FROM source_versions sv
-        JOIN source_access_profiles sap_inner ON sv.source_profile_id = sap_inner.profile_id
-        WHERE sv.version_no = (
-          SELECT MAX(sv2.version_no) FROM source_versions sv2 WHERE sv2.source_key = sv.source_key
-        )
-      ) sap ON il.source_key = sap.source_key
-      WHERE il.canonical_id IN (${placeholders}) AND il.review_state='accepted'
-      ORDER BY il.created_at ASC`).bind(...canonicalIds).all<{
-      link_id: string; canonical_id: string; source_key: string; evidence_kind: string;
-      confidence: number; created_at: string; publish_classes_json: string | null;
-    }>();
-    const linksByCanonical = new Map<string, CatalogIdentityLink[]>();
-    const canonicalHasLinks = new Set<string>();
-    const canonicalHasPublishableLink = new Set<string>();
-    for (const l of linkRes.results || []) {
-      canonicalHasLinks.add(l.canonical_id);
-      let canPublish = true;
-      if (l.publish_classes_json !== null && l.publish_classes_json !== undefined) {
-        try {
-          const parsed = JSON.parse(l.publish_classes_json);
-          canPublish = Array.isArray(parsed) && parsed.length > 0 && parsed.includes("normalized_facts");
-        } catch {
-          canPublish = false;
-        }
-      }
-      if (canPublish) {
-        canonicalHasPublishableLink.add(l.canonical_id);
-        const list = linksByCanonical.get(l.canonical_id) || [];
-        list.push({
-          linkId: l.link_id, sourceKey: l.source_key,
-          evidenceKind: l.evidence_kind as CatalogIdentityLink["evidenceKind"],
-          confidence: l.confidence, createdAt: l.created_at
-        });
-        linksByCanonical.set(l.canonical_id, list);
-      }
-    }
-
-    const frontRes = await this.db.prepare(`SELECT pf.front_id, pf.canonical_id, pf.source_key, pf.platform, pf.storefront_url, pf.price, pf.currency, pf.availability, pf.observed_at,
-        sap.publish_classes_json
-      FROM package_fronts pf
-      LEFT JOIN (
-        SELECT sv.source_key, sap_inner.publish_classes_json
-        FROM source_versions sv
-        JOIN source_access_profiles sap_inner ON sv.source_profile_id = sap_inner.profile_id
-        WHERE sv.version_no = (
-          SELECT MAX(sv2.version_no) FROM source_versions sv2 WHERE sv2.source_key = sv.source_key
-        )
-      ) sap ON pf.source_key = sap.source_key
-      WHERE pf.canonical_id IN (${placeholders})
-        AND EXISTS (
-          SELECT 1 FROM identity_links il
-          WHERE il.canonical_id = pf.canonical_id
-            AND il.source_key = pf.source_key
-            AND il.review_state = 'accepted'
-        )
-      ORDER BY pf.observed_at ASC, pf.front_id ASC`).bind(...canonicalIds).all<{
-      front_id: string; canonical_id: string; source_key: string; platform: Platform;
-      storefront_url: string; price: number | null; currency: string | null;
-      availability: "available" | "delisted" | "unknown"; observed_at: string;
-      publish_classes_json: string | null;
-    }>();
-    const frontsByCanonical = new Map<string, PackageFront[]>();
-    for (const f of frontRes.results || []) {
-      let canPublish = true;
-      if (f.publish_classes_json !== null && f.publish_classes_json !== undefined) {
-        try {
-          const parsed = JSON.parse(f.publish_classes_json);
-          canPublish = Array.isArray(parsed) && parsed.length > 0 && parsed.includes("normalized_facts");
-        } catch {
-          canPublish = false;
-        }
-      }
-      if (canPublish) {
-        const list = frontsByCanonical.get(f.canonical_id) || [];
-        list.push({
-          frontId: f.front_id,
-          canonicalId: f.canonical_id,
-          sourceKey: f.source_key,
-          platform: f.platform,
-          storefrontUrl: f.storefront_url,
-          price: f.price,
-          currency: f.currency,
-          availability: f.availability,
-          observedAt: f.observed_at
-        });
-        frontsByCanonical.set(f.canonical_id, list);
-      }
-    }
-
-    return pkgRows
-      .filter((pkg) => !canonicalHasLinks.has(pkg.canonical_id) || canonicalHasPublishableLink.has(pkg.canonical_id))
-      .map((pkg) => ({
-        canonicalId: pkg.canonical_id,
-        umbrella: pkg.umbrella as CatalogPackage["umbrella"],
-        category: pkg.category,
-        lifecycle: pkg.lifecycle as CatalogPackage["lifecycle"],
-        displayName: pkg.display_name,
-        vpmId: pkg.vpm_id,
-        createdAt: pkg.created_at,
-        updatedAt: pkg.updated_at,
-        publishedAt: pkg.published_at ?? null,
-        timestampConfidence: (pkg.timestamp_confidence as CatalogPackage["timestampConfidence"]) ?? null,
-        contentRating: (pkg.content_rating as CatalogPackage["contentRating"]) || "general",
-        acceptedLinks: linksByCanonical.get(pkg.canonical_id) || [],
-        fronts: frontsByCanonical.get(pkg.canonical_id) || []
-      }));
-  }
-
-  async listCanonicalPackagesPage(
+  listCanonicalPackagesPage(
     limit: number,
     cursor: CatalogCursor | null,
-    options: { includeAllRatings?: boolean } = {}
-  ): Promise<{ packages: CatalogPackage[]; nextCursor: string | null; }> {
-    if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error("Catalog limit must be 1..100");
-    const conditions: string[] = ["p.content_rating != 'prohibited'"];
-    const params: (string | number)[] = [];
-    if (!options.includeAllRatings) {
-      conditions.push("p.content_rating = 'general'");
-    }
-    if (cursor) {
-      conditions.push("(p.created_at, p.canonical_id) < (?, ?)");
-      params.push(cursor.createdAt, cursor.canonicalId);
-    }
-    const where = `WHERE ${conditions.join(" AND ")}`;
-    params.push(limit + 1);
-    const pkgRes = await this.db.prepare(`SELECT p.canonical_id, p.umbrella, p.category, p.lifecycle, p.display_name, p.vpm_id, p.created_at, p.updated_at, p.published_at, p.timestamp_confidence, p.content_rating FROM canonical_packages p ${where}
-      ORDER BY p.created_at DESC, p.canonical_id DESC LIMIT ?`)
-      .bind(...params).all<{
-        canonical_id: string; umbrella: string; category: string; lifecycle: string;
-        display_name: string; vpm_id: string | null; created_at: string; updated_at: string;
-        published_at?: string | null; timestamp_confidence?: string | null;
-        content_rating?: string | null;
-      }>();
-    const pkgRows = pkgRes.results || [];
-    const visible = pkgRows.slice(0, limit);
-    const last = visible.at(-1);
-    const packages = await this.buildCatalogPackagesBatch(visible);
-    return {
-      packages,
-      nextCursor: pkgRows.length > limit && last
-        ? encodeCatalogCursor({ createdAt: last.created_at, canonicalId: last.canonical_id })
-        : null
-    };
+    options?: { includeAllRatings?: boolean }
+  ): Promise<{ packages: CatalogPackage[]; nextCursor: string | null }> {
+    return this.catalog.listCanonicalPackagesPage(limit, cursor, options);
   }
 
-  async listCatalogDeltasPage(limit: number, cursor: CatalogDeltaCursor | null): Promise<{ epoch: string; deltas: CatalogDelta[]; nextCursor: string | null; }> {
-    if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error("Catalog limit must be 1..100");
-    const epoch = await this.getCatalogEpoch();
-    const conditions: string[] = [];
-    const params: (string | number)[] = [];
-    if (cursor) {
-      conditions.push("(d.updated_at, d.canonical_id) > (?, ?)");
-      params.push(cursor.updatedAt, cursor.canonicalId);
-    }
-    const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
-    params.push(limit + 1);
-    const query = `SELECT d.canonical_id, d.umbrella, d.category, d.lifecycle, d.display_name, d.vpm_id, d.created_at, d.updated_at, d.published_at, d.timestamp_confidence, d.content_rating, d.delta_action FROM (
-      SELECT p.canonical_id, p.umbrella, p.category, p.lifecycle, p.display_name, p.vpm_id, p.created_at, p.updated_at, p.published_at, p.timestamp_confidence, p.content_rating,
-        CASE WHEN p.lifecycle = 'delisted' THEN 'delist' ELSE 'upsert' END AS delta_action
-      FROM canonical_packages p WHERE p.content_rating = 'general'
-      UNION ALL
-      SELECT t.canonical_id, NULL AS umbrella, NULL AS category, 'delisted' AS lifecycle, '' AS display_name, NULL AS vpm_id, '' AS created_at, t.recorded_at AS updated_at, NULL AS published_at, NULL AS timestamp_confidence, 'general' AS content_rating, 'delist' AS delta_action
-      FROM catalog_tombstones t
-      WHERE NOT EXISTS (
-        SELECT 1 FROM canonical_packages p
-        WHERE p.canonical_id = t.canonical_id
-          AND p.updated_at = t.recorded_at
-          AND p.lifecycle = 'delisted'
-          AND p.content_rating = 'general'
-      )
-    ) d ${where}
-    ORDER BY d.updated_at ASC, d.canonical_id ASC LIMIT ?`;
-    const pkgRes = await this.db.prepare(query)
-      .bind(...params).all<{
-        canonical_id: string; umbrella: string | null; category: string | null; lifecycle: string;
-        display_name: string; vpm_id: string | null; created_at: string; updated_at: string;
-        published_at?: string | null; timestamp_confidence?: string | null;
-        content_rating?: string | null; delta_action: "upsert" | "delist";
-      }>();
-    const pkgRows = pkgRes.results || [];
-    const visible = pkgRows.slice(0, limit);
-    const last = visible.at(-1);
-    const nonDelisted = visible.filter((p) => p.delta_action !== "delist");
-    const builtPackages = await this.buildCatalogPackagesBatch(nonDelisted as any);
-    const packageMap = new Map(builtPackages.map((p) => [p.canonicalId, p]));
-    const deltas: CatalogDelta[] = [];
-    for (const pkg of visible) {
-      if (pkg.delta_action === "delist") {
-        deltas.push({
-          action: "delist",
-          canonicalId: pkg.canonical_id,
-          updatedAt: pkg.updated_at
-        });
-      } else {
-        const item = packageMap.get(pkg.canonical_id);
-        if (item) {
-          deltas.push({
-            action: "upsert",
-            canonicalId: pkg.canonical_id,
-            updatedAt: pkg.updated_at,
-            package: item
-          });
-        } else {
-          deltas.push({
-            action: "delist",
-            canonicalId: pkg.canonical_id,
-            updatedAt: pkg.updated_at
-          });
-        }
-      }
-    }
-    return {
-      epoch,
-      deltas,
-      nextCursor: pkgRows.length > limit && last
-        ? encodeCatalogDeltaCursor({ updatedAt: last.updated_at, canonicalId: last.canonical_id })
-        : null
-    };
+  listCatalogDeltasPage(
+    limit: number,
+    cursor: CatalogDeltaCursor | null
+  ): Promise<{ epoch: string; deltas: CatalogDelta[]; nextCursor: string | null }> {
+    return this.catalog.listCatalogDeltasPage(limit, cursor);
   }
 
-  // --- Seed & Robots Helpers ---
-  async enqueueJob(input: EnqueueJobRequest, actor: string): Promise<string> {
-    const parsed = EnqueueJobRequestSchema.parse(input);
-    return this.seedJob(parsed.url, parsed.platform, parsed.minDelayMs, undefined, parsed.purpose,
-      { actor, reason: parsed.reason });
+  enqueueJob(input: EnqueueJobRequest, actor: string): Promise<string> {
+    return this.workforce.enqueueJob(input, actor);
   }
 
-  async seedJob(url: string, platform: Platform, minDelayMs = 1000, sourceRuleId?: string,
-    purpose: SourcePurpose = "metadata", audit?: { actor: string; reason: string; leadKey?: string }): Promise<string> {
-    if (audit && (!audit.actor.trim() || audit.actor.length > 100 || !audit.reason.trim() || audit.reason.length > 300)) {
-      throw new Error("Seed audit actor and reason required");
-    }
-    if (audit?.leadKey !== undefined && !/^[a-f0-9]{64}$/.test(audit.leadKey)) throw new Error("Invalid approval lead key");
-    PlatformSchema.parse(platform);
-    if (purpose !== "metadata" && purpose !== "discovery") throw new Error("Invalid job purpose");
-    const parsed = new URL(url);
-    if (parsed.protocol !== "https:") throw new Error("Crawl jobs require HTTPS");
-    if (isItchSearchUrl(parsed.href)) throw new Error("itch.io /search is disallowed by published robots rules");
-    const hostname = parsed.hostname.replace(/^\[|\]$/g, "");
-    if (parsed.username || parsed.password || parsed.hash || (parsed.port && parsed.port !== "443") ||
-      hostname.endsWith(".") || hostname.toLowerCase() === "localhost" ||
-      (isIp(hostname) && isPrivateOrReservedIp(hostname))) {
-      throw new Error("Crawl job target must be public credential-free HTTPS on port 443");
-    }
-    if ((platform === "github" || parsed.hostname === "api.github.com") &&
-      (platform !== "github" || !githubApiRepositoryIdentity(parsed.href))) {
-      throw new Error("GitHub jobs require a public REST repository metadata endpoint");
-    }
-    if (platform === "shopify") {
-      if (purpose === "discovery" && !isShopifyProductSitemapTarget(parsed.href)) {
-        throw new Error("Shopify discovery jobs require an exact product-sitemap discovery URL");
-      }
-      if (purpose === "metadata" && !shopifyProductLead(parsed.href, parsed.origin)) {
-        throw new Error("Shopify metadata jobs require an exact merchant product URL");
-      }
-    }
-    if (platform === "sellfy" && purpose === "metadata" && !isSellfyProductTarget(parsed.href)) {
-      throw new Error("Sellfy metadata jobs require an exact product URL");
-    }
-    if (!Number.isInteger(minDelayMs) || minDelayMs < 0 || minDelayMs > 86400000) throw new Error("Invalid origin delay");
-    const effectiveMinDelayMs = platform === "github" ? Math.max(minDelayMs, 60000) : minDelayMs;
-    const origin = parsed.origin;
-    const now = new Date(this.now()).toISOString();
-    const id = crypto.randomUUID();
-
-    const suppressed = await this.db.prepare("SELECT 1 FROM suppressed_urls WHERE url=?").bind(parsed.href).first();
-    if (suppressed) {
-      throw new Error("URL is suppressed and cannot be reseeded");
-    }
-    if (sourceRuleId) {
-      const activeRule = await this.db.prepare(`SELECT 1 FROM lead_autoqueue_rules
-        WHERE rule_id=? AND disabled_at IS NULL AND expires_at>?`).bind(sourceRuleId, now).first();
-      if (!activeRule) {
-        throw new Error("Auto-queue rule is no longer active");
-      }
-    }
-
-    const authoritySql = `NOT EXISTS (SELECT 1 FROM suppressed_urls WHERE url=?)
-      AND (? IS NULL OR EXISTS (SELECT 1 FROM lead_autoqueue_rules
-        WHERE rule_id=? AND disabled_at IS NULL AND expires_at>?))
-      AND (? IS NULL OR EXISTS (SELECT 1 FROM source_leads
-        WHERE lead_key=? AND status IN ('pending_review','approved')))`;
-    const authorityParams = [parsed.href, sourceRuleId || null, sourceRuleId || null, now,
-      audit?.leadKey ?? null, audit?.leadKey ?? null];
-    const batchStmts = [
-      this.db.prepare(`INSERT OR IGNORE INTO crawl_jobs
-        (job_id,platform,url,origin,state,next_fetch_at,created_at,source_rule_id,job_purpose)
-        SELECT ?,?,?,?,'pending',?,?,?,? WHERE ${authoritySql}`)
-        .bind(id, platform, parsed.href, origin, now, now, sourceRuleId || null, purpose, ...authorityParams),
-      this.db.prepare(`INSERT OR IGNORE INTO origin_leases(origin,active_job_id,lease_expires_at,next_allowed_at,min_delay_ms)
-        SELECT ?,NULL,NULL,?,? WHERE EXISTS
-        (SELECT 1 FROM crawl_jobs WHERE url=? AND platform=? AND job_purpose=?) AND ${authoritySql}`)
-        .bind(origin, now, effectiveMinDelayMs, parsed.href, platform, purpose, ...authorityParams),
-      this.db.prepare(`UPDATE origin_leases SET min_delay_ms = MAX(min_delay_ms, ?) WHERE origin = ?
-        AND EXISTS (SELECT 1 FROM crawl_jobs WHERE url=? AND platform=? AND job_purpose=?) AND ${authoritySql}`)
-        .bind(effectiveMinDelayMs, origin, parsed.href, platform, purpose, ...authorityParams)
-    ];
-    if (sourceRuleId) {
-      batchStmts.push(
-        this.db.prepare(`UPDATE crawl_jobs SET source_rule_id=?
-          WHERE url=? AND platform=? AND job_purpose=? AND source_rule_id IS NOT NULL AND ${authoritySql}`)
-          .bind(sourceRuleId, parsed.href, platform, purpose, ...authorityParams)
-      );
-    }
-    if (audit?.leadKey !== undefined) {
-      const matchingJob = `EXISTS (SELECT 1 FROM crawl_jobs WHERE url=? AND platform=? AND job_purpose=?)`;
-      batchStmts.push(
-        this.db.prepare(`INSERT INTO operator_audit_log(entity_type,entity_id,actor,action,reason,occurred_at)
-          SELECT 'lead',lead_key,?,'approve_lead',?,? FROM source_leads
-          WHERE lead_key=? AND status='pending_review' AND ${matchingJob} AND ${authoritySql}`)
-          .bind(audit.actor, audit.reason.trim(), now, audit.leadKey, parsed.href, platform, purpose, ...authorityParams),
-        this.db.prepare(`UPDATE source_leads SET status='approved'
-          WHERE lead_key=? AND status='pending_review' AND ${matchingJob} AND ${authoritySql}`)
-          .bind(audit.leadKey, parsed.href, platform, purpose, ...authorityParams)
-      );
-    } else if (audit) {
-      batchStmts.push(this.db.prepare(`INSERT INTO operator_audit_log(entity_type,entity_id,actor,action,reason,occurred_at)
-        SELECT 'job',job_id,?,'seed',?,? FROM crawl_jobs WHERE url=? AND platform=? AND job_purpose=? AND ${authoritySql}`)
-        .bind(audit.actor, audit.reason.trim(), now, parsed.href, platform, purpose, ...authorityParams));
-    }
-    await this.executeBatchChunked(batchStmts);
-
-    const stored = await this.db.prepare(`SELECT job_id,platform,job_purpose,
-      EXISTS (SELECT 1 FROM suppressed_urls WHERE url=?) AS suppressed,
-      (? IS NULL OR EXISTS (SELECT 1 FROM lead_autoqueue_rules
-        WHERE rule_id=? AND disabled_at IS NULL AND expires_at>?)) AS rule_active,
-      (? IS NULL OR EXISTS (SELECT 1 FROM source_leads
-        WHERE lead_key=? AND status IN ('pending_review','approved'))) AS lead_active
-      FROM (SELECT 1) LEFT JOIN crawl_jobs ON url=?`)
-      .bind(...authorityParams, parsed.href).first<{ job_id: string | null; platform: Platform | null;
-        job_purpose: SourcePurpose | null; suppressed: number; rule_active: number; lead_active: number; }>();
-    if (stored?.suppressed) throw new Error("URL is suppressed and cannot be reseeded");
-    if (stored && !stored.rule_active) throw new Error("Auto-queue rule is no longer active");
-    if (stored && !stored.lead_active) throw new Error("Lead is no longer eligible for approval");
-    if (!stored?.job_id) throw new Error("Job insertion failed");
-    if (stored.platform !== platform) throw new Error("Existing job has a different reviewed platform");
-    if (stored.job_purpose !== purpose) throw new Error("Existing job has a different reviewed purpose");
-    return stored.job_id;
+  seedJob(
+    url: string,
+    platform: Platform,
+    minDelayMs = 1000,
+    sourceRuleId?: string,
+    purpose: SourcePurpose = "metadata",
+    audit?: { actor: string; reason: string; leadKey?: string }
+  ): Promise<string> {
+    return this.workforce.seedJob(url, platform, minDelayMs, sourceRuleId, purpose, audit);
   }
 
-  /** Claim one stale/missing snapshot for an already queued, nonblocked origin. */
-  async claimDueRobotsRefresh(): Promise<{ origin: string; leaseId: string } | null> {
-    const nowMs = this.now();
-    const now = new Date(nowMs).toISOString();
-    const delay = approvedRobotsJobDelaySql("o.origin", "?1");
-    const due = await this.db.prepare(`SELECT o.origin FROM origin_leases o
-      LEFT JOIN origin_robots r ON r.origin=o.origin
-      WHERE o.next_allowed_at<=?1 AND (r.origin IS NULL OR r.expires_at IS NULL OR r.expires_at<=?1)
-        AND (r.refresh_lease_expires_at IS NULL OR r.refresh_lease_expires_at<=?1)
-        AND (o.active_job_id IS NULL OR o.lease_expires_at<=?1)
-        AND EXISTS (SELECT 1 FROM crawl_jobs j WHERE j.origin=o.origin
-          AND j.state!='blocked' AND j.next_fetch_at<=?1
-          AND (j.source_rule_id IS NULL OR EXISTS (SELECT 1 FROM lead_autoqueue_rules ar
-            WHERE ar.rule_id=j.source_rule_id AND ar.disabled_at IS NULL AND ar.expires_at>?1)))
-        AND ${delay} IS NOT NULL
-      ORDER BY o.origin ASC LIMIT 1`).bind(now).first<{ origin: string }>();
-    if (!due) return null;
-    const leaseId = await this.reserveRobotsRefresh(due.origin);
-    return leaseId ? { origin: due.origin, leaseId } : null;
+  claimDueRobotsRefresh(): Promise<{ origin: string; leaseId: string } | null> {
+    return this.workforce.claimDueRobotsRefresh();
   }
 
-  /** Reserve only a due, authorized origin; never grants a node fetch lease. */
-  async reserveRobotsRefresh(origin: string): Promise<string | null> {
-    OriginRobotsSnapshotSchema.parse({ origin, statusCode: 599, body: "" });
-    const nowMs = this.now();
-    const now = new Date(nowMs).toISOString();
-    const expires = new Date(nowMs + ROBOTS_REFRESH_LEASE_MS).toISOString();
-    const leaseId = crypto.randomUUID();
-    const delay = approvedRobotsJobDelaySql("?1", "?2");
-    const results = await this.db.batch([
-      this.db.prepare(`INSERT INTO origin_robots(origin,refresh_lease_id,refresh_lease_expires_at)
-        SELECT o.origin,?3,?4 FROM origin_leases o WHERE o.origin=?1 AND o.next_allowed_at<=?2
-          AND (o.active_job_id IS NULL OR o.lease_expires_at<=?2)
-          AND NOT EXISTS (SELECT 1 FROM origin_robots r WHERE r.origin=o.origin AND r.expires_at>?2)
-          AND ${delay} IS NOT NULL
-        ON CONFLICT(origin) DO UPDATE SET refresh_lease_id=excluded.refresh_lease_id,refresh_lease_expires_at=excluded.refresh_lease_expires_at
-          WHERE origin_robots.refresh_lease_expires_at IS NULL OR origin_robots.refresh_lease_expires_at<=?2`).bind(origin, now, leaseId, expires),
-      this.db.prepare(`UPDATE origin_leases SET next_allowed_at=MAX(next_allowed_at,
-        strftime('%Y-%m-%dT%H:%M:%fZ',julianday(?2)+MAX(min_delay_ms,${delay})/86400000.0))
-        WHERE origin=?1 AND EXISTS (SELECT 1 FROM origin_robots r
-          WHERE r.origin=?1 AND r.refresh_lease_id=?3 AND r.refresh_lease_expires_at>?2)`)
-        .bind(origin, now, leaseId)
-    ]);
-    return ((results[0]?.meta as { changes?: number } | undefined)?.changes ?? 0) === 1 ? leaseId : null;
+  reserveRobotsRefresh(origin: string): Promise<string | null> {
+    return this.workforce.reserveRobotsRefresh(origin);
   }
 
-  async releaseRobotsRefresh(origin: string, leaseId: string): Promise<boolean> {
-    const results = await this.db.batch([
-      this.db.prepare("DELETE FROM origin_robots WHERE origin=? AND refresh_lease_id=? AND snapshot_id IS NULL").bind(origin, leaseId),
-      this.db.prepare("UPDATE origin_robots SET refresh_lease_id=NULL, refresh_lease_expires_at=NULL WHERE origin=? AND refresh_lease_id=? AND snapshot_id IS NOT NULL").bind(origin, leaseId)
-    ]);
-    const delChanges = (results[0]?.meta as { changes?: number } | undefined)?.changes ?? 0;
-    const updChanges = (results[1]?.meta as { changes?: number } | undefined)?.changes ?? 0;
-    return (delChanges + updChanges) === 1;
+  releaseRobotsRefresh(origin: string, leaseId: string): Promise<boolean> {
+    return this.workforce.releaseRobotsRefresh(origin, leaseId);
   }
 
-  private robotsSnapshotStatements(parsed: OriginRobotsSnapshot, nowMs: number,
-    guard: string | ((offset: number) => string) = "1", guardValues: unknown[] = [], clearLease = false): D1PreparedStatement[] {
-    const fetchedAt = new Date(nowMs).toISOString();
-    const ttlMs = (parsed.statusCode >= 200 && parsed.statusCode < 300) ||
-      robotsResultAllowsMissingFile(parsed.statusCode) ? 24 * 60 * 60 * 1000 : 60 * 60 * 1000;
-    const expiresAt = new Date(nowMs + ttlMs).toISOString();
-    const leaseUpdate = clearLease ? ",refresh_lease_id=NULL,refresh_lease_expires_at=NULL" : "";
-    return [
-      this.db.prepare(`INSERT INTO origin_robots(origin,snapshot_id,status_code,body,fetched_at,expires_at)
-        SELECT ?,?,?,?,?,? WHERE ${typeof guard === "string" ? guard : guard(6)} ON CONFLICT(origin) DO UPDATE SET
-        snapshot_id=excluded.snapshot_id,status_code=excluded.status_code,body=excluded.body,
-        fetched_at=excluded.fetched_at,expires_at=excluded.expires_at${leaseUpdate}`)
-        .bind(parsed.origin, crypto.randomUUID(), parsed.statusCode, parsed.body, fetchedAt, expiresAt, ...guardValues),
-      this.db.prepare(`UPDATE crawl_jobs SET next_fetch_at=?,robots_deferred_until=NULL
-        WHERE origin=? AND robots_deferred_until IS NOT NULL AND state IN ('pending','done','backoff') AND ${typeof guard === "string" ? guard : guard(2)}`)
-        .bind(fetchedAt, parsed.origin, ...guardValues)
-    ];
+  completeRobotsRefresh(origin: string, leaseId: string, statusCode: number, body = ""): Promise<boolean> {
+    return this.workforce.completeRobotsRefresh(origin, leaseId, statusCode, body);
   }
 
-  async completeRobotsRefresh(origin: string, leaseId: string, statusCode: number, body = ""): Promise<boolean> {
-    const parsed = OriginRobotsSnapshotSchema.parse({ origin, statusCode, body });
-    const nowMs = this.now();
-    const now = new Date(nowMs).toISOString();
-    // The guard uses positional placeholders relative to each statement's prefix.
-    const guardFor = (offset: number) => `EXISTS (SELECT 1 FROM origin_robots r
-      WHERE r.origin=?${offset + 1} AND r.refresh_lease_id=?${offset + 2} AND r.refresh_lease_expires_at>?${offset + 3})
-      AND ${approvedRobotsJobDelaySql(`?${offset + 1}`, `?${offset + 3}`)} IS NOT NULL`;
-    const results = await this.db.batch([
-      ...this.robotsSnapshotStatements(parsed, nowMs, guardFor, [origin, leaseId, now], true)
-    ]);
-    const completed = ((results[0]?.meta as { changes?: number } | undefined)?.changes ?? 0) === 1;
-    if (completed) this.robotsMatchers.delete(parsed.origin);
-    return completed;
+  recordRobotsSnapshot(origin: string, statusCode: number, body = ""): Promise<void> {
+    return this.workforce.recordRobotsSnapshot(origin, statusCode, body);
   }
 
-  async recordRobotsSnapshot(origin: string, statusCode: number, body = ""): Promise<void> {
-    const parsed = OriginRobotsSnapshotSchema.parse({ origin, statusCode, body });
-    await this.db.batch(this.robotsSnapshotStatements(parsed, this.now()));
-    this.robotsMatchers.delete(parsed.origin);
-  }
-
-  async upsertSourceItem(item: {
+  upsertSourceItem(item: {
     sourceKey: string;
     platform: Platform;
     sourceUrl: string;
@@ -2001,26 +329,10 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
     latestVersionNo?: number;
     goneAt?: string | null;
   }): Promise<void> {
-    await this.db.prepare(`
-      INSERT INTO source_items (source_key, platform, source_url, latest_digest, latest_version_no, gone_at)
-      VALUES (?, ?, ?, ?, ?, ?)
-      ON CONFLICT(source_key) DO UPDATE SET
-        platform = excluded.platform,
-        source_url = excluded.source_url,
-        latest_digest = excluded.latest_digest,
-        latest_version_no = excluded.latest_version_no,
-        gone_at = excluded.gone_at
-    `).bind(
-      item.sourceKey,
-      item.platform,
-      item.sourceUrl,
-      item.latestDigest,
-      item.latestVersionNo ?? 1,
-      item.goneAt ?? null
-    ).run();
+    return this.catalog.upsertSourceItem(item);
   }
 
-  async upsertCanonicalPackage(pkg: {
+  upsertCanonicalPackage(pkg: {
     canonicalId: string;
     umbrella: CanonicalUmbrella;
     category: string;
@@ -2032,74 +344,30 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
     publishedAt?: string | null;
     timestampConfidence?: "confirmed" | "inferred" | "observed" | null;
     contentRating?: ContentRating | null;
-  }): Promise<CanonicalPackage & { publishedAt?: string | null; timestampConfidence?: string | null; contentRating?: ContentRating }> {
-    const now = new Date(this.now()).toISOString();
-    const createdAt = pkg.createdAt ?? now;
-    const updatedAt = pkg.updatedAt ?? now;
-    const vpmId = pkg.vpmId ?? null;
-    const publishedAt = pkg.publishedAt ?? null;
-    const timestampConfidence = pkg.timestampConfidence ?? (publishedAt ? "confirmed" : null);
-    const contentRating = pkg.contentRating ?? "general";
-    const existing = await this.db.prepare(
-      "SELECT content_rating FROM canonical_packages WHERE canonical_id = ?"
-    ).bind(pkg.canonicalId).first<{ content_rating: string }>();
-    await this.db.prepare(`
-      INSERT INTO canonical_packages (canonical_id, umbrella, category, lifecycle, display_name, vpm_id, created_at, updated_at, published_at, timestamp_confidence, content_rating)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(canonical_id) DO UPDATE SET
-        umbrella = excluded.umbrella,
-        category = excluded.category,
-        lifecycle = excluded.lifecycle,
-        display_name = excluded.display_name,
-        vpm_id = COALESCE(excluded.vpm_id, canonical_packages.vpm_id),
-        updated_at = excluded.updated_at,
-        published_at = COALESCE(excluded.published_at, canonical_packages.published_at),
-        timestamp_confidence = COALESCE(excluded.timestamp_confidence, canonical_packages.timestamp_confidence),
-        content_rating = excluded.content_rating
-    `).bind(pkg.canonicalId, pkg.umbrella, pkg.category, pkg.lifecycle, pkg.displayName, vpmId, createdAt, updatedAt, publishedAt, timestampConfidence, contentRating).run();
-    if (existing && existing.content_rating === "general" && contentRating !== "general") {
-      await this.db.prepare(`
-        INSERT OR IGNORE INTO catalog_tombstones (canonical_id, reason, recorded_at)
-        VALUES (?, 'rating_withdrawn', ?)
-      `).bind(pkg.canonicalId, updatedAt).run();
+  }): Promise<
+    CanonicalPackage & {
+      publishedAt?: string | null;
+      timestampConfidence?: string | null;
+      contentRating?: ContentRating;
     }
-    const result = await this.getCanonicalPackage(pkg.canonicalId);
-    return result!;
+  > {
+    return this.catalog.upsertCanonicalPackage(pkg);
   }
 
-  async getCanonicalPackage(canonicalId: string): Promise<(CanonicalPackage & { publishedAt?: string | null; timestampConfidence?: string | null; contentRating?: ContentRating }) | null> {
-    const row = await this.db.prepare(
-      "SELECT canonical_id, umbrella, category, lifecycle, display_name, vpm_id, created_at, updated_at, published_at, timestamp_confidence, content_rating FROM canonical_packages WHERE canonical_id = ?"
-    ).bind(canonicalId).first<{
-      canonical_id: string;
-      umbrella: CanonicalUmbrella;
-      category: string;
-      lifecycle: CanonicalLifecycle;
-      display_name: string;
-      vpm_id: string | null;
-      created_at: string;
-      updated_at: string;
-      published_at: string | null;
-      timestamp_confidence: string | null;
-      content_rating: string | null;
-    }>();
-    if (!row) return null;
-    return {
-      canonicalId: row.canonical_id,
-      umbrella: row.umbrella,
-      category: row.category,
-      lifecycle: row.lifecycle,
-      displayName: row.display_name,
-      vpmId: row.vpm_id,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-      publishedAt: row.published_at,
-      timestampConfidence: row.timestamp_confidence as "confirmed" | "inferred" | "observed" | null,
-      contentRating: (row.content_rating as ContentRating) || "general"
-    };
+  getCanonicalPackage(
+    canonicalId: string
+  ): Promise<
+    | (CanonicalPackage & {
+        publishedAt?: string | null;
+        timestampConfidence?: string | null;
+        contentRating?: ContentRating;
+      })
+    | null
+  > {
+    return this.catalog.getCanonicalPackage(canonicalId);
   }
 
-  async createIdentityLink(link: {
+  createIdentityLink(link: {
     linkId?: string;
     sourceKey: string;
     canonicalId: string;
@@ -2109,139 +377,42 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
     createdAt?: string;
     reviewedAt?: string | null;
   }): Promise<IdentityLink> {
-    if (link.confidence < 0.0 || link.confidence > 1.0) {
-      throw new RangeError("confidence must be between 0.0 and 1.0");
-    }
-    const linkId = link.linkId ?? crypto.randomUUID();
-    const now = new Date(this.now()).toISOString();
-    const createdAt = link.createdAt ?? now;
-    const reviewState = link.reviewState ?? "provisional";
-    const reviewedAt = link.reviewedAt ?? (reviewState !== "provisional" ? now : null);
-    await this.db.prepare(`
-      INSERT INTO identity_links (link_id, source_key, canonical_id, evidence_kind, confidence, review_state, created_at, reviewed_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `).bind(linkId, link.sourceKey, link.canonicalId, link.evidenceKind, link.confidence, reviewState, createdAt, reviewedAt).run();
-
-    if (reviewState === "accepted" || reviewState === "provisional") {
-      await this.syncPackageFrontFromSourceItem(link.canonicalId, link.sourceKey);
-    }
-
-    return {
-      linkId,
-      sourceKey: link.sourceKey,
-      canonicalId: link.canonicalId,
-      evidenceKind: link.evidenceKind,
-      confidence: link.confidence,
-      reviewState,
-      createdAt,
-      reviewedAt
-    };
+    return this.catalog.createIdentityLink(link);
   }
 
-  async listAvatarCompatibilities(sourceKey: string): Promise<AvatarCompatibility[]> {
-    const res = await this.db.prepare(`
-      SELECT compatibility_id, source_key, target_avatar_base, scope, confidence, evidence_source
-      FROM avatar_compatibilities
-      WHERE source_key = ?
-      ORDER BY target_avatar_base ASC
-    `).bind(sourceKey).all<{
-      compatibility_id: string;
-      source_key: string;
-      target_avatar_base: string;
-      scope: "named_base" | "universal" | "uncertain";
-      confidence: "creator_declared" | "keyword_inferred" | "unverified";
-      evidence_source: string;
-    }>();
-    const rows = res.results || [];
-    return rows.map((r) => ({
-      compatibilityId: r.compatibility_id,
-      itemKey: r.source_key,
-      targetAvatarBase: r.target_avatar_base,
-      scope: r.scope,
-      confidence: r.confidence,
-      evidenceSource: r.evidence_source
-    }));
+  getIdentityLinksForCanonical(canonicalId: string): Promise<IdentityLink[]> {
+    return this.catalog.getIdentityLinksForCanonical(canonicalId);
   }
 
-  async recordDesktopToolEvidence(evidence: DesktopToolEvidence & { confidence: number }): Promise<void> {
-    const now = new Date(this.now()).toISOString();
-    await this.db.prepare(`
-      INSERT INTO desktop_tool_evidence
-        (canonical_id, tool_subtype, supported_os, particular_vrchat_target, evidence_url, publisher_claim, confidence, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(canonical_id) DO UPDATE SET
-        tool_subtype = excluded.tool_subtype,
-        supported_os = excluded.supported_os,
-        particular_vrchat_target = excluded.particular_vrchat_target,
-        evidence_url = excluded.evidence_url,
-        publisher_claim = excluded.publisher_claim,
-        confidence = excluded.confidence
-    `).bind(
-      evidence.canonicalId,
-      evidence.toolSubtype,
-      JSON.stringify(evidence.supportedOS),
-      evidence.particularVRChatTarget ? 1 : 0,
-      evidence.evidenceUrl,
-      evidence.publisherClaim,
-      evidence.confidence,
-      now
-    ).run();
+  getIdentityLinksForSourceItem(sourceKey: string): Promise<IdentityLink[]> {
+    return this.catalog.getIdentityLinksForSourceItem(sourceKey);
   }
 
-  async getDesktopToolEvidence(canonicalId: string): Promise<(DesktopToolEvidence & { confidence: number }) | null> {
-    const row = await this.db.prepare(`
-      SELECT canonical_id, tool_subtype, supported_os, particular_vrchat_target, evidence_url, publisher_claim, confidence, created_at
-      FROM desktop_tool_evidence
-      WHERE canonical_id = ?
-    `).bind(canonicalId).first<{
-      canonical_id: string;
-      tool_subtype: DesktopToolEvidence["toolSubtype"];
-      supported_os: string;
-      particular_vrchat_target: number;
-      evidence_url: string;
-      publisher_claim: string;
-      confidence: number;
-      created_at: string;
-    }>();
-
-    if (!row) return null;
-
-    let supportedOS: DesktopToolEvidence["supportedOS"] = ["windows"];
-    try {
-      supportedOS = JSON.parse(row.supported_os);
-    } catch {
-      supportedOS = ["windows"];
-    }
-
-    return {
-      canonicalId: row.canonical_id,
-      toolSubtype: row.tool_subtype,
-      supportedOS,
-      particularVRChatTarget: row.particular_vrchat_target === 1,
-      evidenceUrl: row.evidence_url,
-      publisherClaim: row.publisher_claim,
-      confidence: row.confidence
-    };
+  updateIdentityLinkReview(linkId: string, reviewState: LinkReviewState): Promise<boolean> {
+    return this.catalog.updateIdentityLinkReview(linkId, reviewState);
   }
 
-  async deleteCanonicalPackage(canonicalId: string): Promise<boolean> {
-    const existing = await this.db.prepare(
-      "SELECT canonical_id, content_rating FROM canonical_packages WHERE canonical_id = ?"
-    ).bind(canonicalId).first<{ canonical_id: string; content_rating: string }>();
-
-    await this.db.prepare("DELETE FROM identity_links WHERE canonical_id = ?").bind(canonicalId).run();
-    const res = await this.db.prepare("DELETE FROM canonical_packages WHERE canonical_id = ?").bind(canonicalId).run();
-    const deleted = (((res.meta as any)?.changes ?? 0) > 0);
-    if (deleted && existing && existing.content_rating === "general") {
-      const now = new Date(this.now()).toISOString();
-      await this.db.prepare(
-        "INSERT OR IGNORE INTO catalog_tombstones (canonical_id, reason, recorded_at) VALUES (?, 'deleted', ?)"
-      ).bind(canonicalId, now).run();
-    }
-    return deleted;
+  deleteIdentityLink(linkId: string): Promise<boolean> {
+    return this.catalog.deleteIdentityLink(linkId);
   }
 
-  async upsertPackageFront(front: {
+  listAvatarCompatibilities(sourceKey: string): Promise<AvatarCompatibility[]> {
+    return this.catalog.listAvatarCompatibilities(sourceKey);
+  }
+
+  recordDesktopToolEvidence(evidence: DesktopToolEvidence & { confidence: number }): Promise<void> {
+    return this.catalog.recordDesktopToolEvidence(evidence);
+  }
+
+  getDesktopToolEvidence(canonicalId: string): Promise<(DesktopToolEvidence & { confidence: number }) | null> {
+    return this.catalog.getDesktopToolEvidence(canonicalId);
+  }
+
+  deleteCanonicalPackage(canonicalId: string): Promise<boolean> {
+    return this.catalog.deleteCanonicalPackage(canonicalId);
+  }
+
+  upsertPackageFront(front: {
     frontId?: string;
     canonicalId: string;
     sourceKey: string;
@@ -2252,426 +423,76 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
     availability?: "available" | "delisted" | "unknown";
     observedAt?: string;
   }): Promise<PackageFront> {
-    const frontId = front.frontId ?? crypto.randomUUID();
-    const now = new Date(this.now()).toISOString();
-    const observedAt = front.observedAt ?? now;
-    const availability = front.availability ?? "available";
-    const price = front.price ?? null;
-    const currency = front.currency ?? null;
-
-    await this.db.prepare(`
-      INSERT INTO package_fronts
-        (front_id, canonical_id, source_key, platform, storefront_url, price, currency, availability, observed_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(canonical_id, source_key) DO UPDATE SET
-        platform = excluded.platform,
-        storefront_url = excluded.storefront_url,
-        price = excluded.price,
-        currency = excluded.currency,
-        availability = excluded.availability,
-        observed_at = excluded.observed_at
-    `).bind(frontId, front.canonicalId, front.sourceKey, front.platform, front.storefrontUrl, price, currency, availability, observedAt).run();
-
-    const row = await this.db.prepare(`
-      SELECT front_id, canonical_id, source_key, platform, storefront_url, price, currency, availability, observed_at
-      FROM package_fronts WHERE canonical_id = ? AND source_key = ?
-    `).bind(front.canonicalId, front.sourceKey).first<{
-      front_id: string;
-      canonical_id: string;
-      source_key: string;
-      platform: Platform;
-      storefront_url: string;
-      price: number | null;
-      currency: string | null;
-      availability: "available" | "delisted" | "unknown";
-      observed_at: string;
-    }>();
-
-    return {
-      frontId: row!.front_id,
-      canonicalId: row!.canonical_id,
-      sourceKey: row!.source_key,
-      platform: row!.platform,
-      storefrontUrl: row!.storefront_url,
-      price: row!.price,
-      currency: row!.currency,
-      availability: row!.availability,
-      observedAt: row!.observed_at
-    };
+    return this.catalog.upsertPackageFront(front);
   }
 
-  async getPackageFrontsForCanonical(canonicalId: string): Promise<PackageFront[]> {
-    const res = await this.db.prepare(`
-      SELECT front_id, canonical_id, source_key, platform, storefront_url, price, currency, availability, observed_at
-      FROM package_fronts WHERE canonical_id = ?
-      ORDER BY observed_at ASC, front_id ASC
-    `).bind(canonicalId).all<{
-      front_id: string;
-      canonical_id: string;
-      source_key: string;
-      platform: Platform;
-      storefront_url: string;
-      price: number | null;
-      currency: string | null;
-      availability: "available" | "delisted" | "unknown";
-      observed_at: string;
-    }>();
-    const rows = res.results || [];
-    return rows.map((r) => ({
-      frontId: r.front_id,
-      canonicalId: r.canonical_id,
-      sourceKey: r.source_key,
-      platform: r.platform,
-      storefrontUrl: r.storefront_url,
-      price: r.price,
-      currency: r.currency,
-      availability: r.availability,
-      observedAt: r.observed_at
-    }));
+  getPackageFrontsForCanonical(canonicalId: string): Promise<PackageFront[]> {
+    return this.catalog.getPackageFrontsForCanonical(canonicalId);
   }
 
-  async deletePackageFront(frontId: string): Promise<boolean> {
-    const res = await this.db.prepare("DELETE FROM package_fronts WHERE front_id = ?").bind(frontId).run();
-    return ((res.meta as any)?.changes ?? 0) > 0;
+  deletePackageFront(frontId: string): Promise<boolean> {
+    return this.catalog.deletePackageFront(frontId);
   }
 
-  private async syncPackageFrontFromSourceItem(canonicalId: string, sourceKey: string): Promise<void> {
-    const item = await this.db.prepare(`
-      SELECT si.platform, si.source_url, si.gone_at, sv.payload_json, sv.observed_at
-      FROM source_items si
-      LEFT JOIN source_versions sv ON sv.source_key = si.source_key AND sv.version_no = si.latest_version_no
-      WHERE si.source_key = ?
-    `).bind(sourceKey).first<{
-      platform: Platform;
-      source_url: string;
-      gone_at: string | null;
-      payload_json: string | null;
-      observed_at: string | null;
-    }>();
-
-    if (!item) return;
-    const isStorefront = STOREFRONT_PLATFORMS.has(item.platform);
-    let price: number | null = null;
-    let currency: string | null = null;
-    let availability: "available" | "delisted" | "unknown" = item.gone_at ? "delisted" : "available";
-    let storefrontUrl = item.source_url;
-
-    if (item.payload_json) {
-      try {
-        const parsed = JSON.parse(item.payload_json);
-        if (parsed.price !== undefined) price = parsed.price;
-        if (parsed.currency !== undefined) currency = parsed.currency;
-        if (parsed.availability !== undefined) availability = parsed.availability;
-        if (parsed.storefrontUrl) storefrontUrl = parsed.storefrontUrl;
-      } catch {}
-    }
-
-    if (isStorefront || price !== null) {
-      await this.upsertPackageFront({
-        canonicalId,
-        sourceKey,
-        platform: item.platform,
-        storefrontUrl: cleanTrackingParams(storefrontUrl),
-        price,
-        currency,
-        availability,
-        observedAt: item.observed_at ?? new Date(this.now()).toISOString()
-      });
-    }
+  recordRemovalReport(appId: string, input: ReportSubmissionRequest): Promise<ReportSubmissionResponse> {
+    return this.downstream.recordRemovalReport(appId, input);
   }
 
-  async recordRemovalReport(appId: string, input: ReportSubmissionRequest): Promise<ReportSubmissionResponse> {
-    const parsed = ReportSubmissionRequestSchema.parse(input);
-    if (parsed.reportType !== "removal_request") throw new CoordinatorConflict("Removal report required", 403);
-    const reportId = crypto.randomUUID();
-    const recordedAt = new Date(this.now()).toISOString();
-    const targetUrl = parsed.targetUrl ?? null;
-    const canonicalId = parsed.canonicalId ?? null;
-    const reason = parsed.reason ?? "Creator takedown requested by trusted app";
-    const result = await this.db.prepare(`INSERT INTO catalog_tickets(ticket_id,ticket_type,app_id,target_url,canonical_id,requester_type,reason,payload_json,review_status,recorded_at)
-      SELECT ?,'removal_report',app_id,?,?,'app',?,?, 'pending',? FROM registered_apps WHERE app_id=? AND revoked_at IS NULL`)
-      .bind(reportId, targetUrl, canonicalId, reason, JSON.stringify(parsed), recordedAt, appId).run();
-    if ((result.meta as { changes?: number } | undefined)?.changes !== 1) throw new CoordinatorConflict("Invalid application credential", 403);
-    return { schemaVersion: 1, status: "accepted", reportId, recordedAt };
+  recordIssueReport(
+    appId: string,
+    input: unknown
+  ): Promise<{ schemaVersion: 1; status: "accepted"; reportId: string; recordedAt: string }> {
+    return this.downstream.recordIssueReport(appId, input);
   }
 
-  async recordIssueReport(appId: string, input: unknown): Promise<{ schemaVersion: 1; status: "accepted"; reportId: string; recordedAt: string }> {
-    const parsed = ReportSubmissionRequestSchema.parse(input);
-    if (parsed.reportType !== "issue_report") throw new CoordinatorConflict("Issue report required", 400);
-    const reportId = crypto.randomUUID();
-    const recordedAt = new Date(this.now()).toISOString();
-    const targetUrl = parsed.targetUrl ? new URL(parsed.targetUrl).href : null;
-    const canonicalId = parsed.canonicalId ?? null;
-
-    let ticketType = "metadata_issue";
-    if (parsed.reportKind === "explicit_false_positive" || parsed.reportKind === "explicit_false_negative" || parsed.reportKind === "misclassified") {
-      ticketType = "rating_dispute";
-    } else if (parsed.reportKind === "inappropriate") {
-      ticketType = "safety_quarantine";
-    }
-
-    const result = await this.db.prepare(`INSERT INTO catalog_tickets(ticket_id,ticket_type,app_id,target_url,canonical_id,reason,payload_json,review_status,recorded_at)
-      SELECT ?,?,app_id,?,?,?,?, 'pending',? FROM registered_apps WHERE app_id=? AND revoked_at IS NULL`)
-      .bind(reportId, ticketType, targetUrl, canonicalId, parsed.reason ?? parsed.reportKind ?? null, JSON.stringify(parsed), recordedAt, appId).run();
-    if ((result.meta as { changes?: number } | undefined)?.changes !== 1) throw new CoordinatorConflict("Invalid application credential", 403);
-    return { schemaVersion: 1, status: "accepted", reportId, recordedAt };
+  listUserApps(
+    userId: string,
+    limit: number,
+    cursor: string | null,
+    appId?: string
+  ): Promise<UserAppListResponse> {
+    return this.downstream.listUserApps(userId, limit, cursor, appId);
   }
 
-  /** Lists owned app metadata without credentials or hashes. */
-  async listUserApps(userId: string, limit: number, cursor: string | null, appId?: string): Promise<UserAppListResponse> {
-    const query = UserAppListQuerySchema.parse({ limit, cursor: cursor ?? undefined });
-    const rows = await this.db.prepare(`SELECT a.app_id,a.app_name,a.permissions_json,a.created_at,a.revoked_at
-      FROM registered_apps a
-      JOIN registered_users u ON u.user_id=a.owner_user_id
-      WHERE a.owner_user_id=? AND u.revoked_at IS NULL AND (? IS NULL OR a.app_id>?) AND (? IS NULL OR a.app_id=?)
-      ORDER BY a.app_id LIMIT ?`).bind(userId, query.cursor ?? null, query.cursor ?? null, appId ?? null, appId ?? null, query.limit + 1)
-      .all<{ app_id: string; app_name: string; permissions_json: string; created_at: string; revoked_at: string | null }>();
-    const items = rows.results ?? [];
-    const apps = items.slice(0, query.limit).map(row => UserAppSchema.parse({ appId: row.app_id, appName: row.app_name,
-      permissions: JSON.parse(row.permissions_json), createdAt: row.created_at, revokedAt: row.revoked_at }));
-    return { schemaVersion: 1, apps, nextCursor: items.length > query.limit ? apps.at(-1)!.appId : null };
+  registerApp(input: RegisterAppRequest, ownerUserId?: string): Promise<RegisterAppResponse> {
+    return this.downstream.registerApp(input, ownerUserId);
   }
 
-  /** Registers a downstream client application with scoped application token. */
-  async registerApp(input: RegisterAppRequest, ownerUserId?: string): Promise<RegisterAppResponse> {
-    const parsed = RegisterAppRequestSchema.parse(input);
-    const appId = crypto.randomUUID();
-    const appToken = "vrcp_app_" + (await sha256Hex(crypto.randomUUID() + Date.now().toString())).slice(0, 64);
-    const tokenHash = await sha256Hex(appToken);
-    const now = new Date(this.now()).toISOString();
-    const permissions = ["catalog:read", "catalog:search", "demand:feedback"];
-
-    const insert = this.db.prepare(`
-      INSERT INTO registered_apps (app_id, app_name, token_hash, contact_email, permissions_json, created_at, revoked_at, owner_user_id)
-      SELECT ?, ?, ?, ?, ?, ?, NULL, ? WHERE ? IS NULL OR EXISTS (
-        SELECT 1 FROM registered_users WHERE user_id=? AND revoked_at IS NULL)
-    `).bind(appId, parsed.appName, tokenHash, parsed.contactEmail || null, JSON.stringify(permissions), now, ownerUserId ?? null, ownerUserId ?? null, ownerUserId ?? null);
-    const result = await insert.run();
-    if ((result.meta as { changes?: number } | undefined)?.changes !== 1) throw new CoordinatorConflict("Invalid user owner", 403);
-
-    return {
-      schemaVersion: 1,
-      appId,
-      appName: parsed.appName,
-      appToken,
-      permissions
-    };
+  authenticateApp(appToken: string) {
+    return this.downstream.authenticateApp(appToken);
   }
 
-  /** Authenticates a downstream application bearer token. */
-  async authenticateApp(appToken: string): Promise<{ appId: string; appName: string; permissions: string[]; candidateStatus?: "none" | "review_pending" | "reviewed" | "trusted"; isTrusted?: boolean; isAgeVerified?: boolean } | null> {
-    if (!/^vrcp_app_[a-f0-9]{64}$/.test(appToken)) return null;
-    const tokenHash = await sha256Hex(appToken);
-    const row = await this.db.prepare(`
-      SELECT a.app_id, a.app_name, a.permissions_json, a.revoked_at, a.candidate_status,
-             COALESCE(MAX(u.age_verified), 0) AS age_verified
-      FROM registered_apps a
-      LEFT JOIN registered_users u ON u.user_id = a.owner_user_id AND u.revoked_at IS NULL
-      WHERE a.token_hash = ?
-      GROUP BY a.app_id
-    `).bind(tokenHash).first<{ app_id: string; app_name: string; permissions_json: string; revoked_at: string | null; candidate_status: string; age_verified: number }>();
-    if (!row || row.revoked_at) return null;
-    const permissions = JSON.parse(row.permissions_json) as string[];
-    const candidateStatus = (row.candidate_status || "none") as "none" | "review_pending" | "reviewed" | "trusted";
-    return {
-      appId: row.app_id,
-      appName: row.app_name,
-      permissions,
-      candidateStatus,
-      isTrusted: candidateStatus === "trusted" || permissions.includes("takedowns:submit") || permissions.includes("claims:delegate"),
-      isAgeVerified: Boolean(row.age_verified)
-    };
+  recordDownstreamFeedback(appId: string, input: DemandFeedbackInput): Promise<DemandFeedbackReceipt> {
+    return this.downstream.recordDownstreamFeedback(appId, input);
   }
 
-  /** Ingests search activity and demand feedback signals from authenticated downstream clients. */
-  async recordDownstreamFeedback(appId: string, input: DownstreamFeedbackRequest): Promise<DownstreamFeedbackResponse> {
-    const parsed = DownstreamFeedbackRequestSchema.parse(input);
-    const signalId = crypto.randomUUID();
-    const recordedAt = new Date(this.now()).toISOString();
-
-    await this.db.prepare(`
-      INSERT INTO downstream_demand_signals (
-        signal_id, app_id, signal_type, query, zero_hits, requested_platform,
-        target_url, category, metadata_json, recorded_at, resolved_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
-    `).bind(
-      signalId,
-      appId,
-      parsed.signalType,
-      parsed.query || null,
-      parsed.zeroHits ? 1 : 0,
-      parsed.requestedPlatform || null,
-      parsed.targetUrl || null,
-      parsed.category || null,
-      parsed.metadata ? JSON.stringify(parsed.metadata) : null,
-      recordedAt
-    ).run();
-
-    return {
-      schemaVersion: 1,
-      status: "accepted",
-      signalId,
-      recordedAt
-    };
+  searchCatalogPackages(
+    input: CatalogSearchRequest,
+    options: { isAgeVerified?: boolean } = {}
+  ): Promise<CatalogSearchResponse> {
+    return this.catalog.searchCatalogPackages(input, options);
   }
 
-  /** Configurable search across canonical packages for registered downstream applications. */
-  async searchCatalogPackages(input: CatalogSearchRequest, options: { isAgeVerified?: boolean } = {}): Promise<CatalogSearchResponse> {
-    const parsed = CatalogSearchRequestSchema.parse(input);
-    const limit = Math.min(Math.max(parsed.limit ?? 50, 1), 100);
-    const conditions = ["p.lifecycle != 'delisted'"];
-    const params: (string | number)[] = [];
-
-    if (!options.isAgeVerified) {
-      conditions.push("p.content_rating = 'general'");
-    } else {
-      conditions.push("p.content_rating != 'prohibited'");
-      if (parsed.rating) {
-        if (parsed.rating === "prohibited") {
-          return {
-            schemaVersion: 1,
-            items: [],
-            nextCursor: null,
-            totalEstimated: 0
-          };
-        }
-        conditions.push("p.content_rating = ?");
-        params.push(parsed.rating);
-      }
-    }
-
-    if (parsed.umbrella) {
-      conditions.push("p.umbrella = ?");
-      params.push(parsed.umbrella);
-    }
-    if (parsed.category) {
-      conditions.push("p.category = ?");
-      params.push(parsed.category);
-    }
-    if (parsed.platform) {
-      conditions.push("EXISTS (SELECT 1 FROM package_fronts pf WHERE pf.canonical_id = p.canonical_id AND pf.platform = ?)");
-      params.push(parsed.platform);
-    }
-    if (parsed.query && parsed.query.trim()) {
-      const term = `%${parsed.query.trim()}%`;
-      conditions.push("(p.display_name LIKE ? OR p.category LIKE ? OR p.vpm_id LIKE ?)");
-      params.push(term, term, term);
-    }
-
-    if (parsed.tags && parsed.tags.length > 0) {
-      for (const tag of parsed.tags) {
-        const cleanTag = tag.trim().toLowerCase();
-        if (!cleanTag) continue;
-        const tagPattern = `%${cleanTag}%`;
-        conditions.push(`(
-          p.category LIKE ? OR
-          p.umbrella = ? OR
-          EXISTS (
-            SELECT 1 FROM identity_links il
-            JOIN avatar_compatibilities ac ON ac.source_key = il.source_key
-            WHERE il.canonical_id = p.canonical_id AND il.review_state = 'accepted'
-              AND (ac.target_avatar_base LIKE ? OR ac.scope LIKE ?)
-          ) OR
-          p.display_name LIKE ?
-        )`);
-        params.push(tagPattern, cleanTag, tagPattern, tagPattern, tagPattern);
-      }
-    }
-
-    const hasKeywordQuery = Boolean(parsed.query && parsed.query.trim());
-
-    if (parsed.cursor) {
-      const decoded = decodeCatalogCursor(parsed.cursor);
-      if (decoded) {
-        if (!hasKeywordQuery) {
-          conditions.push("(COALESCE(p.published_at, p.created_at) < ? OR (COALESCE(p.published_at, p.created_at) = ? AND p.canonical_id < ?))");
-          params.push(decoded.createdAt, decoded.createdAt, decoded.canonicalId);
-        } else {
-          conditions.push("(p.created_at < ? OR (p.created_at = ? AND p.canonical_id < ?))");
-          params.push(decoded.createdAt, decoded.createdAt, decoded.canonicalId);
-        }
-      }
-    }
-
-    const whereClause = conditions.join(" AND ");
-    const countRes = await this.db.prepare(`
-      SELECT COUNT(*) as total FROM canonical_packages p WHERE ${whereClause}
-    `).bind(...params).first<{ total: number }>();
-
-    const orderClause = hasKeywordQuery
-      ? "ORDER BY p.created_at DESC, p.canonical_id DESC"
-      : "ORDER BY COALESCE(p.published_at, p.created_at) DESC, p.canonical_id DESC";
-
-    const queryParams = [...params, limit + 1];
-    const res = await this.db.prepare(`
-      SELECT p.canonical_id, p.umbrella, p.category, p.lifecycle, p.display_name, p.vpm_id, p.created_at, p.updated_at, p.published_at, p.timestamp_confidence, p.content_rating
-      FROM canonical_packages p
-      WHERE ${whereClause}
-      ${orderClause}
-      LIMIT ?
-    `).bind(...queryParams).all<{
-      canonical_id: string; umbrella: string; category: string; lifecycle: string;
-      display_name: string; vpm_id: string | null; created_at: string; updated_at: string;
-      published_at: string | null; timestamp_confidence: string | null;
-      content_rating: string | null;
-    }>();
-
-    const rows = res.results || [];
-    const hasMore = rows.length > limit;
-    const visible = hasMore ? rows.slice(0, limit) : rows;
-    const last = visible.at(-1);
-
-    const items: CatalogPackage[] = await this.buildCatalogPackagesBatch(visible);
-
-    const nextCursor = hasMore && last
-      ? encodeCatalogCursor({
-          createdAt: !hasKeywordQuery ? (last.published_at || last.created_at) : last.created_at,
-          canonicalId: last.canonical_id
-        })
-      : null;
-
-    return {
-      schemaVersion: 1,
-      items,
-      nextCursor,
-      totalEstimated: countRes?.total ?? 0
-    };
-  }
-
-  /** Issues a `vrcp_usr_` token for a new or returning user. */
-  async issueUserToken(userName: string, contactEmail?: string, ageVerified: boolean = false, isModerator: boolean = false): Promise<{
-    userId: string; userName: string; token: string; ageVerified: boolean; isModerator: boolean;
+  issueUserToken(
+    userName: string,
+    contactEmail?: string,
+    ageVerified = false,
+    isModerator = false
+  ): Promise<{
+    userId: string;
+    userName: string;
+    token: string;
+    ageVerified: boolean;
+    isModerator: boolean;
   }> {
-    if (!userName.trim()) throw new Error("User name required");
-    const userId = crypto.randomUUID();
-    const entropy = generateToken();
-    const token = `vrcp_usr_${entropy}`;
-    const tokenHash = await sha256Hex(token);
-    const now = new Date(this.now()).toISOString();
-    await this.db.prepare(`
-      INSERT INTO registered_users (user_id, user_name, token_hash, contact_email, created_at, revoked_at, age_verified, is_moderator)
-      VALUES (?, ?, ?, ?, ?, NULL, ?, ?)
-    `).bind(userId, userName.trim(), tokenHash, contactEmail || null, now, ageVerified ? 1 : 0, isModerator ? 1 : 0).run();
-    return { userId, userName: userName.trim(), token, ageVerified, isModerator };
+    return this.downstream.issueUserToken(userName, contactEmail, ageVerified, isModerator);
   }
 
-  /** Authenticates a user bearer token. */
-  async authenticateUser(token: string): Promise<{ userId: string; userName: string; ageVerified?: boolean; isModerator?: boolean } | null> {
-    if (!/^vrcp_usr_[a-f0-9]{64}$/.test(token)) return null;
-    const tokenHash = await sha256Hex(token);
-    const row = await this.db.prepare(`
-      SELECT user_id, user_name, revoked_at, age_verified, is_moderator FROM registered_users WHERE token_hash = ?
-    `).bind(tokenHash).first<{ user_id: string; user_name: string; revoked_at: string | null; age_verified: number; is_moderator: number }>();
-    if (!row || row.revoked_at) return null;
-    return { userId: row.user_id, userName: row.user_name, ageVerified: Boolean(row.age_verified), isModerator: Boolean(row.is_moderator) };
+  authenticateUser(token: string) {
+    return this.downstream.authenticateUser(token);
   }
 
-  /**
-   * Records a creator/user delisting request and immediately suppresses the target.
-   * Unauthenticated creators use proof verification pathways (dns_txt, storefront_bio_token, manual_notice).
-   * Authenticated users may self-service delist on their behalf without external proof.
-   */
-  async submitDelistRequest(input: {
+  submitDelistRequest(input: {
     targetUrl?: string;
     canonicalId?: string;
     reason: string;
@@ -2681,739 +502,94 @@ export class Coordinator implements CoordinatorStore, OperatorStore, PublicCatal
     proofValue?: string;
     contactEmail?: string;
   }) {
-    if (!input.targetUrl && !input.canonicalId) {
-      throw new Error("Either targetUrl or canonicalId must be provided");
-    }
-    const takedownId = crypto.randomUUID();
-    const recordedAt = new Date(this.now()).toISOString();
-    const target = input.targetUrl || input.canonicalId!;
-    const reviewStatus = input.requesterType === "unauthenticated_creator" ? "pending" : "accepted";
-
-    await this.db.prepare(`
-      INSERT INTO catalog_tickets (
-        ticket_id, ticket_type, target_url, canonical_id, requester_type, requester_id,
-        reason, proof_kind, proof_value, contact_email, recorded_at, review_status, review_notes
-      ) VALUES (?, 'opt_out', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
-    `).bind(
-      takedownId,
-      input.targetUrl || null,
-      input.canonicalId || null,
-      input.requesterType,
-      input.requesterId || null,
-      input.reason,
-      input.proofKind || null,
-      input.proofValue || null,
-      input.contactEmail || null,
-      recordedAt,
-      reviewStatus
-    ).run();
-
-    // Suppress the URL in the crawl queue if a targetUrl was given
-    if (input.targetUrl) {
-      try {
-        const normalized = new URL(input.targetUrl).href;
-        await this.db.prepare(
-          "INSERT OR REPLACE INTO suppressed_urls(url,reason,suppressed_at) VALUES (?,?,?)"
-        ).bind(normalized, `Delisting request ${takedownId}: ${input.reason}`, recordedAt).run();
-        const job = await this.db.prepare(
-          "SELECT job_id,origin FROM crawl_jobs WHERE url=?"
-        ).bind(normalized).first<{ job_id: string; origin: string }>();
-        if (job) {
-          await this.db.prepare(
-            "UPDATE crawl_jobs SET state='blocked',claimed_by=NULL,lease_id=NULL,lease_expires_at=NULL WHERE job_id=?"
-          ).bind(job.job_id).run();
-          await this.db.prepare(
-            "UPDATE origin_leases SET active_job_id=NULL,lease_expires_at=NULL WHERE origin=? AND active_job_id=?"
-          ).bind(job.origin, job.job_id).run();
-        }
-      } catch { /* URL may not exist in queue; suppression is best-effort */ }
-    }
-
-    // Transition matching canonical packages to delisted lifecycle
-    if (input.canonicalId) {
-      await this.db.prepare(`
-        UPDATE canonical_packages SET lifecycle = 'delisted', updated_at = ?
-        WHERE canonical_id = ? AND lifecycle != 'delisted'
-      `).bind(recordedAt, input.canonicalId).run();
-      await this.db.prepare(
-        "INSERT OR IGNORE INTO catalog_tombstones (canonical_id, reason, recorded_at) VALUES (?, 'delisted', ?)"
-      ).bind(input.canonicalId, recordedAt).run();
-    }
-    if (input.targetUrl) {
-      await this.db.prepare(`
-        UPDATE canonical_packages SET lifecycle = 'delisted', updated_at = ?
-        WHERE canonical_id IN (
-          SELECT DISTINCT pf.canonical_id FROM package_fronts pf WHERE pf.storefront_url = ?
-        ) AND lifecycle != 'delisted'
-      `).bind(recordedAt, input.targetUrl).run();
-      const matchingFronts = await this.db.prepare(
-        "SELECT DISTINCT pf.canonical_id FROM package_fronts pf WHERE pf.storefront_url = ?"
-      ).bind(input.targetUrl).all<{ canonical_id: string }>();
-      for (const row of matchingFronts.results || []) {
-        await this.db.prepare(
-          "INSERT OR IGNORE INTO catalog_tombstones (canonical_id, reason, recorded_at) VALUES (?, 'delisted', ?)"
-        ).bind(row.canonical_id, recordedAt).run();
-      }
-    }
-
-    return {
-      schemaVersion: DOWNSTREAM_PROTOCOL_VERSION,
-      status: "accepted",
-      takedownId,
-      target,
-      action: "delisted",
-      requesterType: input.requesterType,
-      recordedAt
-    };
+    return this.operator.submitDelistRequest(input);
   }
 
-  async listTakedownsPage(
+  listTakedownsPage(
     requesterType?: string,
     limit = 100,
     cursor: TakedownCursor | null = null
-  ): Promise<{ records: TakedownRecord[]; nextCursor: string | null; }> {
-    if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error("Takedown limit must be 1..100");
-    const conditions: string[] = [];
-    const params: (string | number)[] = [];
-
-    if (requesterType) {
-      conditions.push("requester_type = ?");
-      params.push(requesterType);
-    }
-    if (cursor) {
-      conditions.push("(recorded_at, ticket_id) < (?, ?)");
-      params.push(cursor.recordedAt, cursor.takedownId);
-    }
-    const where = conditions.length > 0 ? `AND ${conditions.join(" AND ")}` : "";
-    params.push(limit + 1);
-
-    const res = await this.db.prepare(`
-      SELECT ticket_id AS takedown_id, target_url, canonical_id, requester_type, requester_id,
-             reason, proof_kind, proof_value, contact_email, review_status, review_notes, recorded_at
-      FROM catalog_tickets
-      WHERE ticket_type = 'opt_out' ${where}
-      ORDER BY recorded_at DESC, ticket_id DESC
-      LIMIT ?
-    `).bind(...params).all<{
-      takedown_id: string;
-      target_url: string | null;
-      canonical_id: string | null;
-      requester_type: "unauthenticated_creator" | "user" | "admin_operator";
-      requester_id: string | null;
-      reason: string;
-      proof_kind: "storefront_bio_token" | "dns_txt" | "manual_notice" | null;
-      proof_value: string | null;
-      contact_email: string | null;
-      review_status: "pending" | "accepted" | "rejected";
-      review_notes: string | null;
-      recorded_at: string;
-    }>();
-
-    const rows = res.results || [];
-    const visible = rows.slice(0, limit);
-    const last = visible.at(-1);
-
-    const records: TakedownRecord[] = visible.map((row) => ({
-      takedownId: row.takedown_id,
-      targetUrl: row.target_url,
-      canonicalId: row.canonical_id,
-      requesterType: row.requester_type,
-      requesterId: row.requester_id,
-      reason: row.reason,
-      proofKind: row.proof_kind,
-      proofValue: row.proof_value,
-      contactEmail: row.contact_email,
-      reviewStatus: row.review_status,
-      reviewNotes: row.review_notes,
-      recordedAt: row.recorded_at
-    }));
-
-    return {
-      records,
-      nextCursor: rows.length > limit && last ? encodeTakedownCursor({
-        recordedAt: last.recorded_at,
-        takedownId: last.takedown_id
-      }) : null
-    };
+  ): Promise<{ records: TakedownRecord[]; nextCursor: string | null }> {
+    return this.operator.listTakedownsPage(requesterType, limit, cursor);
   }
 
-  async verifyTakedown(
+  verifyTakedown(
     takedownId: string,
     verdict: "accepted" | "rejected",
     actor: string,
     notes?: string
-  ): Promise<{ takedownId: string; status: "accepted" | "rejected"; updatedAt: string; }> {
-    const row = await this.db.prepare(`
-      SELECT ticket_id AS takedown_id, target_url, canonical_id, requester_type, review_status
-      FROM catalog_tickets
-      WHERE ticket_id = ? AND ticket_type = 'opt_out'
-    `).bind(takedownId).first<{
-      takedown_id: string;
-      target_url: string | null;
-      canonical_id: string | null;
-      requester_type: string;
-      review_status: string;
-    }>();
-
-    if (!row) {
-      throw new Error("Takedown not found");
-    }
-
-    const updatedAt = new Date(this.now()).toISOString();
-    const batchStatements: D1PreparedStatement[] = [
-      this.db.prepare(`
-        UPDATE catalog_tickets
-        SET review_status = ?, review_notes = ?
-        WHERE ticket_id = ? AND ticket_type = 'opt_out'
-      `).bind(verdict, notes || null, takedownId)
-    ];
-
-    if (verdict === "rejected") {
-      if (row.canonical_id) {
-        batchStatements.push(
-          this.db.prepare(`
-            UPDATE canonical_packages
-            SET lifecycle = 'active', updated_at = ?
-            WHERE canonical_id = ? AND lifecycle = 'delisted'
-          `).bind(updatedAt, row.canonical_id)
-        );
-      }
-      if (row.target_url) {
-        try {
-          const normalized = new URL(row.target_url).href;
-          batchStatements.push(
-            this.db.prepare("DELETE FROM suppressed_urls WHERE url = ?").bind(normalized),
-            this.db.prepare("UPDATE crawl_jobs SET state = 'pending' WHERE url = ? AND state = 'blocked'").bind(normalized)
-          );
-        } catch { /* URL normalization best-effort */ }
-
-        batchStatements.push(
-          this.db.prepare(`
-            UPDATE canonical_packages
-            SET lifecycle = 'active', updated_at = ?
-            WHERE canonical_id IN (
-              SELECT DISTINCT pf.canonical_id FROM package_fronts pf WHERE pf.storefront_url = ?
-            ) AND lifecycle = 'delisted'
-          `).bind(updatedAt, row.target_url)
-        );
-      }
-    }
-
-    await this.executeBatchChunked(batchStatements);
-
-    return {
-      takedownId,
-      status: verdict,
-      updatedAt
-    };
+  ): Promise<{ takedownId: string; status: "accepted" | "rejected"; updatedAt: string }> {
+    return this.operator.verifyTakedown(takedownId, verdict, actor, notes);
   }
 
-  /**
-   * Ingests delegated creator ownership claims from downstream applications.
-   * Performs signature/payload verification, expiration checks, and atomic replay protection on (app_id, nonce).
-   */
-  async recordCreatorClaimIntake(appId: string, input: CreatorClaimIntakeRequest): Promise<CreatorClaimIntakeResponse> {
-    const parsed = CreatorClaimIntakeRequestSchema.parse(input);
-    if (parsed.attestation.appId !== appId) {
-      throw new CoordinatorConflict("Attestation appId does not match caller", 403);
-    }
-
-    const nowSec = Math.floor(this.now() / 1000);
-    if (parsed.attestation.expiresAt < nowSec) {
-      throw new CoordinatorConflict("Attestation has expired", 400);
-    }
-
-    const recordedAt = new Date(this.now()).toISOString();
-    const payloadJson = JSON.stringify(parsed);
-
-    // Atomic replay protection on (app_id, nonce)
-    const existing = await this.db.prepare(`
-      SELECT ticket_id AS claim_id, payload_json, signature, review_status, recorded_at
-      FROM catalog_tickets
-      WHERE ticket_type = 'delegated_claim' AND app_id = ? AND nonce = ?
-    `).bind(appId, parsed.attestation.nonce).first<{
-      claim_id: string;
-      payload_json: string;
-      signature: string;
-      review_status: "pending" | "accepted" | "rejected";
-      recorded_at: string;
-    }>();
-
-    if (existing) {
-      if (existing.signature !== parsed.signature || existing.payload_json !== payloadJson) {
-        throw new CoordinatorConflict("Nonce already used with different payload or signature", 409);
-      }
-      return {
-        schemaVersion: 1,
-        status: "accepted",
-        claimId: existing.claim_id,
-        reviewStatus: "pending",
-        recordedAt: existing.recorded_at
-      };
-    }
-
-    const claimId = crypto.randomUUID();
-    const result = await this.db.prepare(`
-      INSERT INTO catalog_tickets (
-        ticket_id, ticket_type, app_id, target_url, creator_id, challenge_token,
-        expires_at, nonce, signature, payload_json, reason, contact_email,
-        review_status, review_notes, recorded_at
-      )
-      SELECT ?, 'delegated_claim', app_id, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, ?
-      FROM registered_apps
-      WHERE app_id = ? AND revoked_at IS NULL
-    `).bind(
-      claimId,
-      parsed.attestation.frontUrl,
-      parsed.attestation.creatorId,
-      parsed.attestation.challengeToken,
-      parsed.attestation.expiresAt,
-      parsed.attestation.nonce,
-      parsed.signature,
-      payloadJson,
-      parsed.reason || null,
-      parsed.contactEmail || null,
-      recordedAt,
-      appId
-    ).run();
-
-    if ((result.meta as { changes?: number } | undefined)?.changes !== 1) {
-      throw new CoordinatorConflict("Invalid application credential", 403);
-    }
-
-    return {
-      schemaVersion: 1,
-      status: "accepted",
-      claimId,
-      reviewStatus: "pending",
-      recordedAt
-    };
+  recordCreatorClaimIntake(
+    appId: string,
+    input: CreatorClaimIntakeRequest
+  ): Promise<CreatorClaimIntakeResponse> {
+    return this.downstream.recordCreatorClaimIntake(appId, input);
   }
 
-  async listDelegatedClaimsPage(
+  listDelegatedClaimsPage(
     reviewStatus?: string,
     limit = 100,
     cursor: DelegatedClaimCursor | null = null
   ): Promise<{ records: DelegatedClaimRecord[]; nextCursor: string | null }> {
-    if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error("Claim limit must be 1..100");
-    const conditions: string[] = [];
-    const params: (string | number)[] = [];
-
-    if (reviewStatus) {
-      conditions.push("review_status = ?");
-      params.push(reviewStatus);
-    }
-    if (cursor) {
-      conditions.push("(recorded_at, ticket_id) < (?, ?)");
-      params.push(cursor.recordedAt, cursor.claimId);
-    }
-    const where = conditions.length > 0 ? `AND ${conditions.join(" AND ")}` : "";
-    params.push(limit + 1);
-
-    const res = await this.db.prepare(`
-      SELECT ticket_id AS claim_id, app_id, 'creator_ownership_claim' AS action, target_url AS front_url, creator_id, challenge_token,
-             expires_at, nonce, signature, reason, contact_email, review_status, review_notes, recorded_at
-      FROM catalog_tickets
-      WHERE ticket_type = 'delegated_claim' ${where}
-      ORDER BY recorded_at DESC, ticket_id DESC
-      LIMIT ?
-    `).bind(...params).all<{
-      claim_id: string;
-      app_id: string;
-      action: "creator_ownership_claim";
-      front_url: string;
-      creator_id: string;
-      challenge_token: string;
-      expires_at: number;
-      nonce: string;
-      signature: string;
-      reason: string | null;
-      contact_email: string | null;
-      review_status: "pending" | "accepted" | "rejected";
-      review_notes: string | null;
-      recorded_at: string;
-    }>();
-
-    const rows = res.results || [];
-    const visible = rows.slice(0, limit);
-    const last = visible.at(-1);
-
-    const records: DelegatedClaimRecord[] = visible.map((row) => ({
-      claimId: row.claim_id,
-      appId: row.app_id,
-      action: row.action,
-      frontUrl: row.front_url,
-      creatorId: row.creator_id,
-      challengeToken: row.challenge_token,
-      expiresAt: row.expires_at,
-      nonce: row.nonce,
-      signature: row.signature,
-      reason: row.reason,
-      contactEmail: row.contact_email,
-      reviewStatus: row.review_status,
-      reviewNotes: row.review_notes,
-      recordedAt: row.recorded_at
-    }));
-
-    return {
-      records,
-      nextCursor: rows.length > limit && last ? encodeDelegatedClaimCursor({
-        recordedAt: last.recorded_at,
-        claimId: last.claim_id
-      }) : null
-    };
+    return this.operator.listDelegatedClaimsPage(reviewStatus, limit, cursor);
   }
 
-  async verifyDelegatedClaim(
+  verifyDelegatedClaim(
     claimId: string,
     verdict: "accepted" | "rejected",
     actor: string,
     notes?: string
   ): Promise<{ claimId: string; status: "accepted" | "rejected"; updatedAt: string }> {
-    const row = await this.db.prepare(`
-      SELECT ticket_id AS claim_id, review_status
-      FROM catalog_tickets
-      WHERE ticket_id = ? AND ticket_type = 'delegated_claim'
-    `).bind(claimId).first<{
-      claim_id: string;
-      review_status: string;
-    }>();
-
-    if (!row) {
-      throw new Error("Claim not found");
-    }
-
-    const updatedAt = new Date(this.now()).toISOString();
-    await this.db.prepare(`
-      UPDATE catalog_tickets
-      SET review_status = ?, review_notes = ?
-      WHERE ticket_id = ? AND ticket_type = 'delegated_claim'
-    `).bind(verdict, notes || null, claimId).run();
-
-    return {
-      claimId,
-      status: verdict,
-      updatedAt
-    };
+    return this.operator.verifyDelegatedClaim(claimId, verdict, actor, notes);
   }
 
-  async recordAppActivity(appId: string): Promise<void> {
-    const row = await this.db.prepare(`
-      SELECT app_id, request_count, candidate_status, candidate_flags_json
-      FROM registered_apps
-      WHERE app_id = ?
-    `).bind(appId).first<{
-      app_id: string;
-      request_count: number;
-      candidate_status: string;
-      candidate_flags_json: string;
-    }>();
-    if (!row) return;
-
-    const newCount = (row.request_count || 0) + 1;
-    const now = new Date(this.now()).toISOString();
-    let status = row.candidate_status || "none";
-    let flags: string[] = [];
-    try {
-      flags = JSON.parse(row.candidate_flags_json || "[]");
-    } catch {}
-
-    if (newCount >= 50) {
-      if (status === "none") {
-        status = "review_pending";
-      }
-      if (!flags.includes("intensive_usage")) {
-        flags.push("intensive_usage");
-      }
-      if (!flags.includes("high_frequency_api")) {
-        flags.push("high_frequency_api");
-      }
-    }
-
-    await this.db.prepare(`
-      UPDATE registered_apps
-      SET request_count = ?, last_active_at = ?, candidate_status = ?, candidate_flags_json = ?
-      WHERE app_id = ?
-    `).bind(newCount, now, status, JSON.stringify(flags), appId).run();
+  recordAppActivity(appId: string): Promise<void> {
+    return this.downstream.recordAppActivity(appId);
   }
 
-  async listOperatorAppsPage(
+  listOperatorAppsPage(
     limit = 100,
     cursor: OperatorAppCursor | null = null,
     candidateStatus?: string
   ): Promise<{ apps: OperatorAppRecord[]; nextCursor: string | null }> {
-    if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error("App limit must be 1..100");
-    const conditions: string[] = [];
-    const params: (string | number)[] = [];
-
-    if (candidateStatus) {
-      conditions.push("candidate_status = ?");
-      params.push(candidateStatus);
-    }
-
-    if (cursor) {
-      conditions.push("(created_at, app_id) < (?, ?)");
-      params.push(cursor.createdAt, cursor.appId);
-    }
-    const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
-    params.push(limit + 1);
-
-    const res = await this.db.prepare(`
-      SELECT app_id, app_name, contact_email, permissions_json, created_at, revoked_at,
-             request_count, last_active_at, candidate_status, candidate_flags_json
-      FROM registered_apps
-      ${where}
-      ORDER BY created_at DESC, app_id DESC
-      LIMIT ?
-    `).bind(...params).all<{
-      app_id: string;
-      app_name: string;
-      contact_email: string | null;
-      permissions_json: string;
-      created_at: string;
-      revoked_at: string | null;
-      request_count: number;
-      last_active_at: string | null;
-      candidate_status: string;
-      candidate_flags_json: string;
-    }>();
-
-    const rows = res.results || [];
-    const visible = rows.slice(0, limit);
-    const last = visible.at(-1);
-
-    const apps: OperatorAppRecord[] = visible.map((row) => {
-      const perms: string[] = JSON.parse(row.permissions_json);
-      let flags: string[] = [];
-      try { flags = JSON.parse(row.candidate_flags_json); } catch {}
-      return {
-        appId: row.app_id,
-        appName: row.app_name,
-        contactEmail: row.contact_email ?? null,
-        permissions: perms,
-        delegationAllowed: perms.includes("claims:delegate"),
-        requestCount: row.request_count ?? 0,
-        lastActiveAt: row.last_active_at ?? null,
-        candidateStatus: (row.candidate_status as any) || "none",
-        candidateFlags: flags,
-        createdAt: row.created_at,
-        revokedAt: row.revoked_at ?? null
-      };
-    });
-
-    return {
-      apps,
-      nextCursor: rows.length > limit && last ? encodeOperatorAppCursor({
-        createdAt: last.created_at,
-        appId: last.app_id
-      }) : null
-    };
+    return this.operator.listOperatorAppsPage(limit, cursor, candidateStatus);
   }
 
-  async reviewAppCandidate(
+  reviewAppCandidate(
     appId: string,
     input: { candidateStatus: "none" | "reviewed" | "trusted"; grantDelegation?: boolean; notes?: string },
     actor: string
-  ): Promise<{
-    appId: string;
-    candidateStatus: "none" | "review_pending" | "reviewed" | "trusted";
-    candidateFlags: string[];
-    delegationAllowed: boolean;
-    permissions: string[];
-    reviewedAt: string;
-  }> {
-    const row = await this.db.prepare(`
-      SELECT app_id, permissions_json, revoked_at, candidate_flags_json
-      FROM registered_apps
-      WHERE app_id = ?
-    `).bind(appId).first<{
-      app_id: string;
-      permissions_json: string;
-      revoked_at: string | null;
-      candidate_flags_json: string;
-    }>();
-
-    if (!row) {
-      throw new Error("App not found");
-    }
-    if (row.revoked_at) {
-      throw new Error("App is revoked");
-    }
-
-    const currentPerms = new Set<string>(JSON.parse(row.permissions_json));
-    if (input.grantDelegation === true || input.candidateStatus === "trusted") {
-      currentPerms.add("claims:delegate");
-      currentPerms.add("takedowns:submit");
-    } else if (input.grantDelegation === false) {
-      currentPerms.delete("claims:delegate");
-      currentPerms.delete("takedowns:submit");
-    }
-    const newPerms = Array.from(currentPerms);
-
-    let flags: string[] = [];
-    try { flags = JSON.parse(row.candidate_flags_json); } catch {}
-    const reviewedAt = new Date(this.now()).toISOString();
-
-    await this.db.prepare(`
-      UPDATE registered_apps
-      SET candidate_status = ?, permissions_json = ?
-      WHERE app_id = ?
-    `).bind(input.candidateStatus, JSON.stringify(newPerms), appId).run();
-
-    return {
-      appId,
-      candidateStatus: input.candidateStatus,
-      candidateFlags: flags,
-      delegationAllowed: newPerms.includes("claims:delegate"),
-      permissions: newPerms,
-      reviewedAt
-    };
+  ) {
+    return this.operator.reviewAppCandidate(appId, input, actor);
   }
 
-  async setAppDelegation(
-    appId: string,
-    allowed: boolean,
-    actor: string,
-    reason?: string
-  ): Promise<{ appId: string; delegationAllowed: boolean; permissions: string[]; updatedAt: string }> {
-    const row = await this.db.prepare(`
-      SELECT app_id, permissions_json, revoked_at
-      FROM registered_apps
-      WHERE app_id = ?
-    `).bind(appId).first<{
-      app_id: string;
-      permissions_json: string;
-      revoked_at: string | null;
-    }>();
-
-    if (!row) {
-      throw new Error("App not found");
-    }
-    if (row.revoked_at) {
-      throw new Error("App is revoked");
-    }
-
-    const currentPerms = new Set<string>(JSON.parse(row.permissions_json));
-    if (allowed) {
-      currentPerms.add("claims:delegate");
-    } else {
-      currentPerms.delete("claims:delegate");
-    }
-    const newPerms = Array.from(currentPerms);
-    const updatedAt = new Date(this.now()).toISOString();
-
-    await this.db.prepare(`
-      UPDATE registered_apps
-      SET permissions_json = ?
-      WHERE app_id = ?
-    `).bind(JSON.stringify(newPerms), appId).run();
-
-    return {
-      appId,
-      delegationAllowed: allowed,
-      permissions: newPerms,
-      updatedAt
-    };
+  setAppDelegation(appId: string, allowed: boolean, actor: string, reason?: string) {
+    return this.operator.setAppDelegation(appId, allowed, actor, reason);
   }
 
-  async listModeratorRatingsPage(
+  listModeratorRatingsPage(
     rating?: ContentRating,
     limit = 100,
     cursor: { updatedAt: string; canonicalId: string } | null = null
   ): Promise<{ ratings: ModeratorRatingRecord[]; nextCursor: string | null }> {
-    if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error("Rating limit must be 1..100");
-    const conditions: string[] = [];
-    const params: (string | number)[] = [];
-
-    if (rating) {
-      conditions.push("c.content_rating = ?");
-      params.push(rating);
-    }
-    if (cursor) {
-      conditions.push("(c.updated_at, c.canonical_id) < (?, ?)");
-      params.push(cursor.updatedAt, cursor.canonicalId);
-    }
-    const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
-    params.push(limit + 1);
-
-    const res = await this.db.prepare(`
-      SELECT c.canonical_id, c.display_name, c.content_rating, c.umbrella, c.category, c.updated_at,
-             (SELECT COUNT(*) FROM catalog_tickets r WHERE r.ticket_type IN ('removal_report', 'rating_dispute') AND (r.canonical_id = c.canonical_id OR json_extract(r.payload_json, '$.canonicalId') = c.canonical_id)) AS report_count
-      FROM canonical_packages c
-      ${where}
-      ORDER BY c.updated_at DESC, c.canonical_id DESC
-      LIMIT ?
-    `).bind(...params).all<{
-      canonical_id: string;
-      display_name: string;
-      content_rating: string;
-      umbrella: "assets" | "tools" | "avatars";
-      category: string;
-      updated_at: string;
-      report_count: number;
-    }>();
-
-    const rows = res.results || [];
-    const visible = rows.slice(0, limit);
-    const last = visible.at(-1);
-
-    const ratings: ModeratorRatingRecord[] = visible.map((row) => ({
-      canonicalId: row.canonical_id,
-      displayName: row.display_name,
-      currentRating: row.content_rating as ContentRating,
-      umbrella: row.umbrella,
-      category: row.category,
-      reportCount: row.report_count ?? 0,
-      updatedAt: row.updated_at
-    }));
-
-    return {
-      ratings,
-      nextCursor: rows.length > limit && last ? encodeModeratorRatingCursor({ updatedAt: last.updated_at, canonicalId: last.canonical_id }) : null
-    };
+    return this.downstream.listModeratorRatingsPage(rating, limit, cursor);
   }
 
-  async adjustPackageRating(
+  adjustPackageRating(
     canonicalId: string,
     newRating: ContentRating,
     adjustedBy: string,
     reason: string
-  ): Promise<{ canonicalId: string; previousRating: ContentRating; newRating: ContentRating; adjustedBy: string; updatedAt: string } | null> {
-    const row = await this.db.prepare(`
-      SELECT canonical_id, content_rating
-      FROM canonical_packages
-      WHERE canonical_id = ?
-    `).bind(canonicalId).first<{
-      canonical_id: string;
-      content_rating: string;
-    }>();
-
-    if (!row) {
-      return null;
-    }
-
-    const previousRating = row.content_rating as ContentRating;
-    const updatedAt = new Date(this.now()).toISOString();
-
-    await this.db.prepare(`
-      UPDATE canonical_packages
-      SET content_rating = ?, updated_at = ?
-      WHERE canonical_id = ?
-    `).bind(newRating, updatedAt, canonicalId).run();
-
-    if (previousRating === "general" && newRating !== "general") {
-      await this.db.prepare(`
-        INSERT OR IGNORE INTO catalog_tombstones (canonical_id, reason, recorded_at)
-        VALUES (?, 'rating_withdrawn', ?)
-      `).bind(canonicalId, updatedAt).run();
-    }
-
-    return {
-      canonicalId,
-      previousRating,
-      newRating,
-      adjustedBy,
-      updatedAt
-    };
+  ): Promise<{
+    canonicalId: string;
+    previousRating: ContentRating;
+    newRating: ContentRating;
+    adjustedBy: string;
+    updatedAt: string;
+  } | null> {
+    return this.downstream.adjustPackageRating(canonicalId, newRating, adjustedBy, reason);
   }
 }

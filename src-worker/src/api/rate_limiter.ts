@@ -4,21 +4,14 @@ export interface RateLimitPolicy {
 }
 
 export const RATE_LIMIT_POLICIES = {
-  // Public catalog endpoints (anonymous DoS / cache-busting scraping)
   PUBLIC_CATALOG: { limit: 60, windowSeconds: 60 },
-
-  // Node endpoints (crawler fleet pacing / rogue node polling)
   NODE_CLAIM: { limit: 30, windowSeconds: 60 },
   NODE_HEARTBEAT: { limit: 20, windowSeconds: 60 },
   NODE_RESULT: { limit: 60, windowSeconds: 60 },
-
-  // Downstream app endpoints
   APP_SEARCH: { limit: 120, windowSeconds: 60 },
   APP_REPORT: { limit: 30, windowSeconds: 60 },
   APP_CLAIMS_INTAKE: { limit: 30, windowSeconds: 60 },
   APP_REGISTER: { limit: 100, windowSeconds: 60 },
-
-  // User, Moderator, Operator routes
   USER_ROUTES: { limit: 120, windowSeconds: 60 },
   MODERATOR_ROUTES: { limit: 120, windowSeconds: 60 },
   OPERATOR_ROUTES: { limit: 1200, windowSeconds: 60 }
@@ -40,10 +33,6 @@ export interface IKVNamespace {
   get(key: string): Promise<string | null>;
   put(key: string, value: string, options?: { expirationTtl?: number }): Promise<void>;
   delete?(key: string): Promise<void>;
-}
-
-export interface CloudflareRateLimiterBinding {
-  limit(options: { key: string }): Promise<{ success: boolean }>;
 }
 
 export class InMemoryRateLimiter implements IRateLimiter {
@@ -147,35 +136,13 @@ export class KvRateLimiter implements IRateLimiter {
   }
 }
 
-export class CloudflareBindingRateLimiter implements IRateLimiter {
-  constructor(private binding: CloudflareRateLimiterBinding) {}
-
-  async check(key: string, policy: RateLimitPolicy): Promise<RateLimitResult> {
-    const res = await this.binding.limit({ key });
-    return {
-      allowed: res.success,
-      limit: policy.limit,
-      remaining: res.success ? policy.limit - 1 : 0,
-      resetAfterSeconds: policy.windowSeconds
-    };
-  }
-}
-
 export const defaultRateLimiter = new InMemoryRateLimiter();
 
 export function createRateLimiter(env?: {
   RATE_LIMIT_KV?: IKVNamespace;
-  VRCP_KV?: IKVNamespace;
-  RATE_LIMITER?: CloudflareRateLimiterBinding;
 }): IRateLimiter {
   if (env?.RATE_LIMIT_KV) {
     return new KvRateLimiter(env.RATE_LIMIT_KV);
-  }
-  if (env?.VRCP_KV) {
-    return new KvRateLimiter(env.VRCP_KV);
-  }
-  if (env?.RATE_LIMITER) {
-    return new CloudflareBindingRateLimiter(env.RATE_LIMITER);
   }
   return defaultRateLimiter;
 }

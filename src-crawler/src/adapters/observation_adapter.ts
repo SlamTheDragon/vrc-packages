@@ -4,9 +4,9 @@ import * as cheerio from "cheerio";
 import type { CrawlJob, DiscoveryLead, Observation, ResultRequest, VpmListingIssue } from "vrc-packages-network/node";
 import { isVpmVersion } from "vrc-packages-network/vpm-version";
 import { classifyAccessFailure, retryAfterSeconds } from "../shared/protocol/access_outcome.ts";
-import { githubApiRepositoryIdentity, isBoothBrowseTarget, boothItemIdentity,
+import { githubApiRepositoryIdentity, parseGitHubOwnerRepo, normalizeGitHubRepositoryUrl, isBoothBrowseTarget, boothItemIdentity,
   isShopifyProductSitemapTarget, shopifyProductLead,
-  isSellfyProductTarget, sellfyProductIdentity, isCustomDomainProductTarget } from "vrc-packages-network/source-targets";
+  isSellfyProductTarget, isCustomDomainProductTarget, isStorefrontProductTarget } from "vrc-packages-network/source-targets";
 import { CRAWLER_USER_AGENT } from "../shared/robots/crawler_identity.ts";
 import { UnsafeMetadataTarget } from "../client/public_metadata_fetch.ts";
 import { cleanTitle, cleanTrackingParams } from "vrc-packages-network/catalog-hygiene";
@@ -161,10 +161,12 @@ export function parseVpmListingRecipe(job: CrawlJob, body: string): DiscoveryLea
   if (packages.length > 100 || githubRepos.length > 100) return null;
   const leads: DiscoveryLead[] = [{ kind: "vpm_listing", url: new URL(recipe.url as string).href }];
   for (const repo of githubRepos) {
-    if (typeof repo !== "string" || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo)) return null;
-    const [owner, name] = repo.split("/");
-    if (owner === "." || owner === ".." || name === "." || name === "..") return null;
-    leads.push({ kind: "github_repository", url: `https://github.com/${owner}/${name}` });
+    if (typeof repo !== "string") return null;
+    const parts = repo.split("/");
+    if (parts.length !== 2) return null;
+    const identity = parseGitHubOwnerRepo(parts[0], parts[1], { rejectReservedRoutes: true });
+    if (!identity) return null;
+    leads.push({ kind: "github_repository", url: `https://github.com/${identity}` });
   }
   for (const entry of packages) {
     const packageInfo = object(entry);
@@ -315,14 +317,7 @@ export function parseObservation(job: CrawlJob, body: string, contentType: strin
   }
 
   const productUrl = new URL(job.url);
-  const productPath = job.platform === "booth" && /^\/(?:[a-z]{2}\/)?items\/\d+\/?$/.test(productUrl.pathname) ||
-    job.platform === "gumroad" && /^\/l\/[^/]+\/?$/.test(productUrl.pathname) ||
-    job.platform === "jinxxy" && /^\/[^/]+\/[^/]+\/?$/.test(productUrl.pathname) ||
-    job.platform === "itch" && productUrl.hostname.endsWith(".itch.io") ||
-    job.platform === "shopify" && /^\/(?:[a-z]{2}(?:-[a-z]{2})?\/)?products\/[a-z0-9][a-z0-9-]*\/?$/i.test(productUrl.pathname) ||
-    job.platform === "sellfy" && isSellfyProductTarget(job.url) ||
-    job.platform === "custom_domain" && isCustomDomainProductTarget(job.url);
-  if (!productPath) return null;
+  if (!isStorefrontProductTarget(job.platform, job.url)) return null;
   const $ = cheerio.load(body);
   const metadata = (key: string) => $(`meta[property="${key}"],meta[name="${key}"]`).first().attr("content")?.trim() || "";
   const requested = productUrl;
@@ -431,8 +426,9 @@ export function parseCuratedDiscoveryLeads(job: CrawlJob, body: string, contentT
     try {
       const parsed = new URL(line);
       if (parsed.protocol === "https:") {
-        if (parsed.hostname === "github.com" && /^\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(parsed.pathname)) {
-          leads.push({ kind: "github_repository", url: parsed.href });
+        const ghRepoUrl = parsed.hostname === "github.com" ? normalizeGitHubRepositoryUrl(parsed.href) : null;
+        if (ghRepoUrl) {
+          leads.push({ kind: "github_repository", url: ghRepoUrl });
         } else if (parsed.pathname.endsWith(".json")) {
           leads.push({ kind: "vpm_listing", url: parsed.href });
         }
@@ -448,9 +444,9 @@ export function parseCuratedDiscoveryLeads(job: CrawlJob, body: string, contentT
       try {
         const parsed = new URL(match);
         if (parsed.hostname === "github.com") {
-          const m = /^\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)/.exec(parsed.pathname);
-          if (m && m[1] !== "topics" && m[1] !== "search") {
-            leads.push({ kind: "github_repository", url: `https://github.com/${m[1]}/${m[2]}` });
+          const ghRepoUrl = normalizeGitHubRepositoryUrl(parsed.href);
+          if (ghRepoUrl) {
+            leads.push({ kind: "github_repository", url: ghRepoUrl });
           }
         } else if (parsed.pathname.endsWith("/index.json") || parsed.pathname.endsWith("/vpm.json") || parsed.pathname.endsWith("/packages.json")) {
           leads.push({ kind: "vpm_listing", url: parsed.href });

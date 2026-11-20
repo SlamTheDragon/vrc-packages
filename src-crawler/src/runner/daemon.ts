@@ -5,6 +5,7 @@ import { fetchPublicMetadata } from "../client/public_metadata_fetch.ts";
 import type { NodeRuntimeConfig } from "../config/runtime_config.ts";
 import type { LocalNodeStore } from "../storage/local_sqlite.ts";
 import { PROTOCOL_VERSION, MAX_BATCH_RESULTS, type HeartbeatRequest, type CrawlJob } from "vrc-packages-network/node";
+import { ROBOTS_REFRESH_TIMEOUT_MS } from "vrc-packages-network/robots";
 import { retrieveRobotsSnapshot, type RobotsFetcher } from "vrc-packages-network/robots-retrieval";
 import { CRAWLER_USER_AGENT } from "../shared/robots/crawler_identity.ts";
 import { logger } from "../utils/logging/logger.ts";
@@ -279,18 +280,18 @@ export class CrawlerNodeDaemon {
       const claim = await this.client.claim(this.options.maxClaimJobs);
       if (this.stopping) return "stopped";
       if (claim.status === "empty") {
-        if (typeof (this.client as any).claimRobotsRefresh === "function") {
+        if (typeof this.client.claimRobotsRefresh === "function") {
           try {
-            const robotsClaim = await (this.client as any).claimRobotsRefresh();
+            const robotsClaim = await this.client.claimRobotsRefresh();
             if (robotsClaim && robotsClaim.status === "leased") {
               const fetchFn = this.options.fetchFn ?? fetchPublicMetadata;
               const fetcher: RobotsFetcher = (url, init) => fetchFn(url, init);
               const snapshot = await retrieveRobotsSnapshot(
                 { origin: robotsClaim.origin, userAgent: CRAWLER_USER_AGENT },
                 fetcher,
-                this.stopController.signal
+                AbortSignal.any([this.stopController.signal, AbortSignal.timeout(ROBOTS_REFRESH_TIMEOUT_MS)])
               );
-              await (this.client as any).submitRobotsResult(
+              await this.client.submitRobotsResult(
                 snapshot.origin,
                 robotsClaim.leaseId,
                 snapshot.statusCode,
@@ -327,7 +328,7 @@ export class CrawlerNodeDaemon {
     while (this.claimedJobsQueue.length > 0) {
       const candidate = this.claimedJobsQueue.shift()!;
       // Fail closed: enforce lease unexpired preflight check with clock calibration
-      const clockOffset = typeof (this.client as any).getClockOffset === "function" ? (this.client as any).getClockOffset() : 0;
+      const clockOffset = typeof this.client.getClockOffset === "function" ? this.client.getClockOffset() : 0;
       const nowMs = Date.now() + clockOffset;
       if (new Date(candidate.leaseExpiresAt).getTime() <= nowMs) {
         const errorMsg = `Lease ${candidate.leaseId} for job ${candidate.jobId} expired before execution (expired at ${candidate.leaseExpiresAt})`;

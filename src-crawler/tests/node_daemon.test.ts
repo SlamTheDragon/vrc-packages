@@ -98,9 +98,9 @@ async function withWire(
         }));
       }
       case "/v1/node/robots/claim":
-        return Response.json({ schemaVersion: 1, status: "empty" });
+        return Response.json({ schemaVersion: 1, status: "empty", retryAfterMs: 1000 });
       case "/v1/node/robots/result":
-        return Response.json({ schemaVersion: 1, status: "accepted" });
+        return Response.json({ schemaVersion: 1, status: "accepted", origin: "https://example.org" });
       default: throw new Error("Unexpected node protocol route");
     }
   }) as typeof fetch;
@@ -889,15 +889,15 @@ describe("node-owned daemon lifecycle through serialized contracts", () => {
           schemaVersion: 1,
           status: "leased",
           origin: "https://robots-test.example.org",
-          leaseId: "test-robots-lease-1"
+          leaseId: "c2dd6562-6fa4-4cd2-84ae-0c090ba29733"
         };
       };
 
-      testClient.submitRobotsResult = async (origin, leaseId, statusCode, body) => {
+      testClient.submitRobotsResult = async (origin, _leaseId, statusCode, body) => {
         submittedOrigin = origin;
         submittedStatus = statusCode;
         submittedBody = body;
-        return { status: "accepted", origin };
+        return { schemaVersion: 1, status: "accepted", origin };
       };
 
       const mockFetch = async (url: any) => {

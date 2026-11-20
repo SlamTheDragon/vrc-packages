@@ -10,72 +10,9 @@ import { handlePublicCatalogRequest } from "../src/api/public_handler.ts";
 import { InMemoryRateLimiter } from "../src/api/rate_limiter.ts";
 import { handleNodeRequest } from "../src/api/handler.ts";
 import { sha256Hex } from "../src/storage/d1/utils.ts";
+import { createMockD1Database } from "./support/d1_test_fixtures.ts";
 
-export function createMockD1Database(db = new Database(":memory:")) {
-  db.run("PRAGMA foreign_keys = ON;");
-  const executions = new WeakMap<D1PreparedStatement, () => D1Result<never>>();
-  // SQLite fixture metadata is synthetic, not D1 usage or billing evidence.
-  const meta = (changes = 0, lastRowId = 0): D1Result<never>["meta"] => ({ changes, last_row_id: lastRowId,
-    changed_db: changes > 0, duration: 0, size_after: 0, rows_read: 0, rows_written: 0 });
-  return {
-    prepare(query: string): D1PreparedStatement {
-      let boundValues: SQLQueryBindings[] = [];
-      const stmt: D1PreparedStatement = {
-        bind(...values: unknown[]): D1PreparedStatement {
-          boundValues = values.map((v) => (v === undefined ? null : v)) as SQLQueryBindings[];
-          return stmt;
-        },
-        async first<T = unknown>(colName?: string): Promise<T | null> {
-          const row = db.prepare(query).get(...boundValues) as Record<string, unknown> | null;
-          if (!row) return null;
-          if (colName) return (row[colName] as T) ?? null;
-          return row as T;
-        },
-        async run<T = unknown>(): Promise<D1Result<T>> {
-          const info = db.prepare(query).run(...boundValues);
-          return { success: true, results: [], meta: meta(info.changes, Number(info.lastInsertRowid)) };
-        },
-        async all<T = unknown>(): Promise<D1Result<T>> {
-          const results = db.prepare(query).all(...boundValues) as T[];
-          return { success: true, results, meta: meta() };
-        },
-        async raw(): Promise<never> {
-          throw new Error("SQLite D1 fixture does not implement raw; use native workerd");
-        }
-      };
-      executions.set(stmt, () => {
-        const info = db.prepare(query).run(...boundValues);
-        return { success: true, results: [], meta: meta(info.changes, Number(info.lastInsertRowid)) };
-      });
-      return stmt;
-    },
-    async batch<T = unknown>(statements: D1PreparedStatement[]): Promise<D1Result<T>[]> {
-      const results: D1Result<T>[] = [];
-      db.transaction(() => {
-        for (const statement of statements) {
-          const execute = executions.get(statement);
-          if (!execute) throw new Error("SQLite D1 fixture cannot batch a foreign statement");
-          results.push(execute());
-        }
-      })();
-      return results;
-    },
-    async exec(query: string): Promise<D1ExecResult> {
-      // Native D1 exec processes each nonempty line as a complete command.
-      const commands = query.trim().split("\n").map(line => line.trim()).filter(Boolean);
-      db.transaction(() => {
-        for (const command of commands) db.prepare(command).run();
-      })();
-      return { count: commands.length, duration: 0 };
-    },
-    withSession(): never {
-      throw new Error("SQLite D1 fixture does not implement sessions; use native workerd");
-    },
-    async dump(): Promise<never> {
-      throw new Error("SQLite D1 fixture does not implement dump; use native workerd");
-    }
-  } satisfies Env["VRCP_D1"];
-}
+export { createMockD1Database };
 
 describe("Cloudflare D1 Coordinator Store & Edge Worker Adapter", () => {
   it("rejects unsupported fixture operations and rolls back foreign batch statements", async () => {
@@ -700,11 +637,17 @@ describe("Cloudflare D1 Coordinator Store & Edge Worker Adapter", () => {
     try {
       const db = createMockD1Database(sqlite);
       const calls: string[] = [];
-      const store = new Coordinator({ ...db, async exec(query) {
+      const wrappedDb = {
+        prepare: db.prepare.bind(db),
+        batch: db.batch.bind(db),
+        withSession: db.withSession.bind(db),
+        dump: db.dump.bind(db),
+        async exec(query) {
         calls.push(query);
         if (query.startsWith("ALTER TABLE")) throw new Error("Alterations are not part of fresh initialization");
         return db.exec(query);
-      } });
+      } } satisfies Env["VRCP_D1"];
+      const store = new Coordinator(wrappedDb);
       await store.initSchema(false);
       const columns = sqlite.query("PRAGMA table_info(canonical_packages)").all() as { name: string }[];
       expect(columns.some(column => column.name === "published_at")).toBe(true);

@@ -1,72 +1,13 @@
 # VRCP Sector 1: Coordinator (`src-worker/`)
 
-> **Truth Cascade**: Inherit root [`AGENTS.md`](../AGENTS.md), [`VISION.md`](../docs/research/decisions/VISION.md) (`T00`–`T05`), [`SYSTEM_MAP.md`](../docs/source/SYSTEM_MAP.md), and [`LEGAL.md`](../LEGAL.md). Active 3-file sector ledger: [`docs/scratch-crawler-network/`](../docs/scratch-crawler-network/IMPLEMENTATION_PLAN.md) (`handoff.md` owns **Tier 2** Workers/Schemas and **Tier 3A** `packages/network/`). Permitted upstream reads: [`scratch-legal-research/handoff.md`](../docs/scratch-legal-research/handoff.md) (Tier 1), [`scratch-api-web/handoff.md`](../docs/scratch-api-web/handoff.md) (Tier 3B for `vrc-packages-api-preview`), and [`scratch-pipeline/handoff.md`](../docs/scratch-pipeline/handoff.md). Owning truth docs: [`coordinator_worker.md`](../docs/source/specifications/coordinator_worker.md), [`coordinator_d1.md`](../docs/source/schemas/coordinator_d1.md), [`failure_and_recovery_matrix.md`](../docs/source/reliability/failure_and_recovery_matrix.md). Submit Publication Requests strictly in [`docs/scratch-crawler-network/handoff.md`](../docs/scratch-crawler-network/handoff.md); only Sector 4 Pipeline edits `docs/source/CHANGELOG.md` and clears `verified` rows.
->
-> **Boundaries**: API-only Cloudflare Worker (`src/worker_entry.ts`, D1 binding `VRCP_D1`). Zero sibling-project imports; consume `vrc-packages-api` (preview) and `vrc-packages-network` (tarball) as declared dependencies. Schema or `packages/network/` changes trigger the Rule 06 `edit-guard`. Relevant root skills: `cloudflare`, `workers-best-practices`, `wrangler`.
->
-> **Verification**: `bun run check`, `bun run test`, `bun run test:workers`, `bun run build:preview && bun run test:runtime`.
+**Truth Cascade:** Inherit root [`AGENTS.md`](../AGENTS.md), [`VISION.md`](../docs/research/decisions/VISION.md) (`T00` to `T05`), [`SYSTEM_MAP.md`](../docs/source/SYSTEM_MAP.md), and [`LEGAL.md`](../LEGAL.md).
 
----
+**Ledgers:** Active 3-file sector ledger is [`docs/scratch-crawler-network/`](../docs/scratch-crawler-network/IMPLEMENTATION_PLAN.md). Its [`handoff.md`](../docs/scratch-crawler-network/handoff.md) owns **Tier 2** Workers and Schemas plus **Tier 3A** `packages/network/`. Permitted upstream reads are [`scratch-legal-research/handoff.md`](../docs/scratch-legal-research/handoff.md) (Tier 1), [`scratch-api-web/handoff.md`](../docs/scratch-api-web/handoff.md) (Tier 3B for `vrc-packages-api-preview`), and [`scratch-pipeline/handoff.md`](../docs/scratch-pipeline/handoff.md).
 
-# Cloudflare Workers
+**Owning Truth Docs:** [`coordinator_worker.md`](../docs/source/specifications/coordinator_worker.md), [`coordinator_d1.md`](../docs/source/schemas/coordinator_d1.md), and [`failure_and_recovery_matrix.md`](../docs/source/reliability/failure_and_recovery_matrix.md). Submit Publication Requests strictly in [`docs/scratch-crawler-network/handoff.md`](../docs/scratch-crawler-network/handoff.md). Only Sector 4 Pipeline edits `docs/source/CHANGELOG.md` and clears `verified` rows.
 
-STOP. Your knowledge of Cloudflare Workers APIs and limits may be outdated. Always retrieve current documentation before any Workers, KV, R2, D1, Durable Objects, Queues, Vectorize, AI, or Agents SDK task.
+**Boundaries:** API-only Cloudflare Worker (`src/worker_entry.ts`, D1 binding `VRCP_D1`). Keep zero sibling-project imports. Consume `vrc-packages-api` (preview) and `vrc-packages-network` (tarball) as declared dependencies. Schema or `packages/network/` changes trigger the Rule 06 `edit-guard`.
 
-## Docs
+**Skills and Routing:** [`cloudflare`](../.agents/skills/cloudflare/SKILL.md), [`workers-best-practices`](../.agents/skills/workers-best-practices/SKILL.md), [`wrangler`](../.agents/skills/wrangler/SKILL.md), and [`SYSTEM_MAP.md`](../docs/source/SYSTEM_MAP.md).
 
-- https://developers.cloudflare.com/workers/
-- MCP: `https://docs.mcp.cloudflare.com/mcp`
-
-For all limits and quotas, retrieve from the product's `/platform/limits/` page. eg. `/workers/platform/limits`
-
-## Commands
-
-| Command | Purpose |
-|---------|---------|
-| `npx wrangler dev` | Local development |
-| `npx wrangler deploy` | Deploy to Cloudflare |
-| `npx wrangler types` | Generate TypeScript types |
-
-Run `bun run cf-typegen` after changing bindings in `wrangler.toml`.
-
-## Local Explorer (Debugging & Inspection)
-
-When running `npx wrangler dev`, a Local Explorer API is available for inspecting and debugging local Workers, bindings, and storage state. The API base URL is printed in the terminal when the dev server starts.
-
-Key endpoints (relative to the dev server URL):
-
-| Endpoint | Description |
-|----------|-------------|
-| `GET /cdn-cgi/local/explorer/api/local/workers` | List local Workers and their bindings |
-| `GET /cdn-cgi/local/explorer/api/storage/kv/namespaces` | List KV namespaces |
-| `GET /cdn-cgi/local/explorer/api/d1/database` | List D1 databases |
-| `GET /cdn-cgi/local/explorer/api/r2/buckets` | List R2 buckets |
-| `GET /cdn-cgi/local/explorer/api/workers/durable_objects/namespaces` | List Durable Object namespaces |
-| `GET /cdn-cgi/local/explorer/api/workflows` | List Workflows |
-| `POST /cdn-cgi/local/explorer/api/local/observability/query` | Run a read-only SQL query (SELECT/WITH only) over captured request traces and console logs. Tables: `spans`, `logs` (read attributes via `json(attributes)`). Example: `curl -X POST <base>/cdn-cgi/local/explorer/api/local/observability/query -H 'Content-Type: application/json' -d '{"sql":"SELECT service, name, outcome, duration_ms FROM spans WHERE parent_id IS NULL LIMIT 20"}'` |
-| `POST /cdn-cgi/local/explorer/api/local/observability/clear` | Clear all captured traces and logs |
-
-If the routes above don't cover what you need, fetch the full OpenAPI schema (large - use only as a last resort): `GET /cdn-cgi/local/explorer/api`
-
-Use the Local Explorer to debug issues by inspecting storage state (KV keys, D1 rows, R2 objects, DO storage), viewing Worker bindings, and querying request traces and logs captured during the dev session.
-
-## Node.js Compatibility
-
-https://developers.cloudflare.com/workers/runtime-apis/nodejs/
-
-## Errors
-
-- **Error 1102** (CPU/Memory exceeded): Retrieve limits from `/workers/platform/limits/`
-- **All errors**: https://developers.cloudflare.com/workers/observability/errors/
-
-## Product Docs
-
-Retrieve API references and limits from:
-`/kv/` · `/r2/` · `/d1/` · `/durable-objects/` · `/queues/` · `/vectorize/` · `/workers-ai/` · `/agents/`
-
-## Best Practices (conditional)
-
-If the application uses Durable Objects or Workflows, refer to the relevant best practices:
-
-- Durable Objects: https://developers.cloudflare.com/durable-objects/best-practices/rules-of-durable-objects/
-- Workflows: https://developers.cloudflare.com/workflows/build/rules-of-workflows/
+**Verification:** `bun run check`, `bun run test`, `bun run test:workers`, `bun run build:preview`, and `bun run test:runtime`.

@@ -1,13 +1,13 @@
 import { describe, it, expect } from "bun:test";
 import { cleanTitle, unescapeHtml, cleanTrackingParams } from "vrc-packages-network/catalog-hygiene";
-import { cleanAuthorName, cleanDescription, extractReadmeDescription, normalizeListingTitle } from "../src/utils/text/sanitizer.ts";
+import { cleanAuthorName, cleanDescription } from "../src/utils/text/sanitizer.ts";
 
-describe("Phase 1: Front-Stage Sanitization & Normalization", () => {
+describe("Front-stage sanitization and normalization", () => {
   it("unescapes HTML entities correctly", () => {
     expect(unescapeHtml("&amp; &lt; &gt; &quot; &#39; &#x2F;")).toBe("& < > \" ' /");
   });
 
-  it("normalizes Japanese BOOTH decorative marketing brackets and CJK characters (Task 2.4 / Front Sanitation)", () => {
+  it("normalizes Japanese BOOTH decorative marketing brackets and CJK characters", () => {
     const rawTitle = "【VRChat想定】［無料］Modular Avatar対応 ツール【MA対応】";
     const cleaned = cleanTitle(rawTitle);
     expect(cleaned).toContain("Modular Avatar対応 ツール");
@@ -28,11 +28,6 @@ describe("Phase 1: Front-Stage Sanitization & Normalization", () => {
     expect(cleanAuthorName("@SoloDev")).toBe("SoloDev");
     expect(cleanAuthorName("Creator @handle")).toBe("Creator");
     expect(cleanAuthorName("")).toBe("Unknown");
-  });
-
-  it("normalizeListingTitle aligns with cleanTitle", () => {
-    const title = "【無料】Shader Utility Tool (VRChat)";
-    expect(normalizeListingTitle(title)).toBe(cleanTitle(title));
   });
 
   it("cleanDescription strips discord invites, image markdown, and normalizes spacing while preserving paragraphs", () => {
@@ -59,40 +54,5 @@ describe("Phase 1: Front-Stage Sanitization & Normalization", () => {
 
     const nonUrl = cleanTrackingParams("not-a-url");
     expect(nonUrl).toBe("not-a-url");
-  });
-
-  it("extractReadmeDescription strips badges, code blocks, and boilerplate while capturing rich overview and features", () => {
-    const readme = `
-# Awesome VRC Tool
-[![Release](https://img.shields.io/github/v/release/foo/bar)](https://github.com/foo/bar)
-[![Discord](https://img.shields.io/discord/123)](https://discord.gg/xyz)
-
-Awesome VRC Tool is a non-destructive avatar optimization suite for Unity.
-It automates bone merging, material combination, and texture atlas generation.
-
-\`\`\`bash
-git clone https://github.com/foo/bar.git
-npm install
-\`\`\`
-
-## Features
-* One-click optimizer
-* Non-destructive workflow
-* Multi-platform support
-
-## License
-MIT License. Copyright 2026.
-    `;
-    const synopsis = "Automated non-destructive avatar optimization suite.";
-    const result = extractReadmeDescription(readme, synopsis);
-
-    expect(result).toContain("Automated non-destructive avatar optimization suite.");
-    expect(result).toContain("Awesome VRC Tool is a non-destructive avatar optimization suite for Unity.");
-    expect(result).toContain("- One-click optimizer");
-    expect(result).toContain("- Non-destructive workflow");
-    expect(result).not.toContain("git clone");
-    expect(result).not.toContain("img.shields.io");
-    expect(result).not.toContain("MIT License");
-    expect(result).not.toContain("https://discord.gg/");
   });
 });

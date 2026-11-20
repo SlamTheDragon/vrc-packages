@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 /**
- * Supported subtypes for standalone VRChat desktop software (Task 5.5 / Gate G4).
+ * Supported subtypes for standalone VRChat desktop software.
  */
 export const DesktopToolSubtypeSchema = z.enum([
   "companion_client",
@@ -52,7 +52,7 @@ export function inferSupportedOS(text: string): ("windows" | "linux" | "macos")[
 }
 
 /**
- * Classifies whether a software item is a standalone VRChat desktop tool (Gate G4 & Task 5.5).
+ * Classifies whether a software item is a standalone VRChat desktop tool.
  *
  * Positives: matches known VRChat desktop tools (e.g. VRCX, VRCFaceTracking, VRCOSC, ADVOSC)
  * or explicit OSC/tracking bridges designed for VRChat with high confidence (>= 0.8).
@@ -266,7 +266,7 @@ export function deriveCategoryFromTags(
     if (tag.includes("physics") || tag.includes("physbone")) {
       return "physics_tool";
     }
-    // clothing/outfit/cosmetic via VPM are edge cases — keep default
+    // clothing/outfit/cosmetic via VPM are edge cases; keep default
     if (tag.includes("clothing") || tag.includes("outfit") || tag.includes("cosmetic")) {
       return defaultCategory;
     }

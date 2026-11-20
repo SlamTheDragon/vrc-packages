@@ -7,7 +7,7 @@ const outputPath = path.resolve(import.meta.dir, "../dist/tests");
 fs.mkdirSync(outputPath, { recursive: true });
 const tempRoot = fs.realpathSync(outputPath);
 
-describe("Phase 2 - Task 2.5: Implement Unified latest.log with Daily/Shutdown Archiving", () => {
+describe("Unified latest.log daily and shutdown archiving", () => {
   const testDir = fs.mkdtempSync(path.join(tempRoot, "test_log_rotation_"));
   let logger: Logger;
 

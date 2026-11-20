@@ -11,7 +11,7 @@ import {
   extractAvatarCompatibility
 } from "../src/domain/classification/avatar_compatibility.ts";
 
-describe("Desktop Tool Tagging & Evidence (Gate G4 & Task 5.5)", () => {
+describe("Desktop Tool Tagging and Evidence", () => {
   it("validates DesktopToolEvidenceSchema against authoritative publisher records", () => {
     const validEvidence = {
       canonicalId: "vrcx-official",
@@ -345,15 +345,15 @@ describe("deriveCategoryFromTags (TAXONOMY-01)", () => {
     expect(deriveCategoryFromTags(["physbone", "avatar"], "vpm_package")).toBe("physics_tool");
   });
 
-  it("clothing tag is conservative — returns defaultCategory", () => {
+  it("clothing tag is conservative: returns defaultCategory", () => {
     expect(deriveCategoryFromTags(["clothing", "outfit"], "vpm_package")).toBe("vpm_package");
   });
 
-  it("outfit tag is conservative — returns defaultCategory", () => {
+  it("outfit tag is conservative: returns defaultCategory", () => {
     expect(deriveCategoryFromTags(["outfit"], "vpm_package")).toBe("vpm_package");
   });
 
-  it("cosmetic tag is conservative — returns defaultCategory", () => {
+  it("cosmetic tag is conservative: returns defaultCategory", () => {
     expect(deriveCategoryFromTags(["cosmetic"], "vpm_package")).toBe("vpm_package");
   });
 

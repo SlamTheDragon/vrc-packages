@@ -299,6 +299,8 @@ describe("standalone node observation adapter", () => {
   test("classifies rate limits and unparseable responses without submitting product data", async () => {
     const limited = await fetchJobOutcome(job, async () => new Response("", { status: 429, headers: { "Retry-After": "42" } }));
     expect(limited).toEqual({ kind: "rate_limited", retryAfterSeconds: 42 });
+    const cappedLimit = await fetchJobOutcome(job, async () => new Response("", { status: 429, headers: { "Retry-After": "999999999" } }));
+    expect(cappedLimit).toEqual({ kind: "rate_limited", retryAfterSeconds: 86400 });
     const deniedTemporarily = await fetchJobOutcome(job, async () => new Response("", { status: 403, headers: { "Retry-After": "9" } }));
     expect(deniedTemporarily).toEqual({ kind: "rate_limited", retryAfterSeconds: 9 });
     const reset = Math.floor(Date.now() / 1000) + 120;
@@ -308,6 +310,8 @@ describe("standalone node observation adapter", () => {
     if (githubLimit.kind === "rate_limited") expect(githubLimit.retryAfterSeconds).toBeGreaterThanOrEqual(118);
     const challenge = await fetchJobOutcome(job, async () => new Response("", { status: 200, headers: { "cf-mitigated": "challenge" } }));
     expect(challenge.kind).toBe("blocked");
+    const htmlChallenge = await fetchJobOutcome(job, async () => new Response("<script src='/cdn-cgi/challenge-platform/h/b/orchestrate'></script>", { status: 200 }));
+    expect(htmlChallenge).toEqual({ kind: "blocked", reason: "Challenge response" });
     const redirect = await fetchJobOutcome(job, async () => new Response(null, { status: 302,
       headers: { location: "https://127.0.0.1/private" } }));
     expect(redirect).toEqual({ kind: "blocked", reason: "Redirect requires source review" });

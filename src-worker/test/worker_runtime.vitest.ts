@@ -41,6 +41,6 @@ describe("configured coordinator Worker", () => {
     const response = await exports.default.fetch("https://coordinator.example/");
     expect(response.status).toBe(404);
     expect(response.headers.get("content-type")).toContain("application/json");
-    expect(await response.json()).toEqual({ error: "Not Found" });
+    expect(await response.json()).toEqual({ schemaVersion: 1, code: "not_found", error: "Not Found" });
   });
 });

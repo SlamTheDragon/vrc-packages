@@ -1,31 +1,32 @@
 import { Coordinator } from "./storage/d1/coordinator.ts";
-import { CoordinatorConflict, createCoordinatorHandler, readJson } from "./api/handler.ts";
+import { createCoordinatorHandler, readJson } from "./api/handler.ts";
+import { UnsupportedMediaTypeError } from "./domain/ports/stores.ts";
 import { InitializeCoordinatorRequestSchema, InitializeCoordinatorResponseSchema } from "vrc-packages-api";
 import { createOperatorHandler } from "./api/operator_handler.ts";
 import { createPublicCatalogHandler } from "./api/public_handler.ts";
 import { createDownstreamHandler } from "./api/downstream_handler.ts";
 import { createUserHandler } from "./api/user_handler.ts";
 import { createModeratorHandler } from "./api/moderator_handler.ts";
-import { timingSafeEqual } from "./storage/d1/utils.ts";
+import { isOperatorAuthorized } from "./api/auth.ts";
 import { workerLogger } from "./worker_logger.ts";
 import {
   extractClientIp,
   RATE_LIMIT_POLICIES,
   rateLimitResponse,
+  applyRateLimitHeaders,
   createRateLimiter,
-  type IKVNamespace,
-  type CloudflareRateLimiterBinding
+  type IKVNamespace
 } from "./api/rate_limiter.ts";
 
 export type Env = Omit<Cloudflare.Env, "RATE_LIMIT_KV"> & {
   RATE_LIMIT_KV?: Cloudflare.Env["RATE_LIMIT_KV"];
 };
 
-function isOperatorAuthorized(request: Request, configuredToken: string): boolean {
-  if (!configuredToken || !/^[a-fA-F0-9]{64}$/.test(configuredToken)) return false;
-  const supplied = request.headers.get("authorization") || "";
-  if (!/^Bearer [a-fA-F0-9]{64}$/.test(supplied)) return false;
-  return timingSafeEqual(supplied.slice(7), configuredToken);
+function errorResponse(status: number, code: string, error: string): Response {
+  return new Response(JSON.stringify({ schemaVersion: 1, code, error }), {
+    status,
+    headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" }
+  });
 }
 
 export default {
@@ -34,8 +35,6 @@ export default {
       const store = new Coordinator(env.VRCP_D1);
       const rateLimiter = createRateLimiter(env as unknown as {
         RATE_LIMIT_KV?: IKVNamespace;
-        VRCP_KV?: IKVNamespace;
-        RATE_LIMITER?: CloudflareRateLimiterBinding;
       });
       const url = new URL(request.url);
 
@@ -46,34 +45,38 @@ export default {
           return rateLimitResponse(initRate, 1, "Rate limit exceeded for operator init.");
         }
         if (!isOperatorAuthorized(request, env.OPERATOR_TOKEN)) {
-          return new Response(JSON.stringify({ error: "Unauthorized" }), {
-            status: 401,
-            headers: { "Content-Type": "application/json" }
-          });
+          return errorResponse(401, "unauthorized", "Unauthorized");
         }
-        const failure = (status: number, code: string, error: string) => new Response(
-          JSON.stringify({ schemaVersion: 1, code, error }), {
-            status, headers: { "Content-Type": "application/json", "Cache-Control": "no-store" }
-          });
         let payload: unknown;
         try {
           payload = await readJson(request);
         } catch (cause) {
-          if (cause instanceof RangeError) return failure(413, "invalid_payload", "Payload exceeds 256 KiB");
-          if (cause instanceof CoordinatorConflict) return failure(415, "invalid_payload", "Content-Type must be application/json");
-          return failure(400, "bad_json", "Request body must be valid JSON");
+          if (cause instanceof RangeError) return errorResponse(413, "invalid_payload", "Payload exceeds 256 KiB");
+          if (cause instanceof UnsupportedMediaTypeError) return errorResponse(cause.status, "invalid_payload", cause.message);
+          return errorResponse(400, "bad_json", "Request body must be valid JSON");
         }
         const parsed = InitializeCoordinatorRequestSchema.safeParse(payload);
-        if (!parsed.success) return failure(400, "invalid_payload", "Invalid initialization payload");
+        if (!parsed.success) return errorResponse(400, "invalid_payload", "Invalid initialization payload");
         const autoSeed = parsed.data.autoSeed ?? true;
         await store.initSchema(autoSeed);
         workerLogger.info("Coordinator D1 schema initialized via /v1/operator/init", { autoSeed });
-        return new Response(JSON.stringify(InitializeCoordinatorResponseSchema.parse({
-          schemaVersion: 1, status: "ok", message: "Schema initialized", autoSeed
-        })), {
-          status: 200,
-          headers: { "Content-Type": "application/json", "Cache-Control": "no-store" }
-        });
+        return applyRateLimitHeaders(
+          new Response(
+            JSON.stringify(
+              InitializeCoordinatorResponseSchema.parse({
+                schemaVersion: 1,
+                status: "ok",
+                message: "Schema initialized",
+                autoSeed
+              })
+            ),
+            {
+              status: 200,
+              headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" }
+            }
+          ),
+          initRate
+        );
       }
 
       const publicHandler = createPublicCatalogHandler(store, rateLimiter);
@@ -82,7 +85,8 @@ export default {
       const moderatorHandler = createModeratorHandler(store, rateLimiter);
       const nodeHandler = createCoordinatorHandler(store, rateLimiter);
       const operatorHandler = createOperatorHandler(store, env.OPERATOR_TOKEN, rateLimiter);
-      const handled = (await publicHandler(request)) ??
+      const handled =
+        (await publicHandler(request)) ??
         (await downstreamHandler(request)) ??
         (await userHandler(request)) ??
         (await moderatorHandler(request)) ??
@@ -91,17 +95,11 @@ export default {
       if (handled) return handled;
 
       workerLogger.warn("Route not found in worker fetch", { path: url.pathname, method: request.method });
-      return new Response(JSON.stringify({ error: "Not Found" }), {
-        status: 404,
-        headers: { "Content-Type": "application/json" }
-      });
+      return errorResponse(404, "not_found", "Not Found");
     } catch (error) {
       const path = new URL(request.url).pathname;
       workerLogger.error("Unhandled exception in worker fetch", error, { path });
-      return new Response(JSON.stringify({ error: "Internal Server Error" }), {
-        status: 500,
-        headers: { "Content-Type": "application/json" }
-      });
+      return errorResponse(500, "internal_error", "Internal Server Error");
     }
   }
 } satisfies ExportedHandler<Env>;

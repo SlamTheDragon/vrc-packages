@@ -2,107 +2,22 @@ import { describe, expect, test, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { getTestOutputDir } from "./helpers/test_directory.ts";
-import { LocalCoordinatorStore } from "./support/local_sqlite.js";
+import { createInitializedD1Coordinator } from "./support/d1_test_fixtures.ts";
+import type { Coordinator } from "../src/storage/d1/coordinator.ts";
+import type { Database } from "bun:sqlite";
 import { handleDownstreamRequest } from "../src/api/downstream_handler.ts";
-import { DOWNSTREAM_PROTOCOL_VERSION } from "vrc-packages-api";
-import { VRCPackageClient } from "vrc-packages-api";
-import { type ReportSubmissionRequest } from "vrc-packages-api";
+import { DOWNSTREAM_PROTOCOL_VERSION, VRCPackageClient, type ReportSubmissionRequest } from "vrc-packages-api";
 
 describe("Downstream Client Protocol & Demand Feedback Signals", () => {
-  test("actual report HTTP receipts satisfy the SDK for demand, issue and removal", async () => {
-    const app = store.registerApp({ schemaVersion: 1, appName: "Receipt fixture" });
-    store.reviewAppCandidate(app.appId, { candidateStatus: "trusted" }, "moderator-fixture");
-    const statuses: number[] = [];
-    const client = new VRCPackageClient({ baseUrl: "https://worker.example", appToken: app.appToken,
-      fetch: Object.assign(async (input: RequestInfo | URL, init?: RequestInit) => {
-        const response = await handleDownstreamRequest(new Request(input, init), store);
-        statuses.push(response.status);
-        expect(response.headers.get("cache-control")).toBe("no-store");
-        return response;
-      }, { preconnect() {} }) });
-    const reports: ReportSubmissionRequest[] = [
-      { schemaVersion: 1, reportType: "demand_signal", signalKind: "search_miss", query: "receipt fixture", zeroHits: true, reason: "Expected tool missing" },
-      { schemaVersion: 1, reportType: "issue_report", reportKind: "broken_link", targetUrl: "https://receipt.example/product",
-        reason: " Product link returns 404 ", metadata: { reason: "Caller metadata must not replace the report reason", source: "fixture" } },
-      { schemaVersion: 1, reportType: "removal_request", canonicalId: "receipt-target", reason: "Incorrect attribution" }
-    ];
-    for (const report of reports) {
-      const receipt = await client.reports.submit(report);
-      expect(Object.keys(receipt).sort()).toEqual(["schemaVersion", "status", "reportId", "recordedAt"].sort());
-      const table = report.reportType === "removal_request" ? "catalog_reports" : "downstream_demand_signals";
-      const column = report.reportType === "removal_request" ? "report_id" : "signal_id";
-      expect((store.db.prepare(`SELECT app_id FROM ${table} WHERE ${column}=?`).get(receipt.reportId) as { app_id: string }).app_id).toBe(app.appId);
-      if (report.reportType !== "removal_request") {
-        const row = store.db.prepare("SELECT metadata_json FROM downstream_demand_signals WHERE signal_id=?")
-          .get(receipt.reportId) as { metadata_json: string };
-        const metadata = JSON.parse(row.metadata_json);
-        expect(metadata.reason).toBe(report.reason!.trim());
-        expect(metadata.reportType).toBe(report.reportType);
-        if (report.metadata) expect(metadata.source).toBe("fixture");
-      }
-    }
-    expect(statuses).toEqual([200, 200, 202]);
-  });
-  test("app registration rejects anonymous callers and records authenticated ownership", async () => {
-    const input = { schemaVersion: 1 as const, appName: "Owned app" };
-    const anonymous = new Request("https://worker.example/v1/app/register", {
-      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(input) });
-    expect((await handleDownstreamRequest(anonymous, store)).status).toBe(401);
-    const user = store.issueUserToken("app-owner");
-    const response = await handleDownstreamRequest(request("/v1/app/register", "POST", input, user.token), store);
-    expect(response.status).toBe(201);
-    const app = await response.json() as { appId: string };
-    const owner = store.db.prepare("SELECT user_id FROM user_app_ownership WHERE app_id=?").get(app.appId) as any;
-    expect(owner.user_id).toBe(user.userId);
-    const activeUser = store.issueUserToken("rollback-owner");
-    store.db.exec("CREATE TRIGGER reject_app_owner BEFORE INSERT ON registered_apps WHEN NEW.owner_user_id IS NOT NULL BEGIN SELECT RAISE(ABORT,'Owner write rejected'); END;");
-    expect(() => store.registerApp(input, activeUser.userId)).toThrow("Owner write rejected");
-    store.db.exec("DROP TRIGGER reject_app_owner;");
-    store.db.prepare("UPDATE registered_users SET revoked_at=? WHERE user_id=?").run(new Date().toISOString(), user.userId);
-    expect(() => store.registerApp(input, user.userId)).toThrow();
-    expect((store.db.prepare("SELECT COUNT(*) AS count FROM registered_apps").get() as any).count).toBe(1);
-    const operatorToken = "a".repeat(64);
-    expect((await handleDownstreamRequest(request("/v1/app/register", "POST", input, "b".repeat(64)), store, operatorToken)).status).toBe(401);
-    expect((await handleDownstreamRequest(request("/v1/app/register", "POST", input, operatorToken), store, operatorToken)).status).toBe(201);
-    expect((store.db.prepare("SELECT COUNT(*) AS count FROM user_app_ownership").get() as any).count).toBe(1);
-  });
-  test("singular report records removal for review without catalog or demand changes", async () => {
-    const registered = store.registerApp({ schemaVersion: 1, appName: "Removal test" });
-    const payload = { schemaVersion: 1, reportType: "removal_request", canonicalId: "target-1", reason: "Incorrect attribution" };
-    expect((await handleDownstreamRequest(request("/v1/app/report", "POST", payload), store)).status).toBe(401);
-    expect((await handleDownstreamRequest(request("/v1/app/report", "POST", { ...payload, reason: "" }, registered.appToken), store)).status).toBe(400);
-    expect((await handleDownstreamRequest(request("/v1/app/report", "POST", { schemaVersion: 1, reportType: "removal_request", reason: "No target" }, registered.appToken), store)).status).toBe(400);
-
-    // Untrusted app rejected with 403 (R54-C38A / R54-C38R / R54-C38B)
-    const untrustedRes = await handleDownstreamRequest(request("/v1/app/report", "POST", payload, registered.appToken), store);
-    expect(untrustedRes.status).toBe(403);
-    const untrustedBody = await untrustedRes.json() as any;
-    expect(untrustedBody.error).toContain("trusted registered app status required");
-
-    // Promote to trusted status
-    store.reviewAppCandidate(registered.appId, { candidateStatus: "trusted" }, "moderator-test");
-
-    const response = await handleDownstreamRequest(request("/v1/app/report", "POST", payload, registered.appToken), store);
-    expect(response.status).toBe(202);
-    const body = await response.json() as { reportId: string };
-    const row = store.db.prepare("SELECT app_id, review_status, payload_json FROM catalog_reports WHERE report_id=?").get(body.reportId) as any;
-    expect(row.app_id).toBe(registered.appId);
-    expect(row.review_status).toBe("pending");
-    expect(JSON.parse(row.payload_json)).toEqual(payload);
-    for (const table of ["downstream_demand_signals", "creator_opt_outs", "suppressed_urls", "canonical_packages", "crawl_jobs"]) {
-      expect((store.db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as any).count).toBe(0);
-    }
-    expect((await handleDownstreamRequest(request("/v1/app/reports", "POST", payload, registered.appToken), store)).status).toBe(404);
-  });
   let tempDir: string;
   let dbPath: string;
-  let store: LocalCoordinatorStore;
+  let store: Coordinator & { sqlite: Database; close: () => void };
 
-  beforeEach(() => {
+  beforeEach(async () => {
     tempDir = mkdtempSync(join(getTestOutputDir(), "vrcp-downstream-test-"));
     expect(dirname(tempDir)).toBe(getTestOutputDir());
     dbPath = join(tempDir, "coordinator.db");
-    store = new LocalCoordinatorStore(dbPath);
+    store = await createInitializedD1Coordinator(dbPath);
   });
 
   afterEach(() => {
@@ -114,8 +29,10 @@ describe("Downstream Client Protocol & Demand Feedback Signals", () => {
     }
   });
 
-  const request = (path: string, method: string, body?: unknown, token?: string): Request => {
-    if (path === "/v1/app/register" && token === undefined) token = store.issueUserToken("registration-fixture").token;
+  const request = async (path: string, method: string, body?: unknown, token?: string): Promise<Request> => {
+    if (path === "/v1/app/register" && token === undefined) {
+      token = (await store.issueUserToken("registration-fixture")).token;
+    }
     const headers: Record<string, string> = {
       "Content-Type": "application/json"
     };
@@ -129,9 +46,185 @@ describe("Downstream Client Protocol & Demand Feedback Signals", () => {
     });
   };
 
+  test("actual report HTTP receipts satisfy the SDK for demand, issue and removal", async () => {
+    const app = await store.registerApp({ schemaVersion: 1, appName: "Receipt fixture" });
+    await store.reviewAppCandidate(app.appId, { candidateStatus: "trusted" }, "moderator-fixture");
+    const statuses: number[] = [];
+    const client = new VRCPackageClient({
+      baseUrl: "https://worker.example",
+      appToken: app.appToken,
+      fetch: Object.assign(
+        async (input: RequestInfo | URL, init?: RequestInit) => {
+          const response = await handleDownstreamRequest(new Request(input, init), store);
+          statuses.push(response.status);
+          expect(response.headers.get("cache-control")).toBe("no-store");
+          return response;
+        },
+        { preconnect() {} }
+      )
+    });
+    const reports: ReportSubmissionRequest[] = [
+      {
+        schemaVersion: 1,
+        reportType: "demand_signal",
+        signalKind: "search_miss",
+        query: "receipt fixture",
+        zeroHits: true,
+        reason: "Expected tool missing"
+      },
+      {
+        schemaVersion: 1,
+        reportType: "issue_report",
+        reportKind: "broken_link",
+        targetUrl: "https://receipt.example/product",
+        reason: " Product link returns 404 ",
+        metadata: { reason: "Caller metadata must not replace the report reason", source: "fixture" }
+      },
+      {
+        schemaVersion: 1,
+        reportType: "removal_request",
+        canonicalId: "receipt-target",
+        reason: "Incorrect attribution"
+      }
+    ];
+    for (const report of reports) {
+      const receipt = await client.reports.submit(report);
+      expect(Object.keys(receipt).sort()).toEqual(["schemaVersion", "status", "reportId", "recordedAt"].sort());
+      if (report.reportType === "demand_signal") {
+        const row = store.sqlite
+          .prepare("SELECT app_id, metadata_json FROM downstream_demand_signals WHERE signal_id=?")
+          .get(receipt.reportId) as { app_id: string; metadata_json: string };
+        expect(row.app_id).toBe(app.appId);
+        const metadata = JSON.parse(row.metadata_json);
+        expect(metadata.reason).toBe(report.reason!.trim());
+        expect(metadata.reportType).toBe(report.reportType);
+      } else {
+        const row = store.sqlite
+          .prepare("SELECT app_id, ticket_type, reason, payload_json FROM catalog_tickets WHERE ticket_id=?")
+          .get(receipt.reportId) as { app_id: string; ticket_type: string; reason: string; payload_json: string };
+        expect(row.app_id).toBe(app.appId);
+        expect(row.reason).toBe(report.reason!.trim());
+        if (report.reportType === "issue_report") {
+          expect(row.ticket_type).toBe("metadata_issue");
+          const payload = JSON.parse(row.payload_json);
+          expect(payload.metadata?.source).toBe("fixture");
+        } else {
+          expect(row.ticket_type).toBe("removal_report");
+        }
+      }
+    }
+    expect(statuses).toEqual([200, 200, 202]);
+  });
+
+  test("app registration rejects anonymous callers and records authenticated ownership", async () => {
+    const input = { schemaVersion: 1 as const, appName: "Owned app" };
+    const anonymous = new Request("https://worker.example/v1/app/register", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(input)
+    });
+    expect((await handleDownstreamRequest(anonymous, store)).status).toBe(401);
+    const user = await store.issueUserToken("app-owner");
+    const response = await handleDownstreamRequest(await request("/v1/app/register", "POST", input, user.token), store);
+    expect(response.status).toBe(201);
+    expect(response.headers.get("X-RateLimit-Limit")).toBeDefined();
+    const app = (await response.json()) as { appId: string };
+    const owner = store.sqlite.prepare("SELECT user_id FROM user_app_ownership WHERE app_id=?").get(app.appId) as any;
+    expect(owner.user_id).toBe(user.userId);
+    const activeUser = await store.issueUserToken("rollback-owner");
+    store.sqlite.exec(
+      "CREATE TRIGGER reject_app_owner BEFORE INSERT ON registered_apps WHEN NEW.owner_user_id IS NOT NULL BEGIN SELECT RAISE(ABORT,'Owner write rejected'); END;"
+    );
+    await expect(store.registerApp(input, activeUser.userId)).rejects.toThrow("Owner write rejected");
+    store.sqlite.exec("DROP TRIGGER reject_app_owner;");
+    store.sqlite
+      .prepare("UPDATE registered_users SET revoked_at=? WHERE user_id=?")
+      .run(new Date().toISOString(), user.userId);
+    await expect(store.registerApp(input, user.userId)).rejects.toThrow();
+    expect((store.sqlite.prepare("SELECT COUNT(*) AS count FROM registered_apps").get() as any).count).toBe(1);
+    const operatorToken = "a".repeat(64);
+    expect(
+      (await handleDownstreamRequest(await request("/v1/app/register", "POST", input, "b".repeat(64)), store, operatorToken))
+        .status
+    ).toBe(401);
+    expect(
+      (await handleDownstreamRequest(await request("/v1/app/register", "POST", input, operatorToken), store, operatorToken))
+        .status
+    ).toBe(201);
+    expect((store.sqlite.prepare("SELECT COUNT(*) AS count FROM user_app_ownership").get() as any).count).toBe(1);
+  });
+
+  test("singular report records removal for review without catalog or demand changes", async () => {
+    const registered = await store.registerApp({ schemaVersion: 1, appName: "Removal test" });
+    const payload = {
+      schemaVersion: 1,
+      reportType: "removal_request",
+      canonicalId: "target-1",
+      reason: "Incorrect attribution"
+    };
+    expect((await handleDownstreamRequest(await request("/v1/app/report", "POST", payload), store)).status).toBe(401);
+    expect(
+      (
+        await handleDownstreamRequest(
+          await request("/v1/app/report", "POST", { ...payload, reason: "" }, registered.appToken),
+          store
+        )
+      ).status
+    ).toBe(400);
+    expect(
+      (
+        await handleDownstreamRequest(
+          await request(
+            "/v1/app/report",
+            "POST",
+            { schemaVersion: 1, reportType: "removal_request", reason: "No target" },
+            registered.appToken
+          ),
+          store
+        )
+      ).status
+    ).toBe(400);
+
+    const untrustedRes = await handleDownstreamRequest(
+      await request("/v1/app/report", "POST", payload, registered.appToken),
+      store
+    );
+    expect(untrustedRes.status).toBe(403);
+    const untrustedBody = (await untrustedRes.json()) as any;
+    expect(untrustedBody.error).toContain("trusted registered app status required");
+
+    await store.reviewAppCandidate(registered.appId, { candidateStatus: "trusted" }, "moderator-test");
+
+    const response = await handleDownstreamRequest(
+      await request("/v1/app/report", "POST", payload, registered.appToken),
+      store
+    );
+    expect(response.status).toBe(202);
+    const body = (await response.json()) as { reportId: string };
+    const row = store.sqlite
+      .prepare("SELECT app_id, review_status, payload_json FROM catalog_reports WHERE report_id=?")
+      .get(body.reportId) as any;
+    expect(row.app_id).toBe(registered.appId);
+    expect(row.review_status).toBe("pending");
+    expect(JSON.parse(row.payload_json)).toEqual(payload);
+    for (const table of [
+      "downstream_demand_signals",
+      "creator_opt_outs",
+      "suppressed_urls",
+      "canonical_packages",
+      "crawl_jobs"
+    ]) {
+      expect((store.sqlite.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as any).count).toBe(0);
+    }
+    expect(
+      (await handleDownstreamRequest(await request("/v1/app/reports", "POST", payload, registered.appToken), store))
+        .status
+    ).toBe(404);
+  });
+
   test("POST /v1/app/register creates downstream application with vrcp_app_ token", async () => {
     const res = await handleDownstreamRequest(
-      request("/v1/app/register", "POST", {
+      await request("/v1/app/register", "POST", {
         schemaVersion: DOWNSTREAM_PROTOCOL_VERSION,
         appName: "ALCOM Desktop Manager",
         contactEmail: "alcom@example.org",
@@ -141,7 +234,7 @@ describe("Downstream Client Protocol & Demand Feedback Signals", () => {
     );
 
     expect(res.status).toBe(201);
-    const data = await res.json() as any;
+    const data = (await res.json()) as any;
     expect(data.schemaVersion).toBe(1);
     expect(data.appName).toBe("ALCOM Desktop Manager");
     expect(data.appId).toBeDefined();
@@ -149,9 +242,8 @@ describe("Downstream Client Protocol & Demand Feedback Signals", () => {
     expect(data.permissions).toContain("catalog:search");
     expect(data.permissions).toContain("demand:feedback");
 
-    // Legacy route must return 404
     const legacyRes = await handleDownstreamRequest(
-      request("/v1/apps/register", "POST", {
+      await request("/v1/apps/register", "POST", {
         schemaVersion: DOWNSTREAM_PROTOCOL_VERSION,
         appName: "Legacy App"
       }),
@@ -161,77 +253,93 @@ describe("Downstream Client Protocol & Demand Feedback Signals", () => {
   });
 
   test("POST /v1/app/report requires authentication and ingests demand signals", async () => {
-    // 1. Register app
     const regRes = await handleDownstreamRequest(
-      request("/v1/app/register", "POST", {
+      await request("/v1/app/register", "POST", {
         schemaVersion: 1,
         appName: "VCC Mobile Companion"
       }),
       store
     );
-    const { appToken } = await regRes.json() as { appToken: string };
+    const { appToken } = (await regRes.json()) as { appToken: string };
 
-    // 2. Reject unauthenticated feedback
     const unauthRes = await handleDownstreamRequest(
-      request("/v1/app/report", "POST", {
+      await request("/v1/app/report", "POST", {
         schemaVersion: 1,
-        signalType: "search_miss",
+        reportType: "demand_signal",
+        signalKind: "search_miss",
         query: "physbone optimizer"
       }),
       store
     );
     expect(unauthRes.status).toBe(401);
 
-    // 3. Reject invalid token
     const badTokenRes = await handleDownstreamRequest(
-      request("/v1/app/report", "POST", {
-        schemaVersion: 1,
-        signalType: "search_miss",
-        query: "physbone optimizer"
-      }, "vrcp_app_0000000000000000000000000000000000000000000000000000000000000000"),
+      await request(
+        "/v1/app/report",
+        "POST",
+        {
+          schemaVersion: 1,
+          reportType: "demand_signal",
+          signalKind: "search_miss",
+          query: "physbone optimizer"
+        },
+        "vrcp_app_0000000000000000000000000000000000000000000000000000000000000000"
+      ),
       store
     );
     expect(badTokenRes.status).toBe(401);
 
-    // 4. Accept valid search miss feedback signal
     const feedbackRes = await handleDownstreamRequest(
-      request("/v1/app/report", "POST", {
-        schemaVersion: 1,
-        signalType: "search_miss",
-        query: "novel shader generator",
-        zeroHits: true,
-        requestedPlatform: "booth",
-        category: "shader"
-      }, appToken),
+      await request(
+        "/v1/app/report",
+        "POST",
+        {
+          schemaVersion: 1,
+          reportType: "demand_signal",
+          signalKind: "search_miss",
+          query: "novel shader generator",
+          zeroHits: true
+        },
+        appToken
+      ),
       store
     );
     expect(feedbackRes.status).toBe(200);
-    const feedbackData = await feedbackRes.json() as any;
+    const feedbackData = (await feedbackRes.json()) as any;
     expect(feedbackData.schemaVersion).toBe(1);
     expect(feedbackData.status).toBe("accepted");
     expect(feedbackData.reportId).toBeDefined();
     expect(feedbackData.signalId).toBeUndefined();
     expect(feedbackData.recordedAt).toBeDefined();
 
-    // 5. Accept refresh demand signal for specific target
     const refreshRes = await handleDownstreamRequest(
-      request("/v1/app/report", "POST", {
-        schemaVersion: 1,
-        signalType: "refresh_demand",
-        requestedPlatform: "github",
-        targetUrl: "https://github.com/example-author/stale-tool"
-      }, appToken),
+      await request(
+        "/v1/app/report",
+        "POST",
+        {
+          schemaVersion: 1,
+          reportType: "demand_signal",
+          signalKind: "refresh_demand",
+          targetUrl: "https://github.com/example-author/stale-tool"
+        },
+        appToken
+      ),
       store
     );
     expect(refreshRes.status).toBe(200);
 
-    // Legacy route must return 404
     const legacyRes = await handleDownstreamRequest(
-      request("/v1/apps/feedback", "POST", {
-        schemaVersion: 1,
-        signalType: "search_miss",
-        query: "physbone optimizer"
-      }, appToken),
+      await request(
+        "/v1/apps/feedback",
+        "POST",
+        {
+          schemaVersion: 1,
+          reportType: "demand_signal",
+          signalKind: "search_miss",
+          query: "physbone optimizer"
+        },
+        appToken
+      ),
       store
     );
     expect(legacyRes.status).toBe(404);
@@ -239,24 +347,23 @@ describe("Downstream Client Protocol & Demand Feedback Signals", () => {
 
   test("removed random sampling routes return 404", async () => {
     for (const path of ["/v1/app/index/random", "/v1/app/index/random?limit=2", "/v1/catalog/random"]) {
-      const response = await handleDownstreamRequest(request(path, "GET"), store);
+      const response = await handleDownstreamRequest(await request(path, "GET"), store);
       expect(response.status).toBe(404);
     }
   });
 
   test("POST /v1/app/index/search performs text search and keyset pagination", async () => {
-    // Register app
     const reg = await handleDownstreamRequest(
-      request("/v1/app/register", "POST", { schemaVersion: 1, appName: "Search Tester" }),
+      await request("/v1/app/register", "POST", { schemaVersion: 1, appName: "Search Tester" }),
       store
     );
-    const { appToken } = await reg.json() as { appToken: string };
+    const { appToken } = (await reg.json()) as { appToken: string };
 
     const t1 = new Date(Date.now() - 3000).toISOString();
     const t2 = new Date(Date.now() - 2000).toISOString();
     const t3 = new Date(Date.now() - 1000).toISOString();
 
-    store.db.exec(`
+    store.sqlite.exec(`
       INSERT INTO canonical_packages (canonical_id, umbrella, category, lifecycle, display_name, vpm_id, created_at, updated_at)
       VALUES
         ('pkg-1', 'tools', 'editor_tool', 'active', 'Super VRChat Tool', 'com.vrc.tool', '${t1}', '${t1}'),
@@ -264,43 +371,55 @@ describe("Downstream Client Protocol & Demand Feedback Signals", () => {
         ('pkg-3', 'assets', 'shader', 'active', 'Toon Water Shader', NULL, '${t3}', '${t3}');
     `);
 
-    // Search query
     const searchRes = await handleDownstreamRequest(
-      request("/v1/app/index/search", "POST", {
-        schemaVersion: 1,
-        query: "Optimizer",
-        queryOrigin: "user_authored"
-      }, appToken),
+      await request(
+        "/v1/app/index/search",
+        "POST",
+        {
+          schemaVersion: 1,
+          query: "Optimizer",
+          queryOrigin: "user_authored"
+        },
+        appToken
+      ),
       store
     );
     expect(searchRes.status).toBe(200);
-    const searchBody = await searchRes.json() as any;
+    const searchBody = (await searchRes.json()) as any;
     expect(searchBody.items.length).toBe(1);
     expect(searchBody.items[0].displayName).toBe("Avatar Optimizer");
     expect(searchBody.totalEstimated).toBe(1);
 
-    // Search with limit and pagination
     const pageRes = await handleDownstreamRequest(
-      request("/v1/app/index/search", "POST", {
-        schemaVersion: 1,
-        umbrella: "tools",
-        limit: 1,
-        queryOrigin: "user_authored"
-      }, appToken),
+      await request(
+        "/v1/app/index/search",
+        "POST",
+        {
+          schemaVersion: 1,
+          umbrella: "tools",
+          limit: 1,
+          queryOrigin: "user_authored"
+        },
+        appToken
+      ),
       store
     );
     expect(pageRes.status).toBe(200);
-    const pageBody = await pageRes.json() as any;
+    const pageBody = (await pageRes.json()) as any;
     expect(pageBody.items.length).toBe(1);
     expect(pageBody.nextCursor).toBeDefined();
     expect(pageBody.totalEstimated).toBe(2);
 
-    // Legacy route must return 404
     const legacySearch = await handleDownstreamRequest(
-      request("/v1/catalog/search", "POST", {
-        schemaVersion: 1,
-        query: "Optimizer"
-      }, appToken),
+      await request(
+        "/v1/catalog/search",
+        "POST",
+        {
+          schemaVersion: 1,
+          query: "Optimizer"
+        },
+        appToken
+      ),
       store
     );
     expect(legacySearch.status).toBe(404);
@@ -308,7 +427,7 @@ describe("Downstream Client Protocol & Demand Feedback Signals", () => {
 
   test("delegated creator attestation intake accepts valid claims and enforces replay protection", async () => {
     const reg = await handleDownstreamRequest(
-      request("/v1/app/register", "POST", {
+      await request("/v1/app/register", "POST", {
         schemaVersion: DOWNSTREAM_PROTOCOL_VERSION,
         appName: "VRChat Creator Companion",
         contactEmail: "creator@companion.test"
@@ -316,7 +435,7 @@ describe("Downstream Client Protocol & Demand Feedback Signals", () => {
       store
     );
     expect(reg.status).toBe(201);
-    const { appId, appToken } = await reg.json() as { appId: string; appToken: string };
+    const { appId, appToken } = (await reg.json()) as { appId: string; appToken: string };
 
     const nowSec = Math.floor(Date.now() / 1000);
     const validAttestation = {
@@ -330,9 +449,8 @@ describe("Downstream Client Protocol & Demand Feedback Signals", () => {
     };
     const validSignature = "sig_ed25519_valid_signature_123";
 
-    // 1. Rejects unauthenticated requests
     const anonRes = await handleDownstreamRequest(
-      request("/v1/app/claims/intake", "POST", {
+      await request("/v1/app/claims/intake", "POST", {
         schemaVersion: 1,
         attestation: validAttestation,
         signature: validSignature
@@ -341,72 +459,87 @@ describe("Downstream Client Protocol & Demand Feedback Signals", () => {
     );
     expect(anonRes.status).toBe(401);
 
-    // 2. Rejects application lacking 'claims:delegate' permission (403)
     const unauthorizedAppRes = await handleDownstreamRequest(
-      request("/v1/app/claims/intake", "POST", {
-        schemaVersion: 1,
-        attestation: validAttestation,
-        signature: validSignature
-      }, appToken),
+      await request(
+        "/v1/app/claims/intake",
+        "POST",
+        {
+          schemaVersion: 1,
+          attestation: validAttestation,
+          signature: validSignature
+        },
+        appToken
+      ),
       store
     );
     expect(unauthorizedAppRes.status).toBe(403);
-    const unauthData = await unauthorizedAppRes.json() as any;
+    const unauthData = (await unauthorizedAppRes.json()) as any;
     expect(unauthData.error).toBe("Application is not authorized for delegated creator claims");
 
-    // Grant delegation authority to the application
-    store.setAppDelegation(appId, true, "operator");
+    await store.setAppDelegation(appId, true, "operator");
 
-    // 3. Rejects attestation appId mismatch
     const mismatchRes = await handleDownstreamRequest(
-      request("/v1/app/claims/intake", "POST", {
-        schemaVersion: 1,
-        attestation: {
-          ...validAttestation,
-          appId: "00000000-0000-4000-8000-000000000000"
+      await request(
+        "/v1/app/claims/intake",
+        "POST",
+        {
+          schemaVersion: 1,
+          attestation: {
+            ...validAttestation,
+            appId: "00000000-0000-4000-8000-000000000000"
+          },
+          signature: validSignature
         },
-        signature: validSignature
-      }, appToken),
+        appToken
+      ),
       store
     );
     expect(mismatchRes.status).toBe(403);
 
-    // 3. Rejects expired attestation (400)
     const expiredRes = await handleDownstreamRequest(
-      request("/v1/app/claims/intake", "POST", {
-        schemaVersion: 1,
-        attestation: {
-          ...validAttestation,
-          nonce: "nonce_expired_123456",
-          expiresAt: nowSec - 10
+      await request(
+        "/v1/app/claims/intake",
+        "POST",
+        {
+          schemaVersion: 1,
+          attestation: {
+            ...validAttestation,
+            nonce: "nonce_expired_123456",
+            expiresAt: nowSec - 10
+          },
+          signature: validSignature
         },
-        signature: validSignature
-      }, appToken),
+        appToken
+      ),
       store
     );
     expect(expiredRes.status).toBe(400);
 
-    // 4. Accepts valid claim intake (202)
     const acceptRes = await handleDownstreamRequest(
-      request("/v1/app/claims/intake", "POST", {
-        schemaVersion: 1,
-        attestation: validAttestation,
-        signature: validSignature,
-        reason: "Authoritative storefront claim",
-        contactEmail: "creator@booth.test"
-      }, appToken),
+      await request(
+        "/v1/app/claims/intake",
+        "POST",
+        {
+          schemaVersion: 1,
+          attestation: validAttestation,
+          signature: validSignature,
+          reason: "Authoritative storefront claim",
+          contactEmail: "creator@booth.test"
+        },
+        appToken
+      ),
       store
     );
     expect(acceptRes.status).toBe(202);
-    const acceptData = await acceptRes.json() as any;
+    const acceptData = (await acceptRes.json()) as any;
     expect(acceptData.schemaVersion).toBe(1);
     expect(acceptData.status).toBe("accepted");
     expect(acceptData.claimId).toBeDefined();
     expect(acceptData.reviewStatus).toBe("pending");
     expect(acceptData.recordedAt).toBeDefined();
 
-    // Verify row in DB
-    const claimRow = store.db.prepare("SELECT * FROM delegated_creator_claims WHERE claim_id = ?")
+    const claimRow = store.sqlite
+      .prepare("SELECT * FROM delegated_creator_claims WHERE claim_id = ?")
       .get(acceptData.claimId) as any;
     expect(claimRow.app_id).toBe(appId);
     expect(claimRow.action).toBe("creator_ownership_claim");
@@ -420,57 +553,67 @@ describe("Downstream Client Protocol & Demand Feedback Signals", () => {
     expect(claimRow.reason).toBe("Authoritative storefront claim");
     expect(claimRow.contact_email).toBe("creator@booth.test");
 
-    // Zero crawl egress invariant: no crawl jobs, origin leases, or suppressed URLs queued
-    expect((store.db.prepare("SELECT COUNT(*) AS c FROM crawl_jobs").get() as any).c).toBe(0);
-    expect((store.db.prepare("SELECT COUNT(*) AS c FROM suppressed_urls").get() as any).c).toBe(0);
+    expect((store.sqlite.prepare("SELECT COUNT(*) AS c FROM crawl_jobs").get() as any).c).toBe(0);
+    expect((store.sqlite.prepare("SELECT COUNT(*) AS c FROM suppressed_urls").get() as any).c).toBe(0);
 
-    // 5. Exact duplicate replay returns same receipt idempotently (202)
     const duplicateRes = await handleDownstreamRequest(
-      request("/v1/app/claims/intake", "POST", {
-        schemaVersion: 1,
-        attestation: validAttestation,
-        signature: validSignature,
-        reason: "Authoritative storefront claim",
-        contactEmail: "creator@booth.test"
-      }, appToken),
+      await request(
+        "/v1/app/claims/intake",
+        "POST",
+        {
+          schemaVersion: 1,
+          attestation: validAttestation,
+          signature: validSignature,
+          reason: "Authoritative storefront claim",
+          contactEmail: "creator@booth.test"
+        },
+        appToken
+      ),
       store
     );
     expect(duplicateRes.status).toBe(202);
-    const duplicateData = await duplicateRes.json() as any;
+    const duplicateData = (await duplicateRes.json()) as any;
     expect(duplicateData.claimId).toBe(acceptData.claimId);
     expect(duplicateData.recordedAt).toBe(acceptData.recordedAt);
 
-    // 6. Replay attack with same nonce but altered payload/signature is rejected with 409 conflict
     const tamperedRes = await handleDownstreamRequest(
-      request("/v1/app/claims/intake", "POST", {
-        schemaVersion: 1,
-        attestation: validAttestation,
-        signature: "tampered_signature_xyz_123456",
-        reason: "Authoritative storefront claim",
-        contactEmail: "creator@booth.test"
-      }, appToken),
+      await request(
+        "/v1/app/claims/intake",
+        "POST",
+        {
+          schemaVersion: 1,
+          attestation: validAttestation,
+          signature: "tampered_signature_xyz_123456",
+          reason: "Authoritative storefront claim",
+          contactEmail: "creator@booth.test"
+        },
+        appToken
+      ),
       store
     );
     expect(tamperedRes.status).toBe(409);
-    const tamperedData = await tamperedRes.json() as any;
+    const tamperedData = (await tamperedRes.json()) as any;
     expect(tamperedData.code).toBe("conflict");
 
-    // 7. Revoking delegation authority restores 403 rejection
-    store.setAppDelegation(appId, false, "operator");
+    await store.setAppDelegation(appId, false, "operator");
     const revokedRes = await handleDownstreamRequest(
-      request("/v1/app/claims/intake", "POST", {
-        schemaVersion: 1,
-        attestation: validAttestation,
-        signature: validSignature
-      }, appToken),
+      await request(
+        "/v1/app/claims/intake",
+        "POST",
+        {
+          schemaVersion: 1,
+          attestation: validAttestation,
+          signature: validSignature
+        },
+        appToken
+      ),
       store
     );
     expect(revokedRes.status).toBe(403);
   });
 
   test("catalog search enforces age rating boundary based on user age verification", async () => {
-    // 1. Seed canonical packages with ratings
-    const now = new Date(store["now"]()).toISOString();
+    const now = new Date(store.now()).toISOString();
     const pkgs = [
       { id: "pkg-general-1", rating: "general", name: "Safe Tool" },
       { id: "pkg-mature-1", rating: "mature", name: "Mature Shader" },
@@ -478,193 +621,204 @@ describe("Downstream Client Protocol & Demand Feedback Signals", () => {
       { id: "pkg-prohibited-1", rating: "prohibited", name: "Prohibited Malicious Asset" }
     ];
     for (const p of pkgs) {
-      store.db.prepare(`
-        INSERT INTO canonical_packages (canonical_id, umbrella, category, lifecycle, display_name, vpm_id, created_at, updated_at, content_rating)
-        VALUES (?, 'tools', 'tool', 'active', ?, ?, ?, ?, ?)
-      `).run(p.id, p.name, p.id, now, now, p.rating);
+      store.sqlite
+        .prepare(
+          `INSERT INTO canonical_packages (canonical_id, umbrella, category, lifecycle, display_name, vpm_id, created_at, updated_at, content_rating)
+        VALUES (?, 'tools', 'tool', 'active', ?, ?, ?, ?, ?)`
+        )
+        .run(p.id, p.name, p.id, now, now, p.rating);
     }
 
-    // 2. Register App owned by user without age verification (unverified / minor)
-    const userUnverified = store.issueUserToken("unverified-user", undefined, false);
+    const userUnverified = await store.issueUserToken("unverified-user", undefined, false);
     const regRes1 = await handleDownstreamRequest(
-      request("/v1/app/register", "POST", { schemaVersion: 1, appName: "Unverified App" }, userUnverified.token),
+      await request("/v1/app/register", "POST", { schemaVersion: 1, appName: "Unverified App" }, userUnverified.token),
       store
     );
     expect(regRes1.status).toBe(201);
-    const app1 = await regRes1.json() as { appToken: string };
+    const app1 = (await regRes1.json()) as { appToken: string };
 
-    // Search without rating filter only receives 'general' content
     const searchRes1 = await handleDownstreamRequest(
-      request("/v1/app/index/search", "POST", { schemaVersion: 1 }, app1.appToken),
+      await request("/v1/app/index/search", "POST", { schemaVersion: 1 }, app1.appToken),
       store
     );
     expect(searchRes1.status).toBe(200);
-    const searchData1 = await searchRes1.json() as any;
+    const searchData1 = (await searchRes1.json()) as any;
     expect(searchData1.items.map((i: any) => i.canonicalId)).toEqual(["pkg-general-1"]);
     expect(searchData1.items[0].contentRating).toBe("general");
 
-    // Search explicitly asking for adult content ignores explicit rating tags and only provides general items
     const searchResAdultUnverified = await handleDownstreamRequest(
-      request("/v1/app/index/search", "POST", { schemaVersion: 1, rating: "adult_restricted" }, app1.appToken),
+      await request("/v1/app/index/search", "POST", { schemaVersion: 1, rating: "adult_restricted" }, app1.appToken),
       store
     );
     expect(searchResAdultUnverified.status).toBe(200);
-    const searchDataAdultUnverified = await searchResAdultUnverified.json() as any;
+    const searchDataAdultUnverified = (await searchResAdultUnverified.json()) as any;
     expect(searchDataAdultUnverified.items.map((i: any) => i.canonicalId)).toEqual(["pkg-general-1"]);
     expect(searchDataAdultUnverified.items[0].contentRating).toBe("general");
 
-    // 3. Register App owned by user with verified age
-    const userVerified = store.issueUserToken("verified-adult-user", undefined, true);
+    const userVerified = await store.issueUserToken("verified-adult-user", undefined, true);
     const regRes2 = await handleDownstreamRequest(
-      request("/v1/app/register", "POST", { schemaVersion: 1, appName: "Verified App" }, userVerified.token),
+      await request("/v1/app/register", "POST", { schemaVersion: 1, appName: "Verified App" }, userVerified.token),
       store
     );
     expect(regRes2.status).toBe(201);
-    const app2 = await regRes2.json() as { appToken: string };
+    const app2 = (await regRes2.json()) as { appToken: string };
 
-    // Search without rating filter receives all non-prohibited packages
     const searchRes2 = await handleDownstreamRequest(
-      request("/v1/app/index/search", "POST", { schemaVersion: 1 }, app2.appToken),
+      await request("/v1/app/index/search", "POST", { schemaVersion: 1 }, app2.appToken),
       store
     );
     expect(searchRes2.status).toBe(200);
-    const searchData2 = await searchRes2.json() as any;
+    const searchData2 = (await searchRes2.json()) as any;
     const ids = searchData2.items.map((i: any) => i.canonicalId);
     expect(ids).toContain("pkg-general-1");
     expect(ids).toContain("pkg-mature-1");
     expect(ids).toContain("pkg-adult-1");
-    // Invariant: Prohibited content is NEVER served to any downstream consumer
     expect(ids).not.toContain("pkg-prohibited-1");
 
-    // Filtered search for adult_restricted
     const searchResAdultVerified = await handleDownstreamRequest(
-      request("/v1/app/index/search", "POST", { schemaVersion: 1, rating: "adult_restricted" }, app2.appToken),
+      await request("/v1/app/index/search", "POST", { schemaVersion: 1, rating: "adult_restricted" }, app2.appToken),
       store
     );
     expect(searchResAdultVerified.status).toBe(200);
-    const searchDataAdultVerified = await searchResAdultVerified.json() as any;
+    const searchDataAdultVerified = (await searchResAdultVerified.json()) as any;
     expect(searchDataAdultVerified.items.map((i: any) => i.canonicalId)).toEqual(["pkg-adult-1"]);
 
-    // Attempting to query prohibited returns 0 items
     const searchResProhibited = await handleDownstreamRequest(
-      request("/v1/app/index/search", "POST", { schemaVersion: 1, rating: "prohibited" }, app2.appToken),
+      await request("/v1/app/index/search", "POST", { schemaVersion: 1, rating: "prohibited" }, app2.appToken),
       store
     );
     expect(searchResProhibited.status).toBe(200);
-    const searchDataProhibited = await searchResProhibited.json() as any;
+    const searchDataProhibited = (await searchResProhibited.json()) as any;
     expect(searchDataProhibited.items).toHaveLength(0);
   });
 
   test("tracks downstream application request activity and flags intensive-use candidates at threshold (R54-C38A2)", async () => {
-    const store = new LocalCoordinatorStore(":memory:");
-    try {
-      const user = store.issueUserToken("active-developer", "dev@example.com", false);
-      const regRes = await handleDownstreamRequest(
-        request("/v1/app/register", "POST", { schemaVersion: 1, appName: "Intensive App" }, user.token),
-        store
-      );
-      expect(regRes.status).toBe(201);
-      const app = await regRes.json() as { appId: string; appToken: string };
+    const user = await store.issueUserToken("active-developer", "dev@example.com", false);
+    const regRes = await handleDownstreamRequest(
+      await request("/v1/app/register", "POST", { schemaVersion: 1, appName: "Intensive App" }, user.token),
+      store
+    );
+    expect(regRes.status).toBe(201);
+    const app = (await regRes.json()) as { appId: string; appToken: string };
 
-      // Initial state
-      let row = store.db.prepare("SELECT request_count, last_active_at, candidate_status, candidate_flags_json FROM registered_apps WHERE app_id = ?").get(app.appId) as any;
-      expect(row.request_count).toBe(0);
-      expect(row.last_active_at).toBeNull();
-      expect(row.candidate_status).toBe("none");
-      expect(JSON.parse(row.candidate_flags_json)).toEqual([]);
+    let row = store.sqlite
+      .prepare(
+        "SELECT request_count, last_active_at, candidate_status, candidate_flags_json FROM registered_apps WHERE app_id = ?"
+      )
+      .get(app.appId) as any;
+    expect(row.request_count).toBe(0);
+    expect(row.last_active_at).toBeNull();
+    expect(row.candidate_status).toBe("none");
+    expect(JSON.parse(row.candidate_flags_json)).toEqual([]);
 
-      // 1st request
-      const searchRes1 = await handleDownstreamRequest(
-        request("/v1/app/index/search", "POST", { schemaVersion: 1 }, app.appToken),
-        store
-      );
-      expect(searchRes1.status).toBe(200);
+    const searchRes1 = await handleDownstreamRequest(
+      await request("/v1/app/index/search", "POST", { schemaVersion: 1 }, app.appToken),
+      store
+    );
+    expect(searchRes1.status).toBe(200);
 
-      row = store.db.prepare("SELECT request_count, last_active_at, candidate_status, candidate_flags_json FROM registered_apps WHERE app_id = ?").get(app.appId) as any;
-      expect(row.request_count).toBe(1);
-      expect(row.last_active_at).not.toBeNull();
-      expect(row.candidate_status).toBe("none");
+    row = store.sqlite
+      .prepare(
+        "SELECT request_count, last_active_at, candidate_status, candidate_flags_json FROM registered_apps WHERE app_id = ?"
+      )
+      .get(app.appId) as any;
+    expect(row.request_count).toBe(1);
+    expect(row.last_active_at).not.toBeNull();
+    expect(row.candidate_status).toBe("none");
 
-      // Loop up to 49 total requests
-      for (let i = 2; i <= 49; i++) {
-        await handleDownstreamRequest(
-          request("/v1/app/index/search", "POST", { schemaVersion: 1 }, app.appToken),
-          store
-        );
-      }
-
-      row = store.db.prepare("SELECT request_count, candidate_status FROM registered_apps WHERE app_id = ?").get(app.appId) as any;
-      expect(row.request_count).toBe(49);
-      expect(row.candidate_status).toBe("none");
-
-      // 50th request triggers threshold
+    for (let i = 2; i <= 49; i++) {
       await handleDownstreamRequest(
-        request("/v1/app/index/search", "POST", { schemaVersion: 1 }, app.appToken),
+        await request("/v1/app/index/search", "POST", { schemaVersion: 1 }, app.appToken),
         store
       );
-
-      row = store.db.prepare("SELECT request_count, candidate_status, candidate_flags_json FROM registered_apps WHERE app_id = ?").get(app.appId) as any;
-      expect(row.request_count).toBe(50);
-      expect(row.candidate_status).toBe("review_pending");
-      const flags = JSON.parse(row.candidate_flags_json);
-      expect(flags).toContain("intensive_usage");
-      expect(flags).toContain("high_frequency_api");
-    } finally {
-      store.close();
     }
+
+    row = store.sqlite
+      .prepare("SELECT request_count, candidate_status FROM registered_apps WHERE app_id = ?")
+      .get(app.appId) as any;
+    expect(row.request_count).toBe(49);
+    expect(row.candidate_status).toBe("none");
+
+    await handleDownstreamRequest(
+      await request("/v1/app/index/search", "POST", { schemaVersion: 1 }, app.appToken),
+      store
+    );
+
+    row = store.sqlite
+      .prepare("SELECT request_count, candidate_status, candidate_flags_json FROM registered_apps WHERE app_id = ?")
+      .get(app.appId) as any;
+    expect(row.request_count).toBe(50);
+    expect(row.candidate_status).toBe("review_pending");
+    const flags = JSON.parse(row.candidate_flags_json);
+    expect(flags).toContain("intensive_usage");
+    expect(flags).toContain("high_frequency_api");
   });
 
   test("enforces application permissions for search and demand feedback", async () => {
-    const app = store.registerApp({ schemaVersion: 1, appName: "Permission test" });
-    // Revoke catalog:search and demand:feedback
-    store.db.prepare("UPDATE registered_apps SET permissions_json = ? WHERE app_id = ?")
+    const app = await store.registerApp({ schemaVersion: 1, appName: "Permission test" });
+    store.sqlite
+      .prepare("UPDATE registered_apps SET permissions_json = ? WHERE app_id = ?")
       .run(JSON.stringify([]), app.appId);
 
     const searchRes = await handleDownstreamRequest(
-      request("/v1/app/index/search", "POST", { schemaVersion: 1 }, app.appToken),
+      await request("/v1/app/index/search", "POST", { schemaVersion: 1 }, app.appToken),
       store
     );
     expect(searchRes.status).toBe(403);
-    const searchBody = await searchRes.json() as any;
+    const searchBody = (await searchRes.json()) as any;
     expect(searchBody.error).toContain("Application is not authorized for catalog searches");
 
     const feedbackRes = await handleDownstreamRequest(
-      request("/v1/app/report", "POST", { schemaVersion: 1, reportType: "demand_signal", query: "test", reason: "missing" }, app.appToken),
+      await request(
+        "/v1/app/report",
+        "POST",
+        { schemaVersion: 1, reportType: "demand_signal", query: "test", reason: "missing" },
+        app.appToken
+      ),
       store
     );
     expect(feedbackRes.status).toBe(403);
-    const feedbackBody = await feedbackRes.json() as any;
+    const feedbackBody = (await feedbackRes.json()) as any;
     expect(feedbackBody.error).toContain("Application is not authorized for demand feedback");
 
-    // Removal request requires trusted app status (R54-C38)
-    store.reviewAppCandidate(app.appId, { candidateStatus: "trusted" }, "moderator-test");
+    await store.reviewAppCandidate(app.appId, { candidateStatus: "trusted" }, "moderator-test");
     const removalRes = await handleDownstreamRequest(
-      request("/v1/app/report", "POST", { schemaVersion: 1, reportType: "removal_request", canonicalId: "pkg-1", reason: "opt out" }, app.appToken),
+      await request(
+        "/v1/app/report",
+        "POST",
+        { schemaVersion: 1, reportType: "removal_request", canonicalId: "pkg-1", reason: "opt out" },
+        app.appToken
+      ),
       store
     );
     expect(removalRes.status).toBe(202);
   });
 
   test("POST /v1/app/report partitions issue reports into rating_dispute, safety_quarantine, and metadata_issue (R56-C56C)", async () => {
-    const app = store.registerApp({ schemaVersion: 1, appName: "Report Partitioning Test" });
+    const app = await store.registerApp({ schemaVersion: 1, appName: "Report Partitioning Test" });
 
-    // 1. Rating calibration dispute (explicit_false_positive)
     const ratingRes = await handleDownstreamRequest(
-      request("/v1/app/report", "POST", {
-        schemaVersion: 1,
-        reportType: "issue_report",
-        reportKind: "explicit_false_positive",
-        canonicalId: "com.example.rating-pkg",
-        reason: "Item is safe for general audiences"
-      }, app.appToken),
+      await request(
+        "/v1/app/report",
+        "POST",
+        {
+          schemaVersion: 1,
+          reportType: "issue_report",
+          reportKind: "explicit_false_positive",
+          canonicalId: "com.example.rating-pkg",
+          reason: "Item is safe for general audiences"
+        },
+        app.appToken
+      ),
       store
     );
     expect(ratingRes.status).toBe(200);
-    const ratingData = await ratingRes.json() as any;
+    const ratingData = (await ratingRes.json()) as any;
     expect(ratingData.status).toBe("accepted");
     expect(ratingData.reportId).toBeDefined();
 
-    const ratingRow = store.db.prepare("SELECT ticket_type, canonical_id, reason, review_status FROM catalog_tickets WHERE ticket_id = ?")
+    const ratingRow = store.sqlite
+      .prepare("SELECT ticket_type, canonical_id, reason, review_status FROM catalog_tickets WHERE ticket_id = ?")
       .get(ratingData.reportId) as any;
     expect(ratingRow).toBeDefined();
     expect(ratingRow.ticket_type).toBe("rating_dispute");
@@ -672,23 +826,28 @@ describe("Downstream Client Protocol & Demand Feedback Signals", () => {
     expect(ratingRow.reason).toBe("Item is safe for general audiences");
     expect(ratingRow.review_status).toBe("pending");
 
-    // 2. Suspected illegal / safety quarantine (inappropriate)
     const safetyRes = await handleDownstreamRequest(
-      request("/v1/app/report", "POST", {
-        schemaVersion: 1,
-        reportType: "issue_report",
-        reportKind: "inappropriate",
-        canonicalId: "com.example.safety-pkg",
-        reason: "Suspected unlawful material"
-      }, app.appToken),
+      await request(
+        "/v1/app/report",
+        "POST",
+        {
+          schemaVersion: 1,
+          reportType: "issue_report",
+          reportKind: "inappropriate",
+          canonicalId: "com.example.safety-pkg",
+          reason: "Suspected unlawful material"
+        },
+        app.appToken
+      ),
       store
     );
     expect(safetyRes.status).toBe(200);
-    const safetyData = await safetyRes.json() as any;
+    const safetyData = (await safetyRes.json()) as any;
     expect(safetyData.status).toBe("accepted");
     expect(safetyData.reportId).toBeDefined();
 
-    const safetyRow = store.db.prepare("SELECT ticket_type, canonical_id, reason, review_status FROM catalog_tickets WHERE ticket_id = ?")
+    const safetyRow = store.sqlite
+      .prepare("SELECT ticket_type, canonical_id, reason, review_status FROM catalog_tickets WHERE ticket_id = ?")
       .get(safetyData.reportId) as any;
     expect(safetyRow).toBeDefined();
     expect(safetyRow.ticket_type).toBe("safety_quarantine");
@@ -696,34 +855,41 @@ describe("Downstream Client Protocol & Demand Feedback Signals", () => {
     expect(safetyRow.reason).toBe("Suspected unlawful material");
     expect(safetyRow.review_status).toBe("pending");
 
-    // 3. Metadata issue (broken_link)
     const metaRes = await handleDownstreamRequest(
-      request("/v1/app/report", "POST", {
-        schemaVersion: 1,
-        reportType: "issue_report",
-        reportKind: "broken_link",
-        targetUrl: "https://example.org/broken-url",
-        reason: "Target returns 404"
-      }, app.appToken),
+      await request(
+        "/v1/app/report",
+        "POST",
+        {
+          schemaVersion: 1,
+          reportType: "issue_report",
+          reportKind: "broken_link",
+          targetUrl: "https://example.org/broken-url",
+          reason: "Target returns 404"
+        },
+        app.appToken
+      ),
       store
     );
     expect(metaRes.status).toBe(200);
-    const metaData = await metaRes.json() as any;
+    const metaData = (await metaRes.json()) as any;
     expect(metaData.status).toBe("accepted");
     expect(metaData.reportId).toBeDefined();
 
-    const metaRow = store.db.prepare("SELECT target_url, metadata_json FROM downstream_demand_signals WHERE signal_id = ?")
+    const metaRow = store.sqlite
+      .prepare("SELECT ticket_type, target_url, reason, review_status, payload_json FROM catalog_tickets WHERE ticket_id = ?")
       .get(metaData.reportId) as any;
     expect(metaRow).toBeDefined();
+    expect(metaRow.ticket_type).toBe("metadata_issue");
     expect(metaRow.target_url).toBe("https://example.org/broken-url");
-    const metaPayload = JSON.parse(metaRow.metadata_json);
+    expect(metaRow.reason).toBe("Target returns 404");
+    expect(metaRow.review_status).toBe("pending");
+    const metaPayload = JSON.parse(metaRow.payload_json);
     expect(metaPayload.reportType).toBe("issue_report");
     expect(metaPayload.reportKind).toBe("broken_link");
-    expect(metaPayload.reason).toBe("Target returns 404");
   });
 
   test("POST /v1/app/report gates creator takedowns on trusted app status and routes into catalog_tickets (R54-C38)", async () => {
-    const untrustedApp = store.registerApp({ schemaVersion: 1, appName: "Untrusted Takedown Submitter" });
+    const untrustedApp = await store.registerApp({ schemaVersion: 1, appName: "Untrusted Takedown Submitter" });
     const takedownPayload = {
       schemaVersion: 1,
       reportType: "removal_request",
@@ -731,17 +897,15 @@ describe("Downstream Client Protocol & Demand Feedback Signals", () => {
       reason: "Creator requested package delisting"
     };
 
-    // 1. Untrusted application rejected with 403
     const untrustedRes = await handleDownstreamRequest(
-      request("/v1/app/report", "POST", takedownPayload, untrustedApp.appToken),
+      await request("/v1/app/report", "POST", takedownPayload, untrustedApp.appToken),
       store
     );
     expect(untrustedRes.status).toBe(403);
-    const errBody = await untrustedRes.json() as any;
+    const errBody = (await untrustedRes.json()) as any;
     expect(errBody.error).toContain("trusted registered app status required");
 
-    // 2. Review and promote application to trusted
-    const review = store.reviewAppCandidate(
+    const review = await store.reviewAppCandidate(
       untrustedApp.appId,
       { candidateStatus: "trusted", notes: "Verified verified creator tool" },
       "moderator-lead"
@@ -749,20 +913,20 @@ describe("Downstream Client Protocol & Demand Feedback Signals", () => {
     expect(review.candidateStatus).toBe("trusted");
     expect(review.permissions).toContain("takedowns:submit");
 
-    // 3. Trusted application accepted with 202
     const trustedRes = await handleDownstreamRequest(
-      request("/v1/app/report", "POST", takedownPayload, untrustedApp.appToken),
+      await request("/v1/app/report", "POST", takedownPayload, untrustedApp.appToken),
       store
     );
     expect(trustedRes.status).toBe(202);
-    const receipt = await trustedRes.json() as any;
+    const receipt = (await trustedRes.json()) as any;
     expect(receipt.status).toBe("accepted");
     expect(receipt.reportId).toBeDefined();
 
-    // 4. Verify catalog_tickets entry
-    const ticket = store.db.prepare(
-      "SELECT ticket_id, ticket_type, app_id, canonical_id, requester_type, reason, review_status FROM catalog_tickets WHERE ticket_id = ?"
-    ).get(receipt.reportId) as any;
+    const ticket = store.sqlite
+      .prepare(
+        "SELECT ticket_id, ticket_type, app_id, canonical_id, requester_type, reason, review_status FROM catalog_tickets WHERE ticket_id = ?"
+      )
+      .get(receipt.reportId) as any;
     expect(ticket).toBeDefined();
     expect(ticket.ticket_type).toBe("removal_report");
     expect(ticket.app_id).toBe(untrustedApp.appId);
@@ -771,13 +935,19 @@ describe("Downstream Client Protocol & Demand Feedback Signals", () => {
     expect(ticket.reason).toBe("Creator requested package delisting");
     expect(ticket.review_status).toBe("pending");
 
-    // 5. Verify catalog_reports view projection
-    const reportView = store.db.prepare(
-      "SELECT report_id, app_id, report_type, review_status FROM catalog_reports WHERE report_id = ?"
-    ).get(receipt.reportId) as any;
+    const reportView = store.sqlite
+      .prepare("SELECT report_id, app_id, report_type, review_status FROM catalog_reports WHERE report_id = ?")
+      .get(receipt.reportId) as any;
     expect(reportView).toBeDefined();
     expect(reportView.report_type).toBe("removal_report");
     expect(reportView.app_id).toBe(untrustedApp.appId);
     expect(reportView.review_status).toBe("pending");
+
+    await store.setAppDelegation(untrustedApp.appId, false, "operator-lead", "Revoke delegation");
+    const revokedRes = await handleDownstreamRequest(
+      await request("/v1/app/report", "POST", takedownPayload, untrustedApp.appToken),
+      store
+    );
+    expect(revokedRes.status).toBe(403);
   });
 });
