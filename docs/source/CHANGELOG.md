@@ -194,47 +194,10 @@ See full history at [docs/changelogs/vrcp-web/preview](https://github.com/SlamTh
 ## VRC Packages Worker - `vrcp-worker-preview`
 
 <!-- vrcp-worker-preview-DESCRIPTION_SUMMARY -->
-Add initial seed jobs and pre-configured approved VPM community profiles. Classify Ko-fi storefront leads into pending operator review. Auto-link approved high-confidence storefront leads into accepted identity links while isolating heuristic outbound links for operator review. Gate creator takedown submissions on trusted registered application status and route them into moderator queues. Partition application reports into rating calibration disputes for moderator review and safety quarantine tickets for operator intake. Delegate robots.txt preflight fetching to crawler nodes under leased origin pacing. Enforce source access profile publication rights in public catalog and delta feeds. Enforce distributed Cloudflare KV and binding inbound 429 rate limiting. Calibrate fixed coordinator crawl job leases to 120 seconds. Bound claim candidate scans by an explicit page budget. Verify coordinator failure paths and multi-node fleet allocation in native workerd runtime. Use unique catalog epochs, preserve evidence and URL distinctions, withhold provisional fronts, and emit delist tombstones. Automate preview D1 schema verification and non-production seed population during preview delivery. Partition Coordinator storage and D1 schemas into five planes and adopt shared network validation helpers. Normalize HTTP 415 and JSON error responses, enforce takedown proofs and app delegation audits, route all issue reports to catalog tickets, migrate tests onto Coordinator D1 storage, and verify live crawling with a compiled headless crawler node.
 <!-- vrcp-worker-preview-DESCRIPTION_SUMMARY -->
 ### Added
-- **Live Preview Crawl Verification**: Execute a compiled headless crawler binary against the deployed preview Worker using approved open VPM community sources and revoke ephemeral node credentials after completion.
-- **Automated Preview D1 Initialization**: Automate preview D1 schema verification and non-production seed population during preview delivery (R58-PREVIEW-INIT). Support explicit seed flags with fail-closed operator token checks.
-- **Trusted Application Takedown Ingestion**: Gate creator takedown submissions on trusted registered application status (R54-C38A / R54-C38R / R54-C38B). Route accepted takedown requests into catalog tickets as pending removal reports for moderator review.
-- **Fixed Lease Calibration**: Calibrate crawl job leases to a fixed 120 seconds in coordinator D1 and SQLite stores (R54-C39B). Prevents zombie reservations and provides a predictable window for dynamic heartbeat scaling.
-- **Distributed KV Rate Limiting**: Implement distributed Cloudflare KV and native rate limit bindings for inbound coordinator protection (R54-C39C-RATE-LIMIT). Support KV sliding windows with in-memory fallback.
-- **High-Confidence Storefront Auto-Linking**: Auto-link approved high-confidence storefront leads directly into accepted identity links without operator review (R13-C9-IDENTITY). Unverified heuristic outbound links remain provisional.
-- **Initial Seed and Storefront Classification**: Add pre-configured approved VPM community listing profiles and Ko-fi storefront seed jobs (FLEET-S2). Route Ko-fi product leads into operator pending review.
-- **Report Intake Partitioning**: Partition application report intake between rating calibration disputes and safety quarantine tickets (R56-C56C). Rating disputes route to volunteer moderator review while suspected unlawful content is quarantined for operator-only intake.
-- **Delegated Robots Preflight Protocol**: Added /v1/node/robots/claim and /v1/node/robots/result endpoints (R24-C21). Worker leases due origin preflights to crawler nodes and ingests RFC 9309 snapshots.
-- **Publication Rights Enforcement**: Enforce source access profile publication classes in catalog projection and delta streaming (R13-C3 / Q-PUBLICATION). Withhold packages whose source profile sets publishClasses: [] and emit delist tombstones.
-- **Inbound Rate Limiting**: Enforce per-isolate inbound 429 rate limiting with RFC-compliant headers across public, node, and downstream routes.
-- **Downstream Permission Enforcement**: Verify application permissions for catalog search and demand feedback, returning 403 on missing permissions.
-- **D1 High-Frequency Indexes**: Add ten query indexes for canonical packages, crawl jobs, source leads, items, fronts, and apps.
-- **Statement Batch Chunking**: Chunk large D1 batch executions into fifty statements to protect subrequest budgets.
-- **Source Access Profile Memoization**: Cache active source profile lookups to remove duplicate D1 queries during claims.
-- **Claim Invocation Budgets**: Bound candidate scans to three pages per claim invocation. Measured and asserted empty and leased claim D1 statement budgets in native workerd runtime.
-- **Runtime Verification Harness**: Extended the native coordinator harness to test capability mismatch, lease expiry, cross-node lease isolation, and multi-node fleet concurrency.
 ### Bugs Fixed
-- **Capability Token Authentication**: Fail closed when bearer tokens do not match the capability format.
-- **Claim Loop Budget**: Prevented unbounded claim candidate pagination when deferred jobs occur.
-- **Delta Feed Tombstones**: Record tombstones and emit delist deltas when packages leave the public general catalog via rating withdrawal or deletion.
-- **Provisional Fronts**: Filter provisional cross-source storefront links from public catalog packages until explicit operator review.
-- **Publication Confidence**: Stopped metadata-only canonical upserts from inventing observed confidence or downgrading confirmed publication evidence.
-- **Catalog Epochs**: Give fresh databases unique epochs. Concurrent initialization returns the stored winner and preserves existing epochs.
-- **Source Binding**: Reject substituted storefront IDs and URLs, empty catalog names and storefront fields from other source platforms.
-- **Batch Conflicts**: Keep release-evidence conflicts distinct from terminal lease expiry. Rejected metadata preserves its live job for correction.
-- **URL Associations**: Preserve generic path/query case and trailing slashes. Keep case-insensitive repository matching scoped to GitHub sources.
-- **Lead Identities**: Deduplicate serialized host/default-port aliases for new leads without changing retained observation links.
-- **HTTP and Rate Limit Responses**: Normalize all Worker error responses to `{ schemaVersion: 1, code, error }`, return HTTP 415 for invalid media types, and send rate-limit headers on rate-limited 2xx responses.
-- **Takedown and Delegation Enforcement**: Require creator proof for unauthenticated takedowns, clear rejected delisted tombstones when restoring packages, and record app delegation audit entries.
 ### Changes
-- **Control Planes and Network Adoption**: Partition Coordinator storage and D1 schemas into five plane adapters and five schema modules while adopting shared network helpers for IP checks, robots schemas, and lead routing.
-- **Report Routing and Test Migration**: Route all issue report kinds to `catalog_tickets`, align `default_seeds.ts` template profile retention classes, and migrate Worker D1 test suites onto the live Coordinator store.
-- **Database Schema Reconciliation**: Reconcile DATABASE_SCHEMAS.md with D1 tables, views, ten query indexes, and node outbox storage.
-- **API Route Documentation**: Align AGENTS.md route reference path and document batched job results and operator app delegation endpoints.
-- **Fixture Typechecks**: Include Bun TypeScript tests and support in Worker checks. Preserve separate Cloudflare Vitest typing and native runtime verification.
-- **D1 Fixtures**: Check the SQLite adapter against generated bindings. Reject unsupported operations and foreign batch statements instead of reporting synthetic success.
-- **Specification Reconciliation**: Reconciled API routes, network specifications, and database schemas with delivered claim scan budgets, operator app candidate review, and moderator protocol.
 See full history at [docs/changelogs/vrcp-worker/preview](https://github.com/SlamTheDragon/vrc-packages/tree/main/docs/changelogs/vrcp-worker/preview)
 
 ---
