@@ -255,3 +255,45 @@ test("GitHub proof reader uses explicit credentials only and keeps failures boun
   const malformed = async () => new Response("Sensitive provider diagnostic");
   await expect(readGitHubAPI({}, malformed)("/repos/example/repo/pulls/7")).rejects.toThrow("Invalid release proof metadata JSON");
 });
+
+test("reviewed release accepts SemVer minor/major index resets and rejects non-resetting jumps", async () => {
+  const withVersions = (previousVersion: string, nextVersionValue: string, product = "worker") => {
+    const f = fixture();
+    const prefixName = product === "crawler-client" ? "vrcp-crawler-client" : product === "worker" ? "cloudflare-worker" : product === "package" ? "vrcp-api" : `vrcp-${product}`;
+    const pkgDir = product === "worker" ? "src-worker" : product === "package" ? "src-package" : product === "crawler" ? "src-crawler" : "src-crawler-client";
+    f.selected.product = product;
+    f.selected.version = nextVersionValue;
+    f.proof.tag = `${prefixName}/v${nextVersionValue}`;
+    f.prior[`release-${product}`] = previousVersion;
+    f.current[`release-${product}`] = nextVersionValue;
+    f.responses[f.pull].head.ref = `release/candidate/${product}/v${nextVersionValue}`;
+    f.responses[`${f.prefix}/commits/${f.head}`].commit.message =
+      `Prepare ${product} release ${nextVersionValue}\n\nVRCP-Release-Product: ${product}\nVRCP-Release-Version: ${nextVersionValue}\nVRCP-Release-Base: ${f.base}`;
+    f.responses[`${f.prefix}/commits/${f.head}`].files = [
+      { filename: "config.versions.json", status: "modified" },
+      { filename: `${pkgDir}/package.json`, status: "modified" }
+    ];
+    for (const revision of [f.base, f.head, f.commit]) {
+      f.responses[`${f.prefix}/contents/config.versions.json?ref=${revision}`] = f.file(
+        "config.versions.json",
+        revision === f.base ? f.prior : f.current
+      );
+    }
+    return f;
+  };
+
+  const minorReset = withVersions("0.0.5", "0.1.0");
+  expect((await checkReviewedRelease(minorReset.selected, minorReset.proof, minorReset.api)).version).toBe("0.1.0");
+
+  const majorReset = withVersions("0.2.5", "1.0.0");
+  expect((await checkReviewedRelease(majorReset.selected, majorReset.proof, majorReset.api)).version).toBe("1.0.0");
+
+  for (const [prev, invalidNext] of [["0.0.5", "0.1.1"], ["0.2.5", "1.0.1"], ["0.2.5", "1.1.0"]]) {
+    const bad = withVersions(prev, invalidNext);
+    await expect(checkReviewedRelease(bad.selected, bad.proof, bad.api)).rejects.toThrow("valid SemVer increment");
+  }
+
+  const heldSdk = withVersions("0.0.9", "0.1.0", "package");
+  await expect(checkReviewedRelease(heldSdk.selected, heldSdk.proof, heldSdk.api)).rejects.toThrow("owner API review hold");
+  expect(heldSdk.calls).toEqual([]);
+});

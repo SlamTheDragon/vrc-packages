@@ -434,11 +434,12 @@ export async function checkReviewedRelease(selected, proof, api = readGitHubAPI(
     }
   }
   const key = `release-${selected.product}`, previous = configs[base].release[key];
-  if (semver.inc(previous, "patch") !== selected.version ||
+  const releaseIncrement = ["patch", "minor", "major"].find(inc => semver.inc(previous, inc) === selected.version);
+  if (!releaseIncrement ||
       Object.keys(configs[base].release).some(name => configs[head].release[name] !== (name === key ? selected.version : configs[base].release[name])) ||
       Object.keys(configs[base].preview).some(name => configs[head].preview[name] !== configs[base].preview[name]) ||
       ["release", "preview"].some(channel => Object.keys(configs[head][channel]).some(name => configs[commit][channel][name] !== configs[head][channel][name]))) {
-    throw new Error("Reviewed version PR must change only the selected release config patch");
+    throw new Error("Reviewed version PR must advance only the selected release config by one valid SemVer increment");
   }
   for (const revision of [head, commit]) {
     const routed = selectTag(tag, configs[revision]);
@@ -474,6 +475,7 @@ export async function checkReleaseMetadata(selected, proof, workspace = root, gi
   const { base, head, commit = head } = proof;
   if (selected?.channel !== "release" || !releaseProducts.includes(selected.product) ||
       ![base, head, commit].every(value => /^[a-f0-9]{40}$/.test(value ?? ""))) throw new Error("Invalid release metadata identity");
+  if (selected.product === "package") checkSDKPublicationVersion(selected.version);
   const paths = ["config.versions.json", "config.preview.versions.json", `${productDirectories[selected.product]}/package.json`,
     ...(selected.product === "package" ? [`${productDirectories.network}/package.json`] : []),
     ...(selected.product === "crawler-client" ? ["src-crawler-client/src-tauri/Cargo.toml", "src-crawler-client/src-tauri/tauri.conf.json"] : [])];
@@ -499,8 +501,12 @@ export async function checkReleaseMetadata(selected, proof, workspace = root, gi
       mkdirSync(dirname(target), { recursive: true });
       writeFileSync(target, value);
     }
-    const bumped = await bumpVersion("release", selected.product, "patch", directory);
-    if (bumped.version !== selected.version) throw new Error("Release metadata skips the next configured patch");
+    const priorConfig = JSON.parse(prior.get("config.versions.json"));
+    const priorVersion = priorConfig[`release-${selected.product}`];
+    const releaseIncrement = ["patch", "minor", "major"].find(inc => semver.inc(priorVersion, inc) === selected.version);
+    if (!releaseIncrement) throw new Error("Release metadata skips the next configured SemVer increment");
+    const bumped = await bumpVersion("release", selected.product, releaseIncrement, directory);
+    if (bumped.version !== selected.version) throw new Error("Release metadata skips the next configured SemVer increment");
     await versionFiles("sync", "release", selected.product, directory);
     if (hasChangelog) {
       const changelogResult = extractProductChangelog("release", selected.product, bumped.version, directory);

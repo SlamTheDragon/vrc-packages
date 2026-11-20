@@ -266,7 +266,7 @@ test("single network stream rejects new release bumps while historical config ta
   await fixture(async workspace => {
     await expect(bumpVersion("release", "network", "patch", workspace)).rejects.toThrow("one rapid stream");
     await expect(versionFiles("sync", "release", "network", workspace)).rejects.toThrow("one rapid stream");
-    expect((await bumpVersion("preview", "network", "patch", workspace, new Date("2027-01-01T00:00:00Z"))).version).toBe("2027.1.2");
+    expect((await bumpVersion("preview", "network", "patch", workspace, new Date("2027-01-01T00:00:00Z"))).version).toBe("2027.1.0");
     const path = resolve(workspace, "config.versions.json");
     const { config } = await readVersionConfig("release", workspace);
     config["release-network"] = "0.0.1";
@@ -281,6 +281,9 @@ test("bump changes only one authoritative config value, not local metadata or ex
     const before = await readFile(resolve(workspace, "src-worker/package.json"), "utf8");
     expect((await bumpVersion("preview", "worker", "patch", workspace, new Date("2026-10-05T00:00:00Z"))).version).toBe("2026.10.2-pre");
     expect((await bumpVersion("release", "worker", "minor", workspace)).version).toBe("0.1.0");
+    expect((await bumpVersion("release", "worker", "patch", workspace)).version).toBe("0.1.1");
+    expect((await bumpVersion("release", "worker", "minor", workspace)).version).toBe("0.2.0");
+    expect((await bumpVersion("release", "worker", "major", workspace)).version).toBe("1.0.0");
     expect(await readFile(resolve(workspace, "src-worker/package.json"), "utf8")).toBe(before);
     await expect(bumpVersion("release", "worker", "pre", workspace)).rejects.toThrow();
   });
@@ -387,15 +390,19 @@ test("preview package CalVer increments patch and refuses a trailing prerelease 
   });
 });
 
-test("preview bumps derive UTC year and month while only incrementing patch, without build-time mutation", async () => {
+test("preview bumps reset patch to 0 on UTC month or year rollover and increment within the same month", async () => {
   await fixture(async workspace => {
     const before = await readFile(resolve(workspace, "src-worker/package.json"), "utf8");
     expect((await bumpVersion("preview", "package", "patch", workspace, new Date("2026-11-01T00:00:00Z"))).version)
-      .toBe("2026.11.2-pre");
+      .toBe("2026.11.0-pre");
+    expect((await bumpVersion("preview", "package", "patch", workspace, new Date("2026-11-15T00:00:00Z"))).version)
+      .toBe("2026.11.1-pre");
     expect((await bumpVersion("preview", "package", "patch", workspace, new Date("2027-01-01T00:00:00Z"))).version)
-      .toBe("2027.1.3-pre");
+      .toBe("2027.1.0-pre");
+    await expect(bumpVersion("preview", "package", "patch", workspace, new Date("2026-12-31T00:00:00Z")))
+      .rejects.toThrow("precedes the previous version");
     expect((await bumpVersion("preview", "web", "patch", workspace, new Date("2027-01-01T00:00:00Z"))).version)
-      .toBe("2027.1.2-pre");
+      .toBe("2027.1.0-pre");
     const snapshot = await readFile(resolve(workspace, "config.preview.versions.json"), "utf8");
     await expect(bumpVersion("preview", "package", "patch", workspace, new Date("invalid"))).rejects.toThrow("calendar date");
     expect(await readFile(resolve(workspace, "config.preview.versions.json"), "utf8")).toBe(snapshot);
@@ -408,19 +415,21 @@ test("desktop preview uses short UTC years, retains pre and syncs Cargo from the
     const before = await readFile(resolve(workspace, "src-crawler-client/package.json"), "utf8");
     expect((await resolveTag("vrcp-crawler-client/v26.10.1-pre", workspace)).channel).toBe("preview");
     expect((await bumpVersion("preview", "crawler-client", "patch", workspace, new Date("2026-11-01T00:00:00Z"))).version)
-      .toBe("26.11.2-pre");
+      .toBe("26.11.0-pre");
     expect((await bumpVersion("preview", "crawler-client", "patch", workspace, new Date("2027-01-01T00:00:00Z"))).version)
-      .toBe("27.1.3-pre");
+      .toBe("27.1.0-pre");
+    expect((await bumpVersion("preview", "crawler-client", "patch", workspace, new Date("2027-01-15T00:00:00Z"))).version)
+      .toBe("27.1.1-pre");
     expect(await readFile(resolve(workspace, "src-crawler-client/package.json"), "utf8")).toBe(before);
     expect((await readVersionConfig("preview", workspace)).config["preview-package"]).toBe("2026.10.1-pre");
     await versionFiles("sync", "preview", "crawler-client", workspace);
     await versionFiles("check", "preview", "crawler-client", workspace);
     expect(await readFile(resolve(workspace, "src-crawler-client/src-tauri/Cargo.toml"), "utf8"))
-      .toContain('version = "27.1.3-pre" # retain owner note');
-    expect(JSON.parse(await readFile(resolve(workspace, "src-crawler-client/package.json"), "utf8")).version).toBe("27.1.3-pre");
+      .toContain('version = "27.1.1-pre" # retain owner note');
+    expect(JSON.parse(await readFile(resolve(workspace, "src-crawler-client/package.json"), "utf8")).version).toBe("27.1.1-pre");
     const tauri = JSON.parse(await readFile(resolve(workspace, "src-crawler-client/src-tauri/tauri.conf.json"), "utf8"));
-    expect(tauri.bundle.windows.wix.version).toBe("27.1.3");
-    tauri.bundle.windows.wix.version = "27.1.2";
+    expect(tauri.bundle.windows.wix.version).toBe("27.1.1");
+    tauri.bundle.windows.wix.version = "27.1.0";
     await writeFile(resolve(workspace, "src-crawler-client/src-tauri/tauri.conf.json"), JSON.stringify(tauri));
     await expect(versionFiles("check", "preview", "crawler-client", workspace)).rejects.toThrow("metadata differs");
     await versionFiles("sync", "release", "crawler-client", workspace);
@@ -458,9 +467,11 @@ test("desktop preview rejects invalid calendar fields and MSI patch overflow bef
     config["preview-crawler-client"] = "26.10.65535-pre";
     await writeFile(path, JSON.stringify(config));
     const before = await readFile(path, "utf8");
-    await expect(bumpVersion("preview", "crawler-client", "patch", workspace, new Date("2026-11-01T00:00:00Z")))
+    await expect(bumpVersion("preview", "crawler-client", "patch", workspace, new Date("2026-10-15T00:00:00Z")))
       .rejects.toThrow("MSI limit");
     expect(await readFile(path, "utf8")).toBe(before);
+    expect((await bumpVersion("preview", "crawler-client", "patch", workspace, new Date("2026-11-01T00:00:00Z"))).version)
+      .toBe("26.11.0-pre");
   });
 });
 

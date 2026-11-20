@@ -102,11 +102,22 @@ export function nextVersion(channel, product, increment, previous, now = new Dat
   if (semver.valid(previous) !== previous) throw new Error("Previous version must be canonical SemVer");
   if (channel === "preview") {
     if (!(now instanceof Date) || !Number.isFinite(now.getTime())) throw new Error("Preview bump requires a valid calendar date");
-    const bumped = semver.parse(semver.inc(previous.split("-")[0], "patch"));
-    if (!bumped) throw new Error("Preview patch exceeds the supported version range");
-    if (product === "crawler-client" && bumped.patch > 65535) throw new Error("Desktop preview patch exceeds the MSI limit of 65535");
+    const parsed = semver.parse(previous.split("-")[0]);
+    if (!parsed) throw new Error("Previous version must be canonical SemVer");
     const year = product === "crawler-client" ? now.getUTCFullYear() % 100 : now.getUTCFullYear();
-    return `${year}.${now.getUTCMonth() + 1}.${bumped.patch}${semver.prerelease(previous) ? "-pre" : ""}`;
+    const month = now.getUTCMonth() + 1;
+    let patch;
+    if (year > parsed.major || (year === parsed.major && month > parsed.minor)) {
+      patch = 0;
+    } else if (year === parsed.major && month === parsed.minor) {
+      const bumped = semver.parse(semver.inc(previous.split("-")[0], "patch"));
+      if (!bumped) throw new Error("Preview patch exceeds the supported version range");
+      patch = bumped.patch;
+    } else {
+      throw new Error("Preview calendar date precedes the previous version");
+    }
+    if (product === "crawler-client" && patch > 65535) throw new Error("Desktop preview patch exceeds the MSI limit of 65535");
+    return `${year}.${month}.${patch}${semver.prerelease(previous) ? "-pre" : ""}`;
   } else {
     const version = semver.inc(previous, increment);
     if (!version) throw new Error("Version exceeds the supported range");
