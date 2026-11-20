@@ -30,6 +30,7 @@
 | `crawler-network` | `HO-W2-001` | blocked | Reconcile all 26 live Worker `/v1/` handlers against 23 SDK methods and staged wiki deltas (`WIKI-01`..`WIKI-06`) under owner review before SDK `v0.1.0`. | `Q-API-REVIEW` |
 | `desktop-client` | `HO-D4B-001` | pending | Consume finalized desktop client installer metadata on `src-web/` download and registry views once `R55-C55D-CLIENT` clears. | `R47-C27-WEB` |
 | `pipeline` | `PN-001` | acknowledged | Departmental Handoff Cascade active: submit Publication Requests here and defer changelog edits and verified-row clearing to Sector 4 Pipeline. | `G15` / `G9-WEB` |
+| `pipeline` | `PN-005` | active | Imported 6 UI skills (`shadcn-svelte`, `ui-sdk*`) into `src-web/.agents/skills/`, updated Rule 09 3-tier invariants, and imported 6-domain + `workbench` UI primitives (`src-web/src/lib/components/ui/`). Execute initializer packets `WEB-INIT-01`..`WEB-INIT-05` for `/login`, `/operator`, `/moderator`, and `/design` practicing full pipeline integration (`bun run prepare:dev preview web`). | `WEB-INIT-01`..`WEB-INIT-05` |
 
 ---
 
@@ -51,6 +52,7 @@ Tier 5 sits at the consumer end of the product cascade. Record web deployment co
 | handoff_id | target_tiers | contract_or_artifact | breaking_change | status | integration_notes |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | `HO-W5-001` | Pipeline | `src-web/`, `src-web-search/` (Git submodule) | no | active | `src-web-search/` is a separate Git submodule; pipeline builds and releases must preserve recursive submodule checkouts (`submodules: recursive`). |
+| `HO-W5-002` | Tier 2 (`src-worker/`), Pipeline | `src-web/` Operator/Moderator Admin UI (`WEB-INIT-01`..`WEB-INIT-05`) | no | active | `src-web/` initializes `/login`, `/operator`, `/moderator`, and `/design` using the imported 6-domain `src/lib/components/ui/` primitives and `VRCPackageClient` (`vrc-packages-api` release channel installed via `bun run prepare:dev preview web`). Requires Tier 2 Worker (`src-worker/`) authenticated browser CORS and `OPTIONS` preflight headers (`Access-Control-Allow-Origin`, `Access-Control-Allow-Methods: GET, POST, DELETE, OPTIONS`, `Access-Control-Allow-Headers: Authorization, Content-Type`) on `/v1/operator/*`, `/v1/moderator/*`, `/v1/user/*`, and `/v1/app/*` (`R47-C27-CORS`). |
 
 ---
 
