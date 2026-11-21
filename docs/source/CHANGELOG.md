@@ -197,9 +197,7 @@ See full history at [docs/changelogs/vrcp-worker/preview](https://github.com/Sla
 ## VRC Packages Network `vrcp-packages-network`
 
 <!-- vrcp-packages-network-DESCRIPTION_SUMMARY -->
-Synchronize the SDK peer dependency contract with `vrc-packages-api-preview` `2026.11.2-pre`.
 <!-- vrcp-packages-network-DESCRIPTION_SUMMARY -->
 ### Added
 ### Changes
-- **SDK peer dependency sync:** Update the `vrc-packages-api` peer contract to accept `vrc-packages-api-preview` `2026.11.2-pre` across downstream consumers.
 See full history at [docs/changelogs/vrcp-packages-network/](https://github.com/SlamTheDragon/vrc-packages/tree/main/docs/changelogs/vrcp-packages-network/)
