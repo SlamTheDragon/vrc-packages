@@ -26,7 +26,7 @@
 			data-slot="dropdown-menu-content"
 			sideOffset={6}
 			class={cn(
-				'min-w-[180px] bg-popover border border-border rounded-2xl shadow-2xl p-1.5 text-popover-foreground z-50 animate-in fade-in-0 zoom-in-95',
+				'min-w-[180px] bg-popover border border-border rounded-2xl shadow-2xl p-1.5 text-popover-foreground z-50 duration-150 ease-out animate-in fade-in-0 zoom-in-95 data-[side=bottom]:slide-in-from-top-1 data-[side=top]:slide-in-from-bottom-1 data-[side=left]:slide-in-from-right-1 data-[side=right]:slide-in-from-left-1',
 				className
 			)}
 		>

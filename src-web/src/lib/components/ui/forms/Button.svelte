@@ -13,6 +13,7 @@
 		type = 'button',
 		title,
 		'aria-label': ariaLabel,
+		'aria-expanded': ariaExpanded,
 		href,
 		onclick,
 		children
@@ -24,6 +25,7 @@
 		type?: 'button' | 'submit' | 'reset';
 		title?: string;
 		'aria-label'?: string;
+		'aria-expanded'?: boolean;
 		href?: string;
 		onclick?: (e: MouseEvent) => void;
 		children?: Snippet;
@@ -79,6 +81,7 @@
 		{disabled}
 		{title}
 		aria-label={ariaLabel}
+		aria-expanded={ariaExpanded}
 		{onclick}
 		class={cn(buttonVariants({ variant, size }), className)}
 	>

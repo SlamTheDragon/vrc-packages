@@ -29,7 +29,7 @@
 				data-slot="tooltip-content"
 				sideOffset={4}
 				class={cn(
-					'z-50 overflow-hidden rounded-lg bg-popover border border-border px-2.5 py-1 text-xs text-popover-foreground shadow-lg animate-in fade-in-0 zoom-in-95',
+					'z-50 overflow-hidden rounded-lg bg-popover border border-border px-2.5 py-1 text-xs text-popover-foreground shadow-lg duration-150 ease-out animate-in fade-in-0 zoom-in-95 data-[side=bottom]:slide-in-from-top-1 data-[side=top]:slide-in-from-bottom-1 data-[side=left]:slide-in-from-right-1 data-[side=right]:slide-in-from-left-1',
 					className
 				)}
 			>

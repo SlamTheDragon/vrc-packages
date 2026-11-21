@@ -31,11 +31,13 @@
 	{/if}
 
 	<Primitive.Portal>
-		<Primitive.Overlay class="fixed inset-0 z-50 bg-background/80 backdrop-blur-xs animate-in fade-in-0" />
+		<Primitive.Overlay
+			class="fixed inset-0 z-50 bg-background/80 backdrop-blur-xs duration-150 ease-out data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=closed]:animate-out data-[state=closed]:fade-out-0"
+		/>
 		<Primitive.Content
 			data-slot="dialog-content"
 			class={cn(
-				'fixed left-[50%] top-[50%] z-50 w-full max-w-lg translate-x-[-50%] translate-y-[-50%] rounded-2xl bg-popover p-6 shadow-2xl border border-border text-popover-foreground duration-200 animate-in fade-in-0 zoom-in-95',
+				'fixed left-[50%] top-[50%] z-50 w-full max-w-lg translate-x-[-50%] translate-y-[-50%] rounded-2xl bg-popover p-6 shadow-2xl border border-border text-popover-foreground duration-200 ease-out data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=closed]:duration-150',
 				className
 			)}
 		>

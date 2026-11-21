@@ -32,7 +32,7 @@
 <nav
 	data-slot="sidebar-nav"
 	aria-label={label}
-	class="flex-1 overflow-y-auto py-3 px-2 flex flex-col gap-1 select-none"
+	class="flex-1 overflow-y-auto overflow-x-hidden py-3 px-2 flex flex-col gap-1 select-none"
 >
 	{#each groups as group, gi (group.title ?? gi)}
 		{#if gi > 0}
@@ -47,8 +47,7 @@
 			{@const active = item.id === activeId}
 			{@const Icon = item.icon}
 			{@const cls = cn(
-				'group relative flex items-center gap-3 py-2 text-sm font-medium rounded-xl no-underline transition-colors cursor-pointer',
-				collapsed ? 'justify-center px-2' : 'justify-between px-3.5',
+				'group relative flex items-center justify-between gap-3 px-[13px] py-2 text-sm font-medium rounded-xl no-underline transition-colors duration-150 cursor-pointer overflow-hidden',
 				active
 					? 'bg-primary/20 text-sidebar-primary border border-sidebar-primary/40 font-semibold shadow-2xs'
 					: 'text-sidebar-foreground/80 hover:text-sidebar-foreground hover:bg-sidebar-accent border border-transparent'
@@ -59,21 +58,29 @@
 						<Icon
 							size={18}
 							class={cn(
-								'shrink-0 transition-colors',
+								'shrink-0 transition-colors duration-150',
 								active
 									? 'text-sidebar-primary'
 									: 'text-muted-foreground group-hover:text-sidebar-foreground'
 							)}
 						/>
 					{/if}
-					{#if !collapsed}
-						<span class="truncate">{item.label}</span>
-					{/if}
-				</div>
-				{#if !collapsed && item.badge}
 					<span
+						aria-hidden={collapsed || undefined}
 						class={cn(
-							'text-[10px] font-semibold px-1.5 py-0.5 rounded border shrink-0',
+							'truncate whitespace-nowrap transition-[opacity,transform] duration-150 ease-out',
+							collapsed ? 'opacity-0 -translate-x-2 pointer-events-none' : 'opacity-100 translate-x-0'
+						)}
+					>
+						{item.label}
+					</span>
+				</div>
+				{#if item.badge}
+					<span
+						aria-hidden={collapsed || undefined}
+						class={cn(
+							'text-[10px] font-semibold px-1.5 py-0.5 rounded border shrink-0 whitespace-nowrap transition-[opacity,transform] duration-150 ease-out',
+							collapsed ? 'opacity-0 -translate-x-2 pointer-events-none' : 'opacity-100 translate-x-0',
 							active
 								? 'bg-primary/25 text-sidebar-primary border-sidebar-primary/40'
 								: 'bg-muted text-muted-foreground border-border'
@@ -81,8 +88,14 @@
 					>
 						{item.badge}
 					</span>
-				{:else if !collapsed && item.count !== undefined}
-					<span class="text-[11px] px-1.5 py-0.2 rounded font-mono tabular-nums bg-muted text-muted-foreground border border-border shrink-0">
+				{:else if item.count !== undefined}
+					<span
+						aria-hidden={collapsed || undefined}
+						class={cn(
+							'text-[11px] px-1.5 py-0.2 rounded font-mono tabular-nums bg-muted text-muted-foreground border border-border shrink-0 whitespace-nowrap transition-[opacity,transform] duration-150 ease-out',
+							collapsed ? 'opacity-0 -translate-x-2 pointer-events-none' : 'opacity-100 translate-x-0'
+						)}
+					>
 						{item.count}
 					</span>
 				{/if}

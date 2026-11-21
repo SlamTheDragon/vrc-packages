@@ -40,7 +40,7 @@
 	<Primitive.Trigger
 		data-slot="dropdown-select-trigger"
 		class={cn(
-			'flex items-center justify-between w-full px-3 text-sm font-medium transition-colors select-none cursor-pointer focus:outline-none focus:ring-2 focus:ring-ring/40 focus:border-sidebar-primary disabled:opacity-50 disabled:pointer-events-none',
+			'group flex items-center justify-between w-full px-3 text-sm font-medium transition-colors duration-150 select-none cursor-pointer focus:outline-none focus:ring-2 focus:ring-ring/40 focus:border-sidebar-primary disabled:opacity-50 disabled:pointer-events-none',
 			COMPONENT_PRESETS.dropdownSelect.trigger,
 			heightClass,
 			className
@@ -49,7 +49,10 @@
 		<span class={cn('truncate', selectedOption ? 'text-foreground' : 'text-muted-foreground font-normal')}>
 			{selectedOption ? selectedOption.label : placeholder}
 		</span>
-		<ChevronDown size={16} class="text-muted-foreground shrink-0 ml-2" />
+		<ChevronDown
+			size={16}
+			class="text-muted-foreground shrink-0 ml-2 transition-transform duration-150 ease-out group-data-[state=open]:rotate-180"
+		/>
 	</Primitive.Trigger>
 
 	<Primitive.Portal>
@@ -58,7 +61,7 @@
 			sideOffset={4}
 			class={cn(
 				COMPONENT_PRESETS.dropdownSelect.content,
-				'min-w-[200px] max-h-60 overflow-y-auto p-1 animate-in fade-in-0 zoom-in-95'
+				'min-w-[200px] max-h-60 overflow-y-auto p-1 duration-150 ease-out animate-in fade-in-0 zoom-in-95 data-[side=bottom]:slide-in-from-top-1 data-[side=top]:slide-in-from-bottom-1 data-[side=left]:slide-in-from-right-1 data-[side=right]:slide-in-from-left-1'
 			)}
 		>
 			{#each options as opt (opt.value)}

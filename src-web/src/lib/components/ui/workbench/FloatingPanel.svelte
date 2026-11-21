@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type { Snippet } from 'svelte';
 	import { GripHorizontal, X, Maximize2, Minimize2 } from '@lucide/svelte';
+	import { compositorTransition } from '$lib/motion';
 
 	interface Props {
 		title: string;
@@ -60,6 +61,8 @@
 
 {#if open}
 	<div
+		in:compositorTransition={{ y: 8, scale: 0.98, duration: 180 }}
+		out:compositorTransition={{ y: -6, scale: 0.98, duration: 130 }}
 		data-slot="floating-panel"
 		role="region"
 		aria-label={title}
@@ -87,7 +90,7 @@
 					<button
 						type="button"
 						onclick={onDock}
-						class="px-2 py-0.5 rounded-lg bg-secondary border border-border hover:bg-muted text-[10px] font-semibold text-secondary-foreground cursor-pointer"
+						class="px-2 py-0.5 rounded-lg bg-secondary border border-border hover:bg-muted text-[10px] font-semibold text-secondary-foreground transition-colors duration-150 cursor-pointer"
 						title="Dock into split view"
 					>
 						Split
@@ -96,7 +99,7 @@
 				<button
 					type="button"
 					onclick={() => (isMinimized = !isMinimized)}
-					class="p-1 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted cursor-pointer"
+					class="p-1 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted transition-colors duration-150 cursor-pointer"
 					aria-label={isMinimized ? 'Expand panel' : 'Minimize panel'}
 					title={isMinimized ? 'Expand panel' : 'Minimize panel'}
 				>
@@ -112,7 +115,7 @@
 						open = false;
 						onClose?.();
 					}}
-					class="p-1 rounded-lg text-muted-foreground hover:text-destructive hover:bg-destructive/15 cursor-pointer"
+					class="p-1 rounded-lg text-muted-foreground hover:text-destructive hover:bg-destructive/15 transition-colors duration-150 cursor-pointer"
 					aria-label="Close panel"
 					title="Close panel"
 				>
@@ -122,7 +125,12 @@
 		</div>
 
 		{#if !isMinimized}
-			<div data-slot="floating-panel-body" class="p-4 max-h-[72vh] overflow-y-auto bg-popover">
+			<div
+				in:compositorTransition={{ y: -4, duration: 140 }}
+				out:compositorTransition={{ duration: 100 }}
+				data-slot="floating-panel-body"
+				class="p-4 max-h-[72vh] overflow-y-auto bg-popover"
+			>
 				{@render children()}
 			</div>
 		{/if}

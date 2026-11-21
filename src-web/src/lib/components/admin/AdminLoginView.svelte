@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { cn } from '$lib/utils';
+	import { compositorTransition } from '$lib/motion';
 	import Card from '$lib/components/ui/display/Card.svelte';
 	import Separator from '$lib/components/ui/display/Separator.svelte';
 	import VRCPEmblem from '$lib/components/ui/display/VRCPEmblem.svelte';
@@ -221,12 +222,13 @@
 					<Button
 						variant="ghost"
 						size="xs"
+						aria-expanded={connectionCheckOpen}
 						onclick={() => (connectionCheckOpen = !connectionCheckOpen)}
 						class="px-1 text-muted-foreground hover:text-foreground"
 					>
 						<ChevronDown
 							size={14}
-							class={cn('transition-transform duration-150', connectionCheckOpen && 'rotate-180')}
+							class={cn('transition-transform duration-150 ease-out', connectionCheckOpen && 'rotate-180')}
 						/>
 						<span>Connection Check</span>
 					</Button>
@@ -243,7 +245,11 @@
 				</div>
 
 				{#if connectionCheckOpen}
-					<div class="text-xs text-muted-foreground flex flex-col gap-2 px-1">
+					<div
+						in:compositorTransition={{ y: -4, duration: 150 }}
+						out:compositorTransition={{ y: -4, duration: 110 }}
+						class="text-xs text-muted-foreground flex flex-col gap-2 px-1"
+					>
 						<p class="text-pretty">
 							Sends an unauthenticated <code class="font-mono text-foreground">GET /v1/app/index?limit=1</code> request to verify reachability and CORS headers.
 						</p>

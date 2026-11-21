@@ -37,7 +37,7 @@
 					<ChevronDown size={16} class="text-muted-foreground transition-transform duration-200 group-data-[state=open]:rotate-180" />
 				</Primitive.Trigger>
 			</Primitive.Header>
-			<Primitive.Content class="overflow-hidden text-sm text-muted-foreground p-4 pt-0 transition-all data-[state=closed]:animate-accordion-up data-[state=open]:animate-accordion-down">
+			<Primitive.Content class="overflow-hidden text-sm text-muted-foreground p-4 pt-0 duration-200 ease-out data-[state=closed]:animate-accordion-up data-[state=open]:animate-accordion-down">
 				{#if itemSnippet}
 					{@render itemSnippet(item)}
 				{:else}

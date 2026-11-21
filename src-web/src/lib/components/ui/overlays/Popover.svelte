@@ -26,7 +26,7 @@
 			data-slot="popover-content"
 			sideOffset={6}
 			class={cn(
-				'z-50 w-72 rounded-2xl bg-popover p-4 shadow-2xl border border-border text-popover-foreground animate-in fade-in-0 zoom-in-95',
+				'z-50 w-72 rounded-2xl bg-popover p-4 shadow-2xl border border-border text-popover-foreground duration-150 ease-out animate-in fade-in-0 zoom-in-95 data-[side=bottom]:slide-in-from-top-1 data-[side=top]:slide-in-from-bottom-1 data-[side=left]:slide-in-from-right-1 data-[side=right]:slide-in-from-left-1',
 				className
 			)}
 		>

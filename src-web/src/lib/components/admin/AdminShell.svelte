@@ -6,10 +6,10 @@
 	import SidebarNav from '$lib/components/ui/navigation/SidebarNav.svelte';
 	import Button from '$lib/components/ui/forms/Button.svelte';
 	import Badge from '$lib/components/ui/feedback/Badge.svelte';
+	import Sheet from '$lib/components/ui/overlays/Sheet.svelte';
 	import { adminSession } from '$lib/stores/admin-session.svelte';
 	import {
 		Menu,
-		X,
 		ShieldCheck,
 		Scale,
 		KeyRound,
@@ -49,14 +49,6 @@
 		{ id: '/design', href: '/design', label: 'Design System', icon: Palette }
 	];
 
-	const sectionTitles: Record<string, string> = {
-		'/': 'Overview',
-		'/login': 'Sign In',
-		'/operator': 'Operator Console',
-		'/moderator': 'Moderator Queue',
-		'/design': 'Design System'
-	};
-
 	let activeId = $derived.by(() => {
 		const normalized = currentPath.replace(/\/+$/, '') || '/';
 		const all = [...workspaceLinks, ...systemLinks];
@@ -67,8 +59,6 @@
 			})?.id ?? '/'
 		);
 	});
-
-	let currentSectionTitle = $derived(sectionTitles[activeId] ?? 'Admin Console');
 
 	function handleFocusIn(event: FocusEvent) {
 		const target = event.target as HTMLElement | null;
@@ -112,22 +102,26 @@
 		onfocusout={handleFocusOut}
 		onkeydown={handleKeyDown}
 		class={cn(
-			'hidden md:flex fixed top-4 bottom-4 left-4 z-40 flex-col rounded-2xl border border-sidebar-border bg-sidebar/95 text-sidebar-foreground backdrop-blur-md shadow-2xl overflow-hidden select-none',
+			'hidden md:flex fixed top-4 bottom-4 left-4 z-40 flex-col rounded-2xl border border-sidebar-border bg-sidebar/95 text-sidebar-foreground backdrop-blur-md shadow-2xl overflow-hidden select-none transition-[width] duration-200 ease-out',
 			sidebarExpanded ? 'w-64' : 'w-16'
 		)}
 	>
-		<div class="h-14 px-5 border-b border-sidebar-border flex items-center shrink-0">
+		<div class="h-14 px-[19px] border-b border-sidebar-border flex items-center shrink-0">
 			<a
 				href="/"
 				aria-label="VRC Packages Admin Home"
 				class="flex items-center gap-3 min-w-0 text-sidebar-foreground no-underline"
 			>
 				<VRCPEmblem size={24} color="var(--sidebar-primary)" />
-				{#if sidebarExpanded}
-					<span class="font-semibold text-sm tracking-tight text-sidebar-foreground truncate">
-						VRC Packages
-					</span>
-				{/if}
+				<span
+					aria-hidden={!sidebarExpanded || undefined}
+					class={cn(
+						'font-semibold text-sm tracking-tight text-sidebar-foreground whitespace-nowrap truncate transition-[opacity,transform] duration-150 ease-out',
+						sidebarExpanded ? 'opacity-100 translate-x-0' : 'opacity-0 -translate-x-2 pointer-events-none'
+					)}
+				>
+					VRC Packages
+				</span>
 			</a>
 		</div>
 
@@ -142,11 +136,15 @@
 		/>
 
 		<div class="p-3 border-t border-sidebar-border shrink-0 mt-auto flex flex-col gap-2">
-			{#if !sidebarExpanded}
+			<div class="relative h-6 flex items-center overflow-hidden">
 				<div
-					class="flex justify-center py-1"
+					aria-hidden={sidebarExpanded || undefined}
 					title={adminSession.authenticated ? `Signed in (${adminSession.role})` : 'Guest session'}
-					aria-label={adminSession.authenticated ? `Signed in (${adminSession.role})` : 'Guest session'}
+					aria-label={sidebarExpanded ? undefined : adminSession.authenticated ? `Signed in (${adminSession.role})` : 'Guest session'}
+					class={cn(
+						'w-[38px] shrink-0 flex justify-center transition-opacity duration-150 ease-out',
+						sidebarExpanded ? 'opacity-0 pointer-events-none' : 'opacity-100'
+					)}
 				>
 					<span
 						class={cn(
@@ -155,70 +153,91 @@
 						)}
 					></span>
 				</div>
-			{:else}
-				<div class="flex items-center justify-between gap-2 px-1">
+
+				<div
+					aria-hidden={!sidebarExpanded || undefined}
+					class={cn(
+						'absolute inset-0 flex items-center justify-between gap-2 px-1 whitespace-nowrap transition-[opacity,transform] duration-150 ease-out',
+						sidebarExpanded ? 'opacity-100 translate-x-0' : 'opacity-0 -translate-x-2 pointer-events-none'
+					)}
+				>
 					<span class="text-xs text-muted-foreground">Session</span>
 					<Badge variant={adminSession.authenticated ? 'emerald' : 'neutral'} size="xs">
 						{adminSession.authenticated ? adminSession.role : 'guest'}
 					</Badge>
 				</div>
+			</div>
 
-				{#if adminSession.authenticated}
-					<Button
-						variant="ghost"
-						size="xs"
-						onclick={handleSignOut}
-						class="w-full justify-start text-muted-foreground hover:text-destructive"
+			{#if adminSession.authenticated}
+				<Button
+					variant="ghost"
+					size="xs"
+					onclick={handleSignOut}
+					aria-label={sidebarExpanded ? undefined : 'Sign Out'}
+					title={sidebarExpanded ? undefined : 'Sign Out'}
+					class="w-full justify-start px-3 gap-2.5 overflow-hidden text-muted-foreground hover:text-destructive"
+				>
+					<LogOut size={14} class="shrink-0" />
+					<span
+						aria-hidden={!sidebarExpanded || undefined}
+						class={cn(
+							'whitespace-nowrap transition-[opacity,transform] duration-150 ease-out',
+							sidebarExpanded ? 'opacity-100 translate-x-0' : 'opacity-0 -translate-x-2 pointer-events-none'
+						)}
 					>
-						<LogOut size={13} />
-						<span>Sign Out</span>
-					</Button>
-				{/if}
+						Sign Out
+					</span>
+				</Button>
 			{/if}
 		</div>
 	</aside>
 
 	<div class="flex-1 flex flex-col h-full min-w-0 overflow-hidden relative">
-	<!-- deleted heder, unnecessary -->
+		<div class="md:hidden fixed bottom-4 left-4 z-40">
+			<Button
+				variant="secondary"
+				size="md"
+				aria-label="Open navigation menu"
+				onclick={() => (mobileMenuOpen = true)}
+				class="size-11 px-0 rounded-2xl border-sidebar-border bg-sidebar/95 text-sidebar-foreground backdrop-blur-md shadow-2xl hover:bg-sidebar-accent"
+			>
+				<Menu size={18} />
+			</Button>
+		</div>
 
-		{#if mobileMenuOpen}
-			<div class="md:hidden fixed inset-0 top-14 z-40 bg-background/80 backdrop-blur-xs p-3 flex">
-				<div class="w-64 h-full rounded-2xl border border-sidebar-border bg-sidebar/95 text-sidebar-foreground flex flex-col justify-between shadow-2xl overflow-hidden">
-					<SidebarNav
-						label="Mobile navigation"
-						{activeId}
-						onselect={() => (mobileMenuOpen = false)}
-						groups={[
-							{ items: workspaceLinks, variant: 'primary' },
-							{ items: systemLinks, variant: 'secondary' }
-						]}
-					/>
-					<div class="p-3 border-t border-sidebar-border mt-auto flex flex-col gap-2">
-						<div class="flex items-center justify-between text-xs text-muted-foreground px-1">
-							<span>Session</span>
-							<Badge variant={adminSession.authenticated ? 'emerald' : 'neutral'} size="xs">
-								{adminSession.authenticated ? adminSession.role : 'guest'}
-							</Badge>
-						</div>
-						{#if adminSession.authenticated}
-							<Button variant="ghost" size="xs" onclick={handleSignOut} class="w-full justify-start text-destructive">
-								<LogOut size={13} />
-								<span>Sign Out</span>
-							</Button>
-						{/if}
+		<Sheet
+			bind:open={mobileMenuOpen}
+			side="left"
+			title="VRC Packages"
+			description="Navigation menu"
+			class="bg-sidebar text-sidebar-foreground border-sidebar-border p-4"
+		>
+			<div class="flex flex-col h-full justify-between gap-4">
+				<SidebarNav
+					label="Mobile navigation"
+					{activeId}
+					onselect={() => (mobileMenuOpen = false)}
+					groups={[
+						{ items: workspaceLinks, variant: 'primary' },
+						{ items: systemLinks, variant: 'secondary' }
+					]}
+				/>
+				<div class="p-3 border-t border-sidebar-border mt-auto flex flex-col gap-2">
+					<div class="flex items-center justify-between text-xs text-muted-foreground px-1">
+						<span>Session</span>
+						<Badge variant={adminSession.authenticated ? 'emerald' : 'neutral'} size="xs">
+							{adminSession.authenticated ? adminSession.role : 'guest'}
+						</Badge>
 					</div>
-				</div>
-				<div class="flex-1 h-full">
-					<Button
-						variant="ghost"
-						size="sm"
-						aria-label="Close mobile menu"
-						onclick={() => (mobileMenuOpen = false)}
-						class="size-full rounded-none opacity-0"
-					/>
+					{#if adminSession.authenticated}
+						<Button variant="ghost" size="xs" onclick={handleSignOut} class="w-full justify-start text-destructive">
+							<LogOut size={13} />
+							<span>Sign Out</span>
+						</Button>
+					{/if}
 				</div>
 			</div>
-		{/if}
+		</Sheet>
 
 		{#if fullViewport}
 			<main id="main-content" tabindex="-1" class="flex-1 size-full relative overflow-hidden p-0 m-0 bg-background">

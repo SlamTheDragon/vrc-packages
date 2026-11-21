@@ -2,6 +2,7 @@
 	import { Info, CheckCircle2, AlertTriangle, AlertCircle } from '@lucide/svelte';
 	import type { Snippet } from 'svelte';
 	import { cn } from '$lib/utils';
+	import { compositorTransition } from '$lib/motion';
 
 	let {
 		variant = 'info',
@@ -31,6 +32,8 @@
 </script>
 
 <div
+	in:compositorTransition={{ y: -4, duration: 150 }}
+	out:compositorTransition={{ y: -4, duration: 110 }}
 	data-slot="notice"
 	role={variant === 'danger' ? 'alert' : 'status'}
 	class={cn('flex items-start gap-3 p-3.5 rounded-xl border text-sm', variantStyles[variant], className)}
