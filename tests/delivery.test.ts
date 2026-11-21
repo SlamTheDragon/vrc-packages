@@ -1358,3 +1358,94 @@ test("publishPreviewSDKArtifact honors active temporary npm rollback rule, block
     }
   });
 });
+
+test("readPublicSDK resolves latest through uncached dist-tags endpoint when /latest edge cache stays stale", async () => {
+  await fixture(async workspace => {
+    const bytes = Buffer.from("Synthetic preview SDK dist-tags convergence fixture");
+    const expected = { name: sdkPackageNames.preview, version: "2026.11.1-pre", commit: "a".repeat(40) };
+    const receipt = { ...expected, purpose: "ci-release", sha256: createHash("sha256").update(bytes).digest("hex") };
+    const metadata = {
+      name: expected.name,
+      version: expected.version,
+      dist: { integrity: `sha512-${createHash("sha512").update(bytes).digest("base64")}` }
+    };
+    const previewCfgPath = resolve(workspace, "config.preview.versions.json");
+    const previewCfg = JSON.parse(await readFile(previewCfgPath, "utf8"));
+    previewCfg["preview-package"] = expected.version;
+    await writeFile(previewCfgPath, JSON.stringify(previewCfg));
+    await versionFiles("sync", "preview", "package", workspace);
+    const ciDir = resolve(workspace, "src-package/.artifacts/ci");
+    await mkdir(ciDir, { recursive: true });
+    const sdkPkgPath = resolve(workspace, "src-package/package.json");
+    const sdkPkg = JSON.parse(await readFile(sdkPkgPath, "utf8"));
+    await writeFile(sdkPkgPath, JSON.stringify({
+      ...sdkPkg,
+      name: expected.name,
+      version: expected.version,
+      private: false
+    }));
+    const deliverArtifact = resolve(ciDir, `${expected.name}-${expected.version}.tgz`);
+    await writeFile(deliverArtifact, bytes);
+    await writeFile(`${deliverArtifact}.json`, JSON.stringify(receipt));
+
+    let deliverPublished = false;
+    let latestEdgeHits = 0;
+    const origFetch = globalThis.fetch;
+    const savedEnv = { ...process.env };
+    Object.assign(process.env, {
+      GITHUB_SHA: "a".repeat(40),
+      ACTIONS_ID_TOKEN_REQUEST_URL: "https://example.invalid/oidc",
+      ACTIONS_ID_TOKEN_REQUEST_TOKEN: "synthetic-oidc-token",
+      NODE_AUTH_TOKEN: "",
+      NPM_TOKEN: ""
+    });
+    globalThis.fetch = (async (url: string | URL) => {
+      const target = String(url);
+      if (target === `https://registry.npmjs.org/-/package/${expected.name}/dist-tags`) {
+        return new Response(
+          JSON.stringify({ latest: deliverPublished ? expected.version : "2026.11.0-pre" }),
+          { status: 200 }
+        );
+      }
+      if (target === `https://registry.npmjs.org/${expected.name}/2026.11.0-pre`) {
+        return new Response(
+          JSON.stringify({ name: expected.name, version: "2026.11.0-pre", dist: { integrity: "sha512-prior" } }),
+          { status: 200 }
+        );
+      }
+      if (target === `https://registry.npmjs.org/${expected.name}/${expected.version}`) {
+        return deliverPublished
+          ? new Response(JSON.stringify(metadata), { status: 200 })
+          : new Response("", { status: 404 });
+      }
+      if (target === `https://registry.npmjs.org/${expected.name}/latest`) {
+        latestEdgeHits++;
+        // Simulate 300s cached stale /latest edge document
+        return new Response(
+          JSON.stringify({ name: expected.name, version: "2026.11.0-pre", dist: { integrity: "sha512-prior" } }),
+          { status: 200 }
+        );
+      }
+      throw new Error(`Unexpected fetch URL: ${target}`);
+    }) as typeof fetch;
+    try {
+      const res = await deliver("publish", "preview", "package", true, false, {
+        workspace,
+        runCommand: (args: string[]) => {
+          if (args[0] === "--version") return "11.19.0";
+          deliverPublished = true;
+          return "{}";
+        },
+        verifyCI: async (prod: string, ch: string) => ({ product: prod, channel: ch })
+      });
+      expect(res.status).toBe("published-verified");
+      expect(latestEdgeHits).toBe(0);
+    } finally {
+      globalThis.fetch = origFetch;
+      for (const k of ["GITHUB_SHA", "ACTIONS_ID_TOKEN_REQUEST_URL", "ACTIONS_ID_TOKEN_REQUEST_TOKEN", "NODE_AUTH_TOKEN", "NPM_TOKEN"]) {
+        if (savedEnv[k] === undefined) delete process.env[k];
+        else process.env[k] = savedEnv[k];
+      }
+    }
+  });
+});

@@ -52,6 +52,9 @@ Ad-hoc workarounds or unverified fallbacks added instead of fixing the governing
 
 ## 3. Redesign From First Principles
 
+**IMPORTANT**
+Research first principles of applicable system architecture types and designs (OOP, functional, etc.). Plan semantic abstractable areas and control areas before executing a refactor.
+
 Design the fix as if the sector had known today's requirements from the start:
 - Do pieces that change together live in the same owning module or document?
 - Are independent sectors decoupled along package and HTTP boundaries?

@@ -105,12 +105,25 @@ export function stageSDKArtifact(artifact, expected, receipt, run) {
 }
 
 async function readPublicSDK(name, version, signal) {
-  const response = await fetch(`https://registry.npmjs.org/${name}/${version}`, {
-    redirect: "error", signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000),
-    headers: { accept: "application/json", "cache-control": "no-cache" } });
-  if (response.status === 404) return null;
-  if (!response.ok) throw new Error(`npm registry check failed (${response.status}). No publication retry ran.`);
-  return response.json();
+  const fetchJSON = async url => {
+    const response = await fetch(url, {
+      redirect: "error", signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000),
+      headers: { accept: "application/json", "cache-control": "no-cache" } });
+    if (response.status === 404) return null;
+    if (!response.ok) throw new Error(`npm registry check failed (${response.status}). No publication retry ran.`);
+    return response.json();
+  };
+  if (version === "latest") {
+    try {
+      const tags = await fetchJSON(`https://registry.npmjs.org/-/package/${name}/dist-tags`);
+      if (typeof tags?.latest === "string" && semver.valid(tags.latest) === tags.latest) {
+        return fetchJSON(`https://registry.npmjs.org/${name}/${tags.latest}`);
+      }
+    } catch {
+      // Fall back to direct /latest endpoint when custom test mocks or mirrors omit /-/package/*/dist-tags.
+    }
+  }
+  return fetchJSON(`https://registry.npmjs.org/${name}/${version}`);
 }
 
 /** Preview is directly published through OIDC. Releases still use owner-approved stages. */

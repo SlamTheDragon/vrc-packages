@@ -207,7 +207,9 @@ See full history at [docs/changelogs/vrcp-worker/preview](https://github.com/Sla
 ## VRC Packages Network `vrcp-packages-network`
 
 <!-- vrcp-packages-network-DESCRIPTION_SUMMARY -->
+Synchronize the `vrc-packages-api` peer dependency range to support `vrc-packages-api-preview` `2026.11.1-pre`.
 <!-- vrcp-packages-network-DESCRIPTION_SUMMARY -->
 ### Added
 ### Changes
+- **SDK Peer Range Alignment**: Update `peerDependencies` for `vrc-packages-api` to `0.0.8 || 2026.11.1-pre` after Layer B preview SDK publication.
 See full history at [docs/changelogs/vrcp-packages-network/](https://github.com/SlamTheDragon/vrc-packages/tree/main/docs/changelogs/vrcp-packages-network/)
