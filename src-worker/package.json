@@ -1,6 +1,6 @@
 {
 	"name": "vrcp-worker",
-	"version": "2026.11.12-pre",
+	"version": "2026.11.13-pre",
 	"private": true,
 	"type": "module",
 	"scripts": {
