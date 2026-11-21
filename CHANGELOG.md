@@ -171,14 +171,10 @@ See full history at [docs/changelogs/vrcp-crawler-node/preview](https://github.c
 ## VRC Packages API - `vrcp-packages-api-preview`
 
 <!-- vrcp-packages-api-preview-DESCRIPTION_SUMMARY -->
-Remove deprecated feedback contracts, enforce a three-branch discriminated union on report submissions, and require strict integer limits on user and moderator query schemas.
 <!-- vrcp-packages-api-preview-DESCRIPTION_SUMMARY -->
 ### Added
 ### Bugs Fixed
 ### Changes
-- **Retired Feedback Contracts**: Remove deprecated `FeedbackSignalType` and `DownstreamFeedback` schemas and types from `downstream.ts`, `./protocol`, and the root package barrel.
-- **Discriminated Report Union**: Narrow `ReportSubmissionRequestSchema` to a three-branch `z.discriminatedUnion` (`demand_signal`, `issue_report`, `removal_request`) with target and reason validation.
-- **Strict Integer Query Limits**: Replace `z.coerce.number()` with `z.number()` on `UserAppListQuerySchema`, `ModeratorRatingListQuerySchema`, and `ModeratorAppListQuerySchema`.
 See full history at [docs/changelogs/vrcp-packages-api/preview](https://github.com/SlamTheDragon/vrc-packages/tree/main/docs/changelogs/vrcp-packages-api/preview)
 
 ---
@@ -211,7 +207,9 @@ See full history at [docs/changelogs/vrcp-worker/preview](https://github.com/Sla
 ## VRC Packages Network `vrcp-packages-network`
 
 <!-- vrcp-packages-network-DESCRIPTION_SUMMARY -->
+Synchronize the `vrc-packages-api` peer dependency range to support `vrc-packages-api-preview` `2026.11.1-pre`.
 <!-- vrcp-packages-network-DESCRIPTION_SUMMARY -->
 ### Added
 ### Changes
+- **SDK Peer Range Alignment**: Update `peerDependencies` for `vrc-packages-api` to `0.0.8 || 2026.11.1-pre` after Layer B preview SDK publication.
 See full history at [docs/changelogs/vrcp-packages-network/](https://github.com/SlamTheDragon/vrc-packages/tree/main/docs/changelogs/vrcp-packages-network/)
