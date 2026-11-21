@@ -17,6 +17,7 @@ When artificial intelligence agents build interfaces without UX grounding, they 
 4. **Broken Feedback Loops**: Executing state mutations without immediate visual or tactile acknowledgement, leaving the user unsure whether a click registered.
 5. **Arbitrary Primitive Selection**: Using a disruptive modal dialog for trivial feedback, or a buried settings toggle for high-consequence destructive operations.
 6. **Hyper-Adaptive Disorientation**: Shifting layouts, moving buttons, or collapsing menus dynamically, which destroys subconscious spatial and muscle memory.
+7. **Monolithic Code Degradation**: Intertwining styles, accessibility, and state into rigid components plagued by boolean prop explosion and megabarrel bloat.
 
 **The Golden UX Axiom for Agents**:  
 > *A great interface communicates through spatial position, contrast, grouping, and subtle signifiers. If an interface requires explanatory prose to show how to use it, the interaction architecture has failed.*
@@ -44,11 +45,13 @@ docs/research/UIUX/
 │   └── 02-branching-navigation-trees.md      # Dynamic decision trees, input pruning, state containment
 ├── 04-component-action-matrix/               # Deterministic component mapping and feedback loops
 │   ├── 01-component-selection-matrix.md      # Intent-to-primitive mapping (Dialog, Sheet, Popover, Toast)
-│   └── 02-feedback-loops-and-state-orchestration.md # 4-phase loops, Doherty threshold, optimistic UI
+│   ├── 02-feedback-loops-and-state-orchestration.md # 4-phase loops, Doherty threshold, optimistic UI
+│   └── 03-headless-primitives-and-compound-components.md # Compound Lego architecture, FSMs, roving tabindex
 └── 05-skills-assessment-and-synthesis/       # Assessment of existing agent skills
     ├── 01-agent-skills-assessment.md         # Deep evaluation of 12 agent UI/UX skills
     ├── 02-agent-ux-doctrine.md               # Operational checklist for autonomous coding agents
-    └── 03-human-intuition-vs-agentic-patterns.md # Spatial memory vs adaptive shifting, direct manipulation
+    ├── 03-human-intuition-vs-agentic-patterns.md # Spatial memory vs adaptive shifting, direct manipulation
+    └── 04-code-organization-maintainability-and-a11y.md # 3-tier cascade, state modules, direct imports
 ```
 
 ---
@@ -64,6 +67,8 @@ docs/research/UIUX/
 | **Adding contextual toolbars or tables** | [03-branching-and-contextual-actions/01-contextual-action-scoping.md](03-branching-and-contextual-actions/01-contextual-action-scoping.md) | Selection states, row-level actions, action pruning |
 | **Choosing a component for an action** | [04-component-action-matrix/01-component-selection-matrix.md](04-component-action-matrix/01-component-selection-matrix.md) | Modal vs Sheet vs Popover vs Inline Banner |
 | **Implementing animations and micro-interactions** | [04-component-action-matrix/02-feedback-loops-and-state-orchestration.md](04-component-action-matrix/02-feedback-loops-and-state-orchestration.md) | Scale on press, response thresholds, optimistic UI |
+| **Building accessible compound components** | [04-component-action-matrix/03-headless-primitives-and-compound-components.md](04-component-action-matrix/03-headless-primitives-and-compound-components.md) | Compound pattern, FSMs, roving tabindex, focus traps |
+| **Organizing UI code and state modules** | [05-skills-assessment-and-synthesis/04-code-organization-maintainability-and-a11y.md](05-skills-assessment-and-synthesis/04-code-organization-maintainability-and-a11y.md) | 3-tier cascade, state modules, direct imports, tokens |
 | **Understanding human intuition boundaries** | [05-skills-assessment-and-synthesis/03-human-intuition-vs-agentic-patterns.md](05-skills-assessment-and-synthesis/03-human-intuition-vs-agentic-patterns.md) | Spatial memory, muscle memory, direct manipulation |
 | **Reviewing or refactoring existing UI code** | [05-skills-assessment-and-synthesis/02-agent-ux-doctrine.md](05-skills-assessment-and-synthesis/02-agent-ux-doctrine.md) | Audit checklist, AI slop removal, verification pass |
 
