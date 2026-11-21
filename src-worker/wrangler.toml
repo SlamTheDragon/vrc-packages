@@ -14,11 +14,6 @@ binding = "VRCP_D1"
 database_id = "722bdd0d-92ca-445b-9319-da0b27adf7b2"
 remote = false
 
-[[kv_namespaces]]
-binding = "RATE_LIMIT_KV"
-id = "722bdd0d-92ca-445b-9319-da0b27ad0001"
-remote = false
-
 # Persistent preview Worker with a separate owner-provisioned database.
 [env.preview]
 name = "vrc-package-crawler-preview"
@@ -35,7 +30,7 @@ remote = false
 
 [[env.preview.kv_namespaces]]
 binding = "RATE_LIMIT_KV"
-id = "fbef6ce1-4145-45ae-ae91-5d617a1f0001"
+id = "0a8237b498334dd7b1f58fb7807a68c6"
 remote = false
 
 [observability]

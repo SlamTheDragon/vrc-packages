@@ -31,6 +31,7 @@
 | `pipeline` | `PN-002` | acknowledged | Crawler preview tag `2026.10.10-pre` requires Sector 4 `R50-C31-RECOVERY` before advancing live preview fleet telemetry (`R50-C31`). | `R50-C31` |
 | `pipeline` | `PN-005` | acknowledged | Initializer packet queued from Goal Addendum and `HO-W5-002`: implement Worker authenticated browser CORS and `OPTIONS` preflight headers for `/v1/operator/*`, `/v1/moderator/*`, `/v1/user/*`, and `/v1/app/*`. | `R47-C27-CORS` |
 | `pipeline` | `PN-006` | integrated | Aligned `DEFAULT_APPROVED_SOURCE_PROFILES[0]` (`vrchat-community.github.io/template-package/`) in `src-worker/src/storage/default_seeds.ts` to `retainClasses: ["normalized_facts", "creator_prose"]` while preserving `publishClasses: ["normalized_facts"]`. | `R13-C2 / FLEET-S2` |
+| `pipeline` | `PN-007` | integrated | Bound provisioned preview KV namespace `0a8237b498334dd7b1f58fb7807a68c6` under `[[env.preview.kv_namespaces]]` in `src-worker/wrangler.toml` and removed the placeholder production `RATE_LIMIT_KV` block so production falls back to `InMemoryRateLimiter`. | `R54-C39C-RATE-LIMIT` |
 
 ---
 

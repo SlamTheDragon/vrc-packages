@@ -3,11 +3,13 @@
 ## Active Working Context
 
 - **Sector Anchor**: `docs/scratch-pipeline/` (branches `main`, `release/*`, active integration on `preview/crawler-network`)
-- **Current Milestone**: `DELIVERY-MAINTENANCE` (`verified` locally; live CI & crawl verification active)
-- **Active Task Slice**: Cross-sector sweep & preview publication orchestration (Wave 1 -> Wave 2 -> Live Worker Deploy & Crawl)
+- **Current Milestone**: `DELIVERY-MAINTENANCE` (checkpoint saved; awaiting owner action on failed tag `cloudflare-worker/v2026.11.12-pre` before live Worker preview deploy)
+- **Active Task Slice**: `INT-003` (`PR-CN-WRK-001`) + `PN-007` (`RATE_LIMIT_KV` preview binding) + CalVer rollover fix (`f1d3359`)
 - **Working Theories and Hypotheses**:
-  - Phase 1 Sector 4 Pipeline sweep is complete and verified (`bun test ./tests` 271/271 pass across 20 files; `bun .agents/scripts/check_doc_links.ts` exit 0 across 465 docs).
-  - Immutable tag ruleset `24553469` blocks deleting `vrcp-crawler/v2026.10.10-pre` (`HTTP 403`); `.github/delivery-recoveries.json` + `scripts/delivery-recovery.mjs` now support `failedStage: "build-smoke"` recovery when promoted to `main`.
+  - Phase 1 Sector 4 Pipeline sweep and CalVer month/year patch-reset fix (`f1d3359`) are committed locally (`scripts/versioning.mjs`, `scripts/pipeline-utils.mjs`; targeted `delivery.test.ts` and `release-provenance.test.ts` `61 pass, 0 fail`).
+  - Remote preview D1 (`fbef6ce1-4145-45ae-ae91-5d617a1f2672`) had `0` rows across all `33` legacy tables and was emptied cleanly (`sqlite_master` empty).
+  - Provisioned real Cloudflare preview KV namespace `0a8237b498334dd7b1f58fb7807a68c6` (`preview-RATE_LIMIT_KV`) and bound it in `src-worker/wrangler.toml` via Sector 1 subagent (`PN-007`, removing fabricated production placeholder `722bdd0d-92ca-445b-9319-da0b27ad0001`; all 7 Sector 1 checks green).
+  - Immutable tag ruleset `24553469` blocks deleting `vrcp-crawler/v2026.10.10-pre` (`HTTP 403`) and failed preview Worker tag `cloudflare-worker/v2026.11.12-pre` (`01e5ba42`, run `44762274301` failed at KV deploy); agents must never disable rulesets.
   - Any edit to `scripts/`, `.github/workflows/`, or `config*.versions.json` triggers Rule 06 `edit-guard`.
 
 ---
@@ -27,7 +29,6 @@
 
 ## Next Steps
 
-1. Summon Wave 1 subagents (`src-package/` and `src-worker/packages/network/`) and verify preview Publication Requests.
-2. Transfer verified SDK & Network notes to `docs/source/CHANGELOG.md` and publish preview tags in producer-before-consumer order (`package` then `network`), then run `sync:deps`.
-3. Summon Wave 2 subagents (`src-worker/` and `src-crawler/`), sync container workflow if needed, verify live preview D1 cleanup, and execute live Worker deployment + live crawl proof.
-4. Clear transferred `verified` rows across sector ledgers once Phase 6 completes.
+1. Confirm owner decision on failed remote tag `cloudflare-worker/v2026.11.12-pre` (manual owner deletion on GitHub for `v2026.11.0-pre` vs. sanctioned recovery rule under `.github/delivery-recoveries.json` for `v2026.11.13-pre`).
+2. Restore consumed Worker preview changelog notes if resetting to `2026.10.11-pre`, publish Worker preview (`cloudflare-worker.yml`), and verify live Worker deployment + live VPM crawl proof + remote preview D1 population.
+3. Transfer final ledger clearance across `docs/scratch-pipeline/` and `docs/scratch-crawler-network/`, verify `check_doc_links.ts` + `ste-lint.py`, and push `preview/crawler-network`.
