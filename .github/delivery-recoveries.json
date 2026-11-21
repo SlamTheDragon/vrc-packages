@@ -55,19 +55,7 @@
       "failedRun": 37413527166
     }
   },
-  "supersededPreviewTags": {
-    "cloudflare-worker/v2026.11.12-pre": {
-      "product": "worker",
-      "channel": "preview",
-      "version": "2026.11.12-pre",
-      "commit": "01e5ba428327dc70d29fe9faca9b2cafe8240d4f",
-      "tagObject": "e25b7f358b261b5c73c9612e11915628f9dc9713",
-      "failedRun": 44762274301,
-      "failedStage": "deploy",
-      "supersededByPredecessor": "2026.10.11-pre",
-      "reason": "Immutable preview tag failed deploy on placeholder KV namespace ID 722bdd0d-92ca-445b-9319-da0b27ad0001 (code: 10042); predecessor chain falls back to verified 2026.10.11-pre"
-    }
-  },
+  "supersededPreviewTags": {},
   "temporaryVersionRules": [
     {
       "id": "calver-2026-11-preview-npm-rollback",
