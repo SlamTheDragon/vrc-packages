@@ -24,12 +24,14 @@ This specification defines the live executable state and integration boundaries 
 
 | Project | Package Name and Version Authority | Stack | Live State | Declared SDK Dependency |
 | :--- | :--- | :--- | :--- | :--- |
-| **`src-web/`** | `vrcp-web` ([`config.versions.json`](../../../config.versions.json) and [`config.preview.versions.json`](../../../config.preview.versions.json)) | Astro 7 + Svelte 5 | Operator and Moderator Admin UI (`/`, `/login`, `/operator`, `/moderator`, `/design`) in permanent dark mode consuming `vrc-packages-api`. Public registry and legal pages live in [`IMPLEMENTATION_PLAN.md`](../../scratch-api-web/IMPLEMENTATION_PLAN.md). | `"vrc-packages-api": "latest"` |
+| **`src-web/`** | `vrcp-web` ([`config.versions.json`](../../../config.versions.json) and [`config.preview.versions.json`](../../../config.preview.versions.json)) | Astro 7 + Svelte 5 | Operator and Moderator UI (`/`, `/login`, `/operator`, `/moderator`, `/design`) in dark mode. Public registry and legal pages live in [`IMPLEMENTATION_PLAN.md`](../../scratch-api-web/IMPLEMENTATION_PLAN.md). | `"vrc-packages-api": "npm:vrc-packages-api-preview@latest"` |
 | **`src-web-search/`** *(Git submodule)* | `vrc-packages-search` (`src-web-search/package.json`) | Astro 7 + Svelte 5 | Starter page (`src/pages/index.astro`: `<h1>Astro</h1>`). No search UI wired at this time. | `"vrc-packages-api": "^0.0.6"` |
+
+`src-web/` (`vrcp-web`) consumes `vrc-packages-api-preview` (`npm:vrc-packages-api-preview@latest`) strictly over HTTP via `bun run prepare:dev preview web`. The `src-web-search/` submodule stays on `"vrc-packages-api": "^0.0.6"` until its next alignment.
 
 ## 3. Integration and Security Boundaries
 
-- **Zero sibling imports**: Neither `src-web/` nor `src-web-search/` can import `src-worker/` TypeScript, D1 schemas, or `src-package/` through relative paths. Both apps consume `vrc-packages-api` strictly over HTTP.
+- **Zero sibling imports**: Neither `src-web/` nor `src-web-search/` can import `src-worker/` TypeScript, D1 schemas, or `src-package/` through relative paths. Both apps consume their declared SDK package (`vrc-packages-api-preview` in `src-web/` and `vrc-packages-api` in `src-web-search/`) strictly over HTTP.
 - **No static secrets**: Never embed `OPERATOR_TOKEN`, `vrcp_app_` private keys, or HMAC signing secrets inside static site bundles or browser JavaScript.
 - **Authenticated browser CORS**: Authenticated browser flows and `OPTIONS` preflight require reviewed CORS and Firebase Auth support tracked in [`IMPLEMENTATION_PLAN.md`](../../scratch-api-web/IMPLEMENTATION_PLAN.md).
 - **Outbound storefront attribution**: Public search and catalog UI views must display direct outbound Source Storefront URLs per [`LEGAL.md`](../../../LEGAL.md) Section 4.

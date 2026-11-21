@@ -12,29 +12,16 @@
 		DelegatedClaimRecord,
 		AppCandidateRecord
 	} from '$lib/api/admin-client';
-	import StatCard from '$lib/components/ui/display/StatCard.svelte';
-	import VRCPEmblem from '$lib/components/ui/display/VRCPEmblem.svelte';
 	import Button from '$lib/components/ui/forms/Button.svelte';
-	import Badge from '$lib/components/ui/feedback/Badge.svelte';
-	import EvidenceBadge from '$lib/components/ui/feedback/EvidenceBadge.svelte';
 	import Notice from '$lib/components/ui/feedback/Notice.svelte';
 	import Tabs from '$lib/components/ui/navigation/Tabs.svelte';
-	import ObserverToolbar from '$lib/components/ui/telemetry/ObserverToolbar.svelte';
 	import CatalogInitPanel from '$lib/components/admin/operator/CatalogInitPanel.svelte';
 	import PoliciesPanel from '$lib/components/admin/operator/PoliciesPanel.svelte';
 	import LeadsJobsPanel from '$lib/components/admin/operator/LeadsJobsPanel.svelte';
 	import NodesPanel from '$lib/components/admin/operator/NodesPanel.svelte';
 	import GovernancePanel from '$lib/components/admin/operator/GovernancePanel.svelte';
 	import { adminSession, formatAdminError } from '$lib/stores/admin-session.svelte';
-	import {
-		ShieldCheck,
-		Package,
-		Compass,
-		FileCheck2,
-		Scale,
-		KeyRound,
-		RefreshCw
-	} from '@lucide/svelte';
+	import { KeyRound, RefreshCw } from '@lucide/svelte';
 
 	let activeTab = $state('catalog');
 	let isLoading = $state(false);
@@ -61,11 +48,11 @@
 	);
 
 	const operatorTabs = $derived([
-		{ id: 'catalog', label: '1. Schema Init & Catalog', count: packages.length },
-		{ id: 'policies', label: '2. Source Profiles & Rules', count: activeProfileCount },
-		{ id: 'leads', label: '3. Discovery Leads & Jobs', count: leads.length },
-		{ id: 'nodes', label: '4. Crawler Nodes' },
-		{ id: 'governance', label: '5. Takedowns, Claims & Apps', count: pendingGovernanceCount }
+		{ id: 'catalog', label: 'Catalog', count: packages.length },
+		{ id: 'policies', label: 'Policies', count: activeProfileCount },
+		{ id: 'leads', label: 'Leads & Jobs', count: leads.length },
+		{ id: 'nodes', label: 'Nodes' },
+		{ id: 'governance', label: 'Governance', count: pendingGovernanceCount }
 	]);
 
 	onMount(() => {
@@ -119,124 +106,78 @@
 	}
 </script>
 
-<div class="page-stack">
-	<div class="page-heading">
-		<div class="flex items-center gap-3">
-			<div class="p-2.5 rounded-2xl bg-emerald-950/70 border border-emerald-700/60">
-				<VRCPEmblem size={28} color="#10b981" />
-			</div>
-			<div>
-				<span class="eyebrow">OPERATOR GOVERNANCE CONSOLE // /operator</span>
-				<h1 class="text-2xl font-bold tracking-tight text-slate-100">
-					Coordinator Control Plane &amp; Fleet Governance
-				</h1>
-				<p class="text-xs text-slate-400 mt-0.5">
-					Connected to <code class="font-mono text-emerald-400">{adminSession.coordinatorUrl}</code> via <code class="font-mono">{adminSession.pipelineInfo.sdkPackage}</code> ({adminSession.pipelineInfo.sdkChannel} channel).
-				</p>
-			</div>
+<div class="flex flex-col gap-8">
+	<div class="flex items-start justify-between gap-4 flex-wrap">
+		<div class="flex flex-col gap-1">
+			<h1 class="text-2xl font-semibold tracking-tight text-slate-100 text-balance">
+				Operator Console
+			</h1>
+			<p class="text-sm text-slate-400 text-pretty">
+				Manage catalog projections, source policies, discovery leads, nodes, and governance.
+			</p>
 		</div>
 
-		<div class="flex flex-wrap items-center gap-2.5">
-			<ObserverToolbar
-				onReset={() => void refreshAllPlanes()}
-				onFilter={() => (activeTab = 'leads')}
-			/>
-			<EvidenceBadge state={adminSession.evidenceState} size="md" />
-			{#if hasOperatorSession}
-				<Button
-					variant="secondary"
-					size="sm"
-					disabled={isLoading}
-					onclick={() => void refreshAllPlanes()}
-				>
-					<RefreshCw size={14} />
-					<span>{isLoading ? 'Syncing...' : 'Sync All Planes'}</span>
-				</Button>
-			{:else}
-				<Button variant="primary" size="sm" href="/login">
-					<KeyRound size={14} />
-					<span>Sign In as Operator</span>
-				</Button>
-			{/if}
-		</div>
+		{#if hasOperatorSession}
+			<Button
+				variant="primary"
+				size="sm"
+				disabled={isLoading}
+				onclick={() => void refreshAllPlanes()}
+			>
+				<RefreshCw size={14} />
+				<span>{isLoading ? 'Syncing...' : 'Sync'}</span>
+			</Button>
+		{:else}
+			<Button variant="primary" size="sm" href="/login">
+				<KeyRound size={14} />
+				<span>Sign In</span>
+			</Button>
+		{/if}
 	</div>
 
 	{#if !hasOperatorSession}
-		<Notice variant="warning" title="Operator Authentication Required (64-hex Secret)">
-			You are currently browsing in read-only preview mode. Authenticate with an <code class="font-mono">OPERATOR_TOKEN</code> (64-character hex) on <a href="/login" class="font-semibold underline">/login</a> to load live Coordinator D1 state and execute governance mutations.
+		<Notice variant="warning" title="Operator sign-in required">
+			Sign in with a 64-character hex operator token on <a href="/login" class="font-semibold underline">/login</a> to load live Coordinator state.
 		</Notice>
 	{/if}
 
 	{#if loadError}
-		<Notice variant="danger" title="Coordinator Sync Error">
+		<Notice variant="danger" title="Sync Failed">
 			{loadError}
 		</Notice>
 	{/if}
 
-	<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-		<StatCard
-			label="Catalog Packages"
-			value={packages.length}
-			subtext="Canonical package projections"
-			trend="GET /v1/operator/catalog"
-			trendDirection="up"
-			icon={Package}
-		/>
-		<StatCard
-			label="Active Source Profiles"
-			value={activeProfileCount}
-			subtext={`${rules.length} auto-queue rules loaded`}
-			trend="RFC 9309 + Profile Gate"
-			trendDirection="neutral"
-			icon={FileCheck2}
-		/>
-		<StatCard
-			label="Discovery Leads"
-			value={leads.length}
-			subtext={`Filter: ${leadStatusFilter}`}
-			trend="snake_case DTOs"
-			trendDirection="neutral"
-			icon={Compass}
-		/>
-		<StatCard
-			label="Pending Takedowns & Claims"
-			value={pendingGovernanceCount}
-			subtext={`${apps.length} registered apps`}
-			trend="Legal & Delegation"
-			trendDirection={pendingGovernanceCount > 0 ? 'down' : 'up'}
-			icon={Scale}
-		/>
-	</div>
-
 	<Tabs bind:value={activeTab} items={operatorTabs}>
-		{#if activeTab === 'catalog'}
-			<CatalogInitPanel
-				bind:packages
-				bind:nextCursor={catalogCursor}
-				onRefresh={refreshAllPlanes}
-			/>
-		{:else if activeTab === 'policies'}
-			<PoliciesPanel
-				bind:profiles
-				bind:rules
-				onRefresh={refreshAllPlanes}
-			/>
-		{:else if activeTab === 'leads'}
-			<LeadsJobsPanel
-				bind:leads
-				bind:leadStatusFilter
-				onFilterChange={handleLeadFilterChange}
-				onRefresh={refreshAllPlanes}
-			/>
-		{:else if activeTab === 'nodes'}
-			<NodesPanel />
-		{:else}
-			<GovernancePanel
-				bind:takedowns
-				bind:claims
-				bind:apps
-				onRefresh={refreshAllPlanes}
-			/>
-		{/if}
+		<div class="pt-2">
+			{#if activeTab === 'catalog'}
+				<CatalogInitPanel
+					bind:packages
+					bind:nextCursor={catalogCursor}
+					onRefresh={refreshAllPlanes}
+				/>
+			{:else if activeTab === 'policies'}
+				<PoliciesPanel
+					bind:profiles
+					bind:rules
+					onRefresh={refreshAllPlanes}
+				/>
+			{:else if activeTab === 'leads'}
+				<LeadsJobsPanel
+					bind:leads
+					bind:leadStatusFilter
+					onFilterChange={handleLeadFilterChange}
+					onRefresh={refreshAllPlanes}
+				/>
+			{:else if activeTab === 'nodes'}
+				<NodesPanel />
+			{:else}
+				<GovernancePanel
+					bind:takedowns
+					bind:claims
+					bind:apps
+					onRefresh={refreshAllPlanes}
+				/>
+			{/if}
+		</div>
 	</Tabs>
 </div>

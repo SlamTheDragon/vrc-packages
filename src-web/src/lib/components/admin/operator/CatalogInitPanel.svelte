@@ -11,7 +11,7 @@
 	import DataTable from '$lib/components/ui/telemetry/DataTable.svelte';
 	import PropertyInspector from '$lib/components/ui/telemetry/PropertyInspector.svelte';
 	import { adminSession, formatAdminError } from '$lib/stores/admin-session.svelte';
-	import { Database, RefreshCw, Play, ChevronRight } from '@lucide/svelte';
+	import { Database, Play, ChevronRight } from '@lucide/svelte';
 
 	let {
 		packages = $bindable<CatalogPackage[]>([]),
@@ -49,7 +49,7 @@
 			align: 'right' as const,
 			format: (val: unknown) => (Array.isArray(val) ? String(val.length) : '0')
 		},
-		{ key: 'updatedAt', label: 'Updated At' }
+		{ key: 'updatedAt', label: 'Updated' }
 	];
 
 	async function handleRunInit() {
@@ -88,98 +88,44 @@
 </script>
 
 <div class="flex flex-col gap-6">
-	<Card
-		title="Coordinator D1 Schema Initialization (POST /v1/operator/init)"
-		eyebrow="CONTROL PLANE 1A // STORAGE BOOTSTRAP"
-	>
-		{#snippet headerRight()}
-			<Badge variant="emerald" size="xs">IDEMPOTENT DDL</Badge>
-		{/snippet}
+	{#if initStatusMessage}
+		<Notice variant="success" title="Schema Initialized">
+			{initStatusMessage}
+		</Notice>
+	{/if}
 
-		<div class="flex flex-col gap-4">
-			<p class="text-xs text-slate-300 leading-relaxed">
-				Initializes Cloudflare D1 tables (<code class="font-mono">src-worker/src/storage/d1/utils.ts</code>) and optionally seeds default approved source profiles and discovery candidates without bypassing source-access gates.
-			</p>
+	{#if initError}
+		<Notice variant="danger" title="Initialization Failed">
+			{initError}
+		</Notice>
+	{/if}
 
-			<div class="flex flex-wrap items-center justify-between gap-4">
-				<Switch
-					id="init-autoseed-switch"
-					bind:checked={autoSeed}
-					label="Enable autoSeed (seed default approved VPM source profile & rule)"
-				/>
-
-				<Button variant="primary" size="sm" onclick={() => (initDialogOpen = true)}>
-					<Database size={14} />
-					<span>Initialize Coordinator Schema</span>
-				</Button>
-			</div>
-
-			{#if initStatusMessage}
-				<Notice variant="success" title="Schema Initialized">
-					{initStatusMessage}
-				</Notice>
-			{/if}
-
-			{#if initError}
-				<Notice variant="danger" title="Initialization Error">
-					{initError}
-				</Notice>
-			{/if}
-		</div>
-	</Card>
-
-	<Dialog
-		bind:open={initDialogOpen}
-		title="Confirm Coordinator Schema Initialization"
-		description="Dispatches POST /v1/operator/init to the configured Coordinator."
-	>
-		<div class="flex flex-col gap-3 text-xs text-slate-300">
-			<p>
-				Target Coordinator: <strong class="font-mono text-slate-100">{adminSession.coordinatorUrl}</strong>
-			</p>
-			<Codeblock
-				language="json"
-				code={JSON.stringify({ schemaVersion: 1, autoSeed }, null, 2)}
-			/>
-		</div>
-		{#snippet actions()}
-			<Button variant="secondary" size="sm" onclick={() => (initDialogOpen = false)}>
-				Cancel
-			</Button>
-			<Button variant="primary" size="sm" disabled={isInitializing} onclick={handleRunInit}>
-				<Play size={13} />
-				<span>{isInitializing ? 'Executing...' : 'Confirm & Initialize'}</span>
-			</Button>
-		{/snippet}
-	</Dialog>
+	{#if catalogError}
+		<Notice variant="danger" title="Catalog Query Failed">
+			{catalogError}
+		</Notice>
+	{/if}
 
 	<div class="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-		<div class="lg:col-span-8 flex flex-col gap-4">
-			<Card
-				title="Canonical Package Catalog (GET /v1/operator/catalog)"
-				eyebrow="CONTROL PLANE 1B // CANONICAL PROJECTION"
-			>
+		<div class={selectedPackage ? 'lg:col-span-8' : 'lg:col-span-12'}>
+			<Card title="Canonical Package Catalog">
 				{#snippet headerRight()}
-					<div class="flex items-center gap-2">
-						<Badge variant="neutral" size="xs">{packages.length} loaded</Badge>
-						<Button variant="secondary" size="xs" onclick={() => onRefresh?.()}>
-							<RefreshCw size={12} />
-							<span>Refresh</span>
-						</Button>
-					</div>
+					<Button variant="secondary" size="xs" onclick={() => (initDialogOpen = true)}>
+						<Database size={13} />
+						<span>Initialize Schema</span>
+					</Button>
 				{/snippet}
-
-				{#if catalogError}
-					<Notice variant="danger" title="Catalog Query Error" class="mb-3">
-						{catalogError}
-					</Notice>
-				{/if}
 
 				{#if packages.length === 0}
 					<EmptyState
-						title="No Canonical Packages Indexed"
-						description="Initialize the coordinator with autoSeed enabled or approve pending discovery leads to populate the catalog."
-					/>
+						title="No packages indexed"
+						description="Initialize the Coordinator schema with autoSeed or approve pending discovery leads."
+					>
+						<Button variant="primary" size="sm" onclick={() => (initDialogOpen = true)}>
+							<Database size={14} />
+							<span>Initialize Schema</span>
+						</Button>
+					</EmptyState>
 				{:else}
 					<DataTable
 						columns={catalogColumns}
@@ -205,13 +151,12 @@
 			</Card>
 		</div>
 
-		<div class="lg:col-span-4 flex flex-col gap-4">
-			{#if selectedPackage}
+		{#if selectedPackage}
+			<div class="lg:col-span-4 flex flex-col gap-4">
 				<PropertyInspector
-					title="Package Provenance Inspector"
+					title="Package Provenance"
 					subtitle={selectedPackage.canonicalId}
 					properties={[
-						{ key: 'Canonical ID', value: selectedPackage.canonicalId, category: 'Identity' },
 						{ key: 'Display Name', value: selectedPackage.displayName, category: 'Identity' },
 						{ key: 'VPM ID', value: selectedPackage.vpmId ?? 'none', category: 'Identity' },
 						{ key: 'Umbrella', value: selectedPackage.umbrella, category: 'Taxonomy' },
@@ -223,7 +168,7 @@
 							category: 'Provenance'
 						},
 						{
-							key: 'Accepted Identity Links',
+							key: 'Identity Links',
 							value: selectedPackage.acceptedLinks.length,
 							category: 'Provenance'
 						},
@@ -236,10 +181,10 @@
 				/>
 
 				{#if selectedPackage.fronts.length > 0}
-					<Card title="Outbound Storefront Fronts (LEGAL.md §4)" eyebrow="DEEP-ROUTING">
+					<Card title="Storefront Fronts">
 						<div class="flex flex-col gap-2">
 							{#each selectedPackage.fronts as front (front.frontId)}
-								<div class="p-2.5 rounded-xl border border-slate-800 bg-slate-950/70 flex flex-col gap-1 text-xs">
+								<div class="p-2.5 rounded-xl border border-slate-800 bg-slate-950/60 flex flex-col gap-1 text-xs">
 									<div class="flex items-center justify-between">
 										<Badge variant="emerald" size="xs">{front.platform}</Badge>
 										<span class="font-mono text-[11px] text-slate-400">{front.availability}</span>
@@ -257,15 +202,34 @@
 						</div>
 					</Card>
 				{/if}
-			{:else}
-				<PropertyInspector
-					title="Package Provenance Inspector"
-					subtitle="Select a canonical package row to inspect identity links and storefront fronts"
-					properties={[
-						{ key: 'Selection', value: 'None', category: 'Status' }
-					]}
-				/>
-			{/if}
-		</div>
+			</div>
+		{/if}
 	</div>
+
+	<Dialog
+		bind:open={initDialogOpen}
+		title="Initialize Coordinator Schema"
+		description="Dispatches idempotent POST /v1/operator/init to initialize D1 tables."
+	>
+		<div class="flex flex-col gap-4 text-xs text-slate-300">
+			<Switch
+				id="init-autoseed-switch"
+				bind:checked={autoSeed}
+				label="Seed default approved VPM source profile and rule (autoSeed)"
+			/>
+			<Codeblock
+				language="json"
+				code={JSON.stringify({ schemaVersion: 1, autoSeed }, null, 2)}
+			/>
+		</div>
+		{#snippet actions()}
+			<Button variant="secondary" size="sm" onclick={() => (initDialogOpen = false)}>
+				Cancel
+			</Button>
+			<Button variant="primary" size="sm" disabled={isInitializing} onclick={handleRunInit}>
+				<Play size={13} />
+				<span>{isInitializing ? 'Executing...' : 'Confirm & Initialize'}</span>
+			</Button>
+		{/snippet}
+	</Dialog>
 </div>

@@ -25,8 +25,9 @@
 | source_sector | handoff_id | status | summary | local_slice_id |
 | :--- | :--- | :--- | :--- | :--- |
 | `crawler-network` | `HO-C4A-001` | pending | Consume headless `vrcp-crawler-node` CLI, `node.db` outbox, and `[ACTIVITY]` / `[FINDING]` `latest.log` supervision contracts when building Tauri process supervision. | `R47-C27-CLIENT` |
-| `api-web` | `HO-S3B-001` | pending | Consume release-channel `vrc-packages-api` (`VRCPackageClient`) for desktop node management and consumer API actions. | `R47-C27-CLIENT` |
+| `api-web` | `HO-S3B-001` | pending | Consume preview-channel `vrc-packages-api-preview` (`vrc-packages-api`, `VRCPackageClient`) for desktop node management and consumer API actions. | `R47-C27-CLIENT` |
 | `pipeline` | `PN-001` | acknowledged | Departmental Handoff Cascade active: submit Publication Requests here and defer changelog edits and verified-row clearing to Sector 4 Pipeline. | `G9-CLIENT` |
+| `pipeline` | `PN-008` | integrated | Aligned `src-crawler-client/package.json`, `src-crawler-client/AGENTS.md`, `docs/source/specifications/desktop_client.md`, and Sector 2 ledgers to `vrc-packages-api-preview` (`npm:vrc-packages-api-preview@latest`). Install and build checks await `vrcp-api/v2026.11.2-pre`. | `G9-CLIENT` |
 
 ---
 

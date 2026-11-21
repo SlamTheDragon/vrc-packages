@@ -7,7 +7,7 @@
 - **Active Task Slice**: None actively executing
 - **Working Theories and Hypotheses**:
   - Current verified state is documented in [`docs/source/specifications/desktop_client.md`](../source/specifications/desktop_client.md).
-  - `src-crawler-client/package.json` already declares `"vrc-packages-api": "latest"`, `shadcn-svelte`, Svelte 5, Tailwind v4, and Tauri 2; `src-tauri/src/lib.rs` still contains only starter `greet` + `tauri_plugin_opener`.
+  - `src-crawler-client/package.json` declares `"vrc-packages-api": "npm:vrc-packages-api-preview@latest"` (`vrc-packages-api-preview`), `shadcn-svelte`, Svelte 5, Tailwind v4, and Tauri 2; `src-tauri/src/lib.rs` still contains only starter `greet` + `tauri_plugin_opener`.
 
 ---
 

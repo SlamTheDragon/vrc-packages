@@ -1083,4 +1083,50 @@ describe("VRCPackageClient SDK", () => {
     });
     await expect(largeSuccessClient.index.query()).rejects.toThrow(/exceeds maximum byte limit/);
   });
+
+  it("invokes fetch without binding this to the VRCPackageClient instance", async () => {
+    let calls = 0;
+    function strictWindowFetch(
+      this: unknown,
+      _input: RequestInfo | URL,
+      _init?: RequestInit
+    ): Promise<Response> {
+      if (this !== undefined && this !== globalThis) {
+        throw new TypeError("Failed to execute 'fetch' on 'Window': Illegal invocation");
+      }
+      calls++;
+      return Promise.resolve(
+        Response.json({
+          schemaVersion: 1,
+          packages: [],
+          nextCursor: null
+        })
+      );
+    }
+
+    const strictFetch = Object.assign(strictWindowFetch, { preconnect() {} }) as typeof fetch;
+
+    const explicitClient = new VRCPackageClient({
+      baseUrl: "https://api.vrc-packages.example",
+      fetch: strictFetch
+    });
+    const explicitRes = await explicitClient.index.query();
+    expect(explicitRes.schemaVersion).toBe(1);
+    expect(explicitRes.packages).toEqual([]);
+    expect(calls).toBe(1);
+
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = strictFetch;
+    try {
+      const defaultClient = new VRCPackageClient({
+        baseUrl: "https://api.vrc-packages.example"
+      });
+      const defaultRes = await defaultClient.index.query();
+      expect(defaultRes.schemaVersion).toBe(1);
+      expect(defaultRes.packages).toEqual([]);
+      expect(calls).toBe(2);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
 });

@@ -21,7 +21,7 @@
   "dependencies": {
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-opener": "^2",
-    "vrc-packages-api": "latest"
+    "vrc-packages-api": "npm:vrc-packages-api-preview@latest"
   },
   "devDependencies": {
     "@fontsource-variable/figtree": "^5.3.0",

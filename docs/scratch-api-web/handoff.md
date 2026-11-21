@@ -12,8 +12,8 @@
   - Tier 4B (for Tier 5 web distribution pages): [`docs/scratch-desktop-client/handoff.md`](../scratch-desktop-client/handoff.md)
   - Independent Oversight: [`docs/scratch-pipeline/handoff.md`](../scratch-pipeline/handoff.md)
 - **Downstream Readers**:
-  - Tier 2 (`src-worker/`) and Tier 4A (`src-crawler/`) read **Tier 3B** when adopting `vrc-packages-api-preview` updates
-  - Tier 4B (`src-crawler-client/`) reads **Tier 3B** when adopting `vrc-packages-api` release updates
+  - Tier 2 (`src-worker/`), Tier 4A (`src-crawler/`), Tier 4B (`src-crawler-client/`), and Tier 5 (`src-web/`) read **Tier 3B** when adopting `vrc-packages-api-preview` updates (`PN-008`)
+  - Tier 5 (`src-web-search/`) stays on `"vrc-packages-api": "^0.0.6"` in its separate Git submodule until its next submodule alignment
   - Independent Oversight: Sector 4 Pipeline via [`docs/scratch-pipeline/handoff.md`](../scratch-pipeline/handoff.md)
 - **Write Containment and Ledger Clearing**:
   - Sector 3 agents edit strictly inside `src-package/`, `src-web/`, `src-web-search/` (separate submodule worktree), owned `docs/source/` truth files, and `docs/scratch-api-web/`. Keep `docs/applications/` untouched (stage wiki proposals in [`proposed_wiki_changes.md`](../source/reliability/proposed_wiki_changes.md)).
@@ -31,12 +31,13 @@
 | `desktop-client` | `HO-D4B-001` | pending | Consume finalized desktop client installer metadata on `src-web/` download and registry views once `R55-C55D-CLIENT` clears. | `R47-C27-WEB` |
 | `pipeline` | `PN-001` | acknowledged | Departmental Handoff Cascade active: submit Publication Requests here and defer changelog edits and verified-row clearing to Sector 4 Pipeline. | `G15` / `G9-WEB` |
 | `pipeline` | `PN-005` | verified | Imported 6 UI skills (`shadcn-svelte`, `ui-sdk*`) into `src-web/.agents/skills/`, updated Rule 09 3-tier invariants, and imported 6-domain + `workbench` UI primitives (`src-web/src/lib/components/ui/`). Executed initializer packets `WEB-INIT-01`..`WEB-INIT-05` for `/`, `/login`, `/operator`, `/moderator`, and `/design` in permanent dark mode practicing full pipeline integration (`bun run prepare:dev preview web`). | `WEB-INIT-01`..`WEB-INIT-05` |
+| `pipeline` | `PN-008` | in_progress | Aligned `src-web/package.json` (`"vrc-packages-api": "npm:vrc-packages-api-preview@latest"`), `src-web/README.md`, and `docs/source/specifications/consumer_sdk_and_web.md` to `vrc-packages-api-preview` (`src-web-search/` stays on `^0.0.6` in its separate Git submodule). `src-web/src/lib/api/admin-client.ts` native preview SDK cleanup awaits `vrcp-api/v2026.11.2-pre` npm publication. | `WEB-PREVIEW-SDK` |
 
 ---
 
 ## Tier 3B: Outbound Handoffs (Public Consumer API SDK: `src-package/`)
 
-Publish SDK method signatures, wire DTO exports (`VRCPackageClient`, `VRCPackageClientOptions`, `VRCPApiError`), cursor contracts, and channel release readiness here for Tier 2 (`src-worker/` preview), Tier 4A (`src-crawler/` preview), Tier 4B (`src-crawler-client/` release), and Tier 5 (`src-web/`, `src-web-search/` release).
+Publish SDK method signatures, wire DTO exports (`VRCPackageClient`, `VRCPackageClientOptions`, `VRCPApiError`), cursor contracts, and channel readiness here for Tier 2 (`src-worker/` preview), Tier 4A (`src-crawler/` preview), Tier 4B (`src-crawler-client/` preview per `PN-008`), and Tier 5 (`src-web/` preview per `PN-008`; `src-web-search/` submodule stays on `^0.0.6` until submodule alignment).
 
 | handoff_id | target_tiers | contract_or_artifact | breaking_change | status | integration_notes |
 | :--- | :--- | :--- | :--- | :--- | :--- |

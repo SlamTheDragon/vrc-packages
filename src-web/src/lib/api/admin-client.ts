@@ -196,11 +196,13 @@ export class VRCPAdminClient {
 	private readonly fetchFn: typeof fetch;
 
 	constructor(options: VRCPackageClientOptions) {
-		this.sdk = new VRCPackageClient(options);
+		const customFetch = options.fetch ?? globalThis.fetch;
+		const boundFetch: typeof fetch = (input, init) => customFetch(input, init);
+		this.fetchFn = boundFetch;
+		this.sdk = new VRCPackageClient({ ...options, fetch: boundFetch });
 		this.baseUrl = options.baseUrl.replace(/\/+$/, '');
 		this.operatorToken = options.operatorToken;
 		this.userToken = options.userToken;
-		this.fetchFn = options.fetch ?? globalThis.fetch;
 	}
 
 	getPipelineChannelInfo(): PipelineChannelInfo {

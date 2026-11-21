@@ -5,7 +5,7 @@
 1. **Owned Paths**: `src-crawler-client/` (Windows Tauri 2 + Svelte 5 + Tailwind CSS v4 + `shadcn-svelte` desktop GUI shell).
 2. **Truth Cascade**: Follow [`AGENTS.md`](../../AGENTS.md) -> [`VISION.md`](../research/decisions/VISION.md) (`T00`–`T03`, `T05`, `T06`) -> [`SYSTEM_MAP.md`](../source/SYSTEM_MAP.md) -> [`src-crawler-client/AGENTS.md`](../../src-crawler-client/AGENTS.md).
 3. **Design System and Svelte 5 Invariants**: Obey [`.agents/rules/09-frontend-design-system-invariants.md`](../../.agents/rules/09-frontend-design-system-invariants.md) and local skills in `src-crawler-client/.agents/skills/` (`shadcn-svelte`, `svelte5-best-practices`, `svelte-code-writer`, `svelte-core-bestpractices`). Permit `shadcn-svelte` per-component folder barrels; forbid cross-directory megabarrels and unapproved custom UI primitives (use `ask_question` first).
-4. **Cross-Project Isolation**: Never import sibling `src-crawler/`, `src-worker/`, or `src-package/` source. Consume `vrc-packages-api` strictly as a declared release dependency.
+4. **Cross-Project Isolation**: Never import sibling `src-crawler/`, `src-worker/`, or `src-package/` source. Consume `vrc-packages-api` strictly as a declared preview SDK dependency (`vrc-packages-api-preview`).
 5. **Three-File Scratch Footprint and Pipeline-Only Clearing**: Keep strictly three files here (`IMPLEMENTATION_PLAN.md`, `task_tracker.md`, `handoff.md`). Record Tier 4B outbound handoffs and written Publication Requests strictly in [`handoff.md`](handoff.md). Do not edit `docs/source/CHANGELOG.md` or clear `verified` rows directly (only Sector 4 Pipeline agents transfer notes to `docs/source/CHANGELOG.md` and clear verified rows).
 
 ---
@@ -33,4 +33,4 @@
 
 | ID | milestone | current results | author comments |
 | :--- | :--- | :--- | :--- |
-| G9-CLIENT | Supervised Windows desktop crawler shell and SDK UI | Starter Tauri 2 + Svelte 5 + `shadcn-svelte` shell builds and declares `vrc-packages-api: latest`; node supervision, telemetry panels, and channel identity isolation remain open. | |
+| G9-CLIENT | Supervised Windows desktop crawler shell and SDK UI | Starter Tauri 2 + Svelte 5 + `shadcn-svelte` shell builds and declares `vrc-packages-api: npm:vrc-packages-api-preview@latest`; node supervision, telemetry panels, and channel identity isolation remain open. | |

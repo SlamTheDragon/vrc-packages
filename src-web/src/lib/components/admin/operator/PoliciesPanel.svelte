@@ -12,13 +12,13 @@
 	import Field from '$lib/components/ui/forms/Field.svelte';
 	import Input from '$lib/components/ui/forms/Input.svelte';
 	import Textarea from '$lib/components/ui/forms/Textarea.svelte';
-	import Badge from '$lib/components/ui/feedback/Badge.svelte';
 	import EmptyState from '$lib/components/ui/feedback/EmptyState.svelte';
 	import Notice from '$lib/components/ui/feedback/Notice.svelte';
+	import ToggleGroup from '$lib/components/ui/navigation/ToggleGroup.svelte';
 	import Dialog from '$lib/components/ui/overlays/Dialog.svelte';
 	import DataTable from '$lib/components/ui/telemetry/DataTable.svelte';
 	import { adminSession, formatAdminError } from '$lib/stores/admin-session.svelte';
-	import { Plus, Ban, RefreshCw } from '@lucide/svelte';
+	import { Plus, Ban } from '@lucide/svelte';
 
 	let {
 		profiles = $bindable<SourceAccessProfile[]>([]),
@@ -29,6 +29,13 @@
 		rules?: AutoQueueRule[];
 		onRefresh?: () => Promise<void>;
 	} = $props();
+
+	let activeSection = $state<'profiles' | 'rules'>('profiles');
+
+	const sectionOptions = $derived([
+		{ value: 'profiles', label: `Source Profiles (${profiles.length})` },
+		{ value: 'rules', label: `Auto-Queue Rules (${rules.length})` }
+	]);
 
 	const platformOptions = [
 		{ value: 'vpm', label: 'VPM Registry (vpm)' },
@@ -83,29 +90,27 @@
 	let actionError = $state<string | null>(null);
 
 	const profileColumns = [
-		{ key: 'profileId', label: 'Profile ID' },
 		{ key: 'platform', label: 'Platform' },
 		{ key: 'origin', label: 'Origin' },
 		{ key: 'pathScope', label: 'Path Scope' },
 		{ key: 'purpose', label: 'Purpose' },
-		{ key: 'minDelayMs', label: 'Min Delay (ms)', align: 'right' as const },
+		{ key: 'minDelayMs', label: 'Delay (ms)', align: 'right' as const },
 		{
 			key: 'disabledAt',
 			label: 'Status',
-			format: (val: unknown) => (val ? 'DISABLED' : 'ACTIVE')
+			format: (val: unknown) => (val ? 'Disabled' : 'Active')
 		}
 	];
 
 	const ruleColumns = [
-		{ key: 'ruleId', label: 'Rule ID' },
 		{ key: 'leadKind', label: 'Lead Kind' },
 		{ key: 'origin', label: 'Origin' },
 		{ key: 'pathScope', label: 'Path Scope' },
-		{ key: 'minDelayMs', label: 'Min Delay (ms)', align: 'right' as const },
+		{ key: 'minDelayMs', label: 'Delay (ms)', align: 'right' as const },
 		{
 			key: 'disabledAt',
 			label: 'Status',
-			format: (val: unknown) => (val ? 'DISABLED' : 'ACTIVE')
+			format: (val: unknown) => (val ? 'Disabled' : 'Active')
 		}
 	];
 
@@ -132,7 +137,7 @@
 				retainClasses,
 				publishClasses
 			});
-			actionMessage = `Created SourceAccessProfile ${res.profile.profileId} for ${res.profile.origin}${res.profile.pathScope}.`;
+			actionMessage = `Created profile ${res.profile.profileId} for ${res.profile.origin}${res.profile.pathScope}.`;
 			createProfileOpen = false;
 			await onRefresh?.();
 		} catch (err) {
@@ -152,7 +157,7 @@
 				selectedProfileId,
 				disableProfileReason.trim()
 			);
-			actionMessage = `Disabled SourceAccessProfile ${res.profile.profileId}.`;
+			actionMessage = `Disabled profile ${res.profile.profileId}.`;
 			disableProfileOpen = false;
 			await onRefresh?.();
 		} catch (err) {
@@ -177,7 +182,7 @@
 				reviewReference: ruleReviewRef.trim(),
 				reason: ruleReason.trim()
 			});
-			actionMessage = `Created AutoQueueRule ${res.rule.ruleId} for ${res.rule.origin}${res.rule.pathScope}.`;
+			actionMessage = `Created rule ${res.rule.ruleId} for ${res.rule.origin}${res.rule.pathScope}.`;
 			createRuleOpen = false;
 			await onRefresh?.();
 		} catch (err) {
@@ -197,7 +202,7 @@
 				selectedRuleId,
 				disableRuleReason.trim()
 			);
-			actionMessage = `Disabled AutoQueueRule ${res.rule.ruleId}.`;
+			actionMessage = `Disabled rule ${res.rule.ruleId}.`;
 			disableRuleOpen = false;
 			await onRefresh?.();
 		} catch (err) {
@@ -221,85 +226,95 @@
 		</Notice>
 	{/if}
 
-	<Card
-		title="Source Access Profiles (/v1/operator/source-profiles)"
-		eyebrow="CONTROL PLANE 2A // SCOPED ORIGIN AUTHORIZATION"
-	>
-		{#snippet headerRight()}
-			<div class="flex flex-wrap items-center gap-2">
-				<Badge variant="emerald" size="xs">{profiles.length} profiles</Badge>
-				<Button
-					variant="outline"
-					size="xs"
-					disabled={!selectedProfileId}
-					onclick={() => (disableProfileOpen = true)}
+	<div class="flex items-center justify-between gap-4 flex-wrap">
+		<ToggleGroup
+			bind:value={activeSection}
+			options={sectionOptions}
+			onValueChange={(v) => {
+				if (v === 'profiles' || v === 'rules') activeSection = v;
+			}}
+		/>
+	</div>
+
+	{#if activeSection === 'profiles'}
+		<Card title="Source Access Profiles">
+			{#snippet headerRight()}
+				<div class="flex items-center gap-2">
+					<Button
+						variant="outline"
+						size="xs"
+						disabled={!selectedProfileId}
+						onclick={() => (disableProfileOpen = true)}
+					>
+						<Ban size={12} />
+						<span>Disable Selected</span>
+					</Button>
+					<Button variant="primary" size="xs" onclick={() => (createProfileOpen = true)}>
+						<Plus size={12} />
+						<span>New Profile</span>
+					</Button>
+				</div>
+			{/snippet}
+
+			{#if profiles.length === 0}
+				<EmptyState
+					title="No source access profiles"
+					description="Create a scoped profile to authorize fetching under an approved origin."
 				>
-					<Ban size={12} />
-					<span>Disable Selected</span>
-				</Button>
-				<Button variant="primary" size="xs" onclick={() => (createProfileOpen = true)}>
-					<Plus size={12} />
-					<span>New Profile</span>
-				</Button>
-			</div>
-		{/snippet}
+					<Button variant="primary" size="sm" onclick={() => (createProfileOpen = true)}>
+						<Plus size={14} />
+						<span>New Profile</span>
+					</Button>
+				</EmptyState>
+			{:else}
+				<DataTable
+					columns={profileColumns}
+					data={profiles}
+					keyField="profileId"
+					bind:selectedId={selectedProfileId}
+				/>
+			{/if}
+		</Card>
+	{:else}
+		<Card title="Auto-Queue Rules">
+			{#snippet headerRight()}
+				<div class="flex items-center gap-2">
+					<Button
+						variant="outline"
+						size="xs"
+						disabled={!selectedRuleId}
+						onclick={() => (disableRuleOpen = true)}
+					>
+						<Ban size={12} />
+						<span>Disable Selected</span>
+					</Button>
+					<Button variant="primary" size="xs" onclick={() => (createRuleOpen = true)}>
+						<Plus size={12} />
+						<span>New Rule</span>
+					</Button>
+				</div>
+			{/snippet}
 
-		<p class="text-xs text-slate-300 mb-3">
-			A queued URL does not authorize fetching. Every crawl requires an active scoped <code class="font-mono">SourceAccessProfile</code> and RFC 9309 <code class="font-mono">robots.txt</code> compliance.
-		</p>
-
-		{#if profiles.length === 0}
-			<EmptyState
-				title="No Source Access Profiles Configured"
-				description="Create a scoped source access profile or run Coordinator schema init with autoSeed enabled."
-			/>
-		{:else}
-			<DataTable
-				columns={profileColumns}
-				data={profiles}
-				keyField="profileId"
-				bind:selectedId={selectedProfileId}
-			/>
-		{/if}
-	</Card>
-
-	<Card
-		title="Auto-Queue Rules (/v1/operator/autoqueue-rules)"
-		eyebrow="CONTROL PLANE 2B // AUTOMATED VPM LEAD PROMOTION"
-	>
-		{#snippet headerRight()}
-			<div class="flex flex-wrap items-center gap-2">
-				<Badge variant="sky" size="xs">{rules.length} rules</Badge>
-				<Button
-					variant="outline"
-					size="xs"
-					disabled={!selectedRuleId}
-					onclick={() => (disableRuleOpen = true)}
+			{#if rules.length === 0}
+				<EmptyState
+					title="No auto-queue rules"
+					description="Create a rule to automatically enqueue matching VPM leads under an approved origin."
 				>
-					<Ban size={12} />
-					<span>Disable Selected</span>
-				</Button>
-				<Button variant="primary" size="xs" onclick={() => (createRuleOpen = true)}>
-					<Plus size={12} />
-					<span>New Auto-Queue Rule</span>
-				</Button>
-			</div>
-		{/snippet}
-
-		{#if rules.length === 0}
-			<EmptyState
-				title="No Auto-Queue Rules Active"
-				description="Create an auto-queue rule to automatically promote matching vpm_listing leads under an approved origin."
-			/>
-		{:else}
-			<DataTable
-				columns={ruleColumns}
-				data={rules}
-				keyField="ruleId"
-				bind:selectedId={selectedRuleId}
-			/>
-		{/if}
-	</Card>
+					<Button variant="primary" size="sm" onclick={() => (createRuleOpen = true)}>
+						<Plus size={14} />
+						<span>New Rule</span>
+					</Button>
+				</EmptyState>
+			{:else}
+				<DataTable
+					columns={ruleColumns}
+					data={rules}
+					keyField="ruleId"
+					bind:selectedId={selectedRuleId}
+				/>
+			{/if}
+		</Card>
+	{/if}
 
 	<Dialog
 		bind:open={createProfileOpen}
@@ -387,7 +402,7 @@
 	<Dialog
 		bind:open={createRuleOpen}
 		title="Create Auto-Queue Rule"
-		description="Automatically enqueues discovered vpm_listing leads under the matching HTTPS origin and path scope."
+		description="Automatically enqueues matching vpm_listing leads under the configured origin."
 	>
 		<div class="flex flex-col gap-3">
 			<div class="grid grid-cols-1 sm:grid-cols-2 gap-3">

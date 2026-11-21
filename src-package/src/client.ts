@@ -198,14 +198,15 @@ export class VRCPackageClient {
   private readonly appToken?: string;
   private readonly userToken?: string;
   private readonly operatorToken?: string;
-  private readonly fetchFn: typeof fetch;
+  private readonly fetchFn: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
   constructor(options: VRCPackageClientOptions) {
     this.baseUrl = options.baseUrl.replace(/\/+$/, "");
     this.appToken = options.appToken;
     this.userToken = options.userToken;
     this.operatorToken = options.operatorToken;
-    this.fetchFn = options.fetch ?? globalThis.fetch;
+    const resolvedFetch = options.fetch ?? globalThis.fetch;
+    this.fetchFn = (input, init) => resolvedFetch(input, init);
   }
 
   private async request<T>(

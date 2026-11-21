@@ -67,7 +67,12 @@ function remoteManifest(ref, run) {
   assert(manifest.schemaVersion === 2 && digestPattern.test(manifest.config?.digest) && !manifest.manifests &&
     Array.isArray(manifest.layers) && manifest.layers.length > 0 && manifest.layers.every(layer => digestPattern.test(layer.digest)),
     "Registry image must be a single-platform manifest");
-  return manifest;
+  const manifestDigest = `sha256:${createHash("sha256").update(raw).digest("hex")}`;
+  return { ...manifest, manifestDigest };
+}
+
+function matchesImageId(manifest, imageId) {
+  return Boolean(manifest && (manifest.config.digest === imageId || manifest.manifestDigest === imageId));
 }
 
 /** Never rebuild, overwrite a version tag, or roll latest back during a retry. */
@@ -81,9 +86,9 @@ export function publishCheckedImage(expected, receipt, run = docker) {
   const versionRef = `${image}:${expected.version}`;
   const aliasRef = `${image}:latest`;
   const previous = remoteManifest(versionRef, run);
-  assert(!previous || previous.config.digest === receipt.imageId, "Existing container version is immutable and has different bytes");
+  assert(!previous || matchesImageId(previous, receipt.imageId), "Existing container version is immutable and has different bytes");
   const alias = remoteManifest(aliasRef, run);
-  if (alias && alias.config.digest !== receipt.imageId) {
+  if (alias && !matchesImageId(alias, receipt.imageId)) {
     const config = JSON.parse(run(["buildx", "imagetools", "inspect", "--format", "{{json .Image}}", aliasRef]));
     const labels = config.config?.Labels;
     // Exact published patch-0 identities survive the owner's repository rename.
@@ -94,7 +99,7 @@ export function publishCheckedImage(expected, receipt, run = docker) {
     const renamedBaseline = expected.repository === "SlamTheDragon/vrc-packages" &&
       labels?.["org.opencontainers.image.source"] === "https://github.com/SlamTheDragon/vrc-package-crawler" &&
       labels?.["org.opencontainers.image.revision"] === "fb9edf66ce1b9954bd672826a3090c735b60632d" &&
-      labels?.["org.opencontainers.image.version"] === historical.version && alias.config.digest === historical.digest;
+      labels?.["org.opencontainers.image.version"] === historical.version && matchesImageId(alias, historical.digest);
     assert(labels?.["io.vrcp.channel"] === expected.channel &&
       (labels?.["org.opencontainers.image.source"] === `https://github.com/${expected.repository}` || renamedBaseline),
       "Existing latest image has an unreviewed identity");
@@ -102,10 +107,10 @@ export function publishCheckedImage(expected, receipt, run = docker) {
     assert(semver.valid(version) === version && semver.lt(version, expected.version), "Container retry cannot roll latest back or replace the same version");
   }
   for (const [ref, existing] of [[versionRef, previous], [aliasRef, alias]]) {
-    if (existing?.config.digest === receipt.imageId) continue;
+    if (matchesImageId(existing, receipt.imageId)) continue;
     run(["tag", receipt.imageId, ref]);
     run(["push", ref]);
-    assert.equal(remoteManifest(ref, run)?.config.digest, receipt.imageId, "Published image differs from checked image");
+    assert(matchesImageId(remoteManifest(ref, run), receipt.imageId), "Published image differs from checked image");
   }
   const digest = run(["buildx", "imagetools", "inspect", "--format", "{{.Manifest.Digest}}", versionRef]).trim();
   assert(digestPattern.test(digest), "Registry manifest digest is invalid");

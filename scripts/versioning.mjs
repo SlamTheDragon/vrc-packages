@@ -32,7 +32,7 @@ export const sdkPackageNames = { release: "vrc-packages-api", preview: "vrc-pack
 /** Dependency channels belong to products, not to their artifact release labels. */
 export function sdkChannelForProduct(product, channel) {
   if (!products.includes(product) || !["release", "preview"].includes(channel)) throw new Error("Unknown SDK consumer or build channel");
-  return { crawler: "preview", worker: "preview", "crawler-client": "release", web: "release" }[product] ?? channel;
+  return { crawler: "preview", worker: "preview", "crawler-client": "preview", web: "preview" }[product] ?? channel;
 }
 
 export function networkArchiveURL(version) {

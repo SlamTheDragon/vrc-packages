@@ -135,6 +135,34 @@ test("publication stops if readback differs, and cannot treat a manifest list as
   expect(() => publishCheckedImage(expected, receipt, () => JSON.stringify({ schemaVersion: 2, manifests: [] }))).toThrow("single-platform");
 });
 
+test("Docker 29+ containerd image store matches OCI manifest digest as well as config digest", () => {
+  const ociManifest = manifest(otherId);
+  const manifestDigest = `sha256:${createHash("sha256").update(ociManifest).digest("hex")}`;
+  const ociReceipt = { ...receipt, imageId: manifestDigest };
+  const states = new Map<string, string>();
+  const calls: string[][] = [];
+  const run = (args: string[]) => {
+    calls.push(args);
+    const ref = args.at(-1)!;
+    if (args.includes("--raw")) return states.get(ref) ?? null;
+    if (args.includes("{{.Manifest.Digest}}")) return manifestDigest;
+    if (args[0] === "push") states.set(ref, ociManifest);
+    else if (args[0] !== "tag") throw new Error("Unexpected fake Docker command");
+    return "";
+  };
+  const published = publishCheckedImage(expected, ociReceipt, run);
+  expect(published.imageId).toBe(manifestDigest);
+  expect(published.registryDigest).toBe(manifestDigest);
+  expect(calls.filter(args => args[0] === "push")).toHaveLength(2);
+  // Retrying when both version and latest already carry the same OCI manifest digest makes zero writes.
+  calls.length = 0;
+  publishCheckedImage(expected, ociReceipt, run);
+  expect(calls.some(args => ["tag", "push"].includes(args[0]))).toBe(false);
+  // Conflicting bytes on an immutable version tag still fail before writes.
+  states.set(`ghcr.io/owner/vrcp-crawler-node-preview:${expected.version}`, manifest(id));
+  expect(() => publishCheckedImage(expected, ociReceipt, run)).toThrow("immutable");
+});
+
 test("repository rename accepts only the exact two published patch-0 latest images", () => {
   for (const channel of ["preview", "release"] as const) {
     const oldVersion = channel === "preview" ? "2026.10.0-pre" : "0.0.0";

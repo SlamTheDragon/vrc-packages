@@ -132,7 +132,7 @@ test("all-product sync preserves Cargo comments and Tauri manifest ownership", a
     expect(JSON.parse(await readFile(resolve(workspace, "src-worker/package.json"), "utf8")).dependencies["vrc-packages-api"]).toBe("npm:vrc-packages-api-preview@latest");
     expect(JSON.parse(await readFile(resolve(workspace, "src-crawler/package.json"), "utf8")).dependencies["vrc-packages-api"]).toBe("npm:vrc-packages-api-preview@latest");
     for (const project of ["src-web", "src-crawler-client"]) {
-      expect(JSON.parse(await readFile(resolve(workspace, project, "package.json"), "utf8")).dependencies["vrc-packages-api"]).toBe("latest");
+      expect(JSON.parse(await readFile(resolve(workspace, project, "package.json"), "utf8")).dependencies["vrc-packages-api"]).toBe("npm:vrc-packages-api-preview@latest");
     }
   });
 });
@@ -148,8 +148,7 @@ test("versioning CLI bumps use tagged delivery, never the metadata-only primitiv
 
 test("owner SDK mapping does not change with artifact channels and product delivery forwards to root", () => {
   for (const channel of ["release", "preview"]) {
-    for (const product of ["crawler", "worker"]) expect(sdkChannelForProduct(product, channel)).toBe("preview");
-    for (const product of ["crawler-client", "web"]) expect(sdkChannelForProduct(product, channel)).toBe("release");
+    for (const product of ["crawler", "worker", "crawler-client", "web"]) expect(sdkChannelForProduct(product, channel)).toBe("preview");
     expect(sdkChannelForProduct("package", channel)).toBe(channel);
   }
   expect(() => sdkChannelForProduct("unknown", "preview")).toThrow();

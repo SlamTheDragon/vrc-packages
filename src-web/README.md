@@ -12,9 +12,9 @@
 
 ## Cross-Pipeline Integration
 
-`src-web/` consumes the release SDK package (`vrc-packages-api`) strictly over HTTP without sibling relative imports. Static bundles do not store operator or user tokens.
+`src-web/` (`vrcp-web`) consumes the preview SDK (`vrc-packages-api-preview`, aliased as `vrc-packages-api`) strictly over HTTP without sibling relative imports. Static bundles do not store operator or user tokens.
 
-Prepare the checked release SDK tarball from the repository root before building:
+Prepare the checked preview SDK tarball (`vrc-packages-api-preview`) from the repository root via `bun run prepare:dev preview web` before building:
 
 ```powershell
 bun run prepare:dev preview web

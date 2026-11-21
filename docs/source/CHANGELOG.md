@@ -147,20 +147,27 @@ See full history at [docs/changelogs/vrcp-crawler-client/preview](https://github
 ## VRC Packages Crawler - `vrcp-crawler-node-preview`
 
 <!-- vrcp-crawler-node-preview-DESCRIPTION_SUMMARY -->
+Adopt shared network robots validation and target guards, remove obsolete pre-lease modules, and verify multi-process fleet exclusion and outbox replay.
 <!-- vrcp-crawler-node-preview-DESCRIPTION_SUMMARY -->
 ### Added
+- **Multi-process fleet and outbox replay verification:** Verify concurrent multi-process origin-lease mutual exclusion and crash-restart SQLite outbox batch replay across isolated node processes.
 ### Bugs Fixed
 ### Changes
+- **Robots refresh wire validation:** Validate `/v1/node/robots/claim` and `/v1/node/robots/result` payloads in `CoordinatorClient` with `vrc-packages-network/node` schemas and typed daemon calls.
+- **Shared target and binary guards:** Enforce `ARCHIVE_BINARY_EXTENSIONS`, `isArchiveOrBinaryUrl`, `isStorefrontProductTarget`, `parseGitHubOwnerRepo`, and `normalizeGitHubRepositoryUrl` from `vrc-packages-network/source-targets`.
+- **Pre-lease surplus removal:** Delete unused pre-lease circuit breaker, adaptive limiter, local robots parser, SimHash, IANA registry, and token identity modules from `src-crawler/`.
 See full history at [docs/changelogs/vrcp-crawler-node/preview](https://github.com/SlamTheDragon/vrc-packages/tree/main/docs/changelogs/vrcp-crawler-node/preview)
 
 ## VRC Packages API - `vrcp-packages-api-preview`
 
 <!-- vrcp-packages-api-preview-DESCRIPTION_SUMMARY -->
+Wrap fetch invocation inside `VRCPackageClient` so browser callers do not fail on `Window.fetch` receiver binding.
 <!-- vrcp-packages-api-preview-DESCRIPTION_SUMMARY -->
 ### Added
 ### Bugs Fixed
+- **Browser fetch receiver binding:** Wrap `fetch` invocation inside `VRCPackageClient` so browser callers never throw `Illegal invocation` on `Window.fetch`.
 ### Changes
-See full history at [docs/changelogs/vrcp-packages-api/preview](https://github.com/SlamTheDragon/vrc-packages/tree/main/docs/changelogs/vrcp-packages-api/preview)
+See full history at [docs/changelogs/vrcp-packages-api/preview](https://github.com/SlamTheDragon/vrc-packages/tree/main/docs/changelogs/vrc-packages-api/preview)
 
 ---
 

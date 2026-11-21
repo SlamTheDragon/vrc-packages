@@ -56,6 +56,17 @@
     }
   },
   "supersededPreviewTags": {
+    "vrcp-crawler/v2026.11.0-pre": {
+      "product": "crawler",
+      "channel": "preview",
+      "version": "2026.11.0-pre",
+      "supersededByPredecessor": "2026.10.9-pre",
+      "commit": "723cf96b9e3c5d7b8843c98b7b2de6d09179111e",
+      "tagObject": "642fcf653b669cf99caed290bf3f2858033c4c0a",
+      "failedRun": 44917130159,
+      "failedStage": "verify",
+      "reason": "Run 44917130159 failed post-push digest verification in scripts/container-delivery.mjs:108 because Docker Engine 29+ containerd store reports the OCI manifest digest while the script checked only config.digest (fixed on preview/crawler-network; GitHub Release is 404 and GHCR latest remains at verified predecessor 2026.10.9-pre)."
+    },
     "vrcp-crawler/v2026.10.10-pre": {
       "product": "crawler",
       "channel": "preview",

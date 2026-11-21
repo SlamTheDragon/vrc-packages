@@ -2,8 +2,7 @@
 	import type { TakedownRecord } from 'vrc-packages-api';
 	import type {
 		DelegatedClaimRecord,
-		AppCandidateRecord,
-		CandidateStatus
+		AppCandidateRecord
 	} from '$lib/api/admin-client';
 	import Card from '$lib/components/ui/display/Card.svelte';
 	import Button from '$lib/components/ui/forms/Button.svelte';
@@ -11,9 +10,9 @@
 	import Field from '$lib/components/ui/forms/Field.svelte';
 	import Switch from '$lib/components/ui/forms/Switch.svelte';
 	import Textarea from '$lib/components/ui/forms/Textarea.svelte';
-	import Badge from '$lib/components/ui/feedback/Badge.svelte';
 	import EmptyState from '$lib/components/ui/feedback/EmptyState.svelte';
 	import Notice from '$lib/components/ui/feedback/Notice.svelte';
+	import ToggleGroup from '$lib/components/ui/navigation/ToggleGroup.svelte';
 	import Dialog from '$lib/components/ui/overlays/Dialog.svelte';
 	import DataTable from '$lib/components/ui/telemetry/DataTable.svelte';
 	import { adminSession, formatAdminError } from '$lib/stores/admin-session.svelte';
@@ -30,6 +29,14 @@
 		apps?: AppCandidateRecord[];
 		onRefresh?: () => Promise<void>;
 	} = $props();
+
+	let activeQueue = $state<'takedowns' | 'claims' | 'apps'>('takedowns');
+
+	const queueOptions = $derived([
+		{ value: 'takedowns', label: `Takedowns (${takedowns.length})` },
+		{ value: 'claims', label: `Creator Claims (${claims.length})` },
+		{ value: 'apps', label: `Applications (${apps.length})` }
+	]);
 
 	let selectedTakedownId = $state('');
 	let takedownDialogOpen = $state(false);
@@ -67,35 +74,32 @@
 	];
 
 	const takedownColumns = [
-		{ key: 'takedownId', label: 'Takedown ID' },
-		{ key: 'requesterType', label: 'Requester Type' },
+		{ key: 'requesterType', label: 'Requester' },
 		{ key: 'canonicalId', label: 'Canonical ID' },
 		{ key: 'targetUrl', label: 'Target URL' },
-		{ key: 'proofKind', label: 'Proof Kind' },
-		{ key: 'reviewStatus', label: 'Review Status' },
-		{ key: 'recordedAt', label: 'Recorded At' }
+		{ key: 'proofKind', label: 'Proof' },
+		{ key: 'reviewStatus', label: 'Status' },
+		{ key: 'recordedAt', label: 'Recorded' }
 	];
 
 	const claimColumns = [
-		{ key: 'claimId', label: 'Claim ID' },
-		{ key: 'appId', label: 'App ID' },
 		{ key: 'creatorId', label: 'Creator ID' },
 		{ key: 'frontUrl', label: 'Front URL' },
-		{ key: 'reviewStatus', label: 'Review Status' },
-		{ key: 'recordedAt', label: 'Recorded At' }
+		{ key: 'appId', label: 'App ID' },
+		{ key: 'reviewStatus', label: 'Status' },
+		{ key: 'recordedAt', label: 'Recorded' }
 	];
 
 	const appColumns = [
-		{ key: 'appId', label: 'App ID' },
 		{ key: 'appName', label: 'App Name' },
-		{ key: 'candidateStatus', label: 'Candidate Status' },
+		{ key: 'candidateStatus', label: 'Status' },
 		{
 			key: 'delegationAllowed',
 			label: 'Delegation',
-			format: (val: unknown) => (val ? 'ALLOWED' : 'NO')
+			format: (val: unknown) => (val ? 'Allowed' : 'No')
 		},
 		{ key: 'requestCount', label: 'Requests', align: 'right' as const },
-		{ key: 'createdAt', label: 'Created At' }
+		{ key: 'createdAt', label: 'Created' }
 	];
 
 	async function handleVerifyTakedown() {
@@ -108,7 +112,7 @@
 				verdict: takedownVerdict,
 				notes: takedownNotes.trim() || undefined
 			});
-			statusMessage = `Takedown ${res.takedownId} verified with status "${res.status}".`;
+			statusMessage = `Takedown ${res.takedownId} verified as "${res.status}".`;
 			takedownDialogOpen = false;
 			await onRefresh?.();
 		} catch (err) {
@@ -128,7 +132,7 @@
 				verdict: claimVerdict,
 				notes: claimNotes.trim() || undefined
 			});
-			statusMessage = `Delegated claim ${res.claimId} verified with status "${res.status}".`;
+			statusMessage = `Claim ${res.claimId} verified as "${res.status}".`;
 			claimDialogOpen = false;
 			await onRefresh?.();
 		} catch (err) {
@@ -149,7 +153,7 @@
 				grantDelegation: appGrantDelegation,
 				notes: appReviewNotes.trim() || undefined
 			});
-			statusMessage = `App ${res.appId} candidateStatus="${res.candidateStatus}" (delegationAllowed=${String(res.delegationAllowed)}).`;
+			statusMessage = `App ${res.appId} set to "${res.candidateStatus}" (delegation=${String(res.delegationAllowed)}).`;
 			appDialogOpen = false;
 			await onRefresh?.();
 		} catch (err) {
@@ -169,7 +173,7 @@
 				delegationAllowed: appDelegationAllowed,
 				reason: appDelegationReason.trim() || undefined
 			});
-			statusMessage = `App ${res.appId} delegationAllowed set to ${String(res.delegationAllowed)}.`;
+			statusMessage = `App ${res.appId} delegation set to ${String(res.delegationAllowed)}.`;
 			delegationDialogOpen = false;
 			await onRefresh?.();
 		} catch (err) {
@@ -182,24 +186,30 @@
 
 <div class="flex flex-col gap-6">
 	{#if statusMessage}
-		<Notice variant="success" title="Governance Verdict Recorded">
+		<Notice variant="success" title="Verdict Recorded">
 			{statusMessage}
 		</Notice>
 	{/if}
 
 	{#if errorMessage}
-		<Notice variant="danger" title="Governance Action Failed">
+		<Notice variant="danger" title="Action Failed">
 			{errorMessage}
 		</Notice>
 	{/if}
 
-	<Card
-		title="Takedowns & Creator Opt-Outs (/v1/operator/takedowns)"
-		eyebrow="CONTROL PLANE 5A // DELISTING & TOMBSTONE AUDIT"
-	>
-		{#snippet headerRight()}
-			<div class="flex items-center gap-2">
-				<Badge variant="amber" size="xs">{takedowns.length} records</Badge>
+	<div class="flex items-center justify-between gap-4 flex-wrap">
+		<ToggleGroup
+			bind:value={activeQueue}
+			options={queueOptions}
+			onValueChange={(v) => {
+				if (v === 'takedowns' || v === 'claims' || v === 'apps') activeQueue = v;
+			}}
+		/>
+	</div>
+
+	{#if activeQueue === 'takedowns'}
+		<Card title="Takedowns & Opt-Outs">
+			{#snippet headerRight()}
 				<Button
 					variant="primary"
 					size="xs"
@@ -207,33 +217,27 @@
 					onclick={() => (takedownDialogOpen = true)}
 				>
 					<CheckCircle2 size={12} />
-					<span>Verify Selected Takedown</span>
+					<span>Verify Selected</span>
 				</Button>
-			</div>
-		{/snippet}
+			{/snippet}
 
-		{#if takedowns.length === 0}
-			<EmptyState
-				title="No Takedown Records"
-				description="Creator opt-outs and delisting requests submitted via /v1/app/report appear here for operator verification."
-			/>
-		{:else}
-			<DataTable
-				columns={takedownColumns}
-				data={takedowns}
-				keyField="takedownId"
-				bind:selectedId={selectedTakedownId}
-			/>
-		{/if}
-	</Card>
-
-	<Card
-		title="Delegated Creator Claims (/v1/operator/claims)"
-		eyebrow="CONTROL PLANE 5B // SIGNED OWNERSHIP ATTESTATIONS"
-	>
-		{#snippet headerRight()}
-			<div class="flex items-center gap-2">
-				<Badge variant="sky" size="xs">{claims.length} claims</Badge>
+			{#if takedowns.length === 0}
+				<EmptyState
+					title="No takedown records"
+					description="Creator opt-outs and delisting requests appear here for verification."
+				/>
+			{:else}
+				<DataTable
+					columns={takedownColumns}
+					data={takedowns}
+					keyField="takedownId"
+					bind:selectedId={selectedTakedownId}
+				/>
+			{/if}
+		</Card>
+	{:else if activeQueue === 'claims'}
+		<Card title="Delegated Creator Claims">
+			{#snippet headerRight()}
 				<Button
 					variant="primary"
 					size="xs"
@@ -241,76 +245,72 @@
 					onclick={() => (claimDialogOpen = true)}
 				>
 					<ShieldCheck size={12} />
-					<span>Verify Selected Claim</span>
+					<span>Verify Selected</span>
 				</Button>
-			</div>
-		{/snippet}
+			{/snippet}
 
-		{#if claims.length === 0}
-			<EmptyState
-				title="No Delegated Creator Claims"
-				description="Signed creator ownership attestations submitted via /v1/app/claims/intake appear here."
-			/>
-		{:else}
-			<DataTable
-				columns={claimColumns}
-				data={claims}
-				keyField="claimId"
-				bind:selectedId={selectedClaimId}
-			/>
-		{/if}
-	</Card>
+			{#if claims.length === 0}
+				<EmptyState
+					title="No delegated creator claims"
+					description="Signed creator ownership attestations appear here for review."
+				/>
+			{:else}
+				<DataTable
+					columns={claimColumns}
+					data={claims}
+					keyField="claimId"
+					bind:selectedId={selectedClaimId}
+				/>
+			{/if}
+		</Card>
+	{:else}
+		<Card title="Registered Applications">
+			{#snippet headerRight()}
+				<div class="flex items-center gap-2">
+					<Button
+						variant="secondary"
+						size="xs"
+						disabled={!selectedAppId}
+						onclick={() => (delegationDialogOpen = true)}
+					>
+						<KeyRound size={12} />
+						<span>Delegation</span>
+					</Button>
+					<Button
+						variant="primary"
+						size="xs"
+						disabled={!selectedAppId}
+						onclick={() => (appDialogOpen = true)}
+					>
+						<ShieldCheck size={12} />
+						<span>Review</span>
+					</Button>
+				</div>
+			{/snippet}
 
-	<Card
-		title="Registered Downstream Applications (/v1/operator/apps)"
-		eyebrow="CONTROL PLANE 5C // APP CANDIDATE REVIEW & DELEGATION"
-	>
-		{#snippet headerRight()}
-			<div class="flex flex-wrap items-center gap-2">
-				<Badge variant="emerald" size="xs">{apps.length} apps</Badge>
-				<Button
-					variant="secondary"
-					size="xs"
-					disabled={!selectedAppId}
-					onclick={() => (delegationDialogOpen = true)}
-				>
-					<KeyRound size={12} />
-					<span>Set Delegation</span>
-				</Button>
-				<Button
-					variant="primary"
-					size="xs"
-					disabled={!selectedAppId}
-					onclick={() => (appDialogOpen = true)}
-				>
-					<ShieldCheck size={12} />
-					<span>Review Candidate</span>
-				</Button>
-			</div>
-		{/snippet}
-
-		{#if apps.length === 0}
-			<EmptyState
-				title="No Registered Downstream Applications"
-				description="Applications registered via POST /v1/app/register appear here for trust review and delegation control."
-			/>
-		{:else}
-			<DataTable
-				columns={appColumns}
-				data={apps}
-				keyField="appId"
-				bind:selectedId={selectedAppId}
-			/>
-		{/if}
-	</Card>
+			{#if apps.length === 0}
+				<EmptyState
+					title="No registered applications"
+					description="Applications registered via POST /v1/app/register appear here."
+				/>
+			{:else}
+				<DataTable
+					columns={appColumns}
+					data={apps}
+					keyField="appId"
+					bind:selectedId={selectedAppId}
+				/>
+			{/if}
+		</Card>
+	{/if}
 
 	<Dialog
 		bind:open={takedownDialogOpen}
-		title="Verify Takedown / Creator Opt-Out"
+		title="Verify Takedown"
 		description={`Takedown ID: ${selectedTakedownId}`}
 	>
 		<div class="flex flex-col gap-3">
-			<Field label="Operator Verdict" required={true}>
+			<Field label="Verdict" required={true}>
 				<DropdownSelect
 					bind:value={takedownVerdict}
 					options={verdictOptions}
@@ -326,18 +326,18 @@
 				Cancel
 			</Button>
 			<Button variant="primary" size="sm" disabled={isSubmitting} onclick={handleVerifyTakedown}>
-				Record Takedown Verdict
+				Record Verdict
 			</Button>
 		{/snippet}
 	</Dialog>
 
 	<Dialog
 		bind:open={claimDialogOpen}
-		title="Verify Delegated Creator Claim"
+		title="Verify Creator Claim"
 		description={`Claim ID: ${selectedClaimId}`}
 	>
 		<div class="flex flex-col gap-3">
-			<Field label="Operator Verdict" required={true}>
+			<Field label="Verdict" required={true}>
 				<DropdownSelect
 					bind:value={claimVerdict}
 					options={verdictOptions}
@@ -353,7 +353,7 @@
 				Cancel
 			</Button>
 			<Button variant="primary" size="sm" disabled={isSubmitting} onclick={handleVerifyClaim}>
-				Record Claim Verdict
+				Record Verdict
 			</Button>
 		{/snippet}
 	</Dialog>
@@ -374,7 +374,7 @@
 			<Switch
 				id="app-grant-del"
 				bind:checked={appGrantDelegation}
-				label="Grant delegated creator claim authority (grantDelegation)"
+				label="Grant delegated creator claim authority"
 			/>
 			<Field id="app-rev-notes" label="Review Notes">
 				<Textarea id="app-rev-notes" bind:value={appReviewNotes} rows={2} />
@@ -385,21 +385,21 @@
 				Cancel
 			</Button>
 			<Button variant="primary" size="sm" disabled={isSubmitting} onclick={handleReviewAppCandidate}>
-				Submit Candidate Review
+				Submit Review
 			</Button>
 		{/snippet}
 	</Dialog>
 
 	<Dialog
 		bind:open={delegationDialogOpen}
-		title="Set Application Delegation Authority"
+		title="Set Application Delegation"
 		description={`App ID: ${selectedAppId}`}
 	>
 		<div class="flex flex-col gap-3">
 			<Switch
 				id="set-del-switch"
 				bind:checked={appDelegationAllowed}
-				label="Allow application to submit delegated creator ownership claims"
+				label="Allow delegated creator ownership claims"
 			/>
 			<Field id="set-del-reason" label="Audit Reason">
 				<Textarea id="set-del-reason" bind:value={appDelegationReason} rows={2} />
