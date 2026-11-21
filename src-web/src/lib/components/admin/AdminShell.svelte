@@ -179,40 +179,7 @@
 	</aside>
 
 	<div class="flex-1 flex flex-col h-full min-w-0 overflow-hidden relative">
-		<!-- <header class="h-14 px-4 sm:px-6 md:pl-24 bg-background/95 border-b border-border flex items-center justify-between gap-4 shrink-0 z-30">
-			<div class="flex items-center gap-3 min-w-0">
-				<div class="md:hidden">
-					<Button
-						variant="ghost"
-						size="sm"
-						onclick={() => (mobileMenuOpen = !mobileMenuOpen)}
-						aria-label="Toggle navigation menu"
-					>
-						{#if mobileMenuOpen}
-							<X size={18} />
-						{:else}
-							<Menu size={18} />
-						{/if}
-					</Button>
-				</div>
-				<span class="text-sm font-semibold text-foreground truncate text-balance">
-					{currentSectionTitle}
-				</span>
-			</div>
-
-			<div class="flex items-center gap-2 min-w-0 text-xs font-mono tabular-nums text-muted-foreground">
-				<span
-					class={cn(
-						'size-2 rounded-full shrink-0',
-						adminSession.authenticated ? 'bg-sidebar-primary' : 'bg-muted-foreground/50'
-					)}
-					aria-hidden="true"
-				></span>
-				<span class="truncate max-w-[180px] sm:max-w-[300px]" title={adminSession.coordinatorUrl}>
-					{adminSession.coordinatorHostname}
-				</span>
-			</div>
-		</header> -->
+	<!-- deleted heder, unnecessary -->
 
 		{#if mobileMenuOpen}
 			<div class="md:hidden fixed inset-0 top-14 z-40 bg-background/80 backdrop-blur-xs p-3 flex">
