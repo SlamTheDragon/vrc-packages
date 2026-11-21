@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { cn } from '$lib/utils';
 	import Card from '$lib/components/ui/display/Card.svelte';
 	import Separator from '$lib/components/ui/display/Separator.svelte';
 	import VRCPEmblem from '$lib/components/ui/display/VRCPEmblem.svelte';
@@ -108,23 +109,21 @@
 	);
 </script>
 
-<div class="max-w-lg mx-auto py-4 sm:py-8 flex flex-col gap-6">
-	<!-- Clean Single-Column Header -->
+<div data-slot="admin-login-view" class="max-w-lg mx-auto py-4 sm:py-8 flex flex-col gap-6">
 	<div class="flex flex-col items-center text-center gap-2">
-		<VRCPEmblem size={32} color="#10b981" />
-		<h1 class="text-2xl font-semibold tracking-tight text-slate-100 text-balance">
+		<VRCPEmblem size={32} color="var(--sidebar-primary)" />
+		<h1 class="text-2xl font-semibold tracking-tight text-foreground text-balance">
 			Admin Sign-In
 		</h1>
-		<p class="text-sm text-slate-400 text-pretty">
+		<p class="text-sm text-muted-foreground text-pretty">
 			Connect to a Coordinator and verify your runtime bearer token.
 		</p>
 	</div>
 
 	<Card>
 		<div class="flex flex-col gap-5">
-			<!-- Role Segmented Toggle -->
 			<div class="flex items-center justify-between gap-4">
-				<span class="text-sm font-medium text-slate-200">Role</span>
+				<span class="text-sm font-medium text-foreground">Role</span>
 				<ToggleGroup
 					bind:value={selectedRole}
 					options={roleToggleOptions}
@@ -132,7 +131,6 @@
 				/>
 			</div>
 
-			<!-- Coordinator Target -->
 			<div class="flex flex-col gap-3">
 				<Field id="coordinator-preset" label="Coordinator Target">
 					<DropdownSelect
@@ -153,7 +151,6 @@
 				</Field>
 			</div>
 
-			<!-- Runtime Token -->
 			<Field
 				id="admin-token"
 				label={selectedRole === 'operator' ? 'Operator Token (64-hex)' : 'Moderator Token (vrcp_usr_)'}
@@ -178,7 +175,6 @@
 				</Notice>
 			{/if}
 
-			<!-- Primary Sign-In Action -->
 			<div class="flex items-center gap-3 pt-1">
 				<Button
 					variant="primary"
@@ -200,11 +196,11 @@
 			</div>
 
 			{#if adminSession.authenticated}
-				<div class="flex items-center justify-between gap-3 pt-1 text-xs text-slate-300">
+				<div class="flex items-center justify-between gap-3 pt-1 text-xs text-muted-foreground">
 					<div class="flex items-center gap-2 min-w-0">
-						<CheckCircle2 size={15} class="text-emerald-400 shrink-0" />
+						<CheckCircle2 size={15} class="text-sidebar-primary shrink-0" />
 						<span class="truncate">
-							Signed in as <strong class="text-slate-100">{adminSession.role}</strong>
+							Signed in as <strong class="text-foreground">{adminSession.role}</strong>
 						</span>
 					</div>
 					<Button
@@ -220,18 +216,17 @@
 
 			<Separator />
 
-			<!-- Compact Collapsible Connection Check -->
 			<div class="flex flex-col gap-3">
 				<div class="flex items-center justify-between gap-2">
 					<Button
 						variant="ghost"
 						size="xs"
 						onclick={() => (connectionCheckOpen = !connectionCheckOpen)}
-						class="px-1 text-slate-400 hover:text-slate-200"
+						class="px-1 text-muted-foreground hover:text-foreground"
 					>
 						<ChevronDown
 							size={14}
-							class="transition-transform duration-150 {connectionCheckOpen ? 'rotate-180' : ''}"
+							class={cn('transition-transform duration-150', connectionCheckOpen && 'rotate-180')}
 						/>
 						<span>Connection Check</span>
 					</Button>
@@ -248,9 +243,9 @@
 				</div>
 
 				{#if connectionCheckOpen}
-					<div class="text-xs text-slate-400 flex flex-col gap-2 px-1">
+					<div class="text-xs text-muted-foreground flex flex-col gap-2 px-1">
 						<p class="text-pretty">
-							Sends an unauthenticated <code class="font-mono text-slate-300">GET /v1/app/index?limit=1</code> request to verify reachability and CORS headers.
+							Sends an unauthenticated <code class="font-mono text-foreground">GET /v1/app/index?limit=1</code> request to verify reachability and CORS headers.
 						</p>
 						{#if adminSession.lastProbeMessage && !adminSession.lastError}
 							<Notice

@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { Avatar as Primitive } from 'bits-ui';
+	import { cn } from '$lib/utils';
 
 	let {
 		src,
@@ -14,11 +15,19 @@
 	} = $props();
 </script>
 
-<Primitive.Root class="relative flex h-8 w-8 shrink-0 overflow-hidden rounded-full border border-slate-700 select-none {className}">
+<Primitive.Root
+	data-slot="avatar"
+	class={cn(
+		'relative flex size-8 shrink-0 overflow-hidden rounded-full border border-border select-none',
+		className
+	)}
+>
 	{#if src}
-		<Primitive.Image {src} {alt} class="aspect-square h-full w-full object-cover" />
+		<Primitive.Image {src} {alt} class="aspect-square size-full object-cover" />
 	{/if}
-	<Primitive.Fallback class="flex h-full w-full items-center justify-center bg-slate-800 text-xs font-semibold text-slate-200 font-mono">
+	<Primitive.Fallback
+		class="flex size-full items-center justify-center bg-muted text-xs font-semibold text-foreground font-mono"
+	>
 		{fallback}
 	</Primitive.Fallback>
 </Primitive.Root>

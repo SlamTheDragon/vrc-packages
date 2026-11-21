@@ -14,7 +14,7 @@ This rule governs interactive UI surfaces in **Sector 2** (`src-crawler-client/`
 2. **Centralized design token file (`tokens.ts` or `layout.css`)**:
    - Define colors, control heights (`CONTROL_HEIGHTS`), radii, typography, `EVIDENCE_TOKENS`, `COMPONENT_PRESETS`, and `PALETTE_SWATCHES` in `src-web/src/lib/components/ui/tokens.ts`. Put shared interfaces in `types.ts`.
    - Import styling presets from `tokens.ts` instead of repeating inline color or height strings.
-   - Keep the permanent dark surface profile in `src-web/` (`#111827` panels, `#0b0f19` canvas, `#1e293b` borders, `#f8fafc` ink, `#10b981` emerald, `#f59e0b` amber). Keep `src-crawler-client/src/routes/layout.css` as the client token source.
+   - Keep the permanent dark `shadcn-svelte` `mira` + `mist` OKLCH surface profile shared between `src-crawler-client/` and `src-web/` (`oklch(0.148 0.004 228.8)` background, `oklch(0.218 0.008 223.9)` card and sidebar, `oklch(0.437 0.078 188.216)` primary/accent, `oklch(0.704 0.14 182.503)` sidebar-primary, `oklch(0.704 0.191 22.216)` destructive, `--radius: 0.45rem`, `Figtree Variable` + `IBM Plex Sans Variable`), with `src-crawler-client/src/routes/layout.css` and `src-web/src/app.css` synchronized to the same tokens.
 
 3. **3-Tier component and route structure (`/ui-sdk` and `/design`)**:
    - **Tier 1 (`src/lib/components/ui/<domain>/`)** owns accessible UI primitives across six orthogonal domains plus `workbench/`:

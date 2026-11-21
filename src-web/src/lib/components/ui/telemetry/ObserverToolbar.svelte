@@ -1,5 +1,6 @@
 <script lang="ts">
-	import { ZoomIn, ZoomOut, RotateCcw, Filter, Layers, Maximize2 } from '@lucide/svelte';
+	import { ZoomIn, ZoomOut, RotateCcw, Filter, Maximize2 } from '@lucide/svelte';
+	import { cn } from '$lib/utils';
 	import Button from '$lib/components/ui/forms/Button.svelte';
 
 	let {
@@ -19,14 +20,17 @@
 	} = $props();
 </script>
 
-<div class="inline-flex items-center gap-1 p-1 bg-slate-900 border border-slate-800 rounded-xl shadow-sm {className}">
+<div
+	data-slot="observer-toolbar"
+	class={cn('inline-flex items-center gap-1 p-1 bg-card border border-border rounded-xl shadow-sm', className)}
+>
 	<Button variant="ghost" size="xs" onclick={onZoomIn} title="Zoom In" aria-label="Zoom In">
 		<ZoomIn size={14} />
 	</Button>
 	<Button variant="ghost" size="xs" onclick={onZoomOut} title="Zoom Out" aria-label="Zoom Out">
 		<ZoomOut size={14} />
 	</Button>
-	<div class="w-px h-4 bg-slate-800 mx-0.5"></div>
+	<div class="w-px h-4 bg-border mx-0.5"></div>
 	<Button variant="ghost" size="xs" onclick={onReset} title="Reset View" aria-label="Reset View">
 		<RotateCcw size={14} />
 	</Button>

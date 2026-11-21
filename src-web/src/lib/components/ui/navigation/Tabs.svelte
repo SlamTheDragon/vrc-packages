@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { Tabs as Primitive } from 'bits-ui';
 	import type { Snippet } from 'svelte';
+	import { cn } from '$lib/utils';
 
 	interface TabItem {
 		id: string;
@@ -22,20 +23,20 @@
 	} = $props();
 </script>
 
-<Primitive.Root bind:value class="flex flex-col w-full {className}">
-	<Primitive.List class="inline-flex items-center gap-1 p-1 bg-slate-900 rounded-xl border border-slate-800">
-		{#each items as item}
+<Primitive.Root data-slot="tabs" bind:value class={cn('flex flex-col w-full', className)}>
+	<Primitive.List class="inline-flex items-center gap-1 p-1 bg-card rounded-xl border border-border">
+		{#each items as item (item.id)}
 			<Primitive.Trigger
 				value={item.id}
 				disabled={item.disabled}
-				class="inline-flex items-center justify-center gap-2 px-3 py-1.5 text-xs font-medium rounded-lg transition-all cursor-pointer
-					text-slate-300 hover:text-white select-none
-					data-[state=active]:bg-slate-800 data-[state=active]:text-emerald-300 data-[state=active]:shadow-xs data-[state=active]:font-semibold
+				class="inline-flex items-center justify-center gap-2 px-3 py-1.5 text-xs font-medium rounded-lg transition-colors cursor-pointer
+					text-muted-foreground hover:text-foreground select-none
+					data-[state=active]:bg-muted data-[state=active]:text-sidebar-primary data-[state=active]:shadow-xs data-[state=active]:font-semibold
 					disabled:opacity-40 disabled:cursor-not-allowed"
 			>
 				<span>{item.label}</span>
 				{#if item.count !== undefined}
-					<span class="text-[10px] px-1.5 py-0.2 rounded-full bg-slate-800 text-slate-200 border border-slate-700 font-mono">
+					<span class="text-[10px] px-1.5 py-0.2 rounded-full bg-muted text-foreground border border-border font-mono tabular-nums">
 						{item.count}
 					</span>
 				{/if}

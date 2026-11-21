@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { Info, CheckCircle2, AlertTriangle, AlertCircle } from '@lucide/svelte';
 	import type { Snippet } from 'svelte';
+	import { cn } from '$lib/utils';
 
 	let {
 		variant = 'info',
@@ -15,22 +16,26 @@
 	} = $props();
 
 	const variantStyles = {
-		info: 'bg-sky-950/50 text-sky-200 border-sky-800/70',
-		success: 'bg-emerald-950/50 text-emerald-200 border-emerald-800/70',
-		warning: 'bg-amber-950/50 text-amber-200 border-amber-800/70',
-		danger: 'bg-red-950/50 text-red-200 border-red-800/70'
+		info: 'bg-chart-2/10 text-foreground border-chart-2/40',
+		success: 'bg-primary/15 text-foreground border-sidebar-primary/45',
+		warning: 'bg-warning/10 text-foreground border-warning/40',
+		danger: 'bg-destructive/15 text-destructive border-destructive/40'
 	};
 
 	const iconStyles = {
-		info: 'text-sky-400',
-		success: 'text-emerald-400',
-		warning: 'text-amber-400',
-		danger: 'text-red-400'
+		info: 'text-chart-2',
+		success: 'text-sidebar-primary',
+		warning: 'text-warning',
+		danger: 'text-destructive'
 	};
 </script>
 
-<div class="flex items-start gap-3 p-3.5 rounded-xl border text-sm {variantStyles[variant]} {className}">
-	<div class="shrink-0 mt-0.5 {iconStyles[variant]}">
+<div
+	data-slot="notice"
+	role={variant === 'danger' ? 'alert' : 'status'}
+	class={cn('flex items-start gap-3 p-3.5 rounded-xl border text-sm', variantStyles[variant], className)}
+>
+	<div class={cn('shrink-0 mt-0.5', iconStyles[variant])}>
 		{#if variant === 'info'}
 			<Info size={18} />
 		{:else if variant === 'success'}
@@ -44,9 +49,9 @@
 
 	<div class="flex flex-col gap-0.5 min-w-0">
 		{#if title}
-			<span class="font-semibold">{title}</span>
+			<span class="font-semibold text-balance">{title}</span>
 		{/if}
-		<div class="text-xs leading-relaxed opacity-90">
+		<div class="text-xs leading-relaxed opacity-90 text-pretty">
 			{@render children?.()}
 		</div>
 	</div>

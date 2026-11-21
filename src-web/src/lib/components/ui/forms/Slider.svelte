@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { Slider as Primitive } from 'bits-ui';
+	import { cn } from '$lib/utils';
 
 	let {
 		value = $bindable([50]),
@@ -26,14 +27,14 @@
 	} = $props();
 </script>
 
-<div class="flex flex-col gap-1.5 w-full {className}">
+<div data-slot="slider" class={cn('flex flex-col gap-1.5 w-full', className)}>
 	{#if label || showValue}
-		<div class="flex items-center justify-between text-xs font-medium text-slate-200">
+		<div class="flex items-center justify-between text-xs font-medium text-foreground">
 			{#if label}
 				<span>{label}</span>
 			{/if}
 			{#if showValue}
-				<span class="font-mono text-emerald-300 bg-emerald-950/70 px-1.5 py-0.5 rounded border border-emerald-700/60">
+				<span class="font-mono tabular-nums text-sidebar-primary bg-primary/15 px-1.5 py-0.5 rounded border border-sidebar-primary/40">
 					{value[0]}{unit}
 				</span>
 			{/if}
@@ -55,13 +56,13 @@
 		class="relative flex w-full touch-none select-none items-center py-1 cursor-pointer
 			disabled:opacity-50 disabled:cursor-not-allowed"
 	>
-		<span class="relative h-1.5 w-full grow overflow-hidden rounded-full bg-slate-800">
-			<Primitive.Range class="absolute h-full bg-emerald-500 rounded-full" />
+		<span class="relative h-1.5 w-full grow overflow-hidden rounded-full bg-muted">
+			<Primitive.Range class="absolute h-full bg-sidebar-primary rounded-full" />
 		</span>
 		<Primitive.Thumb
 			index={0}
-			class="block h-4 w-4 rounded-full border-2 border-emerald-500 bg-slate-950 shadow-sm transition-colors
-				focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/30
+			class="block size-4 rounded-full border-2 border-sidebar-primary bg-background shadow-sm transition-colors
+				focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40
 				disabled:pointer-events-none"
 		/>
 	</Primitive.Root>

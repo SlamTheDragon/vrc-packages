@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { Separator as Primitive } from 'bits-ui';
+	import { cn } from '$lib/utils';
 
 	let {
 		orientation = 'horizontal',
@@ -11,8 +12,11 @@
 </script>
 
 <Primitive.Root
+	data-slot="separator"
 	{orientation}
-	class="bg-slate-800 shrink-0
-		{orientation === 'horizontal' ? 'h-px w-full' : 'h-full w-px'}
-		{className}"
+	class={cn(
+		'bg-border shrink-0',
+		orientation === 'horizontal' ? 'h-px w-full' : 'h-full w-px',
+		className
+	)}
 />

@@ -184,7 +184,7 @@
 	}
 </script>
 
-<div class="flex flex-col gap-6">
+<div data-slot="governance-panel" class="flex flex-col gap-6">
 	{#if statusMessage}
 		<Notice variant="success" title="Verdict Recorded">
 			{statusMessage}

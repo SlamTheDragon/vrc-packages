@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { DropdownMenu as Primitive } from 'bits-ui';
 	import type { Snippet } from 'svelte';
+	import { cn } from '$lib/utils';
 
 	let {
 		open = $bindable(false),
@@ -22,8 +23,12 @@
 
 	<Primitive.Portal>
 		<Primitive.Content
+			data-slot="dropdown-menu-content"
 			sideOffset={6}
-			class="min-w-[180px] bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl p-1.5 text-slate-100 z-50 animate-in fade-in-0 zoom-in-95 {className}"
+			class={cn(
+				'min-w-[180px] bg-popover border border-border rounded-2xl shadow-2xl p-1.5 text-popover-foreground z-50 animate-in fade-in-0 zoom-in-95',
+				className
+			)}
 		>
 			{@render children?.()}
 		</Primitive.Content>

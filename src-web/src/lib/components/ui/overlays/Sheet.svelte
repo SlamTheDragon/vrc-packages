@@ -2,6 +2,7 @@
 	import { Dialog as Primitive } from 'bits-ui';
 	import { X } from '@lucide/svelte';
 	import type { Snippet } from 'svelte';
+	import { cn } from '$lib/utils';
 
 	let {
 		open = $bindable(false),
@@ -35,27 +36,34 @@
 	{/if}
 
 	<Primitive.Portal>
-		<Primitive.Overlay class="fixed inset-0 z-50 bg-slate-950/75 backdrop-blur-xs animate-in fade-in-0" />
+		<Primitive.Overlay class="fixed inset-0 z-50 bg-background/80 backdrop-blur-xs animate-in fade-in-0" />
 		<Primitive.Content
-			class="fixed z-50 bg-slate-900 p-6 shadow-2xl border-slate-800 flex flex-col justify-between overflow-y-auto
-				{sideClasses[side]} {className}"
+			data-slot="sheet-content"
+			class={cn(
+				'fixed z-50 bg-popover p-6 shadow-2xl border-border text-popover-foreground flex flex-col justify-between overflow-y-auto',
+				sideClasses[side],
+				className
+			)}
 		>
 			<div class="flex flex-col gap-4">
-				<div class="flex items-start justify-between gap-4 pb-3 border-b border-slate-800">
+				<div class="flex items-start justify-between gap-4 pb-3 border-b border-border">
 					<div class="flex flex-col gap-1 min-w-0">
 						{#if title}
-							<Primitive.Title class="text-base font-semibold text-slate-100 tracking-tight">
+							<Primitive.Title class="text-base font-semibold text-foreground tracking-tight text-balance">
 								{title}
 							</Primitive.Title>
 						{/if}
 						{#if description}
-							<Primitive.Description class="text-xs text-slate-400 leading-normal">
+							<Primitive.Description class="text-xs text-muted-foreground leading-normal text-pretty">
 								{description}
 							</Primitive.Description>
 						{/if}
 					</div>
 
-					<Primitive.Close class="rounded-lg p-1 text-slate-400 hover:text-slate-100 hover:bg-slate-800 transition-colors cursor-pointer">
+					<Primitive.Close
+						aria-label="Close sheet"
+						class="rounded-lg p-1 text-muted-foreground hover:text-foreground hover:bg-muted transition-colors cursor-pointer"
+					>
 						<X size={18} />
 						<span class="sr-only">Close</span>
 					</Primitive.Close>

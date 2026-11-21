@@ -1,4 +1,7 @@
 <script lang="ts">
+	import { cn } from '$lib/utils';
+	import { COMPONENT_PRESETS } from '$lib/components/ui/tokens';
+
 	let {
 		value = $bindable(''),
 		placeholder = '',
@@ -29,6 +32,7 @@
 </script>
 
 <textarea
+	data-slot="textarea"
 	{id}
 	{name}
 	{rows}
@@ -39,10 +43,10 @@
 	bind:value
 	{oninput}
 	{onchange}
-	class="w-full bg-slate-950/90 text-slate-100 border border-slate-700 rounded-xl p-3 text-sm
-		focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 transition-colors shadow-xs
-		placeholder:text-slate-500
-		disabled:bg-slate-900 disabled:text-slate-500 disabled:cursor-not-allowed
-		{error ? 'border-red-500 focus:border-red-500 focus:ring-red-500' : ''}
-		{className}"
+	class={cn(
+		COMPONENT_PRESETS.input.base,
+		'w-full p-3 text-sm disabled:bg-muted disabled:text-muted-foreground disabled:cursor-not-allowed',
+		error && 'border-destructive focus:border-destructive focus:ring-destructive',
+		className
+	)}
 ></textarea>

@@ -87,7 +87,7 @@
 	}
 </script>
 
-<div class="flex flex-col gap-6">
+<div data-slot="catalog-init-panel" class="flex flex-col gap-6">
 	{#if initStatusMessage}
 		<Notice variant="success" title="Schema Initialized">
 			{initStatusMessage}
@@ -161,6 +161,7 @@
 						{ key: 'VPM ID', value: selectedPackage.vpmId ?? 'none', category: 'Identity' },
 						{ key: 'Umbrella', value: selectedPackage.umbrella, category: 'Taxonomy' },
 						{ key: 'Category', value: selectedPackage.category, category: 'Taxonomy' },
+						{ key: 'Content Rating', value: selectedPackage.contentRating, category: 'Taxonomy' },
 						{ key: 'Lifecycle', value: selectedPackage.lifecycle, category: 'Taxonomy' },
 						{
 							key: 'Timestamp Confidence',
@@ -184,16 +185,16 @@
 					<Card title="Storefront Fronts">
 						<div class="flex flex-col gap-2">
 							{#each selectedPackage.fronts as front (front.frontId)}
-								<div class="p-2.5 rounded-xl border border-slate-800 bg-slate-950/60 flex flex-col gap-1 text-xs">
+								<div class="p-2.5 rounded-xl border border-border bg-background/60 flex flex-col gap-1 text-xs">
 									<div class="flex items-center justify-between">
 										<Badge variant="emerald" size="xs">{front.platform}</Badge>
-										<span class="font-mono text-[11px] text-slate-400">{front.availability}</span>
+										<span class="font-mono text-[11px] text-muted-foreground">{front.availability}</span>
 									</div>
 									<a
 										href={front.storefrontUrl}
 										target="_blank"
 										rel="external noopener noreferrer"
-										class="font-mono text-xs text-emerald-400 hover:underline break-all"
+										class="font-mono text-xs text-sidebar-primary hover:underline break-all"
 									>
 										{front.storefrontUrl}
 									</a>
@@ -211,7 +212,7 @@
 		title="Initialize Coordinator Schema"
 		description="Dispatches idempotent POST /v1/operator/init to initialize D1 tables."
 	>
-		<div class="flex flex-col gap-4 text-xs text-slate-300">
+		<div class="flex flex-col gap-4 text-xs text-muted-foreground">
 			<Switch
 				id="init-autoseed-switch"
 				bind:checked={autoSeed}

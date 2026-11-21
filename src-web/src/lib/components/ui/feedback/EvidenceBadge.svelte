@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { cn } from '$lib/utils';
 	import type { EvidenceState } from '$lib/components/ui/types';
 	import { EVIDENCE_TOKENS, CONTROL_HEIGHTS } from '$lib/components/ui/tokens';
 	import { ShieldCheck, CheckCircle2, Sparkles, HelpCircle, AlertTriangle, Clock } from '@lucide/svelte';
@@ -36,10 +37,13 @@
 </script>
 
 <span
-	class="vrcp-evidence-badge inline-flex items-center gap-1.5 font-mono font-semibold uppercase tracking-wider select-none
-		{heightClass}
-		{token.badgeClass}
-		{className}"
+	data-slot="evidence-badge"
+	class={cn(
+		'vrcp-evidence-badge inline-flex items-center gap-1.5 font-mono font-semibold uppercase tracking-wider select-none',
+		heightClass,
+		token.badgeClass,
+		className
+	)}
 	title={token.description}
 	role="status"
 	aria-label={`Evidence State: ${token.label}. ${token.description}`}

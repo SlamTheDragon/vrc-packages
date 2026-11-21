@@ -89,7 +89,7 @@
 	}
 </script>
 
-<div class="flex flex-col gap-6">
+<div data-slot="nodes-panel" class="flex flex-col gap-6">
 	{#if errorMessage}
 		<Notice variant="danger" title="Node Credential Operation Failed">
 			{errorMessage}
@@ -107,8 +107,8 @@
 			{/snippet}
 
 			<div class="flex flex-col gap-4">
-				<p class="text-xs text-slate-300 leading-relaxed">
-					Issues a capability-encoded token (<code class="font-mono">vrcp_&lt;64-hex&gt;&lt;4-hex&gt;</code>) stored strictly as a SHA-256 hash in Coordinator D1. The raw secret is returned once.
+				<p class="text-xs text-muted-foreground leading-relaxed text-pretty">
+					Issues a capability-encoded token (<code class="font-mono text-foreground">vrcp_&lt;64-hex&gt;&lt;4-hex&gt;</code>) stored strictly as a SHA-256 hash in Coordinator D1. The raw secret is returned once.
 				</p>
 
 				<Field id="issue-node-id" label="Node Identifier (nodeId)" required={true}>
@@ -116,8 +116,8 @@
 				</Field>
 
 				<Field label="Assigned Platform Capabilities (10-platform bitmask)" required={true}>
-					<div class="grid grid-cols-2 sm:grid-cols-3 gap-2.5 p-3 rounded-xl border border-slate-800 bg-slate-950/70">
-						{#each ALL_PLATFORMS as platform}
+					<div class="grid grid-cols-2 sm:grid-cols-3 gap-2.5 p-3 rounded-xl border border-border bg-background/70">
+						{#each ALL_PLATFORMS as platform (platform)}
 							<Checkbox
 								id={`cap-${platform}`}
 								bind:checked={selectedCapabilities[platform]}
@@ -157,8 +157,8 @@
 			{/snippet}
 
 			<div class="flex flex-col gap-4">
-				<p class="text-xs text-slate-300 leading-relaxed">
-					Revokes a node credential immediately so future <code class="font-mono">/v1/node/jobs/claim</code> requests fail closed without prematurely releasing in-flight origin pacing reservations.
+				<p class="text-xs text-muted-foreground leading-relaxed text-pretty">
+					Revokes a node credential immediately so future <code class="font-mono text-foreground">/v1/node/jobs/claim</code> requests fail closed without prematurely releasing in-flight origin pacing reservations.
 				</p>
 
 				<Field id="revoke-node-id" label="Target Node Identifier (nodeId)" required={true}>

@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { ToggleGroup as Primitive } from 'bits-ui';
+	import { cn } from '$lib/utils';
 	import type { SelectOption } from '$lib/components/ui/types';
 
 	let {
@@ -18,6 +19,7 @@
 </script>
 
 <Primitive.Root
+	data-slot="toggle-group"
 	type="single"
 	bind:value
 	{disabled}
@@ -26,15 +28,15 @@
 			onValueChange?.(String(val));
 		}
 	}}
-	class="inline-flex items-center gap-1 p-1 bg-slate-900 rounded-xl border border-slate-800 {className}"
+	class={cn('inline-flex items-center gap-1 p-1 bg-card rounded-xl border border-border', className)}
 >
-	{#each options as opt}
+	{#each options as opt (opt.value)}
 		<Primitive.Item
 			value={opt.value}
 			disabled={opt.disabled}
-			class="px-3 py-1 text-xs font-medium rounded-lg transition-all cursor-pointer select-none
-				text-slate-300 hover:text-white
-				data-[state=on]:bg-slate-800 data-[state=on]:text-emerald-300 data-[state=on]:shadow-xs data-[state=on]:font-semibold
+			class="px-3 py-1 text-xs font-medium rounded-lg transition-colors cursor-pointer select-none
+				text-muted-foreground hover:text-foreground
+				data-[state=on]:bg-muted data-[state=on]:text-sidebar-primary data-[state=on]:shadow-xs data-[state=on]:font-semibold
 				disabled:opacity-40 disabled:cursor-not-allowed"
 		>
 			{opt.label}

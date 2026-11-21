@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { Checkbox as Primitive } from 'bits-ui';
 	import { Check } from '@lucide/svelte';
+	import { cn } from '$lib/utils';
 
 	let {
 		checked = $bindable(false),
@@ -23,7 +24,7 @@
 	} = $props();
 </script>
 
-<div class="inline-flex items-center gap-2.5 select-none {className}">
+<div data-slot="checkbox" class={cn('inline-flex items-center gap-2.5 select-none', className)}>
 	<Primitive.Root
 		{id}
 		{name}
@@ -35,21 +36,27 @@
 				onCheckedChange?.(val);
 			}
 		}}
-		class="w-4 h-4 rounded-md border border-slate-600 bg-slate-950 flex items-center justify-center
+		class="size-4 rounded-md border border-input bg-background flex items-center justify-center
 			transition-colors cursor-pointer shadow-2xs
-			data-[state=checked]:bg-emerald-600 data-[state=checked]:border-emerald-500 data-[state=checked]:text-white
-			focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/30
+			data-[state=checked]:bg-primary data-[state=checked]:border-sidebar-primary data-[state=checked]:text-primary-foreground
+			focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40
 			disabled:cursor-not-allowed disabled:opacity-50"
 	>
 		{#snippet children({ checked: isChecked })}
 			{#if isChecked}
-				<Check size={12} strokeWidth={3} class="text-white" />
+				<Check size={12} strokeWidth={3} class="text-primary-foreground" />
 			{/if}
 		{/snippet}
 	</Primitive.Root>
 
 	{#if label}
-		<label for={id} class="text-sm font-medium text-slate-200 cursor-pointer {disabled ? 'opacity-50 cursor-not-allowed' : ''}">
+		<label
+			for={id}
+			class={cn(
+				'text-sm font-medium text-foreground cursor-pointer',
+				disabled && 'opacity-50 cursor-not-allowed'
+			)}
+		>
 			{label}
 		</label>
 	{/if}

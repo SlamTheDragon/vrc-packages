@@ -1,4 +1,6 @@
 <script lang="ts">
+	import { cn } from '$lib/utils';
+
 	interface PropertyEntry {
 		key: string;
 		value: string | number;
@@ -29,26 +31,29 @@
 	});
 </script>
 
-<div class="rounded-2xl border border-slate-800 bg-slate-900/90 p-4 shadow-xs flex flex-col gap-3 {className}">
-	<header class="border-b border-slate-800 pb-2">
-		<h4 class="text-xs font-semibold uppercase tracking-wider text-slate-100">{title}</h4>
+<div
+	data-slot="property-inspector"
+	class={cn('rounded-2xl border border-border bg-card p-4 shadow-xs flex flex-col gap-3', className)}
+>
+	<header class="border-b border-border pb-2">
+		<h4 class="text-xs font-semibold uppercase tracking-wider text-card-foreground text-balance">{title}</h4>
 		{#if subtitle}
-			<p class="text-[11px] text-slate-400 mt-0.5">{subtitle}</p>
+			<p class="text-[11px] text-muted-foreground mt-0.5 truncate">{subtitle}</p>
 		{/if}
 	</header>
 
 	<div class="flex flex-col gap-3">
-		{#each Object.entries(categories) as [catName, entries]}
+		{#each Object.entries(categories) as [catName, entries] (catName)}
 			<div>
-				<span class="text-[10px] font-mono font-bold uppercase tracking-widest text-slate-400 block mb-1">
+				<span class="text-[10px] font-mono font-bold uppercase tracking-widest text-muted-foreground block mb-1">
 					{catName}
 				</span>
-				<div class="rounded-xl border border-slate-800 divide-y divide-slate-800/80 bg-slate-950/60">
-					{#each entries as entry}
+				<div class="rounded-xl border border-border divide-y divide-border bg-background/60">
+					{#each entries as entry (entry.key)}
 						<div class="flex items-center justify-between px-3 py-1.5 text-xs gap-3">
-							<span class="text-slate-400 font-medium shrink-0">{entry.key}</span>
-							<span class="font-mono text-slate-100 font-semibold truncate" title={String(entry.value)}>
-								{entry.value}{#if entry.unit}<span class="text-slate-400 font-normal ml-0.5">{entry.unit}</span>{/if}
+							<span class="text-muted-foreground font-medium shrink-0">{entry.key}</span>
+							<span class="font-mono tabular-nums text-foreground font-semibold truncate" title={String(entry.value)}>
+								{entry.value}{#if entry.unit}<span class="text-muted-foreground font-normal ml-0.5">{entry.unit}</span>{/if}
 							</span>
 						</div>
 					{/each}

@@ -107,6 +107,7 @@ export function stageSDKArtifact(artifact, expected, receipt, run) {
 async function readPublicSDK(name, version, signal) {
   const fetchJSON = async url => {
     const response = await fetch(url, {
+      cache: "no-store",
       redirect: "error", signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000),
       headers: { accept: "application/json", "cache-control": "no-cache" } });
     if (response.status === 404) return null;
@@ -115,15 +116,15 @@ async function readPublicSDK(name, version, signal) {
   };
   if (version === "latest") {
     try {
-      const tags = await fetchJSON(`https://registry.npmjs.org/-/package/${name}/dist-tags`);
+      const tags = await fetchJSON(`https://registry.npmjs.org/-/package/${name}/dist-tags?_=${Date.now()}`);
       if (typeof tags?.latest === "string" && semver.valid(tags.latest) === tags.latest) {
-        return fetchJSON(`https://registry.npmjs.org/${name}/${tags.latest}`);
+        return fetchJSON(`https://registry.npmjs.org/${name}/${tags.latest}?_=${Date.now()}`);
       }
     } catch {
       // Fall back to direct /latest endpoint when custom test mocks or mirrors omit /-/package/*/dist-tags.
     }
   }
-  return fetchJSON(`https://registry.npmjs.org/${name}/${version}`);
+  return fetchJSON(`https://registry.npmjs.org/${name}/${version}?_=${Date.now()}`);
 }
 
 /** Preview is directly published through OIDC. Releases still use owner-approved stages. */
@@ -159,7 +160,7 @@ export async function publishPreviewSDKArtifact(artifact, expected, receipt, run
   }
   // npm can acknowledge publication before its public version and alias reads converge.
   // Retry reads only. Different bytes or identity fail immediately, with no second publish.
-  const delays = [1_000, 2_000, 4_000, 8_000, 16_000, 32_000], signal = AbortSignal.timeout(90_000);
+  const delays = [1_000, 2_000, 4_000, 8_000, 16_000, 32_000, 32_000, 32_000, 32_000], signal = AbortSignal.timeout(210_000);
   for (let attempt = 0;; attempt++) {
     signal.throwIfAborted();
     const published = await registry(expected.name, expected.version, signal);
@@ -169,7 +170,9 @@ export async function publishPreviewSDKArtifact(artifact, expected, receipt, run
       (semver.lt(alias.version, expected.version) || allowedOccupiedLatest(alias.version));
     if (alias !== null && !olderAlias) check(alias);
     if (published !== null && alias !== null && !olderAlias) break;
-    if (attempt === delays.length) throw new Error("Preview publication readback did not converge. No publication retry ran.");
+    if (attempt === delays.length) {
+      throw new Error(`Preview publication readback did not converge after ${attempt + 1} attempts (expected ${expected.version}, versionRead=${published?.version ?? "404"}, latestRead=${alias?.version ?? "404"}). No publication retry ran.`);
+    }
     await wait(delays[attempt]);
   }
   return { ...expected, channel: "preview", tag: "latest", sha256: receipt.sha256, integrity,

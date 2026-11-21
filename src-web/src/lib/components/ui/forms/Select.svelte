@@ -1,5 +1,7 @@
 <script lang="ts">
-	import { CONTROL_HEIGHTS } from '$lib/components/ui/tokens';
+	import { ChevronDown } from '@lucide/svelte';
+	import { cn } from '$lib/utils';
+	import { CONTROL_HEIGHTS, COMPONENT_PRESETS } from '$lib/components/ui/tokens';
 	import type { ControlSize, SelectOption } from '$lib/components/ui/types';
 
 	let {
@@ -33,7 +35,7 @@
 	};
 </script>
 
-<div class="relative inline-flex items-center w-full">
+<div data-slot="select" class="relative inline-flex items-center w-full">
 	<select
 		{id}
 		{name}
@@ -41,19 +43,20 @@
 		{required}
 		bind:value
 		{onchange}
-		class="appearance-none w-full bg-slate-950/90 text-slate-100 border border-slate-700 rounded-xl
-			focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 transition-colors shadow-xs
-			disabled:bg-slate-900 disabled:text-slate-500 disabled:cursor-not-allowed cursor-pointer
-			{heightClass} {sizePaddings[size]} {className}"
+		class={cn(
+			'appearance-none w-full cursor-pointer disabled:bg-muted disabled:text-muted-foreground disabled:cursor-not-allowed',
+			COMPONENT_PRESETS.input.base,
+			heightClass,
+			sizePaddings[size],
+			className
+		)}
 	>
-		{#each options as opt}
+		{#each options as opt (opt.value)}
 			<option value={opt.value} disabled={opt.disabled}>{opt.label}</option>
 		{/each}
 	</select>
 
-	<div class="absolute right-3 pointer-events-none flex items-center text-slate-400">
-		<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-			<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
-		</svg>
+	<div class="absolute right-3 pointer-events-none flex items-center text-muted-foreground">
+		<ChevronDown size={16} aria-hidden="true" />
 	</div>
 </div>

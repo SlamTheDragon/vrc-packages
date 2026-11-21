@@ -1,4 +1,6 @@
 <script lang="ts">
+	import { cn } from '$lib/utils';
+
 	let {
 		class: className = ''
 	}: {
@@ -6,4 +8,4 @@
 	} = $props();
 </script>
 
-<div class="animate-pulse rounded-xl bg-slate-800/80 {className}"></div>
+<div data-slot="skeleton" class={cn('animate-pulse rounded-xl bg-muted/80', className)}></div>

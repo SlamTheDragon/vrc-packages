@@ -1,5 +1,6 @@
 <script lang="ts">
 	import type { Snippet } from 'svelte';
+	import { cn } from '$lib/utils';
 
 	interface Props {
 		direction?: 'horizontal' | 'vertical';
@@ -67,9 +68,11 @@
 	bind:this={containerEl}
 	data-slot="split-pane"
 	data-direction={direction}
-	class="w-full h-full flex {direction === 'horizontal' ? 'flex-row' : 'flex-col'} overflow-hidden relative select-none"
+	class={cn(
+		'size-full flex overflow-hidden relative select-none',
+		direction === 'horizontal' ? 'flex-row' : 'flex-col'
+	)}
 >
-	<!-- First Pane -->
 	<div
 		data-slot="split-pane-first"
 		style={secondPaneOpen && second
@@ -83,7 +86,6 @@
 	</div>
 
 	{#if secondPaneOpen && second}
-		<!-- Accessible Resizable Splitter Handle -->
 		<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
 		<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
 		<div
@@ -97,21 +99,24 @@
 			aria-label="Resize workbench split panels"
 			onpointerdown={handlePointerDown}
 			onkeydown={handleKeyDown}
-			class="{direction === 'horizontal'
-				? 'w-2 cursor-col-resize hover:bg-emerald-500/30'
-				: 'h-2 cursor-row-resize hover:bg-emerald-500/30'} bg-slate-800 transition-colors flex items-center justify-center shrink-0 z-20 focus:outline-hidden focus:bg-emerald-500/40"
+			class={cn(
+				'bg-border transition-colors flex items-center justify-center shrink-0 z-20 focus:outline-hidden focus:bg-sidebar-primary/40',
+				direction === 'horizontal'
+					? 'w-2 cursor-col-resize hover:bg-sidebar-primary/30'
+					: 'h-2 cursor-row-resize hover:bg-sidebar-primary/30'
+			)}
 		>
 			<div
-				class="{direction === 'horizontal'
-					? 'w-0.5 h-8'
-					: 'h-0.5 w-8'} rounded-full bg-slate-500"
+				class={cn(
+					'rounded-full bg-muted-foreground',
+					direction === 'horizontal' ? 'w-0.5 h-8' : 'h-0.5 w-8'
+				)}
 			></div>
 		</div>
 
-		<!-- Second Pane -->
 		<div
 			data-slot="split-pane-second"
-			class="flex-1 min-w-0 min-h-0 relative overflow-hidden bg-slate-900"
+			class="flex-1 min-w-0 min-h-0 relative overflow-hidden bg-card"
 		>
 			{@render second()}
 		</div>

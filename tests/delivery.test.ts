@@ -643,18 +643,18 @@ test("preview readback waits for propagation but never republishes or accepts mi
         if (version !== "latest") {
           reads++;
           if (outcome === "wrong-bytes") return { ...metadata, dist: { integrity: "wrong" } };
-          return outcome === "missing" || reads < (outcome === "late-converged" ? 7 : 3) ? null : metadata;
+          return outcome === "missing" || reads < (outcome === "late-converged" ? 10 : 3) ? null : metadata;
         }
         if (outcome === "newer-alias") return { ...metadata, version: "2026.10.4-pre" };
-        return reads < (outcome === "late-converged" ? 7 : 3) ? { ...metadata, version: "2026.10.2-pre" } : metadata;
+        return reads < (outcome === "late-converged" ? 10 : 3) ? { ...metadata, version: "2026.10.2-pre" } : metadata;
       };
       const result = publishPreviewSDKArtifact(artifact, expected, receipt, run, registry, async delay => { delays.push(delay); });
       if (["converged", "late-converged"].includes(outcome)) {
         expect((await result).status).toBe("published-verified");
-        expect(delays).toEqual(outcome === "converged" ? [1000, 2000] : [1000, 2000, 4000, 8000, 16000, 32000]);
+        expect(delays).toEqual(outcome === "converged" ? [1000, 2000] : [1000, 2000, 4000, 8000, 16000, 32000, 32000, 32000, 32000]);
       } else {
         await expect(result).rejects.toThrow(outcome === "missing" ? "did not converge" : outcome === "unavailable" ? "registry unavailable" : "checked artifact");
-        if (outcome === "missing") expect(delays).toEqual([1000, 2000, 4000, 8000, 16000, 32000]);
+        if (outcome === "missing") expect(delays).toEqual([1000, 2000, 4000, 8000, 16000, 32000, 32000, 32000, 32000]);
         else expect(delays).toEqual([]);
       }
       expect(writes).toBe(1);
@@ -1324,18 +1324,20 @@ test("publishPreviewSDKArtifact honors active temporary npm rollback rule, block
       NODE_AUTH_TOKEN: "",
       NPM_TOKEN: ""
     });
-    globalThis.fetch = (async (url: string | URL) => {
-      const target = String(url);
-      if (target.endsWith("/2026.11.0-pre")) {
+    globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
+      const parsed = new URL(String(url));
+      expect(parsed.searchParams.get("_")).toMatch(/^\d+$/);
+      expect(init?.cache).toBe("no-store");
+      if (parsed.pathname.endsWith("/2026.11.0-pre")) {
         return deliverPublished ? new Response(JSON.stringify(metadata), { status: 200 }) : new Response("", { status: 404 });
       }
-      if (target.endsWith("/latest")) {
+      if (parsed.pathname.endsWith("/latest")) {
         const body = deliverPublished
           ? metadata
           : { name: expected.name, version: "2026.11.12-pre", dist: { integrity: "sha512-old" } };
         return new Response(JSON.stringify(body), { status: 200 });
       }
-      throw new Error(`Unexpected fetch URL: ${target}`);
+      throw new Error(`Unexpected fetch URL: ${String(url)}`);
     }) as typeof fetch;
     try {
       const res = await deliver("publish", "preview", "package", true, false, {
@@ -1398,8 +1400,11 @@ test("readPublicSDK resolves latest through uncached dist-tags endpoint when /la
       NODE_AUTH_TOKEN: "",
       NPM_TOKEN: ""
     });
-    globalThis.fetch = (async (url: string | URL) => {
-      const target = String(url);
+    globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
+      const parsed = new URL(String(url));
+      expect(parsed.searchParams.get("_")).toMatch(/^\d+$/);
+      expect(init?.cache).toBe("no-store");
+      const target = parsed.origin + parsed.pathname;
       if (target === `https://registry.npmjs.org/-/package/${expected.name}/dist-tags`) {
         return new Response(
           JSON.stringify({ latest: deliverPublished ? expected.version : "2026.11.0-pre" }),
@@ -1425,7 +1430,7 @@ test("readPublicSDK resolves latest through uncached dist-tags endpoint when /la
           { status: 200 }
         );
       }
-      throw new Error(`Unexpected fetch URL: ${target}`);
+      throw new Error(`Unexpected fetch URL: ${String(url)}`);
     }) as typeof fetch;
     try {
       const res = await deliver("publish", "preview", "package", true, false, {

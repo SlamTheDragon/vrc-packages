@@ -36,19 +36,21 @@
 	});
 </script>
 
-<div class="page-stack">
-	<div class="page-heading">
+<div data-slot="admin-index-view" class="flex flex-col gap-6">
+	<div class="flex items-start justify-between gap-4 flex-wrap pb-4 border-b border-border">
 		<div class="flex items-center gap-3.5">
-			<div class="p-2.5 rounded-2xl bg-emerald-950/70 border border-emerald-700/60">
-				<VRCPEmblem size={30} color="#10b981" />
+			<div class="p-2.5 rounded-2xl bg-primary/15 border border-sidebar-primary/40">
+				<VRCPEmblem size={30} color="var(--sidebar-primary)" />
 			</div>
 			<div>
-				<span class="eyebrow">SECTOR 3 TIER 5 // DOWNSTREAM WEB CONSOLE</span>
-				<h1 class="text-2xl font-bold tracking-tight text-slate-100">
+				<span class="text-xs font-semibold uppercase tracking-wider text-sidebar-primary">
+					SECTOR 3 TIER 5 // DOWNSTREAM WEB CONSOLE
+				</span>
+				<h1 class="text-2xl font-bold tracking-tight text-foreground text-balance">
 					VRC Packages Governance &amp; Moderation Hub
 				</h1>
-				<p class="text-xs text-slate-400 mt-0.5">
-					Cross-pipeline Operator and Moderator administration console consuming the release SDK (<code class="font-mono text-emerald-400">vrc-packages-api</code>).
+				<p class="text-xs text-muted-foreground mt-0.5 text-pretty">
+					Cross-pipeline Operator and Moderator administration console consuming the preview SDK (<code class="font-mono text-sidebar-primary">vrc-packages-api-preview</code>).
 				</p>
 			</div>
 		</div>
@@ -101,7 +103,7 @@
 		<StatCard
 			label="Protocol Bridge"
 			value={adminSession.pipelineInfo.previewBridgeActive ? 'HYBRID' : 'NATIVE'}
-			subtext="Release 0.0.8 SDK + preview-ahead Zod bridge"
+			subtext="Native vrc-packages-api-preview SDK (no HTTP bridge)"
 			trend="TIER 3B -> 5"
 			trendDirection="up"
 			icon={Activity}
@@ -124,13 +126,13 @@
 				<Badge variant="emerald" size="xs">AUTH GATE</Badge>
 			{/snippet}
 
-			<p class="text-sm text-slate-300 leading-relaxed mb-4">
-				Configure the target Cloudflare Worker Coordinator URL, run an unauthenticated public catalog &amp; CORS connectivity probe (<code class="font-mono text-xs">GET /v1/app/index?limit=1</code>), and verify your runtime <code class="font-mono text-xs">64-hex</code> operator or <code class="font-mono text-xs">vrcp_usr_</code> moderator token.
+			<p class="text-sm text-muted-foreground leading-relaxed mb-4 text-pretty">
+				Configure the target Cloudflare Worker Coordinator URL, run an unauthenticated public catalog &amp; CORS connectivity probe (<code class="font-mono text-xs text-foreground">GET /v1/app/index?limit=1</code>), and verify your runtime <code class="font-mono text-xs text-foreground">64-hex</code> operator or <code class="font-mono text-xs text-foreground">vrcp_usr_</code> moderator token.
 			</p>
 
 			{#snippet footer()}
 				<div class="flex items-center justify-between">
-					<span class="font-mono text-[11px] text-slate-500">Zero static bundle secrets</span>
+					<span class="font-mono text-[11px] text-muted-foreground">Zero static bundle secrets</span>
 					<Button variant="primary" size="sm" href="/login">
 						<KeyRound size={14} />
 						<span>Go to Admin Login</span>
@@ -148,13 +150,13 @@
 				<Badge variant="amber" size="xs">64-HEX TOKEN</Badge>
 			{/snippet}
 
-			<p class="text-sm text-slate-300 leading-relaxed mb-4">
-				Manage D1 schema initialization (<code class="font-mono text-xs">/v1/operator/init</code>), canonical package catalog inspection, source access profiles, auto-queue rules, discovery lead triage, manual crawl job enqueueing, crawler node credentials, takedowns, creator claims, and app delegation.
+			<p class="text-sm text-muted-foreground leading-relaxed mb-4 text-pretty">
+				Manage D1 schema initialization (<code class="font-mono text-xs text-foreground">/v1/operator/init</code>), canonical package catalog inspection, source access profiles, auto-queue rules, discovery lead triage, manual crawl job enqueueing, crawler node credentials, takedowns, creator claims, and app delegation.
 			</p>
 
 			{#snippet footer()}
 				<div class="flex items-center justify-between">
-					<span class="font-mono text-[11px] text-slate-500">5 governance planes</span>
+					<span class="font-mono text-[11px] text-muted-foreground">5 governance planes</span>
 					<Button variant="secondary" size="sm" href="/operator">
 						<ShieldCheck size={14} />
 						<span>Open Operator Console</span>
@@ -172,13 +174,13 @@
 				<Badge variant="sky" size="xs">vrcp_usr_ TOKEN</Badge>
 			{/snippet}
 
-			<p class="text-sm text-slate-300 leading-relaxed mb-4">
-				Triage package content rating reports (<code class="font-mono text-xs">/v1/moderator/ratings</code>) across <code class="font-mono text-xs">general</code>, <code class="font-mono text-xs">mature</code>, <code class="font-mono text-xs">sexual_suggestive</code>, <code class="font-mono text-xs">adult_restricted</code>, <code class="font-mono text-xs">unknown_restricted</code>, and <code class="font-mono text-xs">prohibited</code>, and review downstream application candidates.
+			<p class="text-sm text-muted-foreground leading-relaxed mb-4 text-pretty">
+				Triage package content rating reports (<code class="font-mono text-xs text-foreground">/v1/moderator/ratings</code>) across <code class="font-mono text-xs text-foreground">general</code>, <code class="font-mono text-xs text-foreground">mature</code>, <code class="font-mono text-xs text-foreground">sexual_suggestive</code>, <code class="font-mono text-xs text-foreground">adult_restricted</code>, <code class="font-mono text-xs text-foreground">unknown_restricted</code>, and <code class="font-mono text-xs text-foreground">prohibited</code>, and review downstream application candidates.
 			</p>
 
 			{#snippet footer()}
 				<div class="flex items-center justify-between">
-					<span class="font-mono text-[11px] text-slate-500">Requires age-verified moderator</span>
+					<span class="font-mono text-[11px] text-muted-foreground">Requires age-verified moderator</span>
 					<Button variant="secondary" size="sm" href="/moderator">
 						<Scale size={14} />
 						<span>Open Moderator Queue</span>
@@ -196,13 +198,13 @@
 				<Badge variant="neutral" size="xs">RULE 09</Badge>
 			{/snippet}
 
-			<p class="text-sm text-slate-300 leading-relaxed mb-4">
-				Inspect all 39 Tier 1 UI primitives across <code class="font-mono text-xs">forms/</code>, <code class="font-mono text-xs">navigation/</code>, <code class="font-mono text-xs">overlays/</code>, <code class="font-mono text-xs">feedback/</code>, <code class="font-mono text-xs">display/</code>, <code class="font-mono text-xs">telemetry/</code>, and <code class="font-mono text-xs">workbench/</code>, bound to <code class="font-mono text-xs">tokens.ts</code> and <code class="font-mono text-xs">CONTROL_HEIGHTS</code>.
+			<p class="text-sm text-muted-foreground leading-relaxed mb-4 text-pretty">
+				Inspect all 39 Tier 1 UI primitives across <code class="font-mono text-xs text-foreground">forms/</code>, <code class="font-mono text-xs text-foreground">navigation/</code>, <code class="font-mono text-xs text-foreground">overlays/</code>, <code class="font-mono text-xs text-foreground">feedback/</code>, <code class="font-mono text-xs text-foreground">display/</code>, <code class="font-mono text-xs text-foreground">telemetry/</code>, and <code class="font-mono text-xs text-foreground">workbench/</code>, bound to <code class="font-mono text-xs text-foreground">tokens.ts</code> and <code class="font-mono text-xs text-foreground">CONTROL_HEIGHTS</code>.
 			</p>
 
 			{#snippet footer()}
 				<div class="flex items-center justify-between">
-					<span class="font-mono text-[11px] text-slate-400">Permanent dark carbon profile</span>
+					<span class="font-mono text-[11px] text-muted-foreground">Mist + Teal OKLCH profile</span>
 					<Button variant="secondary" size="sm" href="/design">
 						<Palette size={14} />
 						<span>Explore Design System</span>
@@ -223,7 +225,7 @@
 			},
 			{
 				key: 'Declared SDK Dependency',
-				value: 'vrc-packages-api (release channel)',
+				value: 'vrc-packages-api-preview (preview channel)',
 				category: 'Pipeline Identity'
 			},
 			{
@@ -233,7 +235,9 @@
 			},
 			{
 				key: 'Native Moderator Namespace',
-				value: adminSession.pipelineInfo.nativeModeratorSupport ? 'present' : 'bridged (0.0.8 -> preview Worker)',
+				value: adminSession.pipelineInfo.nativeModeratorSupport
+					? 'native (vrc-packages-api-preview)'
+					: 'unavailable',
 				category: 'Protocol Compatibility'
 			},
 			{

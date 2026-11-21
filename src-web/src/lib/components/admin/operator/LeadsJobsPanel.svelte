@@ -152,7 +152,7 @@
 	}
 </script>
 
-<div class="flex flex-col gap-6">
+<div data-slot="leads-jobs-panel" class="flex flex-col gap-6">
 	{#if statusMessage}
 		<Notice variant="success" title="Updated">
 			{statusMessage}

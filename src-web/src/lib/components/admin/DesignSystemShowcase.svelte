@@ -18,7 +18,7 @@
 	import RadioGroup from '$lib/components/ui/forms/RadioGroup.svelte';
 	import Field from '$lib/components/ui/forms/Field.svelte';
 
-	// Navigation Domain (6 primitives)
+	// Navigation Domain (5 showcase primitives; SidebarNav rendered in AdminShell)
 	import Tabs from '$lib/components/ui/navigation/Tabs.svelte';
 	import ToggleGroup from '$lib/components/ui/navigation/ToggleGroup.svelte';
 	import Accordion from '$lib/components/ui/navigation/Accordion.svelte';
@@ -60,10 +60,7 @@
 	import FloatingPanel from '$lib/components/ui/workbench/FloatingPanel.svelte';
 
 	import {
-		Palette,
-		Sliders,
 		Layers,
-		Activity,
 		ChevronDown,
 		ShieldCheck,
 		Package,
@@ -79,7 +76,7 @@
 	let demoSwitch = $state(true);
 	let demoSlider = $state([2500]);
 	let demoRadio = $state('metadata');
-	let demoToggle = $state('release');
+	let demoToggle = $state('preview');
 	let demoDialogOpen = $state(false);
 	let demoSheetOpen = $state(false);
 	let demoPopoverOpen = $state(false);
@@ -90,7 +87,7 @@
 	let selectedTableId = $state('pkg-1');
 
 	const sectionTabs = [
-		{ id: 'tokens', label: '1. Tokens & Heights', count: 17 },
+		{ id: 'tokens', label: '1. Tokens & Heights', count: 15 },
 		{ id: 'forms', label: '2. Forms Domain', count: 10 },
 		{ id: 'navigation', label: '3. Navigation & Overlays', count: 10 },
 		{ id: 'feedback', label: '4. Feedback & Display', count: 13 },
@@ -161,19 +158,21 @@
 	];
 </script>
 
-<div class="page-stack">
-	<div class="page-heading">
+<div data-slot="design-system-showcase" class="flex flex-col gap-6">
+	<div class="flex items-start justify-between gap-4 flex-wrap pb-4 border-b border-border">
 		<div class="flex items-center gap-3">
-			<div class="p-2.5 rounded-2xl bg-emerald-950/70 border border-emerald-700/60">
-				<VRCPEmblem size={28} color="#10b981" />
+			<div class="p-2.5 rounded-2xl bg-primary/15 border border-sidebar-primary/40">
+				<VRCPEmblem size={28} color="var(--sidebar-primary)" />
 			</div>
 			<div>
-				<span class="eyebrow">RULE 09 ARCHITECTURE // /design</span>
-				<h1 class="text-2xl font-bold tracking-tight text-slate-100">
+				<span class="text-xs font-semibold uppercase tracking-wider text-sidebar-primary">
+					RULE 09 ARCHITECTURE // /design
+				</span>
+				<h1 class="text-2xl font-bold tracking-tight text-foreground text-balance">
 					VRCP 6-Domain + Workbench UI Design System
 				</h1>
-				<p class="text-xs text-slate-400 mt-0.5">
-					39 accessible Svelte 5 primitives bound to <code class="font-mono text-emerald-400">$lib/components/ui/tokens.ts</code> and <code class="font-mono">CONTROL_HEIGHTS</code> (Permanent Dark Mode).
+				<p class="text-xs text-muted-foreground mt-0.5 text-pretty">
+					39 accessible Svelte 5 primitives bound to <code class="font-mono text-sidebar-primary">$lib/components/ui/tokens.ts</code> and <code class="font-mono text-foreground">CONTROL_HEIGHTS</code> (Mist + Teal OKLCH).
 				</p>
 			</div>
 		</div>
@@ -195,11 +194,11 @@
 					eyebrow="RULE 09 INVARIANT 6"
 				>
 					<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-						{#each Object.entries(CONTROL_HEIGHTS) as [sizeKey, heightClass]}
-							<div class="p-4 rounded-xl border border-slate-800 bg-slate-950/60 flex flex-col gap-2">
+						{#each Object.entries(CONTROL_HEIGHTS) as [sizeKey, heightClass] (sizeKey)}
+							<div class="p-4 rounded-xl border border-border bg-background/60 flex flex-col gap-2">
 								<div class="flex items-center justify-between">
 									<Badge variant="emerald" size="xs">size="{sizeKey}"</Badge>
-									<span class="font-mono text-xs text-slate-400">{heightClass}</span>
+									<span class="font-mono tabular-nums text-xs text-muted-foreground">{heightClass}</span>
 								</div>
 								<Button variant="primary" size={sizeKey as 'xs' | 'sm' | 'md' | 'lg'}>
 									Button ({sizeKey})
@@ -214,13 +213,13 @@
 					eyebrow="PROVENANCE & VERIFICATION RUBRIC"
 				>
 					<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-						{#each evidenceStates as st}
-							<div class="p-3.5 rounded-xl border border-slate-800 bg-slate-950/60 flex flex-col gap-2">
-								<div class="flex items-center justify-between">
+						{#each evidenceStates as st (st)}
+							<div class="p-3.5 rounded-xl border border-border bg-background/60 flex flex-col gap-2">
+								<div class="flex items-center justify-between gap-2">
 									<EvidenceBadge state={st} size="md" />
-									<span class="font-mono text-[11px] text-slate-400">{EVIDENCE_TOKENS[st].color}</span>
+									<span class="font-mono tabular-nums text-[10px] text-muted-foreground truncate">{EVIDENCE_TOKENS[st].color}</span>
 								</div>
-								<p class="text-xs text-slate-300 leading-relaxed">
+								<p class="text-xs text-muted-foreground leading-relaxed text-pretty">
 									{EVIDENCE_TOKENS[st].description}
 								</p>
 							</div>
@@ -229,23 +228,22 @@
 				</Card>
 
 				<Card
-					title="Semantic Dark Carbon Surface Palette (PALETTE_SWATCHES)"
+					title="Semantic Mist + Teal OKLCH Palette (PALETTE_SWATCHES)"
 					eyebrow="TOKENS.TS COLOR PROFILE"
 				>
 					<div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
-						{#each PALETTE_SWATCHES as swatch}
-							<div class="p-3 rounded-xl border border-slate-800 bg-slate-950/60 flex items-center gap-3">
+						{#each PALETTE_SWATCHES as swatch (swatch.name)}
+							<div class="p-3 rounded-xl border border-border bg-background/60 flex items-center gap-3">
 								<div
-									class="w-10 h-10 rounded-lg border border-slate-700 shrink-0 shadow-2xs"
+									class="size-10 rounded-lg border border-border shrink-0 shadow-2xs"
 									style="background-color: {swatch.hex}"
 								></div>
 								<div class="min-w-0 flex-1">
 									<div class="flex items-center justify-between gap-1">
-										<span class="text-xs font-semibold text-slate-100 truncate">{swatch.name}</span>
-										<span class="text-[10px] font-mono text-slate-400">{swatch.hex}</span>
+										<span class="text-xs font-semibold text-foreground truncate">{swatch.name}</span>
 									</div>
-									<span class="text-[10px] font-mono text-emerald-400 block truncate">{swatch.token}</span>
-									<span class="text-[10px] text-slate-400 block truncate">{swatch.role}</span>
+									<span class="text-[10px] font-mono text-sidebar-primary block truncate">{swatch.token}</span>
+									<span class="text-[10px] font-mono text-muted-foreground block truncate">{swatch.hex}</span>
 								</div>
 							</div>
 						{/each}
@@ -362,8 +360,8 @@
 								<Button variant="outline" size="sm">Inspect Popover</Button>
 							{/snippet}
 							<div class="flex flex-col gap-1.5 text-xs">
-								<span class="font-semibold text-slate-100">Coordinator Lease Window</span>
-								<p class="text-slate-300">Fixed 120-second monotonic lease deadline with SHA-256 node token verification.</p>
+								<span class="font-semibold text-foreground">Coordinator Lease Window</span>
+								<p class="text-muted-foreground text-pretty">Fixed 120-second monotonic lease deadline with SHA-256 node token verification.</p>
 							</div>
 						</Popover>
 
@@ -379,7 +377,7 @@
 						title="Verify Source Access Profile"
 						description="Modal dialog primitive built on Bits-UI Dialog."
 					>
-						<p class="text-xs text-slate-300">
+						<p class="text-xs text-muted-foreground text-pretty">
 							Confirming this profile grants scoped HTTP GET discovery access under RFC 9309 robots.txt rules.
 						</p>
 						{#snippet actions()}
@@ -440,22 +438,22 @@
 					<Card title="Badges, Notices, Progress & Skeleton" eyebrow="DOMAIN 4 // FEEDBACK">
 						<div class="flex flex-col gap-4">
 							<div class="flex flex-wrap items-center gap-2">
-								<Badge variant="emerald">Emerald</Badge>
+								<Badge variant="emerald">Teal</Badge>
 								<Badge variant="amber">Amber</Badge>
-								<Badge variant="sky">Sky</Badge>
+								<Badge variant="sky">Cyan</Badge>
 								<Badge variant="danger">Danger</Badge>
 								<Badge variant="neutral">Neutral</Badge>
 								<Badge variant="outline">Outline</Badge>
 							</div>
 
-							<Notice variant="success" title="Release Tarball Prepared">
-								Installed <code class="font-mono">vrc-packages-api@0.0.8</code> via <code class="font-mono">bun run prepare:dev preview web</code>.
+							<Notice variant="success" title="Preview SDK Prepared">
+								Installed <code class="font-mono">vrc-packages-api-preview</code> via <code class="font-mono">bun run prepare:dev preview web</code>.
 							</Notice>
 
 							<Progress value={84} max={100} color="emerald" />
 
 							<div class="flex items-center gap-3">
-								<Skeleton class="h-8 w-8 rounded-full" />
+								<Skeleton class="size-8 rounded-full" />
 								<Skeleton class="h-4 flex-1" />
 							</div>
 						</div>
@@ -466,7 +464,7 @@
 							<div class="flex items-center justify-between">
 								<div class="flex items-center gap-2.5">
 									<Avatar fallback="OP" />
-									<span class="text-xs font-medium text-slate-200">Operator Session</span>
+									<span class="text-xs font-medium text-foreground">Operator Session</span>
 								</div>
 								<div class="flex items-center gap-1">
 									<Kbd>Ctrl</Kbd>
@@ -505,10 +503,10 @@
 				</Card>
 
 				<Card title="SplitPane Workbench with DataTable & PropertyInspector" eyebrow="WORKBENCH DOMAIN">
-					<div class="h-[320px] rounded-xl border border-slate-800 overflow-hidden">
+					<div class="h-[320px] rounded-xl border border-border overflow-hidden">
 						<SplitPane direction="horizontal" initialSplitPercent={62}>
 							{#snippet first()}
-								<div class="p-3 h-full overflow-auto bg-slate-950">
+								<div class="p-3 h-full overflow-auto bg-background">
 									<DataTable
 										columns={sampleColumns}
 										data={samplePackages}
@@ -518,12 +516,12 @@
 								</div>
 							{/snippet}
 							{#snippet second()}
-								<div class="p-3 h-full overflow-auto bg-slate-900">
+								<div class="p-3 h-full overflow-auto bg-card">
 									<PropertyInspector
 										title="Selected Package Row"
 										properties={[
 											{ key: 'Row ID', value: selectedTableId, category: 'Selection' },
-											{ key: 'SDK Channel', value: 'release (0.0.8)', category: 'Pipeline' }
+											{ key: 'SDK Channel', value: 'preview (vrc-packages-api-preview)', category: 'Pipeline' }
 										]}
 									/>
 								</div>
@@ -541,8 +539,8 @@
 		bind:open={demoFloatingOpen}
 		onClose={() => (demoFloatingOpen = false)}
 	>
-		<div class="flex flex-col gap-2 text-xs text-slate-300">
-			<p>All 39 UI primitives in <code class="font-mono">src-web/src/lib/components/ui/</code> render without raw HTML control leaks.</p>
+		<div class="flex flex-col gap-2 text-xs text-muted-foreground text-pretty">
+			<p>All 39 UI primitives in <code class="font-mono text-foreground">src-web/src/lib/components/ui/</code> render without raw HTML control leaks.</p>
 			<EvidenceBadge state="measured" size="sm" />
 		</div>
 	</FloatingPanel>

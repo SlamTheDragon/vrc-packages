@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { Tooltip as Primitive } from 'bits-ui';
 	import type { Snippet } from 'svelte';
+	import { cn } from '$lib/utils';
 
 	let {
 		text = '',
@@ -25,8 +26,12 @@
 
 		<Primitive.Portal>
 			<Primitive.Content
+				data-slot="tooltip-content"
 				sideOffset={4}
-				class="z-50 overflow-hidden rounded-lg bg-slate-800 border border-slate-700 px-2.5 py-1 text-xs text-slate-100 shadow-lg animate-in fade-in-0 zoom-in-95 {className}"
+				class={cn(
+					'z-50 overflow-hidden rounded-lg bg-popover border border-border px-2.5 py-1 text-xs text-popover-foreground shadow-lg animate-in fade-in-0 zoom-in-95',
+					className
+				)}
 			>
 				{#if content}
 					{@render content()}

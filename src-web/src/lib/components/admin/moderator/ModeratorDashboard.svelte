@@ -192,13 +192,13 @@
 	}
 </script>
 
-<div class="flex flex-col gap-8">
+<div data-slot="moderator-dashboard" class="flex flex-col gap-8">
 	<div class="flex items-start justify-between gap-4 flex-wrap">
 		<div class="flex flex-col gap-1">
-			<h1 class="text-2xl font-semibold tracking-tight text-slate-100 text-balance">
+			<h1 class="text-2xl font-semibold tracking-tight text-foreground text-balance">
 				Moderator Queue
 			</h1>
-			<p class="text-sm text-slate-400 text-pretty">
+			<p class="text-sm text-muted-foreground text-pretty">
 				Review package content rating disputes and downstream application candidates.
 			</p>
 		</div>

@@ -1,5 +1,6 @@
 <script lang="ts">
 	import type { Snippet } from 'svelte';
+	import { cn } from '$lib/utils';
 	import { CONTROL_HEIGHTS, COMPONENT_PRESETS } from '$lib/components/ui/tokens';
 	import type { ControlSize } from '$lib/components/ui/types';
 
@@ -54,9 +55,9 @@
 	};
 </script>
 
-<div class="relative inline-flex items-center w-full">
+<div data-slot="input" class="relative inline-flex items-center w-full">
 	{#if leftIcon}
-		<div class="absolute left-3 flex items-center pointer-events-none text-slate-400">
+		<div class="absolute left-3 flex items-center pointer-events-none text-muted-foreground">
 			{@render leftIcon()}
 		</div>
 	{/if}
@@ -76,15 +77,21 @@
 		{oninput}
 		{onchange}
 		{onkeydown}
-		class="{COMPONENT_PRESETS.input.base} {heightClass} {sizePaddings[size]} w-full
-			{leftIcon ? 'pl-9' : ''} {rightIcon ? 'pr-9' : ''}
-			{error ? 'border-red-500 focus:border-red-500 focus:ring-red-500' : ''}
-			{disabled ? 'bg-slate-900 text-slate-500 cursor-not-allowed border-slate-800' : ''}
-			{className}"
+		class={cn(
+			COMPONENT_PRESETS.input.base,
+			heightClass,
+			sizePaddings[size],
+			'w-full',
+			leftIcon && 'pl-9',
+			rightIcon && 'pr-9',
+			error && 'border-destructive focus:border-destructive focus:ring-destructive',
+			disabled && 'bg-muted text-muted-foreground cursor-not-allowed border-border',
+			className
+		)}
 	/>
 
 	{#if rightIcon}
-		<div class="absolute right-3 flex items-center pointer-events-none text-slate-400">
+		<div class="absolute right-3 flex items-center pointer-events-none text-muted-foreground">
 			{@render rightIcon()}
 		</div>
 	{/if}

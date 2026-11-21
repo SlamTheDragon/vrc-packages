@@ -213,7 +213,7 @@
 	}
 </script>
 
-<div class="flex flex-col gap-6">
+<div data-slot="policies-panel" class="flex flex-col gap-6">
 	{#if actionMessage}
 		<Notice variant="success" title="Policy Updated">
 			{actionMessage}
