@@ -93,6 +93,7 @@ flowchart TD
 | How are versions, tags, and releases published? | [`PUBLISHING.md`](PUBLISHING.md) (human) + [`AGENT_PUBLISHING_PROCEDURE.md`](../research/decisions/AGENT_PUBLISHING_PROCEDURE.md) (agent) | Product slices vs Sector 4 root pipeline edits. |
 | Where are pending product release notes recorded? | [`docs/source/CHANGELOG.md`](CHANGELOG.md) (written exclusively by Sector 4 Pipeline from sector `handoff.md` Publication Requests) | Sector `handoff.md` requests vs Pipeline-maintained `docs/source/CHANGELOG.md` vs generated root `CHANGELOG.md`. |
 | What rules and skills govern agent execution? | [`.agents/README.md`](../../.agents/README.md) + [`.agents/skills/README.md`](../../.agents/skills/README.md) | Master root governance skills vs diversified sector skills. |
+| What UX doctrine and pre-code sketch rules govern UI work? | [`docs/research/UIUX/README.md`](../research/UIUX/README.md) + [`09-frontend-design-system-invariants.md`](../../.agents/rules/09-frontend-design-system-invariants.md) | Exhaustive UX analysis and mandatory action-path sketches before UI coding. |
 
 ## Cross-Project Dependency Flow
 

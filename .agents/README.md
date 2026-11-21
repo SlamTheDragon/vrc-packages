@@ -45,7 +45,7 @@ Rules `00` through `08` use `trigger: always_on`. Rule `09` uses `trigger: model
 - [`rules/06-self-management-and-guard-edits.md`](rules/06-self-management-and-guard-edits.md): Resilience, thresholded edit-guard (10+ files or cross-project/legal/pipeline boundary), zero data invention, strict 5-value status parameters, Pipeline-only row clearing, and zero standby loops.
 - [`rules/07-documentation-and-diagram-invariants.md`](rules/07-documentation-and-diagram-invariants.md): Three-domain doc separation, 3-file sector ledgers, GFM tables, quoted Mermaid labels, KaTeX math, and portable repo-relative links.
 - [`rules/08-toolchains-and-pipeline-isolation.md`](rules/08-toolchains-and-pipeline-isolation.md): Bun/Node/Wrangler/Python toolchains, validation scripts, Sector 4 all-handoff oversight, Publication Request intake, and strict root distribution pipeline isolation.
-- [`rules/09-frontend-design-system-invariants.md`](rules/09-frontend-design-system-invariants.md): UI component invariants for `src-crawler-client/`, `src-web/`, and `src-web-search/`.
+- [`rules/09-frontend-design-system-invariants.md`](rules/09-frontend-design-system-invariants.md): UI component invariants, [`docs/research/UIUX/`](../docs/research/UIUX/README.md) UX doctrine, and mandatory pre-code action-path sketches for `src-crawler-client/`, `src-web/`, and `src-web-search/`.
 
 ## Master and Diversified Skills
 
