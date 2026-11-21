@@ -93,7 +93,7 @@ export async function readVersionConfig(channel, workspace = root) {
 }
 
 /** Compute a version without changing config or metadata. */
-export function nextVersion(channel, product, increment, previous, now = new Date()) {
+export function nextVersion(channel, product, increment, previous, now = new Date(), occupiedVersions = []) {
   if (product === "network" && channel === "release") throw new Error("Network has one rapid stream; use preview network patch");
   if (!products.includes(product) ||
       !(channel === "release" ? ["patch", "minor", "major"] : ["patch"]).includes(increment)) {
@@ -116,8 +116,16 @@ export function nextVersion(channel, product, increment, previous, now = new Dat
     } else {
       throw new Error("Preview calendar date precedes the previous version");
     }
+    const suffix = semver.prerelease(previous) ? "-pre" : "";
+    const occupied = new Set(Array.isArray(occupiedVersions) ? occupiedVersions : []);
+    let steps = 0;
+    const maxSteps = occupied.size + 1;
+    while (occupied.has(`${year}.${month}.${patch}${suffix}`)) {
+      if (++steps > maxSteps) throw new Error("Preview version skip exceeded occupied version bound");
+      patch += 1;
+    }
     if (product === "crawler-client" && patch > 65535) throw new Error("Desktop preview patch exceeds the MSI limit of 65535");
-    return `${year}.${month}.${patch}${semver.prerelease(previous) ? "-pre" : ""}`;
+    return `${year}.${month}.${patch}${suffix}`;
   } else {
     const version = semver.inc(previous, increment);
     if (!version) throw new Error("Version exceeds the supported range");
@@ -126,11 +134,11 @@ export function nextVersion(channel, product, increment, previous, now = new Dat
 }
 
 /** Change one config value only. Sync, build, tag and publication remain separate. */
-export async function bumpVersion(channel, product, increment, workspace = root, now = new Date()) {
+export async function bumpVersion(channel, product, increment, workspace = root, now = new Date(), occupiedVersions = []) {
   const { config, configPath } = await readVersionConfig(channel, workspace);
   const key = `${channel}-${product}`;
   const previous = config[key];
-  config[key] = nextVersion(channel, product, increment, previous, now);
+  config[key] = nextVersion(channel, product, increment, previous, now, occupiedVersions);
   await writeFile(configPath, JSON.stringify(config, null, 2) + "\n");
   return { channel, product, previous, version: config[key], configPath };
 }

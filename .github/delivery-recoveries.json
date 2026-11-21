@@ -67,5 +67,19 @@
       "supersededByPredecessor": "2026.10.11-pre",
       "reason": "Immutable preview tag failed deploy on placeholder KV namespace ID 722bdd0d-92ca-445b-9319-da0b27ad0001 (code: 10042); predecessor chain falls back to verified 2026.10.11-pre"
     }
-  }
+  },
+  "temporaryVersionRules": [
+    {
+      "id": "calver-2026-11-preview-npm-rollback",
+      "product": "package",
+      "channel": "preview",
+      "packageName": "vrc-packages-api-preview",
+      "period": "2026.11",
+      "occupiedVersions": [
+        "2026.11.12-pre"
+      ],
+      "expiresAtVersion": "2026.11.12-pre",
+      "reason": "Legacy pre-fix CalVer publish vrc-packages-api-preview@2026.11.12-pre remains permanently immutable on npm after GitHub tag cleanup. Allow npm latest transition from 2026.11.12-pre during 2026.11.0-pre..2026.11.11-pre and skip occupied 2026.11.12-pre when November iterations meet it; expires automatically at 2026.11.12-pre or on rollover to 2026.12.0-pre."
+    }
+  ]
 }

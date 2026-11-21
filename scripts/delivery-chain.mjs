@@ -41,7 +41,7 @@ import {
 } from "./pipeline-utils.mjs";
 import { allowedBinary, checkedAssetBytes, checkSourceRun, checkRemoteTag, sameSourceRunLink, sourceRunID } from "./release-assets.mjs";
 import { checkWorkerArtifacts, downloadActionsArchive } from "./worker-artifacts.mjs";
-import { checkRecoveryReceipts, checkRecoveryRun, recoveryIdentity, supersededPreviewTag } from "./delivery-recovery.mjs";
+import { checkRecoveryReceipts, checkRecoveryRun, occupiedTemporaryVersions, recoveryIdentity, supersededPreviewTag } from "./delivery-recovery.mjs";
 import { extractProductChangelog } from "./changelog.mjs";
 import * as p from "@clack/prompts";
 import { defineCommand, runMain } from "citty";
@@ -88,12 +88,21 @@ function mainVersionBlocker(channel, product, version, refs, workspace, git) {
   } catch { return "Cannot read current origin main version config; fetch origin main before delivery"; }
 }
 
+function resolveNextVersion(channel, product, increment, previous, now, workspace) {
+  const baseVersion = nextVersion(channel, product, increment, previous, now);
+  const occupied = occupiedTemporaryVersions(channel, product, baseVersion, workspace);
+  return {
+    occupied,
+    version: occupied.length ? nextVersion(channel, product, increment, previous, now, occupied) : baseVersion
+  };
+}
+
 /** Read-only planning. Release execution prepares a version PR, not a direct main push. */
 export async function planDelivery(channel, product, workspace = root, now = new Date(), git = runGit, force = false, skipTests = false, increment = "patch", publicationProof = null) {
   if (!Object.hasOwn(workflows, product)) throw new Error("Product delivery is disabled or unknown. Website hosting remains deferred.");
   const { config, configPath } = await readVersionConfig(channel, workspace);
   const previous = config[`${channel}-${product}`];
-  const version = nextVersion(channel, product, increment, previous, now);
+  const { version } = resolveNextVersion(channel, product, increment, previous, now, workspace);
   if (product === "package") checkSDKPublicationVersion(version, channel,
     sdkPackageNames[channel]);
   const branch = git(workspace, "symbolic-ref", "--short", "HEAD");
@@ -319,7 +328,8 @@ export async function startDelivery(channel, product, execute = false, workspace
   let changelogResult;
   let paths;
   try {
-    const result = await bumpVersion(channel, product, increment, workspace, now);
+    const { occupied } = resolveNextVersion(channel, product, increment, plan.previous, now, workspace);
+    const result = await bumpVersion(channel, product, increment, workspace, now, occupied);
     if (result.version !== plan.version) throw new Error("Config changed after planning. Inspect it before retrying.");
     const metadata = await versionFiles("sync", channel, product, workspace);
     changelogResult = extractProductChangelog(channel, product, plan.version, workspace);

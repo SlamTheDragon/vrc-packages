@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import semver from "semver";
 import { resolveBuildScript } from "./build.mjs";
 import { readNetworkDistribution } from "./delivery-chain.mjs";
-import { ciSourceCommit, recoveryIdentity, requireCI } from "./delivery-recovery.mjs";
+import { activeTemporaryVersionRule, ciSourceCommit, recoveryIdentity, requireCI } from "./delivery-recovery.mjs";
 import {
   checkReleaseMetadata,
   checkReleaseSource,
@@ -115,7 +115,7 @@ async function readPublicSDK(name, version, signal) {
 
 /** Preview is directly published through OIDC. Releases still use owner-approved stages. */
 export async function publishPreviewSDKArtifact(artifact, expected, receipt, run, registry = readPublicSDK,
-  wait = milliseconds => new Promise(resolvePromise => setTimeout(resolvePromise, milliseconds))) {
+  wait = milliseconds => new Promise(resolvePromise => setTimeout(resolvePromise, milliseconds)), workspace = root) {
   // The SDK project .npmrc is for token-backed staging. Its empty token would
   // shadow the user-level credential installed by npm's OIDC exchange.
   const bytes = readFileSync(artifact), project = root;
@@ -128,10 +128,14 @@ export async function publishPreviewSDKArtifact(artifact, expected, receipt, run
       throw new Error("Public preview SDK differs from its checked artifact");
     }
   };
+  const tempRule = activeTemporaryVersionRule("preview", "package", expected.version, workspace);
+  const allowedOccupiedLatest = version =>
+    Boolean(tempRule && tempRule.packageName === expected.name && tempRule.occupiedVersions.includes(version));
   const existing = await registry(expected.name, expected.version);
   if (existing) check(existing);
   const latest = await registry(expected.name, "latest");
-  if (latest && (latest.name !== expected.name || !semver.valid(latest.version) || semver.gt(latest.version, expected.version))) {
+  if (latest && (latest.name !== expected.name || !semver.valid(latest.version) ||
+      (semver.gt(latest.version, expected.version) && !allowedOccupiedLatest(latest.version)))) {
     throw new Error("Preview latest would roll back or has invalid identity");
   }
   if (!existing) {
@@ -148,7 +152,8 @@ export async function publishPreviewSDKArtifact(artifact, expected, receipt, run
     const published = await registry(expected.name, expected.version, signal);
     if (published !== null) check(published);
     const alias = await registry(expected.name, "latest", signal);
-    const olderAlias = alias?.name === expected.name && semver.valid(alias.version) && semver.lt(alias.version, expected.version);
+    const olderAlias = alias?.name === expected.name && semver.valid(alias.version) &&
+      (semver.lt(alias.version, expected.version) || allowedOccupiedLatest(alias.version));
     if (alias !== null && !olderAlias) check(alias);
     if (published !== null && alias !== null && !olderAlias) break;
     if (attempt === delays.length) throw new Error("Preview publication readback did not converge. No publication retry ran.");
@@ -398,7 +403,7 @@ export async function deliver(action, channel, product, ci = false, skipTests = 
             process.env.NODE_AUTH_TOKEN || process.env.NPM_TOKEN) {
           throw new Error("Direct preview publication requires OIDC without npm write tokens");
         }
-        const publication = await publishPreviewSDKArtifact(artifact, expected, receipt, runCommand);
+        const publication = await publishPreviewSDKArtifact(artifact, expected, receipt, runCommand, readPublicSDK, undefined, workspace);
         writeFileSync(`${artifact}.published.json`, JSON.stringify(publication, null, 2) + "\n");
         return { action, channel, product, purpose: "ci-release", status: publication.status };
       }

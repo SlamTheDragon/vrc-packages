@@ -15,7 +15,7 @@ import {
   selectTag,
   style as c
 } from "./pipeline-utils.mjs";
-import { productDirectories, productTagPrefixes, productWorkflows } from "./versioning.mjs";
+import { productDirectories, productTagPrefixes, productWorkflows, sdkPackageNames } from "./versioning.mjs";
 
 export { renderCardTable };
 
@@ -96,7 +96,7 @@ function isValidPreviewVersionForProduct(product, version) {
   return product === "network" ? semver.prerelease(version) === null : version.endsWith("-pre");
 }
 
-export function supersededPreviewTag(tag, workspace = root) {
+function readValidatedManifest(workspace = root) {
   const filePath = resolve(workspace, manifestPath);
   if (!existsSync(filePath)) {
     return null;
@@ -111,10 +111,15 @@ export function supersededPreviewTag(tag, workspace = root) {
 
   if (!manifest || typeof manifest !== "object" || Array.isArray(manifest) ||
       manifest.schemaVersion !== 1 || manifest.repository !== "SlamTheDragon/vrc-packages") {
-    throw new Error("Superseded preview check failed closed: invalid recovery manifest header.");
+    throw new Error("Recovery manifest check failed closed: invalid manifest header.");
   }
 
-  if (manifest.supersededPreviewTags === undefined) {
+  return manifest;
+}
+
+export function supersededPreviewTag(tag, workspace = root) {
+  const manifest = readValidatedManifest(workspace);
+  if (!manifest || manifest.supersededPreviewTags === undefined) {
     return null;
   }
   if (!manifest.supersededPreviewTags || typeof manifest.supersededPreviewTags !== "object" ||
@@ -143,6 +148,104 @@ export function supersededPreviewTag(tag, workspace = root) {
   }
 
   return { ...entry, tag, repository: manifest.repository };
+}
+
+function previewPeriod(version) {
+  const parsed = semver.parse(version.split("-")[0]);
+  return parsed ? `${parsed.major}.${parsed.minor}` : null;
+}
+
+function validateTemporaryVersionRule(rule) {
+  if (!rule || typeof rule !== "object" || Array.isArray(rule) ||
+      typeof rule.id !== "string" || !/^[a-z0-9-]+$/.test(rule.id) ||
+      !supersededDeliverableProducts.has(rule.product) ||
+      rule.channel !== "preview") {
+    return false;
+  }
+  const periodPattern = rule.product === "crawler-client"
+    ? /^\d{1,2}\.(?:[1-9]|1[0-2])$/
+    : /^\d{4}\.(?:[1-9]|1[0-2])$/;
+  if (typeof rule.period !== "string" || !periodPattern.test(rule.period)) {
+    return false;
+  }
+  if (rule.product === "package") {
+    if (rule.packageName !== sdkPackageNames.preview) return false;
+  } else if (rule.packageName !== undefined) {
+    return false;
+  }
+  if (!Array.isArray(rule.occupiedVersions) || rule.occupiedVersions.length === 0 ||
+      new Set(rule.occupiedVersions).size !== rule.occupiedVersions.length) {
+    return false;
+  }
+  for (const occupiedVersion of rule.occupiedVersions) {
+    if (!isValidPreviewVersionForProduct(rule.product, occupiedVersion) ||
+        isInitialPlaceholderPreviewVersion(occupiedVersion) ||
+        previewPeriod(occupiedVersion) !== rule.period) {
+      return false;
+    }
+  }
+  if (!isValidPreviewVersionForProduct(rule.product, rule.expiresAtVersion) ||
+      isInitialPlaceholderPreviewVersion(rule.expiresAtVersion) ||
+      previewPeriod(rule.expiresAtVersion) !== rule.period ||
+      !rule.occupiedVersions.includes(rule.expiresAtVersion) ||
+      rule.occupiedVersions.some(v => semver.gt(v, rule.expiresAtVersion))) {
+    return false;
+  }
+  return typeof rule.reason === "string" && rule.reason.trim().length > 0;
+}
+
+/** Return the validated temporary CalVer collision/rollback rule for a preview product, or null if absent. */
+export function temporaryVersionRule(channel, product, workspace = root) {
+  const manifest = readValidatedManifest(workspace);
+  if (!manifest || manifest.temporaryVersionRules === undefined) {
+    return null;
+  }
+  if (!Array.isArray(manifest.temporaryVersionRules)) {
+    throw new Error("Temporary version rules check failed closed: temporaryVersionRules must be an array.");
+  }
+  const matches = [];
+  for (const rule of manifest.temporaryVersionRules) {
+    if (!validateTemporaryVersionRule(rule)) {
+      throw new Error(`Temporary version rule ${String(rule?.id ?? "unknown")} failed strict validation.`);
+    }
+    if (rule.channel === channel && rule.product === product) {
+      matches.push(rule);
+    }
+  }
+  if (matches.length > 1) {
+    throw new Error(`Multiple temporary version rules defined for ${channel} ${product}.`);
+  }
+  if (matches.length === 0) {
+    return null;
+  }
+  const selected = matches[0];
+  return {
+    ...selected,
+    occupiedVersions: [...selected.occupiedVersions],
+    repository: manifest.repository
+  };
+}
+
+function matchTemporaryPeriodRule(channel, product, candidateVersion, workspace, comparator) {
+  if (channel !== "preview" || typeof candidateVersion !== "string" || semver.valid(candidateVersion) !== candidateVersion) {
+    return null;
+  }
+  const rule = temporaryVersionRule(channel, product, workspace);
+  if (!rule || previewPeriod(candidateVersion) !== rule.period) {
+    return null;
+  }
+  return comparator(candidateVersion, rule.expiresAtVersion) ? rule : null;
+}
+
+/** Active only strictly before expiresAtVersion within the same period; self-expires on collision or rollover. */
+export function activeTemporaryVersionRule(channel, product, candidateVersion, workspace = root) {
+  return matchTemporaryPeriodRule(channel, product, candidateVersion, workspace, semver.lt);
+}
+
+/** Occupied preview versions to skip when planning a bump up to expiresAtVersion within the same period. */
+export function occupiedTemporaryVersions(channel, product, candidateVersion, workspace = root) {
+  const rule = matchTemporaryPeriodRule(channel, product, candidateVersion, workspace, semver.lte);
+  return rule ? [...rule.occupiedVersions] : [];
 }
 
 /** This only selects a candidate. Every caller must also check its remote evidence. */

@@ -3,13 +3,13 @@
 ## Active Working Context
 
 - **Sector Anchor**: `docs/scratch-pipeline/` (branches `main`, `release/*`, active integration on `preview/crawler-network`)
-- **Current Milestone**: `DELIVERY-MAINTENANCE` (checkpoint saved; awaiting owner action on failed tag `cloudflare-worker/v2026.11.12-pre` before live Worker preview deploy)
-- **Active Task Slice**: `INT-003` (`PR-CN-WRK-001`) + `PN-007` (`RATE_LIMIT_KV` preview binding) + CalVer rollover fix (`f1d3359`)
+- **Current Milestone**: `DELIVERY-MAINTENANCE` (Option 3 pause checkpoint saved; waiting for owner cleanup of premature `2026.11.*` GitHub tags and releases before `2026.11.0(-pre)` redeploy)
+- **Active Task Slice**: `INT-003` (`PR-CN-WRK-001`) + `PN-007` (`RATE_LIMIT_KV` preview binding) + CalVer index-reset and Option 3 temporary ruleset
 - **Working Theories and Hypotheses**:
-  - Phase 1 Sector 4 Pipeline sweep and CalVer month/year patch-reset fix (`f1d3359`) are committed locally (`scripts/versioning.mjs`, `scripts/pipeline-utils.mjs`; targeted `delivery.test.ts` and `release-provenance.test.ts` `61 pass, 0 fail`).
-  - Remote preview D1 (`fbef6ce1-4145-45ae-ae91-5d617a1f2672`) had `0` rows across all `33` legacy tables and was emptied cleanly (`sqlite_master` empty).
-  - Provisioned real Cloudflare preview KV namespace `0a8237b498334dd7b1f58fb7807a68c6` (`preview-RATE_LIMIT_KV`) and bound it in `src-worker/wrangler.toml` via Sector 1 subagent (`PN-007`, removing fabricated production placeholder `722bdd0d-92ca-445b-9319-da0b27ad0001`; all 7 Sector 1 checks green).
-  - Immutable tag ruleset `24553469` blocks deleting `vrcp-crawler/v2026.10.10-pre` (`HTTP 403`) and failed preview Worker tag `cloudflare-worker/v2026.11.12-pre` (`01e5ba42`, run `44762274301` failed at KV deploy); agents must never disable rulesets.
+  - CalVer month/year index reset to `0` and SemVer minor/major lower-index reset checks are committed (`f1d3359`) and extended with `occupiedVersions` collision skipping (`scripts/versioning.mjs`, `scripts/delivery-chain.mjs`).
+  - Temporary self-expiring version ruleset `calver-2026-11-preview-npm-rollback` (`.github/delivery-recoveries.json`, `scripts/delivery-recovery.mjs`, `scripts/delivery.mjs`) permits `vrc-packages-api-preview` `latest` transitions from permanently published `2026.11.12-pre` during `2026.11.0-pre`..`2026.11.11-pre`, skips `2026.11.12-pre` when iterations meet it, and expires automatically at `2026.11.12-pre` or on calendar rollover to `2026.12.0-pre`.
+  - Remote preview D1 (`fbef6ce1-4145-45ae-ae91-5d617a1f2672`) was cleared cleanly (`0` legacy tables), and real preview KV namespace `0a8237b498334dd7b1f58fb7807a68c6` (`preview-RATE_LIMIT_KV`) is bound in `src-worker/wrangler.toml` (`9f920c5`).
+  - Owner directed Option 3: temporarily relax GitHub ruleset `24553469`, delete premature November tags (`vrcp-api/v2026.11.12-pre`, `vrcp-network/v2026.11.9`, `cloudflare-worker/v2026.11.12-pre`, `cloudflare-worker/v2026.11.13-pre`) and their GitHub Releases, then restore ruleset `24553469`.
   - Any edit to `scripts/`, `.github/workflows/`, or `config*.versions.json` triggers Rule 06 `edit-guard`.
 
 ---
@@ -29,6 +29,7 @@
 
 ## Next Steps
 
-1. Confirm owner decision on failed remote tag `cloudflare-worker/v2026.11.12-pre` (manual owner deletion on GitHub for `v2026.11.0-pre` vs. sanctioned recovery rule under `.github/delivery-recoveries.json` for `v2026.11.13-pre`).
-2. Restore consumed Worker preview changelog notes if resetting to `2026.10.11-pre`, publish Worker preview (`cloudflare-worker.yml`), and verify live Worker deployment + live VPM crawl proof + remote preview D1 population.
-3. Transfer final ledger clearance across `docs/scratch-pipeline/` and `docs/scratch-crawler-network/`, verify `check_doc_links.ts` + `ste-lint.py`, and push `preview/crawler-network`.
+1. Owner temporary cleanup on GitHub: relax ruleset `24553469`, delete premature tags and Releases (`vrcp-api/v2026.11.12-pre` + Release, `vrcp-network/v2026.11.9` + Release, `cloudflare-worker/v2026.11.12-pre`, `cloudflare-worker/v2026.11.13-pre`), delete local tags if present, and re-enable ruleset `24553469`.
+2. On resume (after owner confirms deletion): reset `config.preview.versions.json` to October baselines (`preview-package: "2026.10.11-pre"`, `preview-network: "2026.10.8"`, `preview-worker: "2026.10.11-pre"`), remove the obsolete `cloudflare-worker/v2026.11.12-pre` entry from `.github/delivery-recoveries.json` (`supersededPreviewTags`), restore consumed preview changelogs in `docs/source/CHANGELOG.md` from archived notes and commits, sync metadata, and commit locally.
+3. Publish preview chain in strict producer-before-consumer order starting at index `0`: `vrcp-api/v2026.11.0-pre` (`package`), then `vrcp-network/v2026.11.0` (`network`), then `cloudflare-worker/v2026.11.0-pre` (`worker`).
+4. Verify CI live deployment, `worker:preview:live-crawl --execute` output, live Worker HTTP endpoints (`/v1/app/index`, `/v1/app/index/delta`), and remote preview D1 state + `ci-preview-probe-*` node revocation, then transfer final ledger clearance across `docs/scratch-pipeline/` and `docs/scratch-crawler-network/` and push `preview/crawler-network`.

@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { zipSync } from "fflate";
-import { recoveryIdentity, recoveryRunMatches, checkRecoveryRun, checkRecoveryRetry, checkRecoveryReceipts, requireRecoveryCI, ciSourceCommit, authorizeRecovery, diagnoseFailure, rerunWorkflowRun, revertDeliveryTag, createPatchBranch, mergeAndCleanupPatchBranch, promptInteractiveRecovery, supersededPreviewTag } from "../scripts/delivery-recovery.mjs";
+import { recoveryIdentity, recoveryRunMatches, checkRecoveryRun, checkRecoveryRetry, checkRecoveryReceipts, requireRecoveryCI, ciSourceCommit, authorizeRecovery, diagnoseFailure, rerunWorkflowRun, revertDeliveryTag, createPatchBranch, mergeAndCleanupPatchBranch, promptInteractiveRecovery, supersededPreviewTag, temporaryVersionRule, activeTemporaryVersionRule, occupiedTemporaryVersions } from "../scripts/delivery-recovery.mjs";
 import { deliveryTroubleshooting, resolveEffectivePredecessor, requirePredecessorPublicationProof, requirePublicationProof, inspectPredecessorAssets, planDelivery } from "../scripts/delivery-chain.mjs";
 
 function fixture(tag = "vrcp-crawler/v0.0.6") {
@@ -1008,6 +1008,150 @@ test("requirePredecessorPublicationProof resolves superseded preview tag while r
     expect(planned.predecessorProof?.verified).toBe(true);
   } finally {
     rmSync(planDir, { recursive: true, force: true });
+  }
+});
+
+test("temporaryVersionRule activates before expiry, skips occupied iterations, and self-expires on collision or calendar rollover", () => {
+  const liveRule = temporaryVersionRule("preview", "package");
+  expect(liveRule).not.toBeNull();
+  expect(liveRule?.id).toBe("calver-2026-11-preview-npm-rollback");
+  expect(liveRule?.occupiedVersions).toEqual(["2026.11.12-pre"]);
+  expect(liveRule?.expiresAtVersion).toBe("2026.11.12-pre");
+
+  // Active strictly before expiresAtVersion within period 2026.11
+  expect(activeTemporaryVersionRule("preview", "package", "2026.11.0-pre")?.id).toBe("calver-2026-11-preview-npm-rollback");
+  expect(activeTemporaryVersionRule("preview", "package", "2026.11.11-pre")?.id).toBe("calver-2026-11-preview-npm-rollback");
+  // Self-expires when iterations reach expiresAtVersion or go past it, or roll over to next month/year
+  expect(activeTemporaryVersionRule("preview", "package", "2026.11.12-pre")).toBeNull();
+  expect(activeTemporaryVersionRule("preview", "package", "2026.11.13-pre")).toBeNull();
+  expect(activeTemporaryVersionRule("preview", "package", "2026.12.0-pre")).toBeNull();
+  expect(activeTemporaryVersionRule("preview", "package", "2027.1.0-pre")).toBeNull();
+  expect(activeTemporaryVersionRule("release", "package", "2026.11.0-pre")).toBeNull();
+
+  // Occupied versions list stays active up to and including expiresAtVersion so .11 bumps skip .12 -> .13
+  expect(occupiedTemporaryVersions("preview", "package", "2026.11.0-pre")).toEqual(["2026.11.12-pre"]);
+  expect(occupiedTemporaryVersions("preview", "package", "2026.11.12-pre")).toEqual(["2026.11.12-pre"]);
+  expect(occupiedTemporaryVersions("preview", "package", "2026.11.13-pre")).toEqual([]);
+  expect(occupiedTemporaryVersions("preview", "package", "2026.12.0-pre")).toEqual([]);
+  expect(occupiedTemporaryVersions("preview", "package", "2027.1.0-pre")).toEqual([]);
+
+  const missingDir = mkdtempSync(join(tmpdir(), "vrcp-temp-rule-missing-"));
+  try {
+    expect(temporaryVersionRule("preview", "package", missingDir)).toBeNull();
+    expect(activeTemporaryVersionRule("preview", "package", "2026.11.0-pre", missingDir)).toBeNull();
+    expect(occupiedTemporaryVersions("preview", "package", "2026.11.12-pre", missingDir)).toEqual([]);
+  } finally {
+    rmSync(missingDir, { recursive: true, force: true });
+  }
+
+  const invalidRules = [
+    {
+      id: "bad-release",
+      product: "package",
+      channel: "release",
+      packageName: "vrc-packages-api-preview",
+      period: "2026.11",
+      occupiedVersions: ["2026.11.1-pre"],
+      expiresAtVersion: "2026.11.1-pre",
+      reason: "release cannot use temporary rules"
+    },
+    {
+      id: "bad-web",
+      product: "web",
+      channel: "preview",
+      period: "2026.11",
+      occupiedVersions: ["2026.11.1-pre"],
+      expiresAtVersion: "2026.11.1-pre",
+      reason: "web is non-deliverable"
+    },
+    {
+      id: "bad-duplicate-occupied",
+      product: "package",
+      channel: "preview",
+      packageName: "vrc-packages-api-preview",
+      period: "2026.11",
+      occupiedVersions: ["2026.11.5-pre", "2026.11.5-pre"],
+      expiresAtVersion: "2026.11.5-pre",
+      reason: "duplicate occupied entries must fail closed"
+    },
+    {
+      id: "bad-wrong-period",
+      product: "package",
+      channel: "preview",
+      packageName: "vrc-packages-api-preview",
+      period: "2026.11",
+      occupiedVersions: ["2026.12.1-pre"],
+      expiresAtVersion: "2026.12.1-pre",
+      reason: "version period mismatch must fail closed"
+    },
+    {
+      id: "bad-pkg-name",
+      product: "package",
+      channel: "preview",
+      packageName: "vrc-packages-api",
+      period: "2026.11",
+      occupiedVersions: ["2026.11.12-pre"],
+      expiresAtVersion: "2026.11.12-pre",
+      reason: "wrong npm package name must fail closed"
+    },
+    {
+      id: "bad-expiry-not-max",
+      product: "package",
+      channel: "preview",
+      packageName: "vrc-packages-api-preview",
+      period: "2026.11",
+      occupiedVersions: ["2026.11.5-pre", "2026.11.12-pre"],
+      expiresAtVersion: "2026.11.5-pre",
+      reason: "expiresAtVersion must be max occupied version"
+    }
+  ];
+
+  for (const badRule of invalidRules) {
+    const dir = mkdtempSync(join(tmpdir(), "vrcp-temp-rule-bad-"));
+    try {
+      mkdirSync(join(dir, ".github"), { recursive: true });
+      writeFileSync(
+        join(dir, ".github", "delivery-recoveries.json"),
+        JSON.stringify({
+          schemaVersion: 1,
+          repository: "SlamTheDragon/vrc-packages",
+          tags: {},
+          temporaryVersionRules: [badRule]
+        })
+      );
+      expect(() => temporaryVersionRule("preview", "package", dir)).toThrow();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  // Network uses suffix-free CalVer and validates cleanly when configured
+  const networkDir = mkdtempSync(join(tmpdir(), "vrcp-temp-rule-net-"));
+  try {
+    mkdirSync(join(networkDir, ".github"), { recursive: true });
+    writeFileSync(
+      join(networkDir, ".github", "delivery-recoveries.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        repository: "SlamTheDragon/vrc-packages",
+        tags: {},
+        temporaryVersionRules: [
+          {
+            id: "network-2026-11",
+            product: "network",
+            channel: "preview",
+            period: "2026.11",
+            occupiedVersions: ["2026.11.9"],
+            expiresAtVersion: "2026.11.9",
+            reason: "network rapid stream validation"
+          }
+        ]
+      })
+    );
+    expect(occupiedTemporaryVersions("preview", "network", "2026.11.9", networkDir)).toEqual(["2026.11.9"]);
+    expect(occupiedTemporaryVersions("preview", "network", "2026.11.10", networkDir)).toEqual([]);
+  } finally {
+    rmSync(networkDir, { recursive: true, force: true });
   }
 });
 

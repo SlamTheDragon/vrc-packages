@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { createHash, randomBytes } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { bumpVersion, distributedArtifact, networkArchiveURL, productDirectories, readVersionConfig, sdkPackageNames, sdkChannelForProduct, versionFiles } from "../scripts/versioning.mjs";
+import { bumpVersion, distributedArtifact, networkArchiveURL, nextVersion, productDirectories, readVersionConfig, sdkPackageNames, sdkChannelForProduct, versionFiles } from "../scripts/versioning.mjs";
 import { checkSDKPublicationVersion, deliver, requireCI, resolveTag, stageSDKArtifact, publishPreviewSDKArtifact, previewOIDCFailure, validateCIArtifact, validateRegistrySDK, validateSDKStage, workerSecretBindings } from "../scripts/delivery.mjs";
 import { withPipelineWorkspaceFixture } from "./support/pipeline_fixture.ts";
 
@@ -1198,4 +1198,163 @@ test("product workflows scope tests to product domains and enforce test policy o
   const repoTests = Bun.YAML.parse(readFileSync(new URL("../.github/workflows/repository-tests.yml", import.meta.url), "utf8")) as any;
   expect(repoTests.name).toBe("Repository Tests");
   expect(repoTests.jobs.test.steps.some((s: any) => s.run === "bun test ./tests")).toBe(true);
+});
+
+test("nextVersion skips occupied preview versions without breaking month/year or SemVer lower-index resets", () => {
+  // Occupied skip in November 2026
+  expect(nextVersion("preview", "package", "patch", "2026.11.11-pre", new Date("2026-11-21T00:00:00Z"), ["2026.11.12-pre"]))
+    .toBe("2026.11.13-pre");
+  expect(nextVersion("preview", "package", "patch", "2026.11.10-pre", new Date("2026-11-21T00:00:00Z"), ["2026.11.11-pre", "2026.11.12-pre"]))
+    .toBe("2026.11.13-pre");
+  // Month and year rollover reset index to 0 even when occupied versions exist
+  expect(nextVersion("preview", "package", "patch", "2026.11.11-pre", new Date("2026-12-01T00:00:00Z"), ["2026.11.12-pre"]))
+    .toBe("2026.12.0-pre");
+  expect(nextVersion("preview", "package", "patch", "2026.12.5-pre", new Date("2027-01-01T00:00:00Z")))
+    .toBe("2027.1.0-pre");
+  expect(nextVersion("preview", "crawler-client", "patch", "26.11.5-pre", new Date("2026-12-01T00:00:00Z")))
+    .toBe("26.12.0-pre");
+  // SemVer minor and major increments reset lower indices cleanly
+  expect(nextVersion("release", "package", "minor", "0.0.5")).toBe("0.1.0");
+  expect(nextVersion("release", "package", "major", "0.2.5")).toBe("1.0.0");
+  expect(nextVersion("release", "worker", "minor", "1.4.9")).toBe("1.5.0");
+  expect(nextVersion("release", "worker", "major", "1.5.9")).toBe("2.0.0");
+});
+
+test("publishPreviewSDKArtifact honors active temporary npm rollback rule, blocks unlisted rollback, and expires cleanly", async () => {
+  await fixture(async workspace => {
+    await mkdir(resolve(workspace, ".github"), { recursive: true });
+    await writeFile(
+      resolve(workspace, ".github/delivery-recoveries.json"),
+      readFileSync(new URL("../.github/delivery-recoveries.json", import.meta.url), "utf8")
+    );
+
+    const artifact = resolve(workspace, "vrc-packages-api-preview-2026.11.0-pre.tgz");
+    const bytes = Buffer.from("Synthetic preview rollback fixture");
+    await writeFile(artifact, bytes);
+    const expected = { name: sdkPackageNames.preview, version: "2026.11.0-pre", commit: "a".repeat(40) };
+    const receipt = { ...expected, purpose: "ci-release", sha256: createHash("sha256").update(bytes).digest("hex") };
+    const metadata = {
+      name: expected.name,
+      version: expected.version,
+      dist: { integrity: `sha512-${createHash("sha512").update(bytes).digest("base64")}` }
+    };
+
+    // Case 1: Existing npm latest is occupied 2026.11.12-pre and CDN converges after 1 stale read
+    let writes = 0;
+    let aliasReads = 0;
+    const delays: number[] = [];
+    const run = (args: string[]) => {
+      if (args[0] === "--version") return "11.19.0";
+      writes++;
+      return "{}";
+    };
+    const convergingRegistry = async (_name: string, version: string) => {
+      if (version === "2026.11.0-pre") return writes > 0 ? metadata : null;
+      if (version === "latest") {
+        if (writes === 0) return { name: expected.name, version: "2026.11.12-pre", dist: { integrity: "sha512-old" } };
+        aliasReads++;
+        return aliasReads < 2
+          ? { name: expected.name, version: "2026.11.12-pre", dist: { integrity: "sha512-old" } }
+          : metadata;
+      }
+      return null;
+    };
+    const published = await publishPreviewSDKArtifact(
+      artifact,
+      expected,
+      receipt,
+      run,
+      convergingRegistry,
+      async ms => { delays.push(ms); },
+      workspace
+    );
+    expect(published.status).toBe("published-verified");
+    expect(writes).toBe(1);
+    expect(delays).toEqual([1000]);
+
+    // Case 2: Unlisted newer version (2026.11.99-pre) is STILL rejected as rollback
+    const unlistedRegistry = async (_name: string, version: string) =>
+      version === "latest" ? { name: expected.name, version: "2026.11.99-pre", dist: { integrity: "sha512-other" } } : null;
+    await expect(
+      publishPreviewSDKArtifact(artifact, expected, receipt, run, unlistedRegistry, async () => {}, workspace)
+    ).rejects.toThrow("roll back");
+
+    // Case 3: Post-expiry versions (2026.12.0-pre or 2026.11.13-pre) cannot roll back past a newer latest
+    const decExpected = { name: sdkPackageNames.preview, version: "2026.12.0-pre", commit: "a".repeat(40) };
+    const decReceipt = { ...decExpected, purpose: "ci-release", sha256: receipt.sha256 };
+    const expiredRegistry = async (_name: string, version: string) =>
+      version === "latest" ? { name: expected.name, version: "2026.12.1-pre", dist: { integrity: "sha512-other" } } : null;
+    await expect(
+      publishPreviewSDKArtifact(artifact, decExpected, decReceipt, run, expiredRegistry, async () => {}, workspace)
+    ).rejects.toThrow("roll back");
+
+    const postRuleExpected = { name: sdkPackageNames.preview, version: "2026.11.13-pre", commit: "a".repeat(40) };
+    const postRuleReceipt = { ...postRuleExpected, purpose: "ci-release", sha256: receipt.sha256 };
+    const postRuleRegistry = async (_name: string, version: string) =>
+      version === "latest" ? { name: expected.name, version: "2026.11.14-pre", dist: { integrity: "sha512-other" } } : null;
+    await expect(
+      publishPreviewSDKArtifact(artifact, postRuleExpected, postRuleReceipt, run, postRuleRegistry, async () => {}, workspace)
+    ).rejects.toThrow("roll back");
+
+    // Case 4: deliver("publish", "preview", "package", ...) forwards workspace so temp rule applies cleanly
+    const previewCfgPath = resolve(workspace, "config.preview.versions.json");
+    const previewCfg = JSON.parse(await readFile(previewCfgPath, "utf8"));
+    previewCfg["preview-package"] = "2026.11.0-pre";
+    await writeFile(previewCfgPath, JSON.stringify(previewCfg));
+    await versionFiles("sync", "preview", "package", workspace);
+    const ciDir = resolve(workspace, "src-package/.artifacts/ci");
+    await mkdir(ciDir, { recursive: true });
+    const sdkPkgPath = resolve(workspace, "src-package/package.json");
+    const sdkPkg = JSON.parse(await readFile(sdkPkgPath, "utf8"));
+    await writeFile(sdkPkgPath, JSON.stringify({
+      ...sdkPkg,
+      name: sdkPackageNames.preview,
+      version: "2026.11.0-pre",
+      private: false
+    }));
+    const deliverArtifact = resolve(ciDir, "vrc-packages-api-preview-2026.11.0-pre.tgz");
+    await writeFile(deliverArtifact, bytes);
+    await writeFile(`${deliverArtifact}.json`, JSON.stringify(receipt));
+    let deliverPublished = false;
+    const origFetch = globalThis.fetch;
+    const savedEnv = { ...process.env };
+    Object.assign(process.env, {
+      GITHUB_SHA: "a".repeat(40),
+      ACTIONS_ID_TOKEN_REQUEST_URL: "https://example.invalid/oidc",
+      ACTIONS_ID_TOKEN_REQUEST_TOKEN: "synthetic-oidc-token",
+      NODE_AUTH_TOKEN: "",
+      NPM_TOKEN: ""
+    });
+    globalThis.fetch = (async (url: string | URL) => {
+      const target = String(url);
+      if (target.endsWith("/2026.11.0-pre")) {
+        return deliverPublished ? new Response(JSON.stringify(metadata), { status: 200 }) : new Response("", { status: 404 });
+      }
+      if (target.endsWith("/latest")) {
+        const body = deliverPublished
+          ? metadata
+          : { name: expected.name, version: "2026.11.12-pre", dist: { integrity: "sha512-old" } };
+        return new Response(JSON.stringify(body), { status: 200 });
+      }
+      throw new Error(`Unexpected fetch URL: ${target}`);
+    }) as typeof fetch;
+    try {
+      const res = await deliver("publish", "preview", "package", true, false, {
+        workspace,
+        runCommand: (args: string[]) => {
+          if (args[0] === "--version") return "11.19.0";
+          deliverPublished = true;
+          return "{}";
+        },
+        verifyCI: async (prod: string, ch: string) => ({ product: prod, channel: ch })
+      });
+      expect(res.status).toBe("published-verified");
+    } finally {
+      globalThis.fetch = origFetch;
+      for (const k of ["GITHUB_SHA", "ACTIONS_ID_TOKEN_REQUEST_URL", "ACTIONS_ID_TOKEN_REQUEST_TOKEN", "NODE_AUTH_TOKEN", "NPM_TOKEN"]) {
+        if (savedEnv[k] === undefined) delete process.env[k];
+        else process.env[k] = savedEnv[k];
+      }
+    }
+  });
 });
