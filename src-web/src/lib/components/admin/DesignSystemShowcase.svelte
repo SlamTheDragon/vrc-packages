@@ -1,10 +1,13 @@
 <script lang="ts">
+	import { cn } from '$lib/utils';
 	import {
 		PALETTE_SWATCHES,
 		CONTROL_HEIGHTS,
+		COMPONENT_PRESETS,
 		EVIDENCE_TOKENS
 	} from '$lib/components/ui/tokens';
 	import type { EvidenceState } from '$lib/components/ui/types';
+	import { toastStore } from '$lib/stores/toast.svelte';
 
 	// Forms Domain (10 primitives)
 	import Button from '$lib/components/ui/forms/Button.svelte';
@@ -31,13 +34,14 @@
 	import Popover from '$lib/components/ui/overlays/Popover.svelte';
 	import Tooltip from '$lib/components/ui/overlays/Tooltip.svelte';
 
-	// Feedback Domain (6 primitives)
+	// Feedback Domain (7 primitives)
 	import Badge from '$lib/components/ui/feedback/Badge.svelte';
 	import EvidenceBadge from '$lib/components/ui/feedback/EvidenceBadge.svelte';
 	import Notice from '$lib/components/ui/feedback/Notice.svelte';
 	import Progress from '$lib/components/ui/feedback/Progress.svelte';
 	import Skeleton from '$lib/components/ui/feedback/Skeleton.svelte';
 	import EmptyState from '$lib/components/ui/feedback/EmptyState.svelte';
+	import Toast from '$lib/components/ui/feedback/Toast.svelte';
 
 	// Display Domain (7 primitives)
 	import Card from '$lib/components/ui/display/Card.svelte';
@@ -78,6 +82,7 @@
 	let demoRadio = $state('metadata');
 	let demoToggle = $state('preview');
 	let demoDialogOpen = $state(false);
+	let demoAlertOpen = $state(false);
 	let demoSheetOpen = $state(false);
 	let demoPopoverOpen = $state(false);
 	let demoMenuOpen = $state(false);
@@ -90,7 +95,7 @@
 		{ id: 'tokens', label: '1. Tokens & Heights', count: 15 },
 		{ id: 'forms', label: '2. Forms Domain', count: 10 },
 		{ id: 'navigation', label: '3. Navigation & Overlays', count: 10 },
-		{ id: 'feedback', label: '4. Feedback & Display', count: 13 },
+		{ id: 'feedback', label: '4. Feedback & Display', count: 14 },
 		{ id: 'telemetry', label: '5. Telemetry & Workbench', count: 7 }
 	];
 
@@ -172,7 +177,7 @@
 					VRCP 6-Domain + Workbench UI Design System
 				</h1>
 				<p class="text-xs text-muted-foreground mt-0.5 text-pretty">
-					39 accessible Svelte 5 primitives bound to <code class="font-mono text-sidebar-primary">$lib/components/ui/tokens.ts</code> and <code class="font-mono text-foreground">CONTROL_HEIGHTS</code> (Mist + Teal OKLCH).
+					41 accessible Svelte 5 primitives bound to <code class="font-mono text-sidebar-primary">$lib/components/ui/tokens.ts</code> and <code class="font-mono text-foreground">CONTROL_HEIGHTS</code> (Mist + Teal OKLCH).
 				</p>
 			</div>
 		</div>
@@ -318,10 +323,16 @@
 
 							<DropdownMenu bind:open={demoMenuOpen}>
 								{#snippet trigger()}
-									<Button variant="secondary" size="sm">
+									<span
+										class={cn(
+											CONTROL_HEIGHTS.sm,
+											COMPONENT_PRESETS.button.secondary,
+											'inline-flex items-center justify-center px-3 text-xs font-medium rounded-xl gap-1.5 select-none active:scale-[0.96]'
+										)}
+									>
 										<span>Quick Actions</span>
 										<ChevronDown size={14} />
-									</Button>
+									</span>
 								{/snippet}
 								<DropdownItem label="Inspect Source Profile" shortcut="⌘P" />
 								<DropdownItem label="Verify Creator Claim" shortcut="⌘K" />
@@ -346,10 +357,13 @@
 					</div>
 				</Card>
 
-				<Card title="Dialog, Sheet, Popover & Tooltip" eyebrow="DOMAIN 3 // OVERLAYS">
+				<Card title="Dialog, AlertDialog, Sheet, Popover & Tooltip" eyebrow="DOMAIN 3 // OVERLAYS">
 					<div class="flex flex-wrap items-center gap-3">
 						<Button variant="primary" size="sm" onclick={() => (demoDialogOpen = true)}>
 							Open Modal Dialog
+						</Button>
+						<Button variant="destructive" size="sm" onclick={() => (demoAlertOpen = true)}>
+							Open Destructive Alert
 						</Button>
 						<Button variant="secondary" size="sm" onclick={() => (demoSheetOpen = true)}>
 							Open Side Sheet
@@ -357,7 +371,15 @@
 
 						<Popover bind:open={demoPopoverOpen}>
 							{#snippet trigger()}
-								<Button variant="outline" size="sm">Inspect Popover</Button>
+								<span
+									class={cn(
+										CONTROL_HEIGHTS.sm,
+										COMPONENT_PRESETS.button.outline,
+										'inline-flex items-center justify-center px-3 text-xs font-medium rounded-xl gap-1.5 select-none active:scale-[0.96]'
+									)}
+								>
+									Inspect Popover
+								</span>
 							{/snippet}
 							<div class="flex flex-col gap-1.5 text-xs">
 								<span class="font-semibold text-foreground">Coordinator Lease Window</span>
@@ -386,6 +408,32 @@
 							</Button>
 							<Button variant="primary" size="sm" onclick={() => (demoDialogOpen = false)}>
 								Confirm
+							</Button>
+						{/snippet}
+					</Dialog>
+
+					<Dialog
+						bind:open={demoAlertOpen}
+						alert={true}
+						title="Revoke Node Token (AlertDialog)"
+						description="Destructive confirmation built on Bits-UI AlertDialog with locked backdrop."
+					>
+						<p class="text-xs text-muted-foreground text-pretty">
+							AlertDialog prevents accidental outside-click dismissal during irreversible credential revocations.
+						</p>
+						{#snippet actions()}
+							<Button variant="secondary" size="sm" onclick={() => (demoAlertOpen = false)}>
+								Keep Token
+							</Button>
+							<Button
+								variant="destructive"
+								size="sm"
+								onclick={() => {
+									demoAlertOpen = false;
+									toastStore.warning('Sample revocation confirmed (no live mutation).', 'AlertDialog');
+								}}
+							>
+								Revoke Token
 							</Button>
 						{/snippet}
 					</Dialog>
@@ -435,7 +483,7 @@
 				</div>
 
 				<div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-					<Card title="Badges, Notices, Progress & Skeleton" eyebrow="DOMAIN 4 // FEEDBACK">
+					<Card title="Badges, Notices, Toast, Progress & Skeleton" eyebrow="DOMAIN 4 // FEEDBACK">
 						<div class="flex flex-col gap-4">
 							<div class="flex flex-wrap items-center gap-2">
 								<Badge variant="emerald">Teal</Badge>
@@ -449,6 +497,32 @@
 							<Notice variant="success" title="Preview SDK Prepared">
 								Installed <code class="font-mono">vrc-packages-api-preview</code> via <code class="font-mono">bun run prepare:dev preview web</code>.
 							</Notice>
+
+							<div class="flex flex-col gap-2">
+								<Toast
+									variant="info"
+									title="Sample Ephemeral Toast"
+									message="Settles non-critical feedback into the global z-60 viewport."
+									durationMs={0}
+									dismissible={false}
+								/>
+								<div class="flex flex-wrap gap-2">
+									<Button
+										variant="secondary"
+										size="xs"
+										onclick={() => toastStore.success('Node heartbeat synchronized.', 'Sync Complete')}
+									>
+										Emit Success Toast
+									</Button>
+									<Button
+										variant="outline"
+										size="xs"
+										onclick={() => toastStore.warning('Lease expires in 15s.', 'Heartbeat Notice')}
+									>
+										Emit Warning Toast
+									</Button>
+								</div>
+							</div>
 
 							<Progress value={84} max={100} color="emerald" />
 
@@ -502,22 +576,35 @@
 					<AssetPlaceholder label="Provenance Topology Preview" dimensions="100% x 140px" />
 				</Card>
 
-				<Card title="SplitPane Workbench with DataTable & PropertyInspector" eyebrow="WORKBENCH DOMAIN">
+				<Card title="SplitPane Workbench with Compact DataTable & PropertyInspector" eyebrow="WORKBENCH DOMAIN">
 					<div class="h-[320px] rounded-xl border border-border overflow-hidden">
 						<SplitPane direction="horizontal" initialSplitPercent={62}>
 							{#snippet first()}
-								<div class="p-3 h-full overflow-auto bg-background">
+								<div class="h-full overflow-auto bg-background">
 									<DataTable
 										columns={sampleColumns}
 										data={samplePackages}
 										keyField="id"
 										bind:selectedId={selectedTableId}
-									/>
+										embedded={true}
+										density="compact"
+									>
+										{#snippet rowActions(row)}
+											<Button
+												variant="ghost"
+												size="xs"
+												onclick={() => (selectedTableId = row.id)}
+											>
+												Inspect
+											</Button>
+										{/snippet}
+									</DataTable>
 								</div>
 							{/snippet}
 							{#snippet second()}
-								<div class="p-3 h-full overflow-auto bg-card">
+								<div class="h-full overflow-auto bg-card">
 									<PropertyInspector
+										embedded={true}
 										title="Selected Package Row"
 										properties={[
 											{ key: 'Row ID', value: selectedTableId, category: 'Selection' },
@@ -540,7 +627,7 @@
 		onClose={() => (demoFloatingOpen = false)}
 	>
 		<div class="flex flex-col gap-2 text-xs text-muted-foreground text-pretty">
-			<p>All 39 UI primitives in <code class="font-mono text-foreground">src-web/src/lib/components/ui/</code> render without raw HTML control leaks.</p>
+			<p>All 41 UI primitives in <code class="font-mono text-foreground">src-web/src/lib/components/ui/</code> render without raw HTML control leaks.</p>
 			<EvidenceBadge state="measured" size="sm" />
 		</div>
 	</FloatingPanel>

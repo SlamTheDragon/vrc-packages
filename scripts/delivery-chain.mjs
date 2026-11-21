@@ -739,16 +739,17 @@ export function formatDeliveryError(error) {
 export async function readHostedAsset(
   asset,
   binary = false,
-  wait = milliseconds => new Promise(resolvePromise => setTimeout(resolvePromise, milliseconds))
+  wait = milliseconds => new Promise(resolvePromise => setTimeout(resolvePromise, milliseconds)),
+  idleTimeoutMs = binary ? 60_000 : 45_000
 ) {
   const metadata = /\.(?:json|md|sha256)$/.test(asset.name);
   const limit = binary ? 2 * 1024 ** 3 - 1 : metadata ? 2 * 1024 ** 2 : 256 * 1024 ** 2;
   if (!Number.isSafeInteger(asset.size) || asset.size < 1 || asset.size > limit || !/^sha256:[a-f0-9]{64}$/.test(asset.digest ?? "")) {
     throw new Error("Hosted artifact is missing, oversized or lacks a digest");
   }
-  const overallSignal = AbortSignal.timeout(binary ? 1_800_000 : 180_000);
+  const overallSignal = AbortSignal.timeout(binary ? 3_600_000 : 180_000);
   const chunks = [], digest = createHash("sha256"), rangeSize = 8 * 1024 ** 2;
-  const maxRangeAttempts = 3, perAttemptTimeoutMs = binary ? 90_000 : 60_000;
+  const maxRangeAttempts = 3;
   const report = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
   let size = 0;
   do {
@@ -756,16 +757,27 @@ export async function readHostedAsset(
     let completedFullBody = false;
     if (binary && report) console.error(JSON.stringify({ readbackAsset: String(asset.name).slice(0, 214), bytesRead: size, totalBytes: asset.size }));
     for (let attempt = 1; ; attempt++) {
-      let rangeCommitted = false, reader = null;
-      const attemptSignal = AbortSignal.any([overallSignal, AbortSignal.timeout(perAttemptTimeoutMs)]);
+      let rangeCommitted = false, reader = null, idleTimer = null;
+      const attemptController = new AbortController();
+      const clearIdleTimer = () => { if (idleTimer !== null) { clearTimeout(idleTimer); idleTimer = null; } };
+      const resetIdleTimer = () => {
+        clearIdleTimer();
+        idleTimer = setTimeout(() => {
+          attemptController.abort(new DOMException("Hosted artifact download stalled", "TimeoutError"));
+        }, idleTimeoutMs);
+      };
+      const attemptSignal = AbortSignal.any([overallSignal, attemptController.signal]);
       try {
+        resetIdleTimer();
         const response = await fetch(asset.browser_download_url, {
           signal: attemptSignal,
           ...(binary ? { headers: { range: `bytes=${start}-${end}`, "accept-encoding": "identity" } } : {})
         });
+        resetIdleTimer();
         if (!response.ok || !response.body) {
           try { await response.body?.cancel(); } catch {}
           if ((response.status === 429 || response.status >= 500) && attempt < maxRangeAttempts && !overallSignal.aborted) {
+            clearIdleTimer();
             await wait(1_000 * attempt);
             continue;
           }
@@ -784,11 +796,14 @@ export async function readHostedAsset(
           for (;;) {
             const { done, value } = await reader.read();
             if (done) break;
-            rangeBytes += value.length;
-            if (size + rangeBytes > asset.size || size + rangeBytes > end + 1) {
-              throw new ValidationReadError("Hosted artifact exceeds its declared size");
+            if (value.length > 0) {
+              resetIdleTimer();
+              rangeBytes += value.length;
+              if (size + rangeBytes > asset.size || size + rangeBytes > end + 1) {
+                throw new ValidationReadError("Hosted artifact exceeds its declared size");
+              }
+              rangeChunks.push(value);
             }
-            rangeChunks.push(value);
           }
           if (size + rangeBytes !== end + 1) {
             throw new ValidationReadError("Hosted artifact range size differs");
@@ -802,6 +817,7 @@ export async function readHostedAsset(
           const { done, value } = await reader.read();
           if (done) break;
           if (value.length > 0) {
+            resetIdleTimer();
             if (size + value.length > asset.size) {
               throw new ValidationReadError("Hosted artifact exceeds its declared size");
             }
@@ -814,6 +830,7 @@ export async function readHostedAsset(
         completedFullBody = true;
         break;
       } catch (error) {
+        clearIdleTimer();
         if (error instanceof ValidationReadError) throw new Error(error.message);
         if (!rangeCommitted && attempt < maxRangeAttempts && !overallSignal.aborted) {
           await wait(1_000 * attempt);
@@ -822,6 +839,7 @@ export async function readHostedAsset(
         const safeCode = extractSafeErrorCode(error);
         throw new Error(safeCode ? `Hosted artifact download failed (${safeCode})` : "Hosted artifact download failed");
       } finally {
+        clearIdleTimer();
         try { await reader?.cancel(); } catch {}
       }
     }

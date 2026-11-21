@@ -7,21 +7,26 @@
 		icon: Icon = FolderOpen,
 		title = 'No items found',
 		description = 'Try adjusting your search criteria or filters.',
+		embedded = false,
 		class: className = '',
-		action
+		action,
+		children
 	}: {
 		icon?: any;
 		title?: string;
 		description?: string;
+		embedded?: boolean;
 		class?: string;
 		action?: Snippet;
+		children?: Snippet;
 	} = $props();
 </script>
 
 <div
 	data-slot="empty-state"
 	class={cn(
-		'flex flex-col items-center justify-center p-8 text-center bg-card/60 rounded-2xl border border-dashed border-border',
+		'flex flex-col items-center justify-center p-8 text-center',
+		!embedded && 'bg-card/60 rounded-2xl border border-dashed border-border',
 		className
 	)}
 >
@@ -33,6 +38,10 @@
 	{#if action}
 		<div class="mt-4">
 			{@render action()}
+		</div>
+	{:else if children}
+		<div class="mt-4">
+			{@render children()}
 		</div>
 	{/if}
 </div>

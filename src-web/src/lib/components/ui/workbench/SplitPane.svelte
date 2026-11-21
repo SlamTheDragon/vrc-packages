@@ -28,10 +28,11 @@
 	let containerEl = $state<HTMLDivElement | null>(null);
 
 	function handlePointerDown(e: PointerEvent) {
+		if ((e.target as HTMLElement | null)?.closest('button')) return;
 		e.preventDefault();
+		const target = e.currentTarget as HTMLElement;
+		target.setPointerCapture(e.pointerId);
 		isDragging = true;
-		window.addEventListener('pointermove', handlePointerMove);
-		window.addEventListener('pointerup', handlePointerUp);
 	}
 
 	function handlePointerMove(e: PointerEvent) {
@@ -46,10 +47,16 @@
 		}
 	}
 
-	function handlePointerUp() {
+	function handlePointerUp(e: PointerEvent) {
 		isDragging = false;
-		window.removeEventListener('pointermove', handlePointerMove);
-		window.removeEventListener('pointerup', handlePointerUp);
+		const target = e.currentTarget as HTMLElement;
+		if (target.hasPointerCapture?.(e.pointerId)) {
+			target.releasePointerCapture(e.pointerId);
+		}
+	}
+
+	function resetSplit() {
+		splitPercent = initialSplitPercent;
 	}
 
 	function handleKeyDown(e: KeyboardEvent) {
@@ -60,6 +67,9 @@
 		} else if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
 			e.preventDefault();
 			splitPercent = Math.min(maxPercent, splitPercent + step);
+		} else if (e.key === 'Home') {
+			e.preventDefault();
+			resetSplit();
 		}
 	}
 </script>
@@ -80,7 +90,7 @@
 				? `width: ${splitPercent}%;`
 				: `height: ${splitPercent}%;`
 			: 'width: 100%; height: 100%;'}
-		class="relative overflow-hidden shrink-0"
+		class="relative overflow-hidden shrink-0 min-w-0 min-h-0"
 	>
 		{@render first()}
 	</div>
@@ -98,20 +108,27 @@
 			aria-valuemax={maxPercent}
 			aria-label="Resize workbench split panels"
 			onpointerdown={handlePointerDown}
+			onpointermove={handlePointerMove}
+			onpointerup={handlePointerUp}
+			onpointercancel={handlePointerUp}
 			onkeydown={handleKeyDown}
 			class={cn(
-				'bg-border transition-colors flex items-center justify-center shrink-0 z-20 focus:outline-hidden focus:bg-sidebar-primary/40',
+				"relative bg-border touch-none transition-colors flex items-center justify-center shrink-0 z-20 focus-visible:outline-none focus-visible:bg-sidebar-primary/40 before:content-[''] before:absolute",
 				direction === 'horizontal'
-					? 'w-2 cursor-col-resize hover:bg-sidebar-primary/30'
-					: 'h-2 cursor-row-resize hover:bg-sidebar-primary/30'
+					? 'w-2 cursor-col-resize hover:bg-sidebar-primary/30 before:inset-y-0 before:-inset-x-2'
+					: 'h-2 cursor-row-resize hover:bg-sidebar-primary/30 before:inset-x-0 before:-inset-y-2'
 			)}
 		>
-			<div
+			<button
+				type="button"
+				onclick={resetSplit}
+				title="Reset split width"
+				aria-label="Reset split panel width"
 				class={cn(
-					'rounded-full bg-muted-foreground',
-					direction === 'horizontal' ? 'w-0.5 h-8' : 'h-0.5 w-8'
+					'relative z-10 rounded-full bg-muted-foreground/70 hover:bg-sidebar-primary transition-colors cursor-pointer before:content-[""] before:absolute before:-inset-2',
+					direction === 'horizontal' ? 'w-1 h-8' : 'h-1 w-8'
 				)}
-			></div>
+			></button>
 		</div>
 
 		<div

@@ -1015,6 +1015,61 @@ test("hosted range retries recover cleanly from transient 503/stream faults whil
   } finally { globalThis.fetch = originalFetch; }
 });
 
+test("hosted asset readHostedAsset resets idle timeout on progress and retries stalled ranges", async () => {
+  const bytes = Buffer.alloc(1024, 42);
+  const sha = createHash("sha256").update(bytes).digest("hex");
+  const asset = {
+    name: "vrcp-crawler-node-linux",
+    size: bytes.length,
+    digest: `sha256:${sha}`,
+    browser_download_url: "https://github.com/example/fixture/releases/download/test/node"
+  };
+  const originalFetch = globalThis.fetch;
+  const zeroWait = async () => {};
+  try {
+    // 1. Slow streaming range exceeding idleTimeoutMs in aggregate succeeds because chunks reset idle timer
+    globalThis.fetch = (async (_input: unknown, _init: RequestInit) => {
+      const chunks = [bytes.subarray(0, 256), bytes.subarray(256, 512), bytes.subarray(512, 768), bytes.subarray(768, 1024)];
+      let index = 0;
+      return new Response(new ReadableStream({
+        async pull(controller) {
+          if (index < chunks.length) {
+            await new Promise(r => setTimeout(r, 20));
+            controller.enqueue(chunks[index++]);
+          } else {
+            controller.close();
+          }
+        }
+      }), { status: 206, headers: { "content-range": `bytes 0-1023/${bytes.length}` } });
+    }) as typeof fetch;
+
+    const result = await readHostedAsset(asset, true, zeroWait, 40);
+    expect(result).toEqual({ size: bytes.length, sha256: sha });
+
+    // 2. Stalled range (stalling > idleTimeoutMs before emitting chunk) aborts with TimeoutError, retries, and succeeds
+    let attempts = 0;
+    globalThis.fetch = (async (_input: unknown, init: RequestInit) => {
+      attempts++;
+      if (attempts === 1) {
+        return new Response(new ReadableStream({
+          pull() {
+            return new Promise((_, reject) => {
+              init.signal?.addEventListener("abort", () => {
+                reject(init.signal?.reason ?? new DOMException("aborted", "TimeoutError"));
+              });
+            });
+          }
+        }), { status: 206, headers: { "content-range": `bytes 0-1023/${bytes.length}` } });
+      }
+      return new Response(bytes, { status: 206, headers: { "content-range": `bytes 0-1023/${bytes.length}` } });
+    }) as typeof fetch;
+
+    const recovered = await readHostedAsset(asset, true, zeroWait, 30);
+    expect(recovered).toEqual({ size: bytes.length, sha256: sha });
+    expect(attempts).toBe(2);
+  } finally { globalThis.fetch = originalFetch; }
+});
+
 test("hosted network resolution checks the whole delivery and refuses source, tag and checksum substitution", async () => {
   const version = "2026.10.2", tag = `vrcp-network/v${version}`, commit = "a".repeat(40), object = "b".repeat(40);
   const archive = `vrc-packages-network-${version}.tgz`, repository = "SlamTheDragon/vrc-packages";

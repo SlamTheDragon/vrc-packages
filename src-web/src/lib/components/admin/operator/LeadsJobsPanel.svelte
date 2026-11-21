@@ -5,21 +5,24 @@
 		OperatorJobState,
 		Platform
 	} from '$lib/api/admin-client';
-	import Card from '$lib/components/ui/display/Card.svelte';
+	import { cn } from '$lib/utils';
+	import { CONTROL_HEIGHTS, COMPONENT_PRESETS } from '$lib/components/ui/tokens';
 	import Button from '$lib/components/ui/forms/Button.svelte';
 	import DropdownSelect from '$lib/components/ui/forms/DropdownSelect.svelte';
 	import Field from '$lib/components/ui/forms/Field.svelte';
 	import Input from '$lib/components/ui/forms/Input.svelte';
 	import Textarea from '$lib/components/ui/forms/Textarea.svelte';
-	import EmptyState from '$lib/components/ui/feedback/EmptyState.svelte';
 	import Notice from '$lib/components/ui/feedback/Notice.svelte';
-	import Skeleton from '$lib/components/ui/feedback/Skeleton.svelte';
 	import ToggleGroup from '$lib/components/ui/navigation/ToggleGroup.svelte';
+	import DropdownMenu from '$lib/components/ui/navigation/DropdownMenu.svelte';
+	import DropdownItem from '$lib/components/ui/navigation/DropdownItem.svelte';
 	import Dialog from '$lib/components/ui/overlays/Dialog.svelte';
-	import DataTable from '$lib/components/ui/telemetry/DataTable.svelte';
 	import PropertyInspector from '$lib/components/ui/telemetry/PropertyInspector.svelte';
+	import AdminFilterBar, { type FacetGroup } from '$lib/components/admin/AdminFilterBar.svelte';
+	import AdminMasterDetail from '$lib/components/admin/AdminMasterDetail.svelte';
 	import { adminSession, formatAdminError } from '$lib/stores/admin-session.svelte';
-	import { Check, X, Send, ChevronRight } from '@lucide/svelte';
+	import { toastStore } from '$lib/stores/toast.svelte';
+	import { Check, X, Send, ChevronRight, MoreHorizontal } from '@lucide/svelte';
 
 	let {
 		leads = $bindable<LeadRow[]>([]),
@@ -53,6 +56,10 @@
 	} = $props();
 
 	let activeQueue = $state<'leads' | 'jobs'>('leads');
+	let searchQuery = $state('');
+	let leadKindFilter = $state('ALL');
+	let page = $state(0);
+
 	let selectedLeadKey = $state('');
 	let selectedJobId = $state('');
 
@@ -74,28 +81,10 @@
 	let enqueueError = $state<string | null>(null);
 	let isEnqueuing = $state(false);
 
-	let statusMessage = $state<string | null>(null);
-
 	const queueOptions = $derived([
 		{ value: 'leads', label: `Discovery Leads (${leads.length})` },
 		{ value: 'jobs', label: `Crawl Jobs (${jobs.length})` }
 	]);
-
-	let selectedLead = $derived(
-		selectedLeadKey ? (leads.find((l) => l.lead_key === selectedLeadKey) ?? null) : null
-	);
-	let selectedJob = $derived(
-		selectedJobId ? (jobs.find((j) => j.jobId === selectedJobId) ?? null) : null
-	);
-
-	let enqueueFormValid = $derived(
-		jobUrl.trim().startsWith('https://') &&
-			Number(jobMinDelayMs) >= 0 &&
-			jobReason.trim().length >= 1 &&
-			jobReason.trim().length <= 300
-	);
-	let approveReasonValid = $derived(approveReason.trim().length >= 3);
-	let rejectReasonValid = $derived(rejectReason.trim().length >= 3);
 
 	const statusOptions = [
 		{ value: 'pending_review', label: 'Pending Review' },
@@ -127,13 +116,117 @@
 
 	const jobPlatformFilterOptions = [
 		{ value: 'all', label: 'All Platforms' },
-		...platformOptions
+		...platformOptions.map((o) => ({ value: o.value, label: o.value }))
 	];
 
 	const purposeOptions = [
 		{ value: 'discovery', label: 'Discovery (discovery)' },
 		{ value: 'metadata', label: 'Metadata (metadata)' }
 	];
+
+	const leadKindOptions = $derived.by(() => {
+		const values = Array.from(new Set(leads.map((l) => l.kind))).sort();
+		return [{ value: 'ALL', label: 'All Kinds' }, ...values.map((v) => ({ value: v, label: v }))];
+	});
+
+	const leadFacets = $derived<FacetGroup[]>([
+		{
+			id: 'leadStatus',
+			label: 'Review Status (Coordinator)',
+			value: leadStatusFilter,
+			allValue: 'pending_review',
+			options: statusOptions,
+			onChange: (val) => {
+				page = 0;
+				void onFilterChange?.(val as LeadStatus);
+			}
+		},
+		{
+			id: 'leadKind',
+			label: 'Lead Kind',
+			value: leadKindFilter,
+			allValue: 'ALL',
+			options: leadKindOptions,
+			onChange: (val) => {
+				leadKindFilter = val;
+				page = 0;
+			}
+		}
+	]);
+
+	const jobFacets = $derived<FacetGroup[]>([
+		{
+			id: 'jobState',
+			label: 'Job State (Coordinator)',
+			value: jobsStateFilter,
+			allValue: 'all',
+			options: jobStateOptions,
+			onChange: (val) => {
+				page = 0;
+				void onJobsFilterChange?.(val as 'all' | OperatorJobState, jobsPlatformFilter);
+			}
+		},
+		{
+			id: 'jobPlatform',
+			label: 'Platform (Coordinator)',
+			value: jobsPlatformFilter,
+			allValue: 'all',
+			options: jobPlatformFilterOptions,
+			onChange: (val) => {
+				page = 0;
+				void onJobsFilterChange?.(jobsStateFilter, val as 'all' | Platform);
+			}
+		}
+	]);
+
+	let filteredLeads = $derived.by(() => {
+		const q = searchQuery.trim().toLowerCase();
+		return leads.filter((l) => {
+			if (leadKindFilter !== 'ALL' && l.kind !== leadKindFilter) return false;
+			if (!q) return true;
+			return (
+				l.lead_key.toLowerCase().includes(q) ||
+				l.kind.toLowerCase().includes(q) ||
+				l.target_url.toLowerCase().includes(q) ||
+				(l.claimed_package_id ?? '').toLowerCase().includes(q) ||
+				l.discovered_from_url.toLowerCase().includes(q) ||
+				l.status.toLowerCase().includes(q)
+			);
+		});
+	});
+
+	let filteredJobs = $derived.by(() => {
+		const q = searchQuery.trim().toLowerCase();
+		return jobs.filter((j) => {
+			if (!q) return true;
+			return (
+				j.jobId.toLowerCase().includes(q) ||
+				j.origin.toLowerCase().includes(q) ||
+				j.url.toLowerCase().includes(q) ||
+				j.platform.toLowerCase().includes(q) ||
+				j.state.toLowerCase().includes(q) ||
+				j.purpose.toLowerCase().includes(q) ||
+				(j.claimedBy ?? '').toLowerCase().includes(q) ||
+				(j.sourceRuleId ?? '').toLowerCase().includes(q)
+			);
+		});
+	});
+
+	let selectedLead = $derived(
+		selectedLeadKey ? (leads.find((l) => l.lead_key === selectedLeadKey) ?? null) : null
+	);
+	let selectedJob = $derived(
+		selectedJobId ? (jobs.find((j) => j.jobId === selectedJobId) ?? null) : null
+	);
+
+	let enqueueFormValid = $derived(
+		jobUrl.trim().startsWith('https://') &&
+			Number(jobMinDelayMs) >= 0 &&
+			jobReason.trim().length >= 1 &&
+			jobReason.trim().length <= 300
+	);
+	let approveReasonValid = $derived(approveReason.trim().length >= 3);
+	let rejectReasonValid = $derived(rejectReason.trim().length >= 3);
 
 	const leadColumns = [
 		{
@@ -192,12 +285,14 @@
 		enqueueDialogOpen = true;
 	}
 
-	function openApproveDialog() {
+	function openApproveDialog(lead?: LeadRow) {
+		if (lead) selectedLeadKey = lead.lead_key;
 		approveError = null;
 		approveDialogOpen = true;
 	}
 
-	function openRejectDialog() {
+	function openRejectDialog(lead?: LeadRow) {
+		if (lead) selectedLeadKey = lead.lead_key;
 		rejectError = null;
 		rejectDialogOpen = true;
 	}
@@ -205,18 +300,19 @@
 	async function handleApproveLead() {
 		if (!selectedLead || !approveReasonValid) return;
 		approveError = null;
-		statusMessage = null;
 		isTriaging = true;
 		try {
 			const res = await adminSession.client.operator.leads.approve(selectedLead.lead_key, {
 				minDelayMs: Number(approveMinDelayMs),
 				reason: approveReason.trim()
 			});
-			statusMessage =
+			approveDialogOpen = false;
+			toastStore.success(
 				res.status === 'approved'
 					? `Approved lead ${res.leadKey.slice(0, 12)}... (jobId: ${res.jobId}).`
-					: `Updated lead ${res.leadKey}.`;
-			approveDialogOpen = false;
+					: `Updated lead ${res.leadKey}.`,
+				'Lead Approved'
+			);
 			await onRefresh?.();
 		} catch (err) {
 			approveError = formatAdminError(err);
@@ -228,14 +324,13 @@
 	async function handleRejectLead() {
 		if (!selectedLead || !rejectReasonValid) return;
 		rejectError = null;
-		statusMessage = null;
 		isTriaging = true;
 		try {
 			const res = await adminSession.client.operator.leads.reject(selectedLead.lead_key, {
 				reason: rejectReason.trim()
 			});
-			statusMessage = `Rejected lead ${res.leadKey.slice(0, 12)}...`;
 			rejectDialogOpen = false;
+			toastStore.success(`Rejected lead ${res.leadKey.slice(0, 12)}...`, 'Lead Rejected');
 			await onRefresh?.();
 		} catch (err) {
 			rejectError = formatAdminError(err);
@@ -247,7 +342,6 @@
 	async function handleEnqueueJob() {
 		if (!enqueueFormValid) return;
 		enqueueError = null;
-		statusMessage = null;
 		isEnqueuing = true;
 		try {
 			const res = await adminSession.client.operator.jobs.enqueue({
@@ -258,8 +352,8 @@
 				minDelayMs: Number(jobMinDelayMs),
 				reason: jobReason.trim()
 			});
-			statusMessage = `Enqueued job ${res.jobId} for ${jobUrl.trim()}.`;
 			enqueueDialogOpen = false;
+			toastStore.success(`Enqueued job ${res.jobId} for ${jobUrl.trim()}.`, 'Job Enqueued');
 			await onRefresh?.();
 		} catch (err) {
 			enqueueError = formatAdminError(err);
@@ -269,76 +363,93 @@
 	}
 </script>
 
-<div data-slot="leads-jobs-panel" class="flex flex-col gap-6">
-	{#if statusMessage}
-		<Notice variant="success" title="Updated">
-			{statusMessage}
-		</Notice>
-	{/if}
-
-	<div class="flex items-center justify-between gap-4 flex-wrap">
-		<ToggleGroup
-			bind:value={activeQueue}
-			options={queueOptions}
-			onValueChange={(v) => {
-				if (v === 'leads' || v === 'jobs') activeQueue = v;
-			}}
-		/>
-	</div>
-
+<div data-slot="leads-jobs-panel" class="flex flex-col gap-3">
 	{#if activeQueue === 'leads'}
-		<div class="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-			<div class={selectedLead ? 'lg:col-span-8' : 'lg:col-span-12'}>
-				<Card title="Discovery Leads">
-					{#snippet headerRight()}
-						<div class="flex flex-wrap items-center gap-2">
-							<div class="w-40">
-								<DropdownSelect
-									size="xs"
-									bind:value={leadStatusFilter}
-									options={statusOptions}
-									onValueChange={(v) => void onFilterChange?.(v as LeadStatus)}
-								/>
-							</div>
-							<Button variant="secondary" size="xs" onclick={openEnqueueDialog}>
-								<Send size={12} />
-								<span>Enqueue Job</span>
-							</Button>
-						</div>
+		<AdminMasterDetail
+			columns={leadColumns}
+			data={filteredLeads}
+			keyField="lead_key"
+			bind:selectedId={selectedLeadKey}
+			bind:page
+			loading={isLoading}
+			ariaLabel="Discovery leads queue"
+			emptyTitle={`No ${leadStatusFilter.replace('_', ' ')} leads`}
+			emptyDescription="Switch the review status facet, clear search filters, or enqueue a manual crawl job."
+			inspectorTitle={selectedLead?.kind ?? 'Lead Inspector'}
+			inspectorDescription={selectedLead?.lead_key}
+		>
+			{#snippet toolbar()}
+				<AdminFilterBar
+					bind:searchQuery
+					searchPlaceholder="Filter leads by key, URL, package ID, or origin..."
+					facets={leadFacets}
+					resultCount={filteredLeads.length}
+					totalCount={leads.length}
+				>
+					{#snippet extraControls()}
+						<ToggleGroup
+							bind:value={activeQueue}
+							options={queueOptions}
+							onValueChange={(v) => {
+								if (v === 'leads' || v === 'jobs') {
+									activeQueue = v;
+									page = 0;
+								}
+							}}
+						/>
 					{/snippet}
 
-					{#if isLoading && leads.length === 0}
-						<div class="flex flex-col gap-2" aria-busy="true" aria-label="Loading discovery leads">
-							<Skeleton class="h-10 w-full" />
-							<Skeleton class="h-10 w-full" />
-							<Skeleton class="h-10 w-full" />
-						</div>
-					{:else if leads.length === 0}
-						<EmptyState
-							title={`No ${leadStatusFilter.replace('_', ' ')} leads`}
-							description="Switch the status filter or enqueue a manual discovery job."
-						>
-							{#snippet action()}
-								<Button variant="primary" size="sm" onclick={openEnqueueDialog}>
-									<Send size={14} />
-									<span>Enqueue Job</span>
-								</Button>
-							{/snippet}
-						</EmptyState>
-					{:else}
-						<DataTable
-							columns={leadColumns}
-							data={leads}
-							keyField="lead_key"
-							bind:selectedId={selectedLeadKey}
-						/>
-					{/if}
-				</Card>
-			</div>
+					{#snippet actions()}
+						<Button variant="secondary" size="sm" onclick={openEnqueueDialog}>
+							<Send size={14} />
+							<span>Enqueue Job</span>
+						</Button>
+					{/snippet}
+				</AdminFilterBar>
+			{/snippet}
 
-			{#if selectedLead}
-				<div class="lg:col-span-4 flex flex-col gap-4">
+			{#snippet emptyAction()}
+				<Button variant="primary" size="sm" onclick={openEnqueueDialog}>
+					<Send size={14} />
+					<span>Enqueue Job</span>
+				</Button>
+			{/snippet}
+
+			{#snippet rowActions(lead: LeadRow)}
+				<div class="inline-flex items-center justify-end gap-1">
+					<Button
+						variant="ghost"
+						size="xs"
+						onclick={() => (selectedLeadKey = lead.lead_key)}
+					>
+						Inspect
+					</Button>
+					{#if lead.status === 'pending_review'}
+						<DropdownMenu>
+							{#snippet trigger()}
+								<span
+									aria-label={`Triage actions for ${lead.lead_key}`}
+									class={cn(
+										CONTROL_HEIGHTS.xs,
+										COMPONENT_PRESETS.button.ghost,
+										'inline-flex items-center justify-center px-1.5 rounded-lg'
+									)}
+								>
+									<MoreHorizontal size={14} />
+								</span>
+							{/snippet}
+							<DropdownItem label="Inspect Lead" onclick={() => (selectedLeadKey = lead.lead_key)} />
+							<DropdownItem label="Approve & Queue" onclick={() => openApproveDialog(lead)} />
+							<DropdownItem label="Reject Lead" destructive={true} onclick={() => openRejectDialog(lead)} />
+						</DropdownMenu>
+					{/if}
+				</div>
+			{/snippet}
+
+			{#snippet inspector()}
+				{#if selectedLead}
 					<PropertyInspector
+						embedded={true}
 						title="Lead Wire DTO"
 						subtitle={selectedLead.lead_key}
 						properties={[
@@ -363,23 +474,8 @@
 							{ key: 'first_seen_at', value: selectedLead.first_seen_at, category: 'Timestamps' },
 							{ key: 'last_seen_at', value: selectedLead.last_seen_at, category: 'Timestamps' }
 						]}
-					/>
-
-					<Card variant="flat" class="p-4">
-						<div class="flex items-center justify-between gap-2 flex-wrap">
-							<div class="flex items-center gap-2 flex-wrap">
-								{#if selectedLead.status === 'pending_review'}
-									<Button variant="primary" size="sm" onclick={openApproveDialog}>
-										<Check size={14} />
-										<span>Approve</span>
-									</Button>
-									<Button variant="destructive" size="sm" onclick={openRejectDialog}>
-										<X size={14} />
-										<span>Reject</span>
-									</Button>
-								{/if}
-							</div>
-
+					>
+						{#snippet headerActions()}
 							<Button
 								variant="ghost"
 								size="xs"
@@ -390,88 +486,91 @@
 							>
 								<X size={14} />
 							</Button>
-						</div>
-					</Card>
-				</div>
-			{/if}
-		</div>
+						{/snippet}
+
+						{#snippet footerActions()}
+							{#if selectedLead.status === 'pending_review'}
+								<div class="w-full flex items-center justify-end gap-2 flex-wrap">
+									<Button variant="destructive" size="sm" onclick={() => openRejectDialog()}>
+										<X size={14} />
+										<span>Reject</span>
+									</Button>
+									<Button variant="primary" size="sm" onclick={() => openApproveDialog()}>
+										<Check size={14} />
+										<span>Approve</span>
+									</Button>
+								</div>
+							{/if}
+						{/snippet}
+					</PropertyInspector>
+				{/if}
+			{/snippet}
+		</AdminMasterDetail>
 	{:else}
-		<div class="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-			<div class={selectedJob ? 'lg:col-span-8' : 'lg:col-span-12'}>
-				<Card title="Crawl Jobs">
-					{#snippet headerRight()}
-						<div class="flex flex-wrap items-center gap-2">
-							<div class="w-36">
-								<DropdownSelect
-									size="xs"
-									bind:value={jobsStateFilter}
-									options={jobStateOptions}
-									onValueChange={(v) =>
-										void onJobsFilterChange?.(v as 'all' | OperatorJobState, jobsPlatformFilter)}
-								/>
-							</div>
-							<div class="w-44">
-								<DropdownSelect
-									size="xs"
-									bind:value={jobsPlatformFilter}
-									options={jobPlatformFilterOptions}
-									onValueChange={(v) =>
-										void onJobsFilterChange?.(jobsStateFilter, v as 'all' | Platform)}
-								/>
-							</div>
-							<Button variant="primary" size="xs" onclick={openEnqueueDialog}>
-								<Send size={12} />
-								<span>Enqueue Job</span>
-							</Button>
-						</div>
+		<AdminMasterDetail
+			columns={jobColumns}
+			data={filteredJobs}
+			keyField="jobId"
+			bind:selectedId={selectedJobId}
+			bind:page
+			loading={isLoading}
+			ariaLabel="Coordinator crawl jobs"
+			emptyTitle="No crawl jobs"
+			emptyDescription="Adjust state or platform facets, clear filters, or enqueue a manual crawl job."
+			inspectorTitle={selectedJob ? `${selectedJob.platform} · ${selectedJob.state}` : 'Crawl Job Details'}
+			inspectorDescription={selectedJob?.jobId}
+		>
+			{#snippet toolbar()}
+				<AdminFilterBar
+					bind:searchQuery
+					searchPlaceholder="Filter jobs by ID, origin, URL, or lease node..."
+					facets={jobFacets}
+					resultCount={filteredJobs.length}
+					totalCount={jobs.length}
+				>
+					{#snippet extraControls()}
+						<ToggleGroup
+							bind:value={activeQueue}
+							options={queueOptions}
+							onValueChange={(v) => {
+								if (v === 'leads' || v === 'jobs') {
+									activeQueue = v;
+									page = 0;
+								}
+							}}
+						/>
 					{/snippet}
 
-					{#if isLoading && jobs.length === 0}
-						<div class="flex flex-col gap-2" aria-busy="true" aria-label="Loading crawl jobs">
-							<Skeleton class="h-10 w-full" />
-							<Skeleton class="h-10 w-full" />
-							<Skeleton class="h-10 w-full" />
-						</div>
-					{:else if jobs.length === 0}
-						<EmptyState
-							title="No crawl jobs"
-							description="Adjust state or platform filters, or enqueue a manual crawl job."
-						>
-							{#snippet action()}
-								<Button variant="primary" size="sm" onclick={openEnqueueDialog}>
-									<Send size={14} />
-									<span>Enqueue Job</span>
-								</Button>
-							{/snippet}
-						</EmptyState>
-					{:else}
-						<DataTable
-							columns={jobColumns}
-							data={jobs}
-							keyField="jobId"
-							bind:selectedId={selectedJobId}
-						/>
-					{/if}
+					{#snippet actions()}
+						<Button variant="primary" size="sm" onclick={openEnqueueDialog}>
+							<Send size={14} />
+							<span>Enqueue Job</span>
+						</Button>
+					{/snippet}
+				</AdminFilterBar>
+			{/snippet}
 
-					{#if jobsNextCursor}
-						<div class="mt-4 flex justify-end">
-							<Button
-								variant="secondary"
-								size="sm"
-								busy={isLoadingMoreJobs}
-								onclick={() => void onLoadMoreJobs?.()}
-							>
-								<span>{isLoadingMoreJobs ? 'Loading...' : 'Load Next Page'}</span>
-								<ChevronRight size={14} />
-							</Button>
-						</div>
-					{/if}
-				</Card>
-			</div>
+			{#snippet emptyAction()}
+				<Button variant="primary" size="sm" onclick={openEnqueueDialog}>
+					<Send size={14} />
+					<span>Enqueue Job</span>
+				</Button>
+			{/snippet}
 
-			{#if selectedJob}
-				<div class="lg:col-span-4 flex flex-col gap-4">
+			{#snippet rowActions(job: OperatorJobRecord)}
+				<Button
+					variant="ghost"
+					size="xs"
+					onclick={() => (selectedJobId = job.jobId)}
+				>
+					Inspect
+				</Button>
+			{/snippet}
+
+			{#snippet inspector()}
+				{#if selectedJob}
 					<PropertyInspector
+						embedded={true}
 						title="Crawl Job Details"
 						subtitle={selectedJob.jobId}
 						properties={[
@@ -505,22 +604,64 @@
 							},
 							{ key: 'createdAt', value: selectedJob.createdAt, category: 'Provenance' }
 						]}
-					/>
+					>
+						{#snippet headerActions()}
+							<Button
+								variant="ghost"
+								size="xs"
+								aria-label="Clear job selection"
+								title="Clear job selection"
+								onclick={() => (selectedJobId = '')}
+								class="min-w-7 px-1.5"
+							>
+								<X size={14} />
+							</Button>
+						{/snippet}
+					</PropertyInspector>
+				{/if}
+			{/snippet}
 
-					<div class="flex justify-end">
-						<Button
-							variant="ghost"
-							size="xs"
-							aria-label="Clear job selection"
-							onclick={() => (selectedJobId = '')}
-						>
-							<X size={13} />
-							<span>Clear Selection</span>
-						</Button>
+			{#snippet paginationFooter()}
+				{#if jobsNextCursor || filteredJobs.length > 50}
+					<div class="flex items-center justify-between gap-3 flex-wrap">
+						<span class="text-xs text-muted-foreground tabular-nums">
+							{filteredJobs.length} matching job(s) loaded
+						</span>
+						<div class="flex items-center gap-2">
+							{#if filteredJobs.length > 50}
+								<Button
+									variant="outline"
+									size="xs"
+									disabled={page <= 0}
+									onclick={() => (page = Math.max(0, page - 1))}
+								>
+									Prev Page
+								</Button>
+								<Button
+									variant="outline"
+									size="xs"
+									disabled={(page + 1) * 50 >= filteredJobs.length}
+									onclick={() => (page = page + 1)}
+								>
+									Next Page
+								</Button>
+							{/if}
+							{#if jobsNextCursor}
+								<Button
+									variant="secondary"
+									size="xs"
+									busy={isLoadingMoreJobs}
+									onclick={() => void onLoadMoreJobs?.()}
+								>
+									<span>{isLoadingMoreJobs ? 'Loading...' : 'Load Next Page'}</span>
+									<ChevronRight size={13} />
+								</Button>
+							{/if}
+						</div>
 					</div>
-				</div>
-			{/if}
-		</div>
+				{/if}
+			{/snippet}
+		</AdminMasterDetail>
 	{/if}
 
 	<Dialog
@@ -625,6 +766,7 @@
 
 	<Dialog
 		bind:open={rejectDialogOpen}
+		alert={true}
 		title="Reject Discovery Lead"
 		description={selectedLead ? selectedLead.target_url : ''}
 	>

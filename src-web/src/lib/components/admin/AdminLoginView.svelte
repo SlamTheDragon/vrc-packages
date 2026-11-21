@@ -17,6 +17,7 @@
 		isValidCoordinatorUrl,
 		type AdminRole
 	} from '$lib/stores/admin-session.svelte';
+	import { toastStore } from '$lib/stores/toast.svelte';
 	import { KeyRound, Globe, LogOut, ArrowRight, CheckCircle2, ChevronDown } from '@lucide/svelte';
 
 	let selectedPreset = $state<string>(COORDINATOR_PRESETS[0].value);
@@ -77,24 +78,33 @@
 	}
 
 	async function handlePublicProbe() {
+		if (adminSession.isProbing || Boolean(urlError)) return;
 		connectionCheckOpen = true;
 		adminSession.setCoordinatorUrl(customUrlInput);
 		await adminSession.probePublicCatalog();
+		if (!adminSession.lastError && adminSession.lastProbeMessage) {
+			toastStore.info(adminSession.lastProbeMessage, 'Coordinator Reachable');
+		}
 	}
 
 	async function handleSignIn() {
+		if (adminSession.isProbing || Boolean(urlError) || !adminSession.tokenValidation.valid) return;
 		adminSession.setCoordinatorUrl(customUrlInput);
 		adminSession.setRole(selectedRole);
 		adminSession.setToken(tokenInput);
 		const ok = await adminSession.authenticateSession();
-		if (ok && typeof window !== 'undefined') {
-			window.location.href = selectedRole === 'operator' ? '/operator' : '/moderator';
+		if (ok) {
+			toastStore.success(`Signed in as ${selectedRole}.`, 'Session Authenticated');
+			if (typeof window !== 'undefined') {
+				window.location.href = selectedRole === 'operator' ? '/operator' : '/moderator';
+			}
 		}
 	}
 
 	function handleClearSession() {
 		tokenInput = '';
 		adminSession.signOut();
+		toastStore.info('Session token cleared from runtime memory.', 'Signed Out');
 	}
 
 	let urlError = $derived(
@@ -180,7 +190,8 @@
 				<Button
 					variant="primary"
 					size="md"
-					disabled={adminSession.isProbing || Boolean(urlError) || !adminSession.tokenValidation.valid}
+					busy={adminSession.isProbing}
+					ariaDisabled={Boolean(urlError) || !adminSession.tokenValidation.valid}
 					onclick={handleSignIn}
 					class="flex-1"
 				>
@@ -236,7 +247,8 @@
 					<Button
 						variant="secondary"
 						size="xs"
-						disabled={adminSession.isProbing || Boolean(urlError)}
+						busy={adminSession.isProbing}
+						ariaDisabled={Boolean(urlError)}
 						onclick={handlePublicProbe}
 					>
 						<Globe size={13} />

@@ -5,23 +5,25 @@
 		OperatorNodeRecord,
 		OperatorNodeStatus
 	} from '$lib/api/admin-client';
-	import Card from '$lib/components/ui/display/Card.svelte';
+	import { cn } from '$lib/utils';
+	import { CONTROL_HEIGHTS, COMPONENT_PRESETS } from '$lib/components/ui/tokens';
 	import Codeblock from '$lib/components/ui/display/Codeblock.svelte';
 	import Button from '$lib/components/ui/forms/Button.svelte';
 	import Checkbox from '$lib/components/ui/forms/Checkbox.svelte';
-	import DropdownSelect from '$lib/components/ui/forms/DropdownSelect.svelte';
 	import Field from '$lib/components/ui/forms/Field.svelte';
 	import Input from '$lib/components/ui/forms/Input.svelte';
 	import Switch from '$lib/components/ui/forms/Switch.svelte';
 	import Textarea from '$lib/components/ui/forms/Textarea.svelte';
-	import EmptyState from '$lib/components/ui/feedback/EmptyState.svelte';
 	import Notice from '$lib/components/ui/feedback/Notice.svelte';
-	import Skeleton from '$lib/components/ui/feedback/Skeleton.svelte';
 	import Dialog from '$lib/components/ui/overlays/Dialog.svelte';
-	import DataTable from '$lib/components/ui/telemetry/DataTable.svelte';
+	import DropdownMenu from '$lib/components/ui/navigation/DropdownMenu.svelte';
+	import DropdownItem from '$lib/components/ui/navigation/DropdownItem.svelte';
 	import PropertyInspector from '$lib/components/ui/telemetry/PropertyInspector.svelte';
+	import AdminFilterBar, { type FacetGroup } from '$lib/components/admin/AdminFilterBar.svelte';
+	import AdminMasterDetail from '$lib/components/admin/AdminMasterDetail.svelte';
 	import { adminSession, formatAdminError } from '$lib/stores/admin-session.svelte';
-	import { Plus, KeyRound, ShieldAlert, X, ChevronRight } from '@lucide/svelte';
+	import { toastStore } from '$lib/stores/toast.svelte';
+	import { Plus, KeyRound, ShieldAlert, X, ChevronRight, MoreHorizontal } from '@lucide/svelte';
 
 	const ALL_PLATFORMS: Platform[] = [
 		'vpm',
@@ -37,12 +39,6 @@
 	];
 
 	const NODE_ID_PATTERN = /^(?!\.{1,2}$)[A-Za-z0-9._-]+$/;
-
-	const statusFilterOptions = [
-		{ value: 'all', label: 'All Statuses' },
-		{ value: 'active', label: 'Active' },
-		{ value: 'revoked', label: 'Revoked' }
-	];
 
 	let {
 		nodes = $bindable<OperatorNodeRecord[]>([]),
@@ -65,7 +61,9 @@
 	} = $props();
 
 	let selectedNodeId = $state('');
-	let statusMessage = $state<string | null>(null);
+	let searchQuery = $state('');
+	let capabilityFilter = $state<'ALL' | Platform>('ALL');
+	let page = $state(0);
 
 	let issueDialogOpen = $state(false);
 	let dialogMode = $state<'register' | 'rotate'>('register');
@@ -84,6 +82,55 @@
 	let revokeAttempted = $state(false);
 	let isRevoking = $state(false);
 	let revokeError = $state<string | null>(null);
+
+	const facets = $derived<FacetGroup[]>([
+		{
+			id: 'status',
+			label: 'Node Status (Coordinator)',
+			value: statusFilter,
+			allValue: 'all',
+			options: [
+				{ value: 'all', label: 'All Statuses' },
+				{ value: 'active', label: 'Active' },
+				{ value: 'revoked', label: 'Revoked' }
+			],
+			onChange: (val) => {
+				page = 0;
+				void onFilterChange?.(val as 'all' | OperatorNodeStatus);
+			}
+		},
+		{
+			id: 'capability',
+			label: 'Capability Platform',
+			value: capabilityFilter,
+			allValue: 'ALL',
+			options: [
+				{ value: 'ALL', label: 'All Platforms' },
+				...ALL_PLATFORMS.map((p) => ({ value: p, label: p }))
+			],
+			onChange: (val) => {
+				capabilityFilter = val as 'ALL' | Platform;
+				page = 0;
+			}
+		}
+	]);
+
+	let filteredNodes = $derived.by(() => {
+		const q = searchQuery.trim().toLowerCase();
+		return nodes.filter((node) => {
+			if (capabilityFilter !== 'ALL' && !node.capabilities.includes(capabilityFilter)) {
+				return false;
+			}
+			if (!q) return true;
+			return (
+				node.nodeId.toLowerCase().includes(q) ||
+				node.status.toLowerCase().includes(q) ||
+				(node.heartbeatState ?? '').toLowerCase().includes(q) ||
+				(node.activeJobId ?? '').toLowerCase().includes(q) ||
+				node.capabilities.some((c) => c.toLowerCase().includes(q))
+			);
+		});
+	});
 
 	let selectedNode = $derived(
 		selectedNodeId ? (nodes.find((n) => n.nodeId === selectedNodeId) ?? null) : null
@@ -256,10 +303,12 @@
 			});
 			issuedCredential = res;
 			selectedNodeId = res.nodeId;
-			statusMessage =
+			toastStore.success(
 				dialogMode === 'rotate'
 					? `Rotated credential for ${res.nodeId}.`
-					: `Registered node ${res.nodeId}.`;
+					: `Registered node ${res.nodeId}.`,
+				'Fleet Updated'
+			);
 			await onRefresh?.();
 		} catch (err) {
 			issueError = formatAdminError(err);
@@ -280,7 +329,7 @@
 				trimmedRevokeReason
 			);
 			revokeDialogOpen = false;
-			statusMessage = `Revoked node ${res.nodeId}.`;
+			toastStore.success(`Revoked node ${res.nodeId}.`, 'Node Revoked');
 			await onRefresh?.();
 		} catch (err) {
 			revokeError = formatAdminError(err);
@@ -290,88 +339,98 @@
 	}
 </script>
 
-<div data-slot="nodes-panel" class="flex flex-col gap-6">
-	{#if statusMessage}
-		<Notice variant="success" title="Fleet Updated">
-			{statusMessage}
-		</Notice>
-	{/if}
-
-	<div class="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-		<div class={selectedNode ? 'lg:col-span-8' : 'lg:col-span-12'}>
-			<Card title="Registered Nodes">
-				{#snippet headerRight()}
-					<div class="flex flex-wrap items-center gap-2">
-						<div class="w-36">
-							<DropdownSelect
-								size="xs"
-								bind:value={statusFilter}
-								options={statusFilterOptions}
-								onValueChange={(val) =>
-									void onFilterChange?.(val as 'all' | OperatorNodeStatus)}
-							/>
-						</div>
-						<Button variant="primary" size="xs" onclick={openRegisterDialog}>
-							<Plus size={12} />
-							<span>Register Node</span>
-						</Button>
-					</div>
+<div data-slot="nodes-panel" class="flex flex-col gap-3">
+	<AdminMasterDetail
+		columns={nodeColumns}
+		data={filteredNodes}
+		keyField="nodeId"
+		bind:selectedId={selectedNodeId}
+		bind:page
+		loading={isLoading}
+		ariaLabel="Registered crawler nodes"
+		emptyTitle="No registered nodes"
+		emptyDescription="Register a crawler node or adjust your search and status filters."
+		inspectorTitle={selectedNode?.nodeId ?? 'Node Inspector'}
+		inspectorDescription={selectedNode ? `${selectedNode.status} · ${selectedNode.heartbeatState ?? 'offline'}` : undefined}
+	>
+		{#snippet toolbar()}
+			<AdminFilterBar
+				bind:searchQuery
+				searchPlaceholder="Filter nodes by ID, job, heartbeat, or platform..."
+				{facets}
+				resultCount={filteredNodes.length}
+				totalCount={nodes.length}
+			>
+				{#snippet actions()}
+					<Button variant="primary" size="sm" onclick={openRegisterDialog}>
+						<Plus size={14} />
+						<span>Register Node</span>
+					</Button>
 				{/snippet}
+			</AdminFilterBar>
+		{/snippet}
 
-				{#if isLoading && nodes.length === 0}
-					<div class="flex flex-col gap-2" aria-busy="true" aria-label="Loading registered nodes">
-						<Skeleton class="h-10 w-full" />
-						<Skeleton class="h-10 w-full" />
-						<Skeleton class="h-10 w-full" />
-					</div>
-				{:else if nodes.length === 0}
-					<EmptyState
-						title="No registered nodes"
-						description="Register a crawler node or adjust the status filter."
-					>
-						{#snippet action()}
-							<Button variant="primary" size="sm" onclick={openRegisterDialog}>
-								<Plus size={14} />
-								<span>Register Node</span>
-							</Button>
-						{/snippet}
-					</EmptyState>
-				{:else}
-					<DataTable
-						columns={nodeColumns}
-						data={nodes}
-						keyField="nodeId"
-						bind:selectedId={selectedNodeId}
-					/>
-				{/if}
+		{#snippet emptyAction()}
+			<Button variant="primary" size="sm" onclick={openRegisterDialog}>
+				<Plus size={14} />
+				<span>Register Node</span>
+			</Button>
+		{/snippet}
 
-				{#if nextCursor}
-					<div class="mt-4 flex justify-end">
-						<Button
-							variant="secondary"
-							size="sm"
-							busy={isLoadingMore}
-							onclick={() => void onLoadMore?.()}
+		{#snippet rowActions(node: OperatorNodeRecord)}
+			<div class="inline-flex items-center justify-end gap-1">
+				<Button
+					variant="ghost"
+					size="xs"
+					onclick={() => (selectedNodeId = node.nodeId)}
+				>
+					Inspect
+				</Button>
+				<DropdownMenu>
+					{#snippet trigger()}
+						<span
+							aria-label={`Actions for ${node.nodeId}`}
+							class={cn(
+								CONTROL_HEIGHTS.xs,
+								COMPONENT_PRESETS.button.ghost,
+								'inline-flex items-center justify-center px-1.5 rounded-lg'
+							)}
 						>
-							<span>{isLoadingMore ? 'Loading...' : 'Load Next Page'}</span>
-							<ChevronRight size={14} />
-						</Button>
-					</div>
-				{/if}
-			</Card>
-		</div>
+							<MoreHorizontal size={14} />
+						</span>
+					{/snippet}
+					<DropdownItem label="Inspect Node" onclick={() => (selectedNodeId = node.nodeId)} />
+					<DropdownItem label="Rotate / Re-issue Token" onclick={() => openRotateDialog(node)} />
+					{#if node.status === 'active'}
+						<DropdownItem label="Revoke Node" destructive={true} onclick={() => openRevokeDialog(node)} />
+					{/if}
+				</DropdownMenu>
+			</div>
+		{/snippet}
 
-		{#if selectedNode}
-			<div class="lg:col-span-4 flex flex-col gap-4">
+		{#snippet inspector()}
+			{#if selectedNode}
 				<PropertyInspector
+					embedded={true}
 					title="Selected Node"
 					subtitle={selectedNode.nodeId}
 					properties={selectedInspectorProperties}
-				/>
+				>
+					{#snippet headerActions()}
+						<Button
+							variant="ghost"
+							size="xs"
+							aria-label="Clear selection"
+							title="Clear selection"
+							onclick={() => (selectedNodeId = '')}
+							class="min-w-7 px-1.5"
+						>
+							<X size={14} />
+						</Button>
+					{/snippet}
 
-				<Card variant="flat" class="p-4">
-					<div class="flex items-center justify-between gap-2 flex-wrap">
-						<div class="flex items-center gap-2 flex-wrap">
+					{#snippet footerActions()}
+						<div class="w-full flex items-center justify-between gap-2 flex-wrap">
 							<Button
 								variant="secondary"
 								size="sm"
@@ -391,22 +450,52 @@
 								</Button>
 							{/if}
 						</div>
+					{/snippet}
+				</PropertyInspector>
+			{/if}
+		{/snippet}
 
-						<Button
-							variant="ghost"
-							size="xs"
-							aria-label="Clear selection"
-							title="Clear selection"
-							onclick={() => (selectedNodeId = '')}
-							class="min-w-7 px-1.5"
-						>
-							<X size={14} />
-						</Button>
+		{#snippet paginationFooter()}
+			{#if nextCursor || filteredNodes.length > 50}
+				<div class="flex items-center justify-between gap-3 flex-wrap">
+					<span class="text-xs text-muted-foreground tabular-nums">
+						{filteredNodes.length} matching node(s) loaded
+					</span>
+					<div class="flex items-center gap-2">
+						{#if filteredNodes.length > 50}
+							<Button
+								variant="outline"
+								size="xs"
+								disabled={page <= 0}
+								onclick={() => (page = Math.max(0, page - 1))}
+							>
+								Prev Page
+							</Button>
+							<Button
+								variant="outline"
+								size="xs"
+								disabled={(page + 1) * 50 >= filteredNodes.length}
+								onclick={() => (page = page + 1)}
+							>
+								Next Page
+							</Button>
+						{/if}
+						{#if nextCursor}
+							<Button
+								variant="secondary"
+								size="xs"
+								busy={isLoadingMore}
+								onclick={() => void onLoadMore?.()}
+							>
+								<span>{isLoadingMore ? 'Loading...' : 'Load Next Page'}</span>
+								<ChevronRight size={13} />
+							</Button>
+						{/if}
 					</div>
-				</Card>
-			</div>
-		{/if}
-	</div>
+				</div>
+			{/if}
+		{/snippet}
+	</AdminMasterDetail>
 
 	<Dialog
 		bind:open={issueDialogOpen}
@@ -501,8 +590,9 @@
 
 	<Dialog
 		bind:open={revokeDialogOpen}
+		alert={true}
 		title="Revoke Node Credential"
-		description={`Immediate lease cutoff for ${revokeTargetId}.`}
+		description={`Immediate lease cutoff for ${revokeTargetId}. This action cannot be undone.`}
 	>
 		<div class="flex flex-col gap-4">
 			{#if revokeError}

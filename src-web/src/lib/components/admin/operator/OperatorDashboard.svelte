@@ -26,7 +26,9 @@
 	import LeadsJobsPanel from '$lib/components/admin/operator/LeadsJobsPanel.svelte';
 	import NodesPanel from '$lib/components/admin/operator/NodesPanel.svelte';
 	import GovernancePanel from '$lib/components/admin/operator/GovernancePanel.svelte';
+	import { cn } from '$lib/utils';
 	import { adminSession, formatAdminError } from '$lib/stores/admin-session.svelte';
+	import { toastStore } from '$lib/stores/toast.svelte';
 	import { KeyRound, RefreshCw } from '@lucide/svelte';
 
 	const VALID_TABS = ['catalog', 'policies', 'leads', 'nodes', 'governance'] as const;
@@ -63,6 +65,8 @@
 	);
 
 	let activeProfileCount = $derived(profiles.filter((p) => !p.disabledAt).length);
+	let activeRuleCount = $derived(rules.filter((r) => !r.disabledAt).length);
+	let activeNodeCount = $derived(nodes.filter((n) => n.status === 'active').length);
 	let pendingGovernanceCount = $derived(
 		takedowns.filter((t) => t.reviewStatus === 'pending').length +
 			claims.filter((c) => c.reviewStatus === 'pending').length
@@ -113,7 +117,7 @@
 		return base;
 	}
 
-	async function refreshAllPlanes() {
+	async function refreshAllPlanes(notifyOnSuccess = false) {
 		if (!hasOperatorSession) return;
 		loadError = null;
 		isLoading = true;
@@ -215,6 +219,8 @@
 			}
 			if (errors.length > 0) {
 				loadError = errors.join(' | ');
+			} else if (notifyOnSuccess) {
+				toastStore.success('Synchronized all 9 operator planes.', 'Sync Complete');
 			}
 		} finally {
 			isLoading = false;
@@ -319,18 +325,29 @@
 	}
 </script>
 
-<div data-slot="operator-dashboard" class="flex flex-col gap-6">
-	<div class="flex items-center justify-between gap-4 flex-wrap">
-		<h1 class="text-2xl font-semibold tracking-tight text-foreground text-balance">
-			Operator Console
-		</h1>
+<div
+	data-slot="operator-dashboard"
+	class={cn(
+		'h-full flex flex-col gap-3 p-4 sm:p-6 md:pl-24 overflow-y-auto',
+		!loadError && hasOperatorSession && 'md:overflow-hidden'
+	)}
+>
+	<header class="flex items-center justify-between gap-3 flex-wrap shrink-0">
+		<div class="flex items-center gap-2.5 min-w-0">
+			<h1 class="text-lg font-semibold tracking-tight text-foreground text-balance">
+				Operator Console
+			</h1>
+			<span class="hidden sm:inline-block text-xs font-mono text-muted-foreground truncate">
+				{adminSession.coordinatorHostname}
+			</span>
+		</div>
 
 		{#if hasOperatorSession}
 			<Button
 				variant="primary"
 				size="sm"
 				busy={isLoading}
-				onclick={() => void refreshAllPlanes()}
+				onclick={() => void refreshAllPlanes(true)}
 			>
 				<RefreshCw size={14} />
 				<span>{isLoading ? 'Syncing...' : 'Sync'}</span>
@@ -341,7 +358,88 @@
 				<span>Sign In</span>
 			</Button>
 		{/if}
-	</div>
+	</header>
+
+	<section
+		aria-label="Operator telemetry summary"
+		class="grid grid-cols-2 lg:grid-cols-4 rounded-2xl border border-border bg-card divide-y sm:divide-y-0 sm:divide-x divide-border overflow-hidden shrink-0 shadow-xs"
+	>
+		<Button
+			variant="ghost"
+			size="sm"
+			onclick={() => (activeTab = 'nodes')}
+			class="h-auto w-full rounded-none px-4 py-2.5 flex-col items-start justify-start text-left gap-0.5 hover:bg-muted/40"
+		>
+			<span class="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Active Nodes</span>
+			<div class="flex items-center gap-2">
+				<span
+					class={cn(
+						'size-2 rounded-full shrink-0',
+						activeNodeCount > 0 ? 'bg-sidebar-primary' : 'bg-muted-foreground/50'
+					)}
+				></span>
+				<span class="text-base font-semibold text-foreground tabular-nums">{activeNodeCount}</span>
+				<span class="text-xs text-muted-foreground tabular-nums">/ {nodes.length} fleet</span>
+			</div>
+		</Button>
+
+		<Button
+			variant="ghost"
+			size="sm"
+			onclick={() => (activeTab = 'leads')}
+			class="h-auto w-full rounded-none px-4 py-2.5 flex-col items-start justify-start text-left gap-0.5 hover:bg-muted/40"
+		>
+			<span class="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Leads &amp; Jobs</span>
+			<div class="flex items-center gap-2">
+				<span
+					class={cn(
+						'size-2 rounded-full shrink-0',
+						leads.length > 0 ? 'bg-chart-2' : 'bg-muted-foreground/50'
+					)}
+				></span>
+				<span class="text-base font-semibold text-foreground tabular-nums">{leads.length}</span>
+				<span class="text-xs text-muted-foreground tabular-nums">/ {jobs.length} jobs</span>
+			</div>
+		</Button>
+
+		<Button
+			variant="ghost"
+			size="sm"
+			onclick={() => (activeTab = 'policies')}
+			class="h-auto w-full rounded-none px-4 py-2.5 flex-col items-start justify-start text-left gap-0.5 hover:bg-muted/40"
+		>
+			<span class="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Source Policies</span>
+			<div class="flex items-center gap-2">
+				<span
+					class={cn(
+						'size-2 rounded-full shrink-0',
+						activeProfileCount > 0 ? 'bg-sidebar-primary' : 'bg-muted-foreground/50'
+					)}
+				></span>
+				<span class="text-base font-semibold text-foreground tabular-nums">{activeProfileCount}</span>
+				<span class="text-xs text-muted-foreground tabular-nums">/ {activeRuleCount} rules</span>
+			</div>
+		</Button>
+
+		<Button
+			variant="ghost"
+			size="sm"
+			onclick={() => (activeTab = 'governance')}
+			class="h-auto w-full rounded-none px-4 py-2.5 flex-col items-start justify-start text-left gap-0.5 hover:bg-muted/40"
+		>
+			<span class="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Pending Governance</span>
+			<div class="flex items-center gap-2">
+				<span
+					class={cn(
+						'size-2 rounded-full shrink-0',
+						pendingGovernanceCount > 0 ? 'bg-warning' : 'bg-sidebar-primary'
+					)}
+				></span>
+				<span class="text-base font-semibold text-foreground tabular-nums">{pendingGovernanceCount}</span>
+				<span class="text-xs text-muted-foreground tabular-nums">/ {apps.length} apps</span>
+			</div>
+		</Button>
+	</section>
 
 	{#if !hasOperatorSession}
 		<Notice variant="warning" title="Operator sign-in required">
@@ -356,53 +454,54 @@
 	{/if}
 
 	<Tabs bind:value={activeTab} items={operatorTabs}>
-		<div class="pt-2">
-			{#if activeTab === 'catalog'}
-				<CatalogInitPanel
-					bind:packages
-					bind:nextCursor={catalogCursor}
-					onRefresh={refreshAllPlanes}
-				/>
-			{:else if activeTab === 'policies'}
-				<PoliciesPanel
-					bind:profiles
-					bind:rules
-					onRefresh={refreshAllPlanes}
-				/>
-			{:else if activeTab === 'leads'}
-				<LeadsJobsPanel
-					bind:leads
-					bind:leadStatusFilter
-					bind:jobs
-					bind:jobsNextCursor
-					bind:jobsStateFilter
-					bind:jobsPlatformFilter
-					isLoading={isLoading || isLoadingJobs}
-					isLoadingMoreJobs={isLoadingMoreJobs}
-					onFilterChange={handleLeadFilterChange}
-					onJobsFilterChange={handleJobsFilterChange}
-					onLoadMoreJobs={handleLoadMoreJobs}
-					onRefresh={refreshAllPlanes}
-				/>
-			{:else if activeTab === 'nodes'}
-				<NodesPanel
-					bind:nodes
-					bind:statusFilter={nodesStatusFilter}
-					bind:nextCursor={nodesNextCursor}
-					isLoading={isLoading || isLoadingNodes}
-					isLoadingMore={isLoadingMoreNodes}
-					onFilterChange={handleNodeFilterChange}
-					onLoadMore={handleLoadMoreNodes}
-					onRefresh={refreshAllPlanes}
-				/>
-			{:else}
-				<GovernancePanel
-					bind:takedowns
-					bind:claims
-					bind:apps
-					onRefresh={refreshAllPlanes}
-				/>
-			{/if}
-		</div>
+		{#if activeTab === 'catalog'}
+			<CatalogInitPanel
+				bind:packages
+				bind:nextCursor={catalogCursor}
+				isLoading={isLoading}
+				onRefresh={() => refreshAllPlanes()}
+			/>
+		{:else if activeTab === 'policies'}
+			<PoliciesPanel
+				bind:profiles
+				bind:rules
+				isLoading={isLoading}
+				onRefresh={() => refreshAllPlanes()}
+			/>
+		{:else if activeTab === 'leads'}
+			<LeadsJobsPanel
+				bind:leads
+				bind:leadStatusFilter
+				bind:jobs
+				bind:jobsNextCursor
+				bind:jobsStateFilter
+				bind:jobsPlatformFilter
+				isLoading={isLoading || isLoadingJobs}
+				isLoadingMoreJobs={isLoadingMoreJobs}
+				onFilterChange={handleLeadFilterChange}
+				onJobsFilterChange={handleJobsFilterChange}
+				onLoadMoreJobs={handleLoadMoreJobs}
+				onRefresh={() => refreshAllPlanes()}
+			/>
+		{:else if activeTab === 'nodes'}
+			<NodesPanel
+				bind:nodes
+				bind:statusFilter={nodesStatusFilter}
+				bind:nextCursor={nodesNextCursor}
+				isLoading={isLoading || isLoadingNodes}
+				isLoadingMore={isLoadingMoreNodes}
+				onFilterChange={handleNodeFilterChange}
+				onLoadMore={handleLoadMoreNodes}
+				onRefresh={() => refreshAllPlanes()}
+			/>
+		{:else}
+			<GovernancePanel
+				bind:takedowns
+				bind:claims
+				bind:apps
+				isLoading={isLoading}
+				onRefresh={() => refreshAllPlanes()}
+			/>
+		{/if}
 	</Tabs>
 </div>

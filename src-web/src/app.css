@@ -194,3 +194,23 @@
 ::-webkit-scrollbar-thumb:hover {
   background: var(--ring);
 }
+
+@media (forced-colors: active) {
+  [data-slot="card"],
+  [data-slot="dialog-content"],
+  [data-slot="sheet-content"],
+  [data-slot="popover-content"],
+  [data-slot="dropdown-menu-content"],
+  [data-slot="floating-nav-island"],
+  [data-slot="toast"] {
+    border: 1px solid CanvasText;
+  }
+
+  button,
+  a,
+  input,
+  textarea,
+  [role="button"] {
+    border-color: ButtonBorder;
+  }
+}

@@ -6,8 +6,10 @@
 	import SidebarNav from '$lib/components/ui/navigation/SidebarNav.svelte';
 	import Button from '$lib/components/ui/forms/Button.svelte';
 	import Badge from '$lib/components/ui/feedback/Badge.svelte';
+	import Toast from '$lib/components/ui/feedback/Toast.svelte';
 	import Sheet from '$lib/components/ui/overlays/Sheet.svelte';
 	import { adminSession } from '$lib/stores/admin-session.svelte';
+	import { toastStore } from '$lib/stores/toast.svelte';
 	import {
 		Menu,
 		ShieldCheck,
@@ -103,7 +105,7 @@
 		onfocusout={handleFocusOut}
 		onkeydown={handleKeyDown}
 		class={cn(
-			'hidden md:flex fixed top-4 bottom-4 left-4 z-40 flex-col rounded-2xl border border-sidebar-border bg-sidebar/95 text-sidebar-foreground backdrop-blur-md shadow-2xl overflow-hidden select-none transition-[width] duration-200 ease-out',
+			'hidden md:flex fixed top-4 bottom-4 left-4 z-40 flex-col rounded-2xl border border-sidebar-border bg-sidebar/95 text-sidebar-foreground backdrop-blur-md shadow-2xl overflow-hidden select-none',
 			sidebarExpanded ? 'w-64' : 'w-16'
 		)}
 	>
@@ -195,7 +197,10 @@
 {/snippet}
 
 {#snippet mobileNav()}
-	<div class="md:hidden fixed bottom-4 left-4 z-40">
+	<div
+		class="md:hidden fixed z-40"
+		style="bottom: calc(1rem + env(safe-area-inset-bottom)); left: calc(1rem + env(safe-area-inset-left));"
+	>
 		<Button
 			variant="secondary"
 			size="md"
@@ -242,9 +247,34 @@
 	</Sheet>
 {/snippet}
 
+{#snippet toastViewport()}
+	{#if toastStore.items.length > 0}
+		<div
+			data-slot="toast-viewport"
+			aria-label="Notifications"
+			class="fixed z-60 flex flex-col gap-2 w-[min(24rem,calc(100vw-2rem))] pointer-events-none"
+			style="bottom: calc(1rem + env(safe-area-inset-bottom)); right: calc(1rem + env(safe-area-inset-right));"
+		>
+			{#each toastStore.items as item (item.id)}
+				<div class="pointer-events-auto">
+					<Toast
+						message={item.message}
+						title={item.title}
+						variant={item.variant}
+						durationMs={item.durationMs}
+						dismissible={item.dismissible}
+						onDismiss={() => toastStore.dismiss(item.id)}
+					/>
+				</div>
+			{/each}
+		</div>
+	{/if}
+{/snippet}
+
 {#if navOnly}
 	{@render desktopRail()}
 	{@render mobileNav()}
+	{@render toastViewport()}
 {:else}
 	<div data-slot="admin-shell" class="relative flex h-dvh w-screen overflow-hidden bg-background text-foreground">
 		{@render desktopRail()}
@@ -262,5 +292,6 @@
 				</main>
 			{/if}
 		</div>
+		{@render toastViewport()}
 	</div>
 {/if}
