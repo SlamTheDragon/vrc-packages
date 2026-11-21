@@ -171,10 +171,17 @@ See full history at [docs/changelogs/vrcp-crawler-node/preview](https://github.c
 ## VRC Packages API - `vrcp-packages-api-preview`
 
 <!-- vrcp-packages-api-preview-DESCRIPTION_SUMMARY -->
+Support catalog search rating filters, strict registration credential checks, safe canonical ID paths, explicit JSON error wrapping, and shared protocol schema validation.
 <!-- vrcp-packages-api-preview-DESCRIPTION_SUMMARY -->
 ### Added
+- **Search Rating Filter**: Add optional rating filter support to `CatalogSearchParams` and `client.index.search`.
 ### Bugs Fixed
+- **Registration Credentials**: Validate `RegisterAppRequestSchema` first in `client.app.register`, require explicit `auth` when two tokens exist, and return status 401 when tokens are missing.
+- **Canonical ID Paths**: Reject dot segments and blank-trimmed strings on `canonicalId` in `client.moderator.ratings.adjust`.
+- **Success JSON Parsing**: Wrap invalid `2xx` JSON parse failures inside `VRCPApiError`.
 ### Changes
+- **Schema Consolidation and Validation**: Share internal URL, token, umbrella, and candidate schemas, and enforce `PackageFrontSchema`, `LeadRowSchema`, strict init, and rule origin checks.
+- **Package and Fixture Hygiene**: Remove the unused root stub and compiler flags, clean temporary test folders, and split protocol test files.
 See full history at [docs/changelogs/vrcp-packages-api/preview](https://github.com/SlamTheDragon/vrc-packages/tree/main/docs/changelogs/vrcp-packages-api/preview)
 
 ---
@@ -245,7 +252,12 @@ See full history at [docs/changelogs/vrcp-worker/preview](https://github.com/Sla
 ## VRC Packages Network `vrcp-packages-network`
 
 <!-- vrcp-packages-network-DESCRIPTION_SUMMARY -->
+Export shared node robots protocol schemas, unified IP validation, and centralized source-target and binary policies.
 <!-- vrcp-packages-network-DESCRIPTION_SUMMARY -->
 ### Added
+- **Node Robots Protocol Schemas**: Export `NodeRobotsClaimRequestSchema`, `NodeRobotsClaimResponseSchema`, `NodeRobotsResultRequestSchema`, and `NodeRobotsResultResponseSchema` from `vrc-packages-network/node` aligned with `OriginRobotsSnapshotSchema`.
+- **IP Literal Helper**: Export `isIp` from `vrc-packages-network/ip-policy` using unified IPv4 and IPv6 validation.
+- **Source-Target and Binary Policies**: Export binary archive guards, GitHub normalization helpers, storefront predicates, outbound lead classification, and discovery lead resolution from `vrc-packages-network/source-targets`.
 ### Changes
+- **Package Documentation**: Update `README.md` commands to Bun and rewrite documentation in ASD-STE100 prose.
 See full history at [docs/changelogs/vrcp-packages-network/](https://github.com/SlamTheDragon/vrc-packages/tree/main/docs/changelogs/vrcp-packages-network/)
