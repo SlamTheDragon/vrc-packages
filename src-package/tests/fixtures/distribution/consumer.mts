@@ -1,9 +1,19 @@
 import { VRCPackageClient, type VRCPackageClientOptions } from 'vrc-packages-api';
-import { RevokeNodeRequestSchema, type PublicCatalogListQuery,
-  type PublicCatalogListResponse } from 'vrc-packages-api/protocol';
+import {
+  RevokeNodeRequestSchema,
+  type PublicCatalogListQuery,
+  type PublicCatalogListResponse,
+  type ReportSubmissionRequest,
+  type DemandSignalReportRequest,
+  type IssueReportRequest,
+  type RemovalReportRequest
+} from 'vrc-packages-api/protocol';
 import { type Platform } from 'vrc-packages-api/types';
 import { UmbrellaSchema } from 'vrc-packages-api/taxonomy';
 import { isAppToken } from 'vrc-packages-api/auth';
+
+// @ts-expect-error Deprecated Wave 1 feedback symbols were retired from the public SDK.
+import type { FeedbackSignalType, DownstreamFeedbackRequest, DownstreamFeedbackResponse } from 'vrc-packages-api/protocol';
 
 // @ts-expect-error Version-zero SDK does not retain the old client spelling.
 import { VRCPackagesClient } from 'vrc-packages-api';
@@ -63,3 +73,29 @@ async function checkStrictLeadTypes() {
   }
 }
 void checkStrictLeadTypes;
+
+async function checkNarrowedReportsAndQueryLimits(report: ReportSubmissionRequest) {
+  if (report.reportType === 'demand_signal') {
+    const d: DemandSignalReportRequest = report;
+    // @ts-expect-error demand_signal requests do not accept reportKind.
+    void report.reportKind;
+    void d.signalKind;
+  } else if (report.reportType === 'issue_report') {
+    const i: IssueReportRequest = report;
+    // @ts-expect-error issue_report requests do not accept query or zeroHits.
+    void report.query;
+    void i.reportKind;
+  } else {
+    const r: RemovalReportRequest = report;
+    // @ts-expect-error removal_request requests do not accept signalKind or reportKind.
+    void report.signalKind;
+    void r.reason;
+  }
+  // @ts-expect-error User and moderator query limits must be numbers, not strings.
+  await client.user.apps.list({ limit: '10' });
+  // @ts-expect-error Moderator rating query limits must be numbers, not strings.
+  await client.moderator.ratings.list({ limit: '10' });
+  // @ts-expect-error Moderator app query limits must be numbers, not strings.
+  await client.moderator.apps.list({ limit: '10' });
+}
+void checkNarrowedReportsAndQueryLimits;

@@ -5,7 +5,15 @@ import { RevokeNodeRequestSchema, LeadCursorSchema, encodeLeadCursor, decodeLead
   NodeCredentialResponseSchema, encodeCatalogCursor, PublicCatalogListQuerySchema } from 'vrc-packages-api/protocol';
 import { encodeCatalogDeltaCursor, CatalogDeltaQuerySchema, OperatorLeadListQuerySchema } from 'vrc-packages-api/protocol';
 import { LeadRowSchema, ApproveLeadSchema, RejectLeadSchema } from 'vrc-packages-api/protocol';
-import { ReportSubmissionRequestSchema } from 'vrc-packages-api/protocol';
+import {
+  ReportSubmissionRequestSchema,
+  DemandSignalReportRequestSchema,
+  IssueReportRequestSchema,
+  RemovalReportRequestSchema,
+  UserAppListQuerySchema,
+  ModeratorRatingListQuerySchema,
+  ModeratorAppListQuerySchema
+} from 'vrc-packages-api/protocol';
 import { CatalogPackageSchema } from 'vrc-packages-api/types';
 import * as taxonomy from 'vrc-packages-api/taxonomy';
 import * as sdkExports from 'vrc-packages-api';
@@ -126,6 +134,22 @@ await assert.rejects(transportClient.operator.init({ autoSeed: false }), error =
   error instanceof VRCPApiError && error.status === 503 &&
   error.details === '<html>Upstream unavailable</html>');
 assert.equal(requests, 3);
+assert.equal(Object.hasOwn(sdkExports, 'FeedbackSignalTypeSchema'), false);
+assert.equal(Object.hasOwn(sdkExports, 'DownstreamFeedbackRequestSchema'), false);
+assert.equal(Object.hasOwn(sdkExports, 'DownstreamFeedbackResponseSchema'), false);
+assert.equal(DemandSignalReportRequestSchema.safeParse({ schemaVersion: 1, reportType: 'demand_signal',
+  signalKind: 'search_miss', query: 'packed query' }).success, true);
+assert.equal(IssueReportRequestSchema.safeParse({ schemaVersion: 1, reportType: 'issue_report',
+  reportKind: 'broken_link', canonicalId: 'packed-target' }).success, true);
+assert.equal(RemovalReportRequestSchema.safeParse({ schemaVersion: 1, reportType: 'removal_request',
+  canonicalId: 'packed-target', reason: 'Packed removal test' }).success, true);
+assert.equal(ReportSubmissionRequestSchema.safeParse({ schemaVersion: 1, reportType: 'demand_signal',
+  reportKind: 'broken_link' }).success, false);
+assert.equal(ReportSubmissionRequestSchema.safeParse({ schemaVersion: 1, reportType: 'issue_report',
+  reportKind: 'broken_link', query: 'cross-variant' }).success, false);
+assert.equal(UserAppListQuerySchema.safeParse({ limit: '10' }).success, false);
+assert.equal(ModeratorRatingListQuerySchema.safeParse({ limit: '10' }).success, false);
+assert.equal(ModeratorAppListQuerySchema.safeParse({ limit: '10' }).success, false);
 assert.equal(ReportSubmissionRequestSchema.safeParse({ schemaVersion: 1, reportType: 'removal_request',
   canonicalId: 'packed-target', reason: 'Packed removal test' }).success, true);
 const reportClient = new VRCPackageClient({ baseUrl: 'https://packed-worker.test', appToken: 'packed-test-only',

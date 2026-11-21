@@ -28,6 +28,7 @@ Sweep all sector `handoff.md` files and stage accepted intake rows here in stric
 | `INT-001` | `api-web` | `PR-AW-SDK-001` | `package` | `preview` | `yes (reset and published as 2026.11.0-pre, run 44907441586)` | `yes` | `yes` | `cleared` |
 | `INT-002` | `crawler-network` | `PR-CN-NET-001` | `network` | `preview` | `yes (package 2026.11.0-pre verified; published 2026.11.0, run 44908178157)` | `yes` | `yes` | `cleared` |
 | `INT-003` | `crawler-network` | `PR-CN-WRK-001` | `worker` | `preview` | `yes (package 2026.11.0-pre, network 2026.11.0 verified; published 2026.11.0-pre, run 44908546421, live crawl verified)` | `yes` | `yes` | `cleared` |
+| `INT-004` | `api-web` | `PR-AW-SDK-002` | `package` | `preview` | `yes (producer SDK Layer B; target 2026.11.1-pre)` | `yes` | `no` | `in_progress` |
 
 ---
 

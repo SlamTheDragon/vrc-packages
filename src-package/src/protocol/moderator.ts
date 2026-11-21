@@ -6,7 +6,7 @@ import {
   AppCandidateCursorSchema,
   encodeAppCandidateCursor,
   decodeAppCandidateCursor,
-  createAppCandidateListQuerySchema,
+  AppCandidateListQuerySchema,
   createAppCandidateListResponseSchema,
   createReviewAppCandidateRequestSchema,
   createReviewAppCandidateResponseSchema,
@@ -42,10 +42,9 @@ export function decodeModeratorRatingCursor(value: string): ModeratorRatingCurso
   return decodeCursor(value, ModeratorRatingCursorSchema);
 }
 
-// Retain z.coerce.number() until Wave 2 Worker parses query integers before validation.
 export const ModeratorRatingListQuerySchema = z.strictObject({
   rating: ContentRatingSchema.optional(),
-  limit: z.coerce.number().int().min(1).max(100).default(100),
+  limit: z.number().int().min(1).max(100).default(100),
   cursor: CursorTokenSchema.optional()
 }).refine(query => query.cursor === undefined || decodeModeratorRatingCursor(query.cursor) !== null, "Invalid moderator cursor");
 export type ModeratorRatingListQuery = z.infer<typeof ModeratorRatingListQuerySchema>;
@@ -86,8 +85,7 @@ export type ModeratorAppCursor = AppCandidateCursor;
 export const encodeModeratorAppCursor = encodeAppCandidateCursor;
 export const decodeModeratorAppCursor = decodeAppCandidateCursor;
 
-// Retain z.coerce.number() until Wave 2 Worker parses query integers before validation.
-export const ModeratorAppListQuerySchema = createAppCandidateListQuerySchema(true);
+export const ModeratorAppListQuerySchema = AppCandidateListQuerySchema;
 export type ModeratorAppListQuery = AppCandidateListQuery;
 
 export const ModeratorAppListResponseSchema = createAppCandidateListResponseSchema(MODERATOR_PROTOCOL_VERSION);

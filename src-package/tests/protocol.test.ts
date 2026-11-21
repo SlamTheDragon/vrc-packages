@@ -13,11 +13,15 @@ import {
 } from "../src/protocol/catalog.ts";
 import {
   CatalogSearchRequestSchema,
+  DemandSignalReportRequestSchema,
+  IssueReportRequestSchema,
+  RemovalReportRequestSchema,
   ReportSubmissionRequestSchema,
   CreatorDelegationAttestationSchema,
   CreatorClaimIntakeRequestSchema,
   CreatorClaimIntakeResponseSchema
 } from "../src/protocol/downstream.ts";
+import { UserAppListQuerySchema } from "../src/protocol/user.ts";
 import {
   InitializeCoordinatorRequestSchema,
   InitializeCoordinatorResponseSchema,
@@ -158,34 +162,66 @@ describe("src-package wire protocols", () => {
     expect(parsed.rating).toBe("mature");
   });
 
-  it("validates ReportSubmissionRequest for demand signals, issue reports, and removal requests", () => {
-    const removal = { schemaVersion: 1, reportType: "removal_request", canonicalId: "pkg-123", reason: "Incorrect attribution" };
+  it("validates ReportSubmissionRequest as a strict 3-branch discriminated union", () => {
+    const removal = { schemaVersion: 1 as const, reportType: "removal_request" as const, canonicalId: "pkg-123", reason: "Incorrect attribution" };
+    expect(RemovalReportRequestSchema.safeParse(removal).success).toBe(true);
     expect(ReportSubmissionRequestSchema.safeParse(removal).success).toBe(true);
-    for (const invalid of [{ ...removal, reason: "" }, { ...removal, canonicalId: undefined },
-      { ...removal, signalKind: "refresh_demand" }, { ...removal, query: "search" }]) {
+    expect(ReportSubmissionRequestSchema.safeParse({
+      schemaVersion: 1,
+      reportType: "removal_request",
+      targetUrl: "https://booth.pm/ja/items/12345",
+      reason: "Creator request"
+    }).success).toBe(true);
+    // Target requirement (targetUrl or canonicalId) is enforced on ReportSubmissionRequestSchema
+    expect(ReportSubmissionRequestSchema.safeParse({
+      schemaVersion: 1,
+      reportType: "removal_request",
+      reason: "Missing target"
+    }).success).toBe(false);
+    for (const invalid of [
+      { ...removal, reason: "" },
+      { ...removal, reason: "   " },
+      { ...removal, reason: undefined },
+      { ...removal, signalKind: "refresh_demand" },
+      { ...removal, reportKind: "broken_link" },
+      { ...removal, query: "search" },
+      { ...removal, zeroHits: true },
+      { ...removal, extra: true }
+    ]) {
+      expect(RemovalReportRequestSchema.safeParse(invalid).success).toBe(false);
       expect(ReportSubmissionRequestSchema.safeParse(invalid).success).toBe(false);
     }
+
     const demand = {
-      schemaVersion: 1,
+      schemaVersion: 1 as const,
       reportType: "demand_signal" as const,
       signalKind: "search_miss" as const,
       query: "missing package",
       zeroHits: true
     };
+    expect(() => DemandSignalReportRequestSchema.parse(demand)).not.toThrow();
     expect(() => ReportSubmissionRequestSchema.parse(demand)).not.toThrow();
+    for (const invalid of [
+      { ...demand, reportKind: "broken_link" },
+      { ...demand, extra: true }
+    ]) {
+      expect(DemandSignalReportRequestSchema.safeParse(invalid).success).toBe(false);
+      expect(ReportSubmissionRequestSchema.safeParse(invalid).success).toBe(false);
+    }
 
     const issue = {
-      schemaVersion: 1,
+      schemaVersion: 1 as const,
       reportType: "issue_report" as const,
       reportKind: "broken_link" as const,
       targetUrl: "https://example.com/broken",
       canonicalId: "pkg-123"
     };
+    expect(() => IssueReportRequestSchema.parse(issue)).not.toThrow();
     expect(() => ReportSubmissionRequestSchema.parse(issue)).not.toThrow();
 
     // Explicit content report sub-categories
     const falsePositive = {
-      schemaVersion: 1,
+      schemaVersion: 1 as const,
       reportType: "issue_report" as const,
       reportKind: "explicit_false_positive" as const,
       canonicalId: "pkg-safe-model",
@@ -194,7 +230,7 @@ describe("src-package wire protocols", () => {
     expect(() => ReportSubmissionRequestSchema.parse(falsePositive)).not.toThrow();
 
     const falseNegative = {
-      schemaVersion: 1,
+      schemaVersion: 1 as const,
       reportType: "issue_report" as const,
       reportKind: "explicit_false_negative" as const,
       targetUrl: "https://booth.pm/ja/items/999999",
@@ -202,11 +238,18 @@ describe("src-package wire protocols", () => {
     };
     expect(() => ReportSubmissionRequestSchema.parse(falseNegative)).not.toThrow();
 
-    // Unknown report kinds are rejected
-    expect(ReportSubmissionRequestSchema.safeParse({
-      ...issue,
-      reportKind: "unauthorized_kind" as any
-    }).success).toBe(false);
+    // Cross-variant fields, missing reportKind, and unknown report kinds are rejected
+    for (const invalid of [
+      { schemaVersion: 1, reportType: "issue_report", canonicalId: "pkg-123" },
+      { ...issue, signalKind: "search_miss" },
+      { ...issue, query: "missing package" },
+      { ...issue, zeroHits: true },
+      { ...issue, reportKind: "unauthorized_kind" },
+      { ...issue, extra: true }
+    ]) {
+      expect(IssueReportRequestSchema.safeParse(invalid).success).toBe(false);
+      expect(ReportSubmissionRequestSchema.safeParse(invalid).success).toBe(false);
+    }
   });
 
   it("encodes, decodes, and validates operator cursors", () => {
@@ -572,6 +615,13 @@ describe("src-package wire protocols", () => {
       candidateStatus: "trusted",
       limit: 50
     })).not.toThrow();
+    for (const badLimit of ["50", "abc", 0, 101, 1.5]) {
+      expect(ModeratorAppListQuerySchema.safeParse({ limit: badLimit }).success).toBe(false);
+    }
+    expect(() => UserAppListQuerySchema.parse({ limit: 25 })).not.toThrow();
+    for (const badLimit of ["25", "abc", 0, 101, 1.5]) {
+      expect(UserAppListQuerySchema.safeParse({ limit: badLimit }).success).toBe(false);
+    }
     expect(() => ModeratorAppListResponseSchema.parse({
       schemaVersion: 1,
       apps: [appWithCandidate],
@@ -626,6 +676,9 @@ describe("src-package wire protocols", () => {
       limit: 20,
       cursor: encModCursor
     })).not.toThrow();
+    for (const badLimit of ["20", "abc", 0, 101, 1.5]) {
+      expect(ModeratorRatingListQuerySchema.safeParse({ limit: badLimit }).success).toBe(false);
+    }
 
     expect(() => ModeratorRatingListResponseSchema.parse({
       schemaVersion: 1,

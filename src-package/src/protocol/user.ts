@@ -8,7 +8,7 @@ export const UserAppSchema = z.strictObject({
 });
 export type UserApp = z.infer<typeof UserAppSchema>;
 export const UserAppListQuerySchema = z.strictObject({
-  limit: z.coerce.number().int().min(1).max(100).default(50), cursor: z.uuid().optional()
+  limit: z.number().int().min(1).max(100).default(50), cursor: z.uuid().optional()
 });
 export type UserAppListQuery = z.infer<typeof UserAppListQuerySchema>;
 export const UserAppListResponseSchema = z.strictObject({

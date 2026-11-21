@@ -38,15 +38,10 @@ export function decodeAppCandidateCursor(value: string): AppCandidateCursor | nu
   return decodeCursor(value, AppCandidateCursorSchema);
 }
 
-/** Creates an application candidate list query schema with optional integer coercion for Wave 2 handler migration. */
-export function createAppCandidateListQuerySchema(coerceLimit = false) {
-  const limit = (coerceLimit ? z.coerce.number() : z.number())
-    .int()
-    .min(1)
-    .max(100)
-    .default(100);
+/** Creates an application candidate list query schema for operator and moderator control planes. */
+export function createAppCandidateListQuerySchema() {
   return z.strictObject({
-    limit,
+    limit: z.number().int().min(1).max(100).default(100),
     cursor: CursorTokenSchema.optional(),
     candidateStatus: CandidateStatusSchema.optional()
   }).refine(
@@ -55,7 +50,7 @@ export function createAppCandidateListQuerySchema(coerceLimit = false) {
   );
 }
 
-export const AppCandidateListQuerySchema = createAppCandidateListQuerySchema(false);
+export const AppCandidateListQuerySchema = createAppCandidateListQuerySchema();
 export type AppCandidateListQuery = z.infer<typeof AppCandidateListQuerySchema>;
 
 /** Creates an application candidate list response schema bound to the owning protocol version. */

@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import * as sdk from "../src/index.ts";
+import * as protocol from "../src/protocol/index.ts";
 import * as user from "../src/protocol/user.ts";
 import * as downstream from "../src/protocol/downstream.ts";
 
@@ -15,9 +16,16 @@ test("SDK exports use owner-approved VRCP identity without old-name aliases", ()
   expect(error.code).toBe("forbidden");
 });
 
-test("SDK entry points do not expose the retired direct-delisting contract", () => {
-  for (const entry of [sdk, user, downstream]) {
-    for (const name of ["DelistRequestSchema", "DelistResponseSchema", "DelistProofKindSchema"]) {
+test("SDK entry points do not expose retired direct-delisting or deprecated feedback contracts", () => {
+  for (const entry of [sdk, protocol, user, downstream]) {
+    for (const name of [
+      "DelistRequestSchema",
+      "DelistResponseSchema",
+      "DelistProofKindSchema",
+      "FeedbackSignalTypeSchema",
+      "DownstreamFeedbackRequestSchema",
+      "DownstreamFeedbackResponseSchema"
+    ]) {
       expect(Object.hasOwn(entry, name)).toBe(false);
     }
   }

@@ -28,35 +28,6 @@ export type RegisterAppResponse = z.infer<typeof RegisterAppResponseSchema>;
 export const DemandSignalKindSchema = z.enum(["search_miss", "refresh_demand", "popularity_signal"]);
 export type DemandSignalKind = z.infer<typeof DemandSignalKindSchema>;
 
-/** @deprecated Retained until Wave 2 Worker feedback callers migrate to ReportSubmissionRequestSchema. */
-export const FeedbackSignalTypeSchema = DemandSignalKindSchema;
-/** @deprecated Retained until Wave 2 Worker feedback callers migrate to ReportSubmissionRequestSchema. */
-export type FeedbackSignalType = DemandSignalKind;
-
-/** @deprecated Retained until Wave 2 Worker feedback callers migrate to ReportSubmissionRequestSchema. */
-export const DownstreamFeedbackRequestSchema = z.strictObject({
-  schemaVersion: z.literal(DOWNSTREAM_PROTOCOL_VERSION),
-  signalType: FeedbackSignalTypeSchema,
-  query: z.string().trim().max(200).optional(),
-  zeroHits: z.boolean().optional(),
-  requestedPlatform: PlatformSchema.optional(),
-  targetUrl: HttpsUrlSchema.optional(),
-  category: z.string().trim().max(100).optional(),
-  metadata: z.record(z.string().max(100), z.unknown()).optional()
-});
-/** @deprecated Retained until Wave 2 Worker feedback callers migrate to ReportSubmissionRequestSchema. */
-export type DownstreamFeedbackRequest = z.infer<typeof DownstreamFeedbackRequestSchema>;
-
-/** @deprecated Retained until Wave 2 Worker feedback callers migrate to ReportSubmissionResponseSchema. */
-export const DownstreamFeedbackResponseSchema = z.strictObject({
-  schemaVersion: z.literal(DOWNSTREAM_PROTOCOL_VERSION),
-  status: z.literal("accepted"),
-  signalId: z.string().uuid(),
-  recordedAt: CursorTimestampSchema
-});
-/** @deprecated Retained until Wave 2 Worker feedback callers migrate to ReportSubmissionResponseSchema. */
-export type DownstreamFeedbackResponse = z.infer<typeof DownstreamFeedbackResponseSchema>;
-
 export const QueryOriginSchema = z.enum(["user_authored", "app_automated"]);
 export type QueryOrigin = z.infer<typeof QueryOriginSchema>;
 
@@ -98,25 +69,49 @@ export const IssueReportKindSchema = z.enum([
 ]);
 export type IssueReportKind = z.infer<typeof IssueReportKindSchema>;
 
-/**
- * Consolidated report submission payload.
- * @deprecated Narrowing to a strict discriminated union waits until Wave 2 Worker routing handles all issue_report kinds cleanly.
- */
-export const ReportSubmissionRequestSchema = z.strictObject({
+export const DemandSignalReportRequestSchema = z.strictObject({
   schemaVersion: z.literal(DOWNSTREAM_PROTOCOL_VERSION),
-  reportType: ConsolidatedReportTypeSchema,
+  reportType: z.literal("demand_signal"),
   signalKind: DemandSignalKindSchema.optional(),
-  reportKind: IssueReportKindSchema.optional(),
   targetUrl: HttpsUrlSchema.optional(),
   canonicalId: z.string().trim().min(1).max(500).optional(),
   query: z.string().trim().max(200).optional(),
   zeroHits: z.boolean().optional(),
   reason: z.string().trim().min(1).max(1000).optional(),
   metadata: z.record(z.string().max(100), z.unknown()).optional()
-}).refine(data => data.reportType !== "removal_request" || Boolean(data.reason && (data.targetUrl || data.canonicalId)),
-  { message: "Removal requests require a target and reason" })
-  .refine(data => data.reportType !== "removal_request" || (data.signalKind === undefined && data.reportKind === undefined && data.query === undefined && data.zeroHits === undefined),
-    { message: "Removal requests cannot include demand or issue fields" });
+});
+export type DemandSignalReportRequest = z.infer<typeof DemandSignalReportRequestSchema>;
+
+export const IssueReportRequestSchema = z.strictObject({
+  schemaVersion: z.literal(DOWNSTREAM_PROTOCOL_VERSION),
+  reportType: z.literal("issue_report"),
+  reportKind: IssueReportKindSchema,
+  targetUrl: HttpsUrlSchema.optional(),
+  canonicalId: z.string().trim().min(1).max(500).optional(),
+  reason: z.string().trim().min(1).max(1000).optional(),
+  metadata: z.record(z.string().max(100), z.unknown()).optional()
+});
+export type IssueReportRequest = z.infer<typeof IssueReportRequestSchema>;
+
+export const RemovalReportRequestSchema = z.strictObject({
+  schemaVersion: z.literal(DOWNSTREAM_PROTOCOL_VERSION),
+  reportType: z.literal("removal_request"),
+  targetUrl: HttpsUrlSchema.optional(),
+  canonicalId: z.string().trim().min(1).max(500).optional(),
+  reason: z.string().trim().min(1).max(1000),
+  metadata: z.record(z.string().max(100), z.unknown()).optional()
+});
+export type RemovalReportRequest = z.infer<typeof RemovalReportRequestSchema>;
+
+/** Discriminated report submission payload for POST /v1/app/report. */
+export const ReportSubmissionRequestSchema = z.discriminatedUnion("reportType", [
+  DemandSignalReportRequestSchema,
+  IssueReportRequestSchema,
+  RemovalReportRequestSchema
+]).refine(
+  (data) => data.reportType !== "removal_request" || Boolean(data.targetUrl || data.canonicalId),
+  { message: "Removal requests require a target and reason" }
+);
 export type ReportSubmissionRequest = z.infer<typeof ReportSubmissionRequestSchema>;
 
 export const ReportSubmissionResponseSchema = z.strictObject({

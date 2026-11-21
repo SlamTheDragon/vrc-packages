@@ -55,7 +55,19 @@
       "failedRun": 37413527166
     }
   },
-  "supersededPreviewTags": {},
+  "supersededPreviewTags": {
+    "vrcp-crawler/v2026.10.10-pre": {
+      "product": "crawler",
+      "channel": "preview",
+      "version": "2026.10.10-pre",
+      "supersededByPredecessor": "2026.10.9-pre",
+      "commit": "66777f5888cda81bd7be2498ba01a99e6cb9cc46",
+      "tagObject": "03f910caaef6213da1ccd785ed8cb74cc93693e7",
+      "failedRun": 38308127484,
+      "failedStage": "build",
+      "reason": "Run 38308127484 failed on retired --help smoke test in build-linux (windows uploaded single partial artifact; GitHub Release is 404); immutable tag ruleset 24553469 blocks remote tag deletion; superseded by verified predecessor vrcp-crawler/v2026.10.9-pre (run 37719706372, release-artifacts-verified)."
+    }
+  },
   "temporaryVersionRules": [
     {
       "id": "calver-2026-11-preview-npm-rollback",

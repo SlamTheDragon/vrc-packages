@@ -1181,5 +1181,20 @@ test("temporaryVersionRule activates before expiry, skips occupied iterations, a
   }
 });
 
+test("live supersededPreviewTags resolves failed vrcp-crawler/v2026.10.10-pre to verified 2026.10.9-pre", () => {
+  const entry = supersededPreviewTag("vrcp-crawler/v2026.10.10-pre");
+  expect(entry).not.toBeNull();
+  expect(entry?.product).toBe("crawler");
+  expect(entry?.channel).toBe("preview");
+  expect(entry?.failedStage).toBe("build");
+  expect(entry?.failedRun).toBe(38308127484);
+  expect(entry?.supersededByPredecessor).toBe("2026.10.9-pre");
+
+  expect(resolveEffectivePredecessor("preview", "crawler", "2026.10.10-pre")).toEqual({
+    version: "2026.10.9-pre",
+    supersededFrom: ["vrcp-crawler/v2026.10.10-pre"]
+  });
+});
+
 
 

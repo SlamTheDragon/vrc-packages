@@ -15,15 +15,26 @@ import { encodeCatalogCursor, encodeCatalogDeltaCursor } from "../src/protocol/c
 test("SDK list queries reject invalid bounds, cursors and unknown fields without fetching", async () => {
   let calls = 0;
   const client = new VRCPackageClient({ baseUrl: "https://worker.example", operatorToken: "fixture-operator",
+    userToken: "fixture-user",
     fetch: Object.assign(async () => { calls++; throw new Error("Invalid query reached transport"); }, { preconnect() {} }) });
-  const lists = [client.index.syncDeltas, client.operator.leads.list, client.operator.sourceProfiles.list,
-    client.operator.autoQueueRules.list, client.operator.catalog.list, client.operator.takedowns.list,
-    client.operator.claims.list, client.operator.apps.list];
-  for (const params of [{ limit: 0 }, { limit: 101 }, { limit: NaN }, { limit: 1.5 },
-    { cursor: "" }, { cursor: "invalid!" }, { cursor: "YWJj" }, { extra: true }]) {
+  const lists = [client.index.syncDeltas, client.user.apps.list, client.operator.leads.list,
+    client.operator.sourceProfiles.list, client.operator.autoQueueRules.list, client.operator.catalog.list,
+    client.operator.takedowns.list, client.operator.claims.list, client.operator.apps.list,
+    client.moderator.ratings.list, client.moderator.apps.list];
+  for (const params of [{ limit: 0 }, { limit: 101 }, { limit: NaN }, { limit: 1.5 }, { limit: "10" }, { limit: "abc" },
+    { extra: true }]) {
     for (const list of lists) await expect(list(params as never)).rejects.toThrow();
     expect(calls).toBe(0);
   }
+  const cursorLists = [client.index.syncDeltas, client.operator.leads.list, client.operator.sourceProfiles.list,
+    client.operator.autoQueueRules.list, client.operator.catalog.list, client.operator.takedowns.list,
+    client.operator.claims.list, client.operator.apps.list, client.moderator.ratings.list, client.moderator.apps.list];
+  for (const params of [{ cursor: "" }, { cursor: "invalid!" }, { cursor: "YWJj" }]) {
+    for (const list of cursorLists) await expect(list(params as never)).rejects.toThrow();
+    expect(calls).toBe(0);
+  }
+  await expect(client.user.apps.list({ cursor: "not-a-uuid" })).rejects.toThrow();
+  expect(calls).toBe(0);
   const cursor = encodeLeadCursor({ status: "approved", firstSeenAt: "2026-10-04T00:00:00.000Z", leadKey: "a".repeat(64) });
   await expect(client.operator.leads.list({ status: "rejected", cursor })).rejects.toThrow();
   await expect(client.operator.leads.list({ status: "invalid" } as never)).rejects.toThrow();
@@ -178,6 +189,11 @@ test("invalid SDK POST inputs fail before invoking fetch", async () => {
     () => client.index.search({ queryOrigin: "user_authored", umbrella: "invalid" as never }),
     () => client.app.register({ schemaVersion: 1, appName: "Valid app", extra: true } as never),
     () => client.reports.submit({ schemaVersion: 1, reportType: "removal_request", canonicalId: "fixture" } as never),
+    () => client.reports.submit({ schemaVersion: 1, reportType: "removal_request", reason: "Missing target" } as never),
+    () => client.reports.submit({ schemaVersion: 1, reportType: "demand_signal", reportKind: "broken_link" } as never),
+    () => client.reports.submit({ schemaVersion: 1, reportType: "issue_report", canonicalId: "fixture" } as never),
+    () => client.reports.submit({ schemaVersion: 1, reportType: "issue_report", reportKind: "broken_link", signalKind: "search_miss" } as never),
+    () => client.reports.submit({ schemaVersion: 1, reportType: "issue_report", reportKind: "broken_link", query: "missing", zeroHits: true } as never),
     () => client.operator.leads.approve(leadKey, { minDelayMs: -1, reason: "Reviewed lead" }),
     () => client.operator.leads.reject(leadKey, { reason: " " }),
     () => client.operator.leads.approve(leadKey, {} as never),
