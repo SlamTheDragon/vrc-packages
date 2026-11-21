@@ -184,10 +184,14 @@ See full history at [docs/changelogs/vrcp-web/preview](https://github.com/SlamTh
 ## VRC Packages Worker - `vrcp-worker-preview`
 
 <!-- vrcp-worker-preview-DESCRIPTION_SUMMARY -->
+Add keyset-paginated operator node and crawl job listing routes without exposing secrets.
 <!-- vrcp-worker-preview-DESCRIPTION_SUMMARY -->
 ### Added
+- **Operator node listing (`vrcp-worker`):** Add `GET /v1/operator/nodes` with `status` filter, keyset pagination preserving node ID case, heartbeat telemetry fields, and zero `token_hash` or bearer token exposure.
+- **Operator crawl job listing (`vrcp-worker`):** Add `GET /v1/operator/jobs` with `state` and `platform` filters, descending keyset pagination preserving job ID case for UUID and non-UUID jobs, and zero `lease_id`, `etag`, or `last_modified` exposure.
 ### Bugs Fixed
 ### Changes
+- **Strict operator query checks (`vrcp-worker`):** Reject empty, duplicate, unknown, non-integer, or invalid cursor query parameters with `400 invalid_query`, and export `operatorNodeListResponse` and `operatorJobListResponse` JSON Schemas.
 See full history at [docs/changelogs/vrcp-worker/preview](https://github.com/SlamTheDragon/vrc-packages/tree/main/docs/changelogs/vrcp-worker/preview)
 
 ---
@@ -197,9 +201,7 @@ See full history at [docs/changelogs/vrcp-worker/preview](https://github.com/Sla
 ## VRC Packages Network `vrcp-packages-network`
 
 <!-- vrcp-packages-network-DESCRIPTION_SUMMARY -->
-Synchronize internal peer compatibility with vrc-packages-api-preview 2026.11.3-pre.
 <!-- vrcp-packages-network-DESCRIPTION_SUMMARY -->
 ### Added
 ### Changes
-- **Preview SDK peer synchronization:** Update `peerDependencies["vrc-packages-api"]` to accept `vrc-packages-api-preview` `2026.11.3-pre`.
 See full history at [docs/changelogs/vrcp-packages-network/](https://github.com/SlamTheDragon/vrc-packages/tree/main/docs/changelogs/vrcp-packages-network/)
