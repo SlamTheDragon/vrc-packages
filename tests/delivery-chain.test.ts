@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, readFile, realpath, rename, rm, writeFile } from "node:
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { tmpdir } from "node:os";
-import { askBinary, executeDelivery, finalizeRelease as checkedFinalizeRelease, inspectConfiguredDeliveries, inspectDelivery, inspectPredecessorAssets, loadRootEnv, planDelivery, promptInteractiveDelivery, readHostedAsset, readNetworkDistribution, repositoryFromRemote, requirePublicationProof, resolveGitHubToken, retryDelivery, retryReleasePreparation, startDelivery as checkedStartDelivery, summarizeRun, trackDeliveryPipeline, triggerReconcile, verifyPredecessor } from "../scripts/delivery-chain.mjs";
+import { askBinary, executeDelivery, finalizeRelease as checkedFinalizeRelease, formatDeliveryError, inspectConfiguredDeliveries, inspectDelivery, inspectPredecessorAssets, loadRootEnv, planDelivery, promptInteractiveDelivery, readHostedAsset, readNetworkDistribution, repositoryFromRemote, requirePublicationProof, resolveGitHubToken, retryDelivery, retryReleasePreparation, startDelivery as checkedStartDelivery, summarizeRun, trackDeliveryPipeline, triggerReconcile, verifyPredecessor } from "../scripts/delivery-chain.mjs";
 import { networkArchiveURL, productDirectories, productTagPrefixes } from "../scripts/versioning.mjs";
 import { checkReleaseMetadata } from "../scripts/delivery.mjs";
 import { createHash } from "node:crypto";
@@ -920,6 +920,98 @@ test("binary ranges hash every byte and reject shifted, truncated or ignored lat
       calls = [];
       await expect(readHostedAsset(asset, true)).rejects.toThrow("range");
     }
+  } finally { globalThis.fetch = originalFetch; }
+});
+
+test("hosted range retries recover cleanly from transient 503/stream faults while redacting transport secrets", async () => {
+  const bytes = Buffer.alloc(8 * 1024 ** 2 + 17, 73);
+  const sha = createHash("sha256").update(bytes).digest("hex");
+  const asset = {
+    name: "vrcp-crawler-node-linux",
+    size: bytes.length,
+    digest: `sha256:${sha}`,
+    browser_download_url: "https://github.com/example/fixture/releases/download/test/node"
+  };
+  const originalFetch = globalThis.fetch;
+  const zeroWait = async () => {};
+  try {
+    let secondRangeAttempts = 0;
+    globalThis.fetch = (async (_input: unknown, init: RequestInit) => {
+      const range = new Headers(init.headers).get("range")!;
+      const [, startText, endText] = /^bytes=(\d+)-(\d+)$/.exec(range)!;
+      const start = Number(startText), end = Number(endText);
+      const part = bytes.subarray(start, end + 1);
+      if (start > 0) {
+        secondRangeAttempts++;
+        if (secondRangeAttempts === 1) return new Response("upstream busy", { status: 503 });
+        if (secondRangeAttempts === 2) {
+          return new Response(new ReadableStream({
+            start(controller) {
+              controller.enqueue(part.subarray(0, 5));
+              controller.error(Object.assign(new Error("stalled socket"), { code: "ECONNRESET" }));
+            }
+          }), { status: 206, headers: { "content-range": `bytes ${start}-${end}/${bytes.length}` } });
+        }
+      }
+      return new Response(part, { status: 206, headers: { "content-range": `bytes ${start}-${end}/${bytes.length}` } });
+    }) as typeof fetch;
+    expect(await readHostedAsset(asset, true, zeroWait)).toEqual({ size: bytes.length, sha256: sha });
+    expect(secondRangeAttempts).toBe(3);
+
+    // Exhausted transport throws wrap allowlisted codes cleanly without leaking redirected storage URLs.
+    let exhaustedCalls = 0;
+    globalThis.fetch = (async () => {
+      exhaustedCalls++;
+      throw Object.assign(new Error("fetch failed for https://objects.githubusercontent.com/private?sig=secret_token_value"), {
+        cause: Object.assign(new Error("socket hang up"), { code: "ECONNRESET" })
+      });
+    }) as typeof fetch;
+    await expect(readHostedAsset(asset, true, zeroWait)).rejects.toThrow("Hosted artifact download failed (ECONNRESET)");
+    expect(exhaustedCalls).toBe(3);
+
+    // Non-retryable 404 rejects immediately on attempt 1 without retries.
+    let notFoundCalls = 0;
+    globalThis.fetch = (async () => {
+      notFoundCalls++;
+      return new Response("not found", { status: 404 });
+    }) as typeof fetch;
+    await expect(readHostedAsset(asset, true, zeroWait)).rejects.toThrow("Hosted artifact is unavailable");
+    expect(notFoundCalls).toBe(1);
+
+    // Mid-stream failure after the first committed chunk on a non-ranged 200 response fails closed without retrying.
+    let nonRangedCalls = 0;
+    globalThis.fetch = (async () => {
+      nonRangedCalls++;
+      let sentFirstChunk = false;
+      return new Response(new ReadableStream({
+        pull(controller) {
+          if (!sentFirstChunk) {
+            sentFirstChunk = true;
+            controller.enqueue(bytes.subarray(0, 64));
+            return;
+          }
+          controller.error(new DOMException("aborted", "TimeoutError"));
+        }
+      }), { status: 200 });
+    }) as typeof fetch;
+    await expect(readHostedAsset(asset, true, zeroWait)).rejects.toThrow("Hosted artifact download failed (TimeoutError)");
+    expect(nonRangedCalls).toBe(1);
+
+    // CLI error formatter preserves clean VRCP messages while strictly allowlisting errors that carry .cause.
+    expect(formatDeliveryError(new Error("Plain VRCP message"))).toBe("Plain VRCP message");
+    const leaked = Object.assign(
+      new Error("fatal https://x-access-token:ghp_secret123@github.com/org/repo git@github.com vrcp_abcd"),
+      { cause: Object.assign(new Error("token=vrcp_secret"), { code: "ECONNRESET" }) }
+    );
+    const formatted = formatDeliveryError(leaked);
+    expect(formatted).toBe("Delivery failed (ECONNRESET). Inspect the exact tag/run before retrying.");
+    expect(formatted).not.toContain("ghp_");
+    expect(formatted).not.toContain("vrcp_");
+    expect(formatted).not.toContain("https://");
+    const unallowlisted = Object.assign(new Error("credential helper leaked secret"), {
+      cause: new Error("lower-case secret cause")
+    });
+    expect(formatDeliveryError(unallowlisted)).toBe("Delivery failed. Inspect the exact tag/run before retrying.");
   } finally { globalThis.fetch = originalFetch; }
 });
 

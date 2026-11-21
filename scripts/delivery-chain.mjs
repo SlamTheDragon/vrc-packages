@@ -710,45 +710,122 @@ function githubReader(workspace) {
   };
 }
 
+class ValidationReadError extends Error {}
+
+function extractSafeErrorCode(error) {
+  const code = error && typeof error === "object"
+    ? (error.cause && typeof error.cause === "object" && "code" in error.cause && typeof error.cause.code === "string"
+      ? error.cause.code
+      : "code" in error && typeof error.code === "string" ? error.code : "")
+    : "";
+  if (/^[A-Z0-9_]{2,40}$/.test(code)) return code;
+  const causeName = error && typeof error === "object" && error.cause instanceof Error ? error.cause.name : "";
+  if (/^(?:TimeoutError|AbortError)$/.test(causeName)) return causeName;
+  const errorName = error instanceof Error ? error.name : "";
+  if (/^(?:TimeoutError|AbortError)$/.test(errorName)) return errorName;
+  return "";
+}
+
+/** Format delivery errors strictly via allowlisted codes when native transport causes exist. */
+export function formatDeliveryError(error) {
+  if (error instanceof Error && !error.cause) return error.message;
+  const code = extractSafeErrorCode(error);
+  return code
+    ? `Delivery failed (${code}). Inspect the exact tag/run before retrying.`
+    : "Delivery failed. Inspect the exact tag/run before retrying.";
+}
+
 /** Hash binaries incrementally. Only bounded receipts and package archives stay in memory. */
-export async function readHostedAsset(asset, binary = false) {
+export async function readHostedAsset(
+  asset,
+  binary = false,
+  wait = milliseconds => new Promise(resolvePromise => setTimeout(resolvePromise, milliseconds))
+) {
   const metadata = /\.(?:json|md|sha256)$/.test(asset.name);
   const limit = binary ? 2 * 1024 ** 3 - 1 : metadata ? 2 * 1024 ** 2 : 256 * 1024 ** 2;
   if (!Number.isSafeInteger(asset.size) || asset.size < 1 || asset.size > limit || !/^sha256:[a-f0-9]{64}$/.test(asset.digest ?? "")) {
     throw new Error("Hosted artifact is missing, oversized or lacks a digest");
   }
-  const signal = AbortSignal.timeout(binary ? 1_800_000 : 180_000);
+  const overallSignal = AbortSignal.timeout(binary ? 1_800_000 : 180_000);
   const chunks = [], digest = createHash("sha256"), rangeSize = 8 * 1024 ** 2;
+  const maxRangeAttempts = 3, perAttemptTimeoutMs = binary ? 90_000 : 60_000;
   const report = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
   let size = 0;
   do {
     const start = size, end = Math.min(start + rangeSize, asset.size) - 1;
+    let completedFullBody = false;
     if (binary && report) console.error(JSON.stringify({ readbackAsset: String(asset.name).slice(0, 214), bytesRead: size, totalBytes: asset.size }));
-    const response = await fetch(asset.browser_download_url, { signal,
-      ...(binary ? { headers: { range: `bytes=${start}-${end}`, "accept-encoding": "identity" } } : {}) });
-    if (!response.ok || !response.body) {
-      await response.body?.cancel();
-      throw new Error("Hosted artifact is unavailable");
-    }
-    const ranged = response.status === 206;
-    if ((ranged && (!binary || response.headers.get("content-range") !== `bytes ${start}-${end}/${asset.size}`)) ||
-        (!ranged && (response.status !== 200 || start !== 0))) {
-      await response.body.cancel();
-      throw new Error("Hosted artifact range differs from the requested bytes");
-    }
-    const reader = response.body.getReader();
-    try {
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        size += value.length;
-        if (size > asset.size || (ranged && size > end + 1)) throw new Error("Hosted artifact exceeds its declared size");
-        digest.update(value);
-        if (!binary) chunks.push(value);
+    for (let attempt = 1; ; attempt++) {
+      let rangeCommitted = false, reader = null;
+      const attemptSignal = AbortSignal.any([overallSignal, AbortSignal.timeout(perAttemptTimeoutMs)]);
+      try {
+        const response = await fetch(asset.browser_download_url, {
+          signal: attemptSignal,
+          ...(binary ? { headers: { range: `bytes=${start}-${end}`, "accept-encoding": "identity" } } : {})
+        });
+        if (!response.ok || !response.body) {
+          try { await response.body?.cancel(); } catch {}
+          if ((response.status === 429 || response.status >= 500) && attempt < maxRangeAttempts && !overallSignal.aborted) {
+            await wait(1_000 * attempt);
+            continue;
+          }
+          throw new ValidationReadError("Hosted artifact is unavailable");
+        }
+        const ranged = response.status === 206;
+        if ((ranged && (!binary || response.headers.get("content-range") !== `bytes ${start}-${end}/${asset.size}`)) ||
+            (!ranged && (response.status !== 200 || start !== 0))) {
+          try { await response.body.cancel(); } catch {}
+          throw new ValidationReadError("Hosted artifact range differs from the requested bytes");
+        }
+        reader = response.body.getReader();
+        if (ranged) {
+          const rangeChunks = [];
+          let rangeBytes = 0;
+          for (;;) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            rangeBytes += value.length;
+            if (size + rangeBytes > asset.size || size + rangeBytes > end + 1) {
+              throw new ValidationReadError("Hosted artifact exceeds its declared size");
+            }
+            rangeChunks.push(value);
+          }
+          if (size + rangeBytes !== end + 1) {
+            throw new ValidationReadError("Hosted artifact range size differs");
+          }
+          rangeCommitted = true;
+          for (const chunk of rangeChunks) digest.update(chunk);
+          size += rangeBytes;
+          break;
+        }
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (value.length > 0) {
+            if (size + value.length > asset.size) {
+              throw new ValidationReadError("Hosted artifact exceeds its declared size");
+            }
+            rangeCommitted = true;
+            size += value.length;
+            digest.update(value);
+            if (!binary) chunks.push(value);
+          }
+        }
+        completedFullBody = true;
+        break;
+      } catch (error) {
+        if (error instanceof ValidationReadError) throw new Error(error.message);
+        if (!rangeCommitted && attempt < maxRangeAttempts && !overallSignal.aborted) {
+          await wait(1_000 * attempt);
+          continue;
+        }
+        const safeCode = extractSafeErrorCode(error);
+        throw new Error(safeCode ? `Hosted artifact download failed (${safeCode})` : "Hosted artifact download failed");
+      } finally {
+        try { await reader?.cancel(); } catch {}
       }
-    } finally { await reader.cancel(); }
-    if (!ranged) break; // A server can ignore the first range and supply the full file.
-    if (size !== end + 1) throw new Error("Hosted artifact range size differs");
+    }
+    if (completedFullBody) break; // A server can ignore the first range and supply the full file.
   } while (size < asset.size);
   const sha256 = digest.digest("hex");
   if (size !== asset.size || asset.digest !== `sha256:${sha256}`) throw new Error("Hosted artifact digest or size differs");
@@ -1595,7 +1672,7 @@ export const main = defineCommand({
       if (action === "check" && (result.status === "ci-failed" || !result.artifactsVerified)) process.exitCode = 1;
     } catch (error) {
       // Native errors can include credential-helper or authenticated transport details.
-      console.error(error instanceof Error && !error.cause ? error.message : "Delivery failed. Inspect the exact tag/run before retrying.");
+      console.error(formatDeliveryError(error));
       process.exitCode = 1;
     }
   }
