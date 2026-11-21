@@ -161,12 +161,8 @@ See full history at [docs/changelogs/vrcp-crawler-node/preview](https://github.c
 ## VRC Packages API - `vrcp-packages-api-preview`
 
 <!-- vrcp-packages-api-preview-DESCRIPTION_SUMMARY -->
-Add operator node and crawl job listing schemas, keyset cursors, and client methods without exposing secrets.
 <!-- vrcp-packages-api-preview-DESCRIPTION_SUMMARY -->
 ### Added
-- **Operator node listing (`vrcp-packages-api`):** Add `OperatorNodeStatusSchema`, `OperatorNodeHeartbeatStateSchema`, `OperatorNodeRecordSchema`, `OperatorNodeCursorSchema`, `OperatorNodeListQuerySchema`, `OperatorNodeListResponseSchema`, and `VRCPackageClient.operator.nodes.list()` (`GET /v1/operator/nodes`) and omit node token secrets.
-- **Operator crawl job listing (`vrcp-packages-api`):** Add `OperatorJobStateSchema`, `OperatorJobRecordSchema`, `OperatorJobCursorSchema`, `OperatorJobListQuerySchema`, `OperatorJobListResponseSchema`, and `VRCPackageClient.operator.jobs.list()` (`GET /v1/operator/jobs`) for UUID and non-UUID `jobId` values and omit lease secrets.
-- **Operator listing cursors (`vrcp-packages-api`):** Add `encodeOperatorNodeCursor`, `decodeOperatorNodeCursor`, `encodeOperatorJobCursor`, and `decodeOperatorJobCursor`.
 ### Bugs Fixed
 ### Changes
 See full history at [docs/changelogs/vrcp-packages-api/preview](https://github.com/SlamTheDragon/vrc-packages/tree/main/docs/changelogs/vrcp-packages-api/preview)

@@ -8,7 +8,7 @@ Here are the latest changelogs of each package and applications. For a full hist
 ## What Changed
 
 <!-- MASTER_SUMMARY -->
-Delegate robots.txt preflight fetching to crawler nodes under coordinator leases. Preserve evidence, settled outbox results and URL resource distinctions. Broadcast crawler activities and findings to the dedicated log file. Auto-link approved high-confidence storefront leads into accepted identity links while isolating heuristic outbound links for operator review. Support distributed Cloudflare KV rate limiting for coordinator endpoints. Calibrate fixed coordinator crawl job leases to 120 seconds. Scale crawler heartbeat pulse intervals dynamically between 5 and 30 seconds based on origin duration. Gate creator takedown submissions on trusted registered application status and route requests into moderator review queues. Emit delist tombstones on package withdrawal. Enforce source access profile publication rights in public catalog and delta feeds. Configure initial approved VPM community seeds and classify Ko-fi storefront leads into operator review. Verify multi-platform crawler fleet ingestion across VPM, GitHub, Booth, and Ko-fi drivers under lease isolation and crash recovery. Verify coordinator failure paths and multi-node fleet allocation in native workerd runtime. Bound claim candidate scans with explicit invocation budgets to protect Cloudflare quotas. Remove Watchtower from crawler Docker configuration and require isolated fleet data volumes. Automate preview D1 schema verification and non-production seed population in Cloudflare Worker preview delivery. Add atomic preparation rollback and enforce publication preconditions before tag deletion in delivery recovery tooling. Support catalog search rating filters and strict credential and path validation in the TypeScript SDK. Consolidate internal SDK protocol schemas and test fixture hygiene. Export shared node robots protocol schemas and unified IP validation in `vrc-packages-network`. Centralize source-target policies, binary URL guards, and storefront lead classification. Partition Worker D1 storage into five control planes, normalize error and rate-limit responses, enforce takedown proofs and app delegation audits, and verify live VPM crawling against preview deployments. Bind provisioned preview KV namespace `0a8237b498334dd7b1f58fb7807a68c6` for `RATE_LIMIT_KV` in `src-worker/wrangler.toml`.
+Delegate robots.txt preflight fetching to crawler nodes under coordinator leases. Preserve evidence, settled outbox results and URL resource distinctions. Broadcast crawler activities and findings to the dedicated log file. Auto-link approved high-confidence storefront leads into accepted identity links while isolating heuristic outbound links for operator review. Support distributed Cloudflare KV rate limiting for coordinator endpoints. Calibrate fixed coordinator crawl job leases to 120 seconds. Scale crawler heartbeat pulse intervals dynamically between 5 and 30 seconds based on origin duration. Gate creator takedown submissions on trusted registered application status and route requests into moderator review queues. Emit delist tombstones on package withdrawal. Enforce source access profile publication rights in public catalog and delta feeds. Configure initial approved VPM community seeds and classify Ko-fi storefront leads into operator review. Verify multi-platform crawler fleet ingestion across VPM, GitHub, Booth, and Ko-fi drivers under lease isolation and crash recovery. Verify coordinator failure paths and multi-node fleet allocation in native workerd runtime. Bound claim candidate scans with explicit invocation budgets to protect Cloudflare quotas. Remove Watchtower from crawler Docker configuration and require isolated fleet data volumes. Automate preview D1 schema verification and non-production seed population in Cloudflare Worker preview delivery. Add atomic preparation rollback and enforce publication preconditions before tag deletion in delivery recovery tooling. Support catalog search rating filters and strict credential and path validation in the TypeScript SDK. Consolidate internal SDK protocol schemas and test fixture hygiene. Export shared node robots protocol schemas and unified IP validation in `vrc-packages-network`. Centralize source-target policies, binary URL guards, and storefront lead classification. Partition Worker D1 storage into five control planes, normalize error and rate-limit responses, enforce takedown proofs and app delegation audits, and verify live VPM crawling against preview deployments. Bind provisioned preview KV namespace `0a8237b498334dd7b1f58fb7807a68c6` for `RATE_LIMIT_KV` in `src-worker/wrangler.toml`. Add operator node and crawl job listing schemas, keyset cursors, and SDK client methods.
 <!-- MASTER_SUMMARY -->
 
 ## Table of Contents
@@ -161,11 +161,15 @@ See full history at [docs/changelogs/vrcp-crawler-node/preview](https://github.c
 ## VRC Packages API - `vrcp-packages-api-preview`
 
 <!-- vrcp-packages-api-preview-DESCRIPTION_SUMMARY -->
+Add operator node and crawl job listing schemas, keyset cursors, and client methods without exposing secrets.
 <!-- vrcp-packages-api-preview-DESCRIPTION_SUMMARY -->
 ### Added
+- **Operator node listing (`vrcp-packages-api`):** Add `OperatorNodeStatusSchema`, `OperatorNodeHeartbeatStateSchema`, `OperatorNodeRecordSchema`, `OperatorNodeCursorSchema`, `OperatorNodeListQuerySchema`, `OperatorNodeListResponseSchema`, and `VRCPackageClient.operator.nodes.list()` (`GET /v1/operator/nodes`) and omit node token secrets.
+- **Operator crawl job listing (`vrcp-packages-api`):** Add `OperatorJobStateSchema`, `OperatorJobRecordSchema`, `OperatorJobCursorSchema`, `OperatorJobListQuerySchema`, `OperatorJobListResponseSchema`, and `VRCPackageClient.operator.jobs.list()` (`GET /v1/operator/jobs`) for UUID and non-UUID `jobId` values and omit lease secrets.
+- **Operator listing cursors (`vrcp-packages-api`):** Add `encodeOperatorNodeCursor`, `decodeOperatorNodeCursor`, `encodeOperatorJobCursor`, and `decodeOperatorJobCursor`.
 ### Bugs Fixed
 ### Changes
-See full history at [docs/changelogs/vrcp-packages-api/preview](https://github.com/SlamTheDragon/vrc-packages/tree/main/docs/changelogs/vrc-packages-api/preview)
+See full history at [docs/changelogs/vrcp-packages-api/preview](https://github.com/SlamTheDragon/vrc-packages/tree/main/docs/changelogs/vrcp-packages-api/preview)
 
 ---
 
@@ -197,9 +201,9 @@ See full history at [docs/changelogs/vrcp-worker/preview](https://github.com/Sla
 ## VRC Packages Network `vrcp-packages-network`
 
 <!-- vrcp-packages-network-DESCRIPTION_SUMMARY -->
-Synchronize the SDK peer dependency contract with `vrc-packages-api-preview` `2026.11.2-pre`.
+Synchronize internal peer compatibility with vrc-packages-api-preview 2026.11.3-pre.
 <!-- vrcp-packages-network-DESCRIPTION_SUMMARY -->
 ### Added
 ### Changes
-- **SDK peer dependency sync:** Update the `vrc-packages-api` peer contract to accept `vrc-packages-api-preview` `2026.11.2-pre` across downstream consumers.
+- **Preview SDK peer synchronization:** Update `peerDependencies["vrc-packages-api"]` to accept `vrc-packages-api-preview` `2026.11.3-pre`.
 See full history at [docs/changelogs/vrcp-packages-network/](https://github.com/SlamTheDragon/vrc-packages/tree/main/docs/changelogs/vrcp-packages-network/)
