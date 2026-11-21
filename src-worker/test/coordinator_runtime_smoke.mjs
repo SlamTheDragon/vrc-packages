@@ -482,6 +482,19 @@ try {
 		return body;
 	};
   await post('/v1/operator/init', { schemaVersion: 1, autoSeed: true }, operatorToken);
+  let lastOperatorRawText = '';
+  const operatorClient = new VRCPackageClient({
+    baseUrl: 'https://offline.test',
+    operatorToken,
+    fetch: async (input, init) => {
+      const response = await runtime.dispatchFetch(String(input), init);
+      lastOperatorRawText = await response.clone().text();
+      return response;
+    }
+  });
+  const initialNodes = await operatorClient.operator.nodes.list();
+  assert.deepEqual(initialNodes, { schemaVersion: 1, nodes: [], nextCursor: null });
+  assert.ok(!lastOperatorRawText.includes('token_hash') && !lastOperatorRawText.includes('"token"'));
   // Seed isolated D1 rows, but exercise pagination only through the real Worker HTTP boundary.
   const paginationDB = await runtime.getD1Database('VRCP_D1');
   const paginationIds = ['界'.repeat(499) + 'a', '界'.repeat(499) + 'b'];
@@ -630,6 +643,27 @@ try {
   const seeded = EnqueueJobResponseSchema.parse(await post('/v1/operator/jobs', seedInput, operatorToken));
   const repeated = EnqueueJobResponseSchema.parse(await post('/v1/operator/jobs', seedInput, operatorToken));
   assert.equal(seeded.jobId, repeated.jobId);
+  const pendingVpmJobs = await operatorClient.operator.jobs.list({ state: 'pending', platform: 'vpm' });
+  assert.ok(!lastOperatorRawText.includes('lease_id') && !lastOperatorRawText.includes('leaseId'));
+  assert.ok(!lastOperatorRawText.includes('etag') && !lastOperatorRawText.includes('last_modified'));
+  const seededJob = pendingVpmJobs.jobs.find(job => job.jobId === seeded.jobId);
+  assert.ok(seededJob, 'Enqueued job must appear in GET /v1/operator/jobs');
+  assert.equal(seededJob.platform, 'vpm');
+  assert.equal(seededJob.url, seedInput.url);
+  assert.equal(seededJob.origin, 'https://native-seed.example');
+  assert.equal(seededJob.state, 'pending');
+  assert.equal(seededJob.purpose, 'metadata');
+  assert.equal(seededJob.claimedBy, null);
+  assert.equal(seededJob.leaseExpiresAt, null);
+  assert.equal(seededJob.robotsDeferredUntil, null);
+  assert.equal(seededJob.sourceRuleId, null);
+  assert.equal(seededJob.leaseProfileId, null);
+  const jobPage1 = await operatorClient.operator.jobs.list({ limit: 2 });
+  assert.equal(jobPage1.jobs.length, 2);
+  assert.ok(jobPage1.nextCursor, 'Paginated job listing must return nextCursor');
+  const jobPage2 = await operatorClient.operator.jobs.list({ limit: 2, cursor: jobPage1.nextCursor });
+  assert.equal(jobPage2.jobs.length, 2);
+  assert.ok(jobPage2.jobs.every(job => !jobPage1.jobs.some(prev => prev.jobId === job.jobId)));
   console.log(JSON.stringify({ check: 'native_operator_enqueue_idempotent', passed: true }));
   const ruleInput = { schemaVersion: 1, leadKind: 'vpm_listing', origin: 'https://native-rule.example',
     pathScope: '/index.json', minDelayMs: 1000, expiresAt: new Date(Date.now() + 86400000).toISOString(),
@@ -711,6 +745,22 @@ try {
 			)
 		);
 	}
+	const issuedNodesPage = await operatorClient.operator.nodes.list({ status: 'active' });
+	assert.ok(!lastOperatorRawText.includes('token_hash') && !lastOperatorRawText.includes('tokenHash') && !lastOperatorRawText.includes('"token"'));
+	for (const issuedNode of nodes) {
+		assert.ok(!lastOperatorRawText.includes(issuedNode.token), 'Node listing leaked issued bearer token');
+		const listed = issuedNodesPage.nodes.find(item => item.nodeId === issuedNode.nodeId);
+		assert.ok(listed, `Issued node ${issuedNode.nodeId} missing from GET /v1/operator/nodes`);
+		assert.deepEqual(listed, {
+			nodeId: issuedNode.nodeId,
+			capabilities: ['vpm'],
+			status: 'active',
+			revokedAt: null,
+			lastSeenAt: null,
+			heartbeatState: null,
+			activeJobId: null
+		});
+	}
 	for (const node of nodes) {
 		const empty = ClaimResponseSchema.parse(await post('/v1/node/jobs/claim', {
 			schemaVersion: 1, nodeId: node.nodeId, capabilities: ['vpm']
@@ -771,6 +821,33 @@ try {
 			winner.token
 		)
 	);
+	const leasedJobsPage = await operatorClient.operator.jobs.list({ state: 'leased' });
+	assert.ok(!lastOperatorRawText.includes('lease_id') && !lastOperatorRawText.includes('leaseId') && !lastOperatorRawText.includes(claim.job.leaseId));
+	const leasedListedJob = leasedJobsPage.jobs.find(item => item.jobId === claim.job.jobId);
+	assert.ok(leasedListedJob, 'Claimed job missing from GET /v1/operator/jobs?state=leased');
+	assert.equal(leasedListedJob.platform, 'vpm');
+	assert.equal(leasedListedJob.url, 'https://runtime.example/index.json');
+	assert.equal(leasedListedJob.origin, 'https://runtime.example');
+	assert.equal(leasedListedJob.state, 'leased');
+	assert.equal(leasedListedJob.purpose, 'metadata');
+	assert.equal(leasedListedJob.claimedBy, winner.nodeId);
+	assert.equal(leasedListedJob.leaseExpiresAt, claim.job.leaseExpiresAt);
+	assert.ok(leasedListedJob.leaseProfileId !== null);
+	const heartbeatNodesPage = await operatorClient.operator.nodes.list({ status: 'active' });
+	assert.ok(!lastOperatorRawText.includes('token_hash') && !lastOperatorRawText.includes('"token"') && !lastOperatorRawText.includes(winner.token));
+	const fetchingWinner = heartbeatNodesPage.nodes.find(item => item.nodeId === winner.nodeId);
+	assert.ok(fetchingWinner, 'Winner node missing after heartbeat');
+	assert.equal(fetchingWinner.status, 'active');
+	assert.equal(fetchingWinner.revokedAt, null);
+	assert.equal(fetchingWinner.heartbeatState, 'fetching');
+	assert.equal(fetchingWinner.activeJobId, claim.job.jobId);
+	assert.equal(typeof fetchingWinner.lastSeenAt, 'string');
+	const nodePage1 = await operatorClient.operator.nodes.list({ limit: 3 });
+	assert.equal(nodePage1.nodes.length, 3);
+	assert.ok(nodePage1.nextCursor, 'Paginated node listing must return nextCursor');
+	const nodePage2 = await operatorClient.operator.nodes.list({ limit: 3, cursor: nodePage1.nextCursor });
+	assert.ok(nodePage2.nodes.length > 0);
+	assert.ok(nodePage2.nodes.every(item => !nodePage1.nodes.some(prev => prev.nodeId === item.nodeId)));
 	const resultPayload = {
 		schemaVersion: 1,
 		nodeId: winner.nodeId,
@@ -812,6 +889,27 @@ try {
 		assert.equal(revoked.nodeId, winner.nodeId);
 		assert.equal(revoked.status, 'revoked');
 	}
+	const revokedNodesPage = await operatorClient.operator.nodes.list({ status: 'revoked' });
+	assert.ok(!lastOperatorRawText.includes('token_hash') && !lastOperatorRawText.includes('tokenHash') && !lastOperatorRawText.includes('"token"') && !lastOperatorRawText.includes(winner.token));
+	const revokedWinner = revokedNodesPage.nodes.find(item => item.nodeId === winner.nodeId);
+	assert.ok(revokedWinner, 'Revoked node missing from GET /v1/operator/nodes?status=revoked');
+	assert.equal(revokedWinner.status, 'revoked');
+	assert.equal(typeof revokedWinner.revokedAt, 'string');
+	assert.equal(revokedWinner.heartbeatState, 'fetching');
+	assert.equal(revokedWinner.activeJobId, claim.job.jobId);
+	const activeAfterRevoke = await operatorClient.operator.nodes.list({ status: 'active' });
+	assert.ok(!activeAfterRevoke.nodes.some(item => item.nodeId === winner.nodeId), 'Revoked node appeared in status=active list');
+	console.log(JSON.stringify({
+		check: 'native_HTTP_operator_nodes_and_jobs_listing',
+		beforeIssueEmpty: true,
+		afterIssueActive: true,
+		afterClaimLeased: true,
+		afterHeartbeatFetching: true,
+		afterRevokeFiltered: true,
+		paginated: true,
+		secretsAbsent: true,
+		passed: true
+	}));
 	for (const [path, payload] of [
 		['/v1/node/jobs/claim', { schemaVersion: 1, nodeId: winner.nodeId, capabilities: ['vpm'] }],
 		['/v1/node/heartbeat', { schemaVersion: 1, nodeId: winner.nodeId, capabilities: ['vpm'], state: 'idle' }],

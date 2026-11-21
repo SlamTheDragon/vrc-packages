@@ -20,6 +20,12 @@ import type {
   DelegatedClaimRecord,
   OperatorAppCursor,
   OperatorAppRecord,
+  OperatorNodeStatus,
+  OperatorNodeRecord,
+  OperatorNodeCursor,
+  OperatorJobState,
+  OperatorJobRecord,
+  OperatorJobCursor,
   UserAppListResponse,
   ReportSubmissionRequest,
   ReportSubmissionResponse,
@@ -182,6 +188,22 @@ export class Coordinator
 
   issueNodeCredential(input: IssueNodeCredential, actor: string): Promise<string> {
     return this.operator.issueNodeCredential(input, actor);
+  }
+
+  listNodesPage(
+    status?: OperatorNodeStatus,
+    limit = 100,
+    cursor: OperatorNodeCursor | null = null
+  ): Promise<{ nodes: OperatorNodeRecord[]; nextCursor: string | null }> {
+    return this.operator.listNodesPage(status, limit, cursor);
+  }
+
+  listJobsPage(
+    filters?: { state?: OperatorJobState; platform?: Platform },
+    limit = 100,
+    cursor: OperatorJobCursor | null = null
+  ): Promise<{ jobs: OperatorJobRecord[]; nextCursor: string | null }> {
+    return this.workforce.listJobsPage(filters, limit, cursor);
   }
 
   listLeadsPage(

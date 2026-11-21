@@ -26,6 +26,12 @@ import type {
   DelegatedClaimRecord,
   OperatorAppRecord,
   OperatorAppCursor,
+  OperatorNodeStatus,
+  OperatorNodeRecord,
+  OperatorNodeCursor,
+  OperatorJobState,
+  OperatorJobRecord,
+  OperatorJobCursor,
   CreateSourceAccessProfile,
   SourceAccessProfile,
   ProfileCursor,
@@ -78,6 +84,16 @@ export interface OperatorStore {
   revokeNode(nodeId: string, input: RevokeNodeRequest, actor: string): Promise<void> | void;
   enqueueJob(input: EnqueueJobRequest, actor: string): Promise<string> | string;
   issueNodeCredential(input: IssueNodeCredential, actor: string): Promise<string> | string;
+  listNodesPage(
+    status?: OperatorNodeStatus,
+    limit?: number,
+    cursor?: OperatorNodeCursor | null
+  ): Promise<{ nodes: OperatorNodeRecord[]; nextCursor: string | null }> | { nodes: OperatorNodeRecord[]; nextCursor: string | null };
+  listJobsPage(
+    filters?: { state?: OperatorJobState; platform?: Platform },
+    limit?: number,
+    cursor?: OperatorJobCursor | null
+  ): Promise<{ jobs: OperatorJobRecord[]; nextCursor: string | null }> | { jobs: OperatorJobRecord[]; nextCursor: string | null };
   listLeadsPage(
     status: "pending_review" | "approved" | "rejected",
     limit: number,

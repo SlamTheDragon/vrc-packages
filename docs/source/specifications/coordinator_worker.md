@@ -26,8 +26,8 @@ Requires `Authorization: Bearer vrcp_<64-hex><4-hex>`:
 Requires `Authorization: Bearer <64-hex OPERATOR_TOKEN>`:
 
 - `POST /v1/operator/init`: Initializes `D1_SCHEMA_SQL`. When `autoSeed: true`, calls `seedInitialJobs()` only and never creates default profiles or robots snapshots.
-- `POST /v1/operator/jobs`: Enqueues an audited manual candidate job. Nodes need an active matching `SourceAccessProfile` before claiming it.
-- `POST /v1/operator/nodes` (`201`) and `POST /v1/operator/nodes/{nodeId}/revoke`: Issues one-time capability-encoded node credentials (auto-selecting top 3 needed platforms via `evaluateWorkforceDistribution` when omitted) and revokes nodes.
+- `GET /v1/operator/jobs` and `POST /v1/operator/jobs`: Lists crawl jobs in descending creation order with `state`, `platform`, `limit`, and `cursor` filters (omitting `lease_id`, `etag`, and `last_modified`). The `POST` route queues an audited candidate job, which requires an active `SourceAccessProfile` before claim.
+- `GET /v1/operator/nodes`, `POST /v1/operator/nodes` (`201`), and `POST /v1/operator/nodes/{nodeId}/revoke`: Lists registered nodes with heartbeat state and `status`, `limit`, and `cursor` filters (omitting `token_hash`). The `POST` routes issue capability-encoded credentials (selecting top 3 needed platforms via `evaluateWorkforceDistribution` when omitted) or revoke nodes.
 - `GET /v1/operator/leads`, `POST /v1/operator/leads/{64-hex}/approve`, `POST /v1/operator/leads/{64-hex}/reject`: Keyset-paginated lead review. Approve and reject require an explicit caller `reason`.
 - `GET /v1/operator/source-profiles`, `POST /v1/operator/source-profiles` (`201`), `POST /v1/operator/source-profiles/{id}/disable`: Manages scoped `GET`-only fetch, retain, and publish policies. Disabling invalidates active leases.
 - `GET /v1/operator/autoqueue-rules`, `POST /v1/operator/autoqueue-rules` (`201`), `POST /v1/operator/autoqueue-rules/{id}/disable`: Manages expiring path-scoped lead promotion rules.

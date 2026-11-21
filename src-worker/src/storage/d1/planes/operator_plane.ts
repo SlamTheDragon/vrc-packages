@@ -8,7 +8,9 @@ import {
   encodeTakedownCursor,
   encodeDelegatedClaimCursor,
   encodeOperatorAppCursor,
+  encodeOperatorNodeCursor,
   encodeProfileCursor,
+  OperatorNodeStatusSchema,
   CreateSourceAccessProfileSchema,
   DOWNSTREAM_PROTOCOL_VERSION,
   type RevokeNodeRequest,
@@ -24,6 +26,9 @@ import {
   type DelegatedClaimRecord,
   type OperatorAppCursor,
   type OperatorAppRecord,
+  type OperatorNodeStatus,
+  type OperatorNodeRecord,
+  type OperatorNodeCursor,
   type ProfileCursor,
   type SourceAccessProfile,
   type CreateSourceAccessProfile
@@ -190,6 +195,83 @@ export class OperatorPlane {
         ? await this.evaluateWorkforceDistribution(parsed.capabilities)
         : await this.evaluateWorkforceDistribution();
     return this.createNodeCredential(parsed.nodeId, capabilities, { actor, reason: parsed.reason });
+  }
+
+  private parseNodeCapabilities(raw: string): Platform[] {
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return [];
+      const seen = new Set<Platform>();
+      for (const item of parsed) {
+        const check = PlatformSchema.safeParse(item);
+        if (check.success) seen.add(check.data);
+      }
+      return [...seen];
+    } catch {
+      return [];
+    }
+  }
+
+  async listNodesPage(
+    status?: OperatorNodeStatus,
+    limit = 100,
+    cursor: OperatorNodeCursor | null = null
+  ): Promise<{ nodes: OperatorNodeRecord[]; nextCursor: string | null }> {
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error("Node limit must be 1..100");
+    if (status !== undefined) OperatorNodeStatusSchema.parse(status);
+    const conditions: string[] = [];
+    const params: (string | number)[] = [];
+    if (status === "active") {
+      conditions.push("c.revoked_at IS NULL");
+    } else if (status === "revoked") {
+      conditions.push("c.revoked_at IS NOT NULL");
+    }
+    if (cursor) {
+      conditions.push("c.node_id > ?");
+      params.push(cursor.nodeId);
+    }
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+    params.push(limit + 1);
+
+    const res = await this.ctx.db
+      .prepare(
+        `SELECT c.node_id, c.capabilities_json, c.revoked_at, h.last_seen_at, h.state AS heartbeat_state, h.active_job_id
+      FROM node_credentials c
+      LEFT JOIN node_heartbeats h ON h.node_id = c.node_id
+      ${where}
+      ORDER BY c.node_id ASC
+      LIMIT ?`
+      )
+      .bind(...params)
+      .all<{
+        node_id: string;
+        capabilities_json: string;
+        revoked_at: string | null;
+        last_seen_at: string | null;
+        heartbeat_state: "idle" | "fetching" | null;
+        active_job_id: string | null;
+      }>();
+
+    const rows = res.results || [];
+    const visible = rows.slice(0, limit);
+    const nodes: OperatorNodeRecord[] = visible.map((row) => ({
+      nodeId: row.node_id,
+      capabilities: this.parseNodeCapabilities(row.capabilities_json),
+      status: row.revoked_at ? "revoked" : "active",
+      revokedAt: row.revoked_at ?? null,
+      lastSeenAt: row.last_seen_at ?? null,
+      heartbeatState: row.heartbeat_state ?? null,
+      activeJobId: row.active_job_id ?? null
+    }));
+    const last = nodes.at(-1);
+
+    return {
+      nodes,
+      nextCursor:
+        rows.length > limit && last
+          ? encodeOperatorNodeCursor({ nodeId: last.nodeId })
+          : null
+    };
   }
 
   async listLeadsPage(

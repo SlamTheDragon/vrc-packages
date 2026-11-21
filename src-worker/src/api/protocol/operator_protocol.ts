@@ -12,6 +12,8 @@ export const OPERATOR_API_JSON_SCHEMAS = {
   autoQueueRuleResponse: z.toJSONSchema(sdk.AutoQueueRuleResponseSchema),
   issueNodeCredential: z.toJSONSchema(sdk.IssueNodeCredentialSchema),
   nodeCredentialResponse: z.toJSONSchema(sdk.NodeCredentialResponseSchema),
+  operatorNodeListResponse: z.toJSONSchema(sdk.OperatorNodeListResponseSchema),
+  operatorJobListResponse: z.toJSONSchema(sdk.OperatorJobListResponseSchema),
   catalogListResponse: z.toJSONSchema(sdk.CatalogListResponseSchema),
   takedownListResponse: z.toJSONSchema(sdk.TakedownListResponseSchema),
   verifyTakedownRequest: z.toJSONSchema(sdk.VerifyTakedownRequestSchema),

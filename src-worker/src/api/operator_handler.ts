@@ -14,6 +14,12 @@ import {
   RuleCursorSchema,
   IssueNodeCredentialSchema,
   NodeCredentialResponseSchema,
+  OperatorNodeListQuerySchema,
+  OperatorNodeListResponseSchema,
+  decodeOperatorNodeCursor,
+  OperatorJobListQuerySchema,
+  OperatorJobListResponseSchema,
+  decodeOperatorJobCursor,
   CatalogListResponseSchema,
   decodeCatalogCursor,
   OperatorClaimListQuerySchema,
@@ -50,7 +56,7 @@ import {
 } from "vrc-packages-api";
 import { parseCapabilityToken } from "../domain/security/capability_token.ts";
 import { workerLogger } from "../worker_logger.ts";
-import { isOperatorAuthorized } from "./auth.ts";
+import { isOperatorAuthorized, parseIntegerQueryParam } from "./auth.ts";
 import {
   extractClientIp,
   RATE_LIMIT_POLICIES,
@@ -73,6 +79,26 @@ function failure(status: number, code: string, message: string): Response {
   return json({ schemaVersion: OPERATOR_PROTOCOL_VERSION, code, error: message }, status);
 }
 
+function parseOperatorListQuery<T>(
+  searchParams: URLSearchParams,
+  allowedKeys: readonly string[],
+  schema: { safeParse(input: unknown): { success: true; data: T } | { success: false } }
+): T | null {
+  const keys = [...searchParams.keys()];
+  if (keys.some((key) => !allowedKeys.includes(key) || searchParams.getAll(key).length > 1)) {
+    return null;
+  }
+  const rawQuery: Record<string, unknown> = {};
+  for (const key of allowedKeys) {
+    if (!searchParams.has(key)) continue;
+    const value = searchParams.get(key);
+    if (value === null || value === "") return null;
+    rawQuery[key] = key === "limit" ? parseIntegerQueryParam(value) : value;
+  }
+  const parsed = schema.safeParse(rawQuery);
+  return parsed.success ? parsed.data : null;
+}
+
 /** Separate operator boundary. Node credentials never grant these controls. */
 export async function handleOperatorRequest(
   request: Request,
@@ -88,8 +114,10 @@ export async function handleOperatorRequest(
   const ruleDisable = request.method === "POST" && /^\/v1\/operator\/autoqueue-rules\/([^/]+)\/disable$/.exec(url.pathname);
   const profileListing = request.method === "GET" && url.pathname === "/v1/operator/source-profiles";
   const profileCreate = request.method === "POST" && url.pathname === "/v1/operator/source-profiles";
+  const nodeListing = request.method === "GET" && url.pathname === "/v1/operator/nodes";
   const nodeIssue = request.method === "POST" && url.pathname === "/v1/operator/nodes";
   const nodeRevoke = request.method === "POST" && /^\/v1\/operator\/nodes\/([A-Za-z0-9._-]{1,100})\/revoke$/.exec(url.pathname);
+  const jobListing = request.method === "GET" && url.pathname === "/v1/operator/jobs";
   const jobEnqueue = request.method === "POST" && url.pathname === "/v1/operator/jobs";
   const profileDisable = request.method === "POST" && /^\/v1\/operator\/source-profiles\/([^/]+)\/disable$/.exec(url.pathname);
   const catalogListing = request.method === "GET" && url.pathname === "/v1/operator/catalog";
@@ -102,7 +130,9 @@ export async function handleOperatorRequest(
   const appCandidateReview = request.method === "POST" && /^\/v1\/operator\/apps\/([^/]+)\/candidate-review$/.exec(url.pathname);
 
   if (
+    !nodeListing &&
     !nodeRevoke &&
+    !jobListing &&
     !jobEnqueue &&
     !listing &&
     !ruleListing &&
@@ -334,6 +364,44 @@ export async function handleOperatorRequest(
           limit,
           cursor ? { ...cursor, appId: cursor.appId.toLowerCase() } : null,
           query.data.candidateStatus
+        ))
+      })
+    );
+  }
+  if (nodeListing) {
+    const query = parseOperatorListQuery(
+      url.searchParams,
+      ["status", "limit", "cursor"],
+      OperatorNodeListQuerySchema
+    );
+    const cursor = query?.cursor ? decodeOperatorNodeCursor(query.cursor) : null;
+    if (!query || (query.cursor !== undefined && !cursor)) {
+      return failure(400, "invalid_query", "Node query parameters are invalid");
+    }
+    return ok(
+      OperatorNodeListResponseSchema.parse({
+        schemaVersion: OPERATOR_PROTOCOL_VERSION,
+        ...(await store.listNodesPage(query.status, query.limit, cursor))
+      })
+    );
+  }
+  if (jobListing) {
+    const query = parseOperatorListQuery(
+      url.searchParams,
+      ["state", "platform", "limit", "cursor"],
+      OperatorJobListQuerySchema
+    );
+    const cursor = query?.cursor ? decodeOperatorJobCursor(query.cursor) : null;
+    if (!query || (query.cursor !== undefined && !cursor)) {
+      return failure(400, "invalid_query", "Job query parameters are invalid");
+    }
+    return ok(
+      OperatorJobListResponseSchema.parse({
+        schemaVersion: OPERATOR_PROTOCOL_VERSION,
+        ...(await store.listJobsPage(
+          { state: query.state, platform: query.platform },
+          query.limit,
+          cursor
         ))
       })
     );

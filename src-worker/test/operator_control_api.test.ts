@@ -9,6 +9,12 @@ import {
   DelegatedClaimListResponseSchema,
   VerifyDelegatedClaimResponseSchema,
   OperatorAppListResponseSchema,
+  OperatorNodeListResponseSchema,
+  OperatorJobListResponseSchema,
+  encodeOperatorNodeCursor,
+  decodeOperatorNodeCursor,
+  encodeOperatorJobCursor,
+  decodeOperatorJobCursor,
   SetAppDelegationResponseSchema,
   ReviewAppCandidateResponseSchema
 } from "vrc-packages-api";
@@ -190,6 +196,8 @@ describe("separate operator control API", () => {
     expect(OPERATOR_API_JSON_SCHEMAS.autoQueueRuleResponse.type).toBe("object");
     expect(OPERATOR_API_JSON_SCHEMAS.issueNodeCredential.type).toBe("object");
     expect(OPERATOR_API_JSON_SCHEMAS.nodeCredentialResponse.type).toBe("object");
+    expect(OPERATOR_API_JSON_SCHEMAS.operatorNodeListResponse.type).toBe("object");
+    expect(OPERATOR_API_JSON_SCHEMAS.operatorJobListResponse.type).toBe("object");
     expect(OPERATOR_API_JSON_SCHEMAS.takedownListResponse.type).toBe("object");
     expect(OPERATOR_API_JSON_SCHEMAS.verifyTakedownRequest.type).toBe("object");
     expect(OPERATOR_API_JSON_SCHEMAS.verifyTakedownResponse.type).toBe("object");
@@ -1468,6 +1476,579 @@ describe("separate operator control API", () => {
       ).toBe("approved");
       expect((store.sqlite.prepare("SELECT count(*) AS n FROM crawl_jobs").get() as { n: number }).n).toBe(2);
       expect(await store.retryPendingAutoPromotions()).toBe(0);
+    } finally {
+      store.close();
+    }
+  });
+
+  test("GET /v1/operator/nodes lists active, revoked, heartbeat, and no-heartbeat nodes with mixed-case cursor pagination and zero token secrets", async () => {
+    let now = Date.parse("2026-10-05T00:00:00.000Z");
+    const store = await createInitializedD1Coordinator(":memory:", () => now);
+    try {
+      const emptyRes = await handleOperatorRequest(operatorRequest("/v1/operator/nodes"), store, operatorToken);
+      expect(emptyRes.status).toBe(200);
+      expect(emptyRes.headers.get("X-RateLimit-Limit")).toBeDefined();
+      const emptyPayload = OperatorNodeListResponseSchema.parse(await emptyRes.json());
+      expect(emptyPayload).toEqual({ schemaVersion: 1, nodes: [], nextCursor: null });
+
+      const tokAlpha = await store.createNodeCredential("Node-Alpha", ["vpm"]);
+      const tokGamma = await store.createNodeCredential("Node-Gamma", ["booth", "github"]);
+      const tokZeta = await store.createNodeCredential("Node-Zeta", ["itch"]);
+      const tokBeta = await store.createNodeCredential("node-beta", ["vpm", "curated"]);
+      const tokDelta = await store.createNodeCredential("node-delta", ["shopify"]);
+
+      const principalAlpha = (await store.authenticate("Node-Alpha", tokAlpha))!;
+      const principalGamma = (await store.authenticate("Node-Gamma", tokGamma))!;
+      const principalZeta = (await store.authenticate("Node-Zeta", tokZeta))!;
+
+      const activeProfile = await store.createSourceAccessProfile(
+        {
+          schemaVersion: 1,
+          platform: "vpm",
+          origin: "https://active-node.example",
+          pathScope: "/index.json",
+          method: "GET",
+          purpose: "metadata",
+          minDelayMs: 1000,
+          expiresAt: new Date(now + 3_600_000).toISOString(),
+          reviewReference: "OFFLINE-NODE-LIST-TEST",
+          reason: "Active node heartbeat fixture",
+          retainClasses: ["normalized_facts"],
+          publishClasses: []
+        },
+        "operator-api"
+      );
+      const jobCreated = new Date(now).toISOString();
+      const leaseExpires = new Date(now + 120_000).toISOString();
+      const leaseSecret = "lease-secret-node-alpha";
+      store.sqlite
+        .prepare(
+          `INSERT INTO crawl_jobs
+        (job_id, platform, url, origin, state, next_fetch_at, claimed_by, lease_id, lease_expires_at, created_at, job_purpose, lease_profile_id)
+        VALUES (?, 'vpm', 'https://active-node.example/index.json', 'https://active-node.example', 'leased', ?, 'Node-Alpha', ?, ?, ?, 'metadata', ?)`
+        )
+        .run("job-active-1", jobCreated, leaseSecret, leaseExpires, jobCreated, activeProfile.profileId);
+
+      now += 1000;
+      await store.heartbeat(
+        {
+          schemaVersion: 1,
+          nodeId: "Node-Alpha",
+          capabilities: ["vpm"],
+          state: "fetching",
+          activeJobId: "job-active-1",
+          activeLeaseId: leaseSecret
+        },
+        principalAlpha
+      );
+      now += 1000;
+      await store.heartbeat(
+        { schemaVersion: 1, nodeId: "Node-Gamma", capabilities: ["booth", "github"], state: "idle" },
+        principalGamma
+      );
+      now += 1000;
+      await store.heartbeat(
+        { schemaVersion: 1, nodeId: "Node-Zeta", capabilities: ["itch"], state: "idle" },
+        principalZeta
+      );
+
+      now += 1000;
+      await store.revokeNode("Node-Gamma", { schemaVersion: 1, reason: "Rotated node key" }, "operator-api");
+      await store.revokeNode("node-delta", { schemaVersion: 1, reason: "Retired node" }, "operator-api");
+
+      const allRes = await handleOperatorRequest(operatorRequest("/v1/operator/nodes"), store, operatorToken);
+      expect(allRes.status).toBe(200);
+      const allRaw = await allRes.text();
+      expect(allRaw).not.toContain("token_hash");
+      expect(allRaw).not.toContain("tokenHash");
+      expect(allRaw).not.toContain('"token"');
+      for (const secretToken of [tokAlpha, tokGamma, tokZeta, tokBeta, tokDelta]) {
+        expect(allRaw).not.toContain(secretToken);
+      }
+
+      const allData = OperatorNodeListResponseSchema.parse(JSON.parse(allRaw));
+      expect(allData.nextCursor).toBeNull();
+      expect(allData.nodes.map((node) => node.nodeId)).toEqual([
+        "Node-Alpha",
+        "Node-Gamma",
+        "Node-Zeta",
+        "node-beta",
+        "node-delta"
+      ]);
+
+      const nodeAlpha = allData.nodes[0]!;
+      expect(nodeAlpha).toEqual({
+        nodeId: "Node-Alpha",
+        capabilities: ["vpm"],
+        status: "active",
+        revokedAt: null,
+        lastSeenAt: "2026-10-05T00:00:01.000Z",
+        heartbeatState: "fetching",
+        activeJobId: "job-active-1"
+      });
+
+      const nodeGamma = allData.nodes[1]!;
+      expect(nodeGamma).toEqual({
+        nodeId: "Node-Gamma",
+        capabilities: ["booth", "github"],
+        status: "revoked",
+        revokedAt: "2026-10-05T00:00:04.000Z",
+        lastSeenAt: "2026-10-05T00:00:02.000Z",
+        heartbeatState: "idle",
+        activeJobId: null
+      });
+
+      const nodeBeta = allData.nodes[3]!;
+      expect(nodeBeta).toEqual({
+        nodeId: "node-beta",
+        capabilities: ["vpm", "curated"],
+        status: "active",
+        revokedAt: null,
+        lastSeenAt: null,
+        heartbeatState: null,
+        activeJobId: null
+      });
+
+      const activeRes = await handleOperatorRequest(
+        operatorRequest("/v1/operator/nodes?status=active"),
+        store,
+        operatorToken
+      );
+      expect(activeRes.status).toBe(200);
+      const activeData = OperatorNodeListResponseSchema.parse(await activeRes.json());
+      expect(activeData.nodes.map((node) => node.nodeId)).toEqual(["Node-Alpha", "Node-Zeta", "node-beta"]);
+      expect(activeData.nodes.every((node) => node.status === "active" && node.revokedAt === null)).toBe(true);
+
+      const revokedRes = await handleOperatorRequest(
+        operatorRequest("/v1/operator/nodes?status=revoked"),
+        store,
+        operatorToken
+      );
+      expect(revokedRes.status).toBe(200);
+      const revokedData = OperatorNodeListResponseSchema.parse(await revokedRes.json());
+      expect(revokedData.nodes.map((node) => node.nodeId)).toEqual(["Node-Gamma", "node-delta"]);
+      expect(revokedData.nodes.every((node) => node.status === "revoked" && node.revokedAt !== null)).toBe(true);
+
+      const page1Res = await handleOperatorRequest(
+        operatorRequest("/v1/operator/nodes?limit=2"),
+        store,
+        operatorToken
+      );
+      expect(page1Res.status).toBe(200);
+      const page1 = OperatorNodeListResponseSchema.parse(await page1Res.json());
+      expect(page1.nodes.map((node) => node.nodeId)).toEqual(["Node-Alpha", "Node-Gamma"]);
+      expect(page1.nextCursor).not.toBeNull();
+      expect(decodeOperatorNodeCursor(page1.nextCursor!)).toEqual({ nodeId: "Node-Gamma" });
+
+      const page2Res = await handleOperatorRequest(
+        operatorRequest(`/v1/operator/nodes?limit=2&cursor=${page1.nextCursor}`),
+        store,
+        operatorToken
+      );
+      expect(page2Res.status).toBe(200);
+      const page2 = OperatorNodeListResponseSchema.parse(await page2Res.json());
+      expect(page2.nodes.map((node) => node.nodeId)).toEqual(["Node-Zeta", "node-beta"]);
+      expect(page2.nextCursor).not.toBeNull();
+      expect(decodeOperatorNodeCursor(page2.nextCursor!)).toEqual({ nodeId: "node-beta" });
+
+      const page3Res = await handleOperatorRequest(
+        operatorRequest(`/v1/operator/nodes?limit=2&cursor=${page2.nextCursor}`),
+        store,
+        operatorToken
+      );
+      expect(page3Res.status).toBe(200);
+      const page3 = OperatorNodeListResponseSchema.parse(await page3Res.json());
+      expect(page3.nodes.map((node) => node.nodeId)).toEqual(["node-delta"]);
+      expect(page3.nextCursor).toBeNull();
+
+      // Verify exact mixed-case cursor preservation when cursor nodeId has uppercase prefix before another uppercase nodeId
+      const afterAlphaCursor = encodeOperatorNodeCursor({ nodeId: "Node-Alpha" });
+      const afterAlphaRes = await handleOperatorRequest(
+        operatorRequest(`/v1/operator/nodes?limit=1&cursor=${afterAlphaCursor}`),
+        store,
+        operatorToken
+      );
+      expect(afterAlphaRes.status).toBe(200);
+      const afterAlphaData = OperatorNodeListResponseSchema.parse(await afterAlphaRes.json());
+      expect(afterAlphaData.nodes.map((node) => node.nodeId)).toEqual(["Node-Gamma"]);
+    } finally {
+      store.close();
+    }
+  });
+
+  test("GET /v1/operator/jobs lists UUID and non-UUID jobs, supports state/platform filters and mixed-case keyset pagination, and omits lease secrets", async () => {
+    const store = await createInitializedD1Coordinator();
+    try {
+      const emptyRes = await handleOperatorRequest(operatorRequest("/v1/operator/jobs"), store, operatorToken);
+      expect(emptyRes.status).toBe(200);
+      expect(emptyRes.headers.get("X-RateLimit-Limit")).toBeDefined();
+      const emptyPayload = OperatorJobListResponseSchema.parse(await emptyRes.json());
+      expect(emptyPayload).toEqual({ schemaVersion: 1, jobs: [], nextCursor: null });
+
+      await store.createNodeCredential("Node-Alpha", ["booth"]);
+      const rule = await store.createAutoQueueRule(
+        {
+          schemaVersion: 1,
+          leadKind: "vpm_listing",
+          origin: "https://vpm-rule.example",
+          pathScope: "/index.json",
+          minDelayMs: 1000,
+          expiresAt: "2027-01-01T00:00:00.000Z",
+          reviewReference: "OFFLINE-JOB-RULE",
+          reason: "Job listing fixture rule"
+        },
+        "operator-api"
+      );
+      const profile = await store.createSourceAccessProfile(
+        {
+          schemaVersion: 1,
+          platform: "booth",
+          origin: "https://booth.pm",
+          pathScope: "/items/",
+          method: "GET",
+          purpose: "metadata",
+          minDelayMs: 1000,
+          expiresAt: "2027-01-01T00:00:00.000Z",
+          reviewReference: "OFFLINE-JOB-PROFILE",
+          reason: "Job listing fixture profile",
+          retainClasses: ["normalized_facts"],
+          publishClasses: ["normalized_facts"]
+        },
+        "operator-api"
+      );
+
+      const uuidJobId = "00000000-0000-4000-8000-000000000010";
+      const secretLeaseId = "secret-lease-uuid-1234";
+      const secretEtag = '"secret-etag-abc"';
+      const secretLastModified = "Mon, 05 Oct 2026 00:00:00 GMT";
+      const insertJob = store.sqlite.prepare(`INSERT INTO crawl_jobs
+        (job_id, platform, url, origin, state, next_fetch_at, claimed_by, lease_id, lease_expires_at,
+          etag, last_modified, created_at, robots_deferred_until, source_rule_id, job_purpose, lease_profile_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+
+      insertJob.run(
+        uuidJobId,
+        "vpm",
+        "https://vpm-rule.example/index.json",
+        "https://vpm-rule.example",
+        "done",
+        "2026-10-06T00:00:00.000Z",
+        null,
+        null,
+        null,
+        secretEtag,
+        secretLastModified,
+        "2026-10-05T00:00:02.000Z",
+        null,
+        rule.ruleId,
+        "discovery",
+        null
+      );
+      insertJob.run(
+        "job-beta",
+        "booth",
+        "https://booth.pm/items/1",
+        "https://booth.pm",
+        "leased",
+        "2026-10-05T00:00:01.000Z",
+        "Node-Alpha",
+        secretLeaseId,
+        "2026-10-05T00:02:01.000Z",
+        secretEtag,
+        secretLastModified,
+        "2026-10-05T00:00:01.000Z",
+        null,
+        null,
+        "metadata",
+        profile.profileId
+      );
+      insertJob.run(
+        "Job-Zeta",
+        "booth",
+        "https://booth.pm/items/2",
+        "https://booth.pm",
+        "pending",
+        "2026-10-05T00:00:01.000Z",
+        null,
+        null,
+        null,
+        null,
+        null,
+        "2026-10-05T00:00:01.000Z",
+        "2026-10-05T01:00:00.000Z",
+        null,
+        "metadata",
+        null
+      );
+      insertJob.run(
+        "Job-Alpha",
+        "github",
+        "https://api.github.com/repos/example/tool",
+        "https://api.github.com",
+        "backoff",
+        "2026-10-05T00:15:00.000Z",
+        null,
+        null,
+        null,
+        null,
+        null,
+        "2026-10-05T00:00:01.000Z",
+        null,
+        null,
+        "metadata",
+        null
+      );
+      insertJob.run(
+        "job-b1",
+        "vpm",
+        "https://blocked.example/index.json",
+        "https://blocked.example",
+        "blocked",
+        "2026-10-08T00:00:00.000Z",
+        null,
+        null,
+        null,
+        null,
+        null,
+        "2026-10-05T00:00:00.000Z",
+        null,
+        null,
+        "discovery",
+        null
+      );
+
+      const allRes = await handleOperatorRequest(operatorRequest("/v1/operator/jobs"), store, operatorToken);
+      expect(allRes.status).toBe(200);
+      const allRaw = await allRes.text();
+      expect(allRaw).not.toContain("lease_id");
+      expect(allRaw).not.toContain("leaseId");
+      expect(allRaw).not.toContain(secretLeaseId);
+      expect(allRaw).not.toContain("etag");
+      expect(allRaw).not.toContain(secretEtag);
+      expect(allRaw).not.toContain("last_modified");
+      expect(allRaw).not.toContain("lastModified");
+      expect(allRaw).not.toContain(secretLastModified);
+
+      const allData = OperatorJobListResponseSchema.parse(JSON.parse(allRaw));
+      expect(allData.nextCursor).toBeNull();
+      expect(allData.jobs.map((job) => job.jobId)).toEqual([
+        uuidJobId,
+        "job-beta",
+        "Job-Zeta",
+        "Job-Alpha",
+        "job-b1"
+      ]);
+
+      expect(allData.jobs[0]).toEqual({
+        jobId: uuidJobId,
+        platform: "vpm",
+        url: "https://vpm-rule.example/index.json",
+        origin: "https://vpm-rule.example",
+        state: "done",
+        purpose: "discovery",
+        nextFetchAt: "2026-10-06T00:00:00.000Z",
+        claimedBy: null,
+        leaseExpiresAt: null,
+        createdAt: "2026-10-05T00:00:02.000Z",
+        robotsDeferredUntil: null,
+        sourceRuleId: rule.ruleId,
+        leaseProfileId: null
+      });
+
+      expect(allData.jobs[1]).toEqual({
+        jobId: "job-beta",
+        platform: "booth",
+        url: "https://booth.pm/items/1",
+        origin: "https://booth.pm",
+        state: "leased",
+        purpose: "metadata",
+        nextFetchAt: "2026-10-05T00:00:01.000Z",
+        claimedBy: "Node-Alpha",
+        leaseExpiresAt: "2026-10-05T00:02:01.000Z",
+        createdAt: "2026-10-05T00:00:01.000Z",
+        robotsDeferredUntil: null,
+        sourceRuleId: null,
+        leaseProfileId: profile.profileId
+      });
+
+      expect(allData.jobs[2]?.robotsDeferredUntil).toBe("2026-10-05T01:00:00.000Z");
+
+      const leasedRes = await handleOperatorRequest(
+        operatorRequest("/v1/operator/jobs?state=leased"),
+        store,
+        operatorToken
+      );
+      expect(leasedRes.status).toBe(200);
+      const leasedData = OperatorJobListResponseSchema.parse(await leasedRes.json());
+      expect(leasedData.jobs.map((job) => job.jobId)).toEqual(["job-beta"]);
+
+      const boothRes = await handleOperatorRequest(
+        operatorRequest("/v1/operator/jobs?platform=booth"),
+        store,
+        operatorToken
+      );
+      expect(boothRes.status).toBe(200);
+      const boothData = OperatorJobListResponseSchema.parse(await boothRes.json());
+      expect(boothData.jobs.map((job) => job.jobId)).toEqual(["job-beta", "Job-Zeta"]);
+
+      const boothPendingRes = await handleOperatorRequest(
+        operatorRequest("/v1/operator/jobs?state=pending&platform=booth"),
+        store,
+        operatorToken
+      );
+      expect(boothPendingRes.status).toBe(200);
+      const boothPendingData = OperatorJobListResponseSchema.parse(await boothPendingRes.json());
+      expect(boothPendingData.jobs.map((job) => job.jobId)).toEqual(["Job-Zeta"]);
+
+      const page1Res = await handleOperatorRequest(
+        operatorRequest("/v1/operator/jobs?limit=2"),
+        store,
+        operatorToken
+      );
+      expect(page1Res.status).toBe(200);
+      const page1 = OperatorJobListResponseSchema.parse(await page1Res.json());
+      expect(page1.jobs.map((job) => job.jobId)).toEqual([uuidJobId, "job-beta"]);
+      expect(page1.nextCursor).not.toBeNull();
+      expect(decodeOperatorJobCursor(page1.nextCursor!)).toEqual({
+        createdAt: "2026-10-05T00:00:01.000Z",
+        jobId: "job-beta"
+      });
+
+      const page2Res = await handleOperatorRequest(
+        operatorRequest(`/v1/operator/jobs?limit=2&cursor=${page1.nextCursor}`),
+        store,
+        operatorToken
+      );
+      expect(page2Res.status).toBe(200);
+      const page2 = OperatorJobListResponseSchema.parse(await page2Res.json());
+      expect(page2.jobs.map((job) => job.jobId)).toEqual(["Job-Zeta", "Job-Alpha"]);
+      expect(page2.nextCursor).not.toBeNull();
+      expect(decodeOperatorJobCursor(page2.nextCursor!)).toEqual({
+        createdAt: "2026-10-05T00:00:01.000Z",
+        jobId: "Job-Alpha"
+      });
+
+      const page3Res = await handleOperatorRequest(
+        operatorRequest(`/v1/operator/jobs?limit=2&cursor=${page2.nextCursor}`),
+        store,
+        operatorToken
+      );
+      expect(page3Res.status).toBe(200);
+      const page3 = OperatorJobListResponseSchema.parse(await page3Res.json());
+      expect(page3.jobs.map((job) => job.jobId)).toEqual(["job-b1"]);
+      expect(page3.nextCursor).toBeNull();
+
+      // Verify exact mixed-case jobId cursor preservation without duplicating "job-beta"
+      const zetaCursor = encodeOperatorJobCursor({ createdAt: "2026-10-05T00:00:01.000Z", jobId: "Job-Zeta" });
+      const afterZetaRes = await handleOperatorRequest(
+        operatorRequest(`/v1/operator/jobs?limit=2&cursor=${zetaCursor}`),
+        store,
+        operatorToken
+      );
+      expect(afterZetaRes.status).toBe(200);
+      const afterZeta = OperatorJobListResponseSchema.parse(await afterZetaRes.json());
+      expect(afterZeta.jobs.map((job) => job.jobId)).toEqual(["Job-Alpha", "job-b1"]);
+    } finally {
+      store.close();
+    }
+  });
+
+  test("GET /v1/operator/nodes and GET /v1/operator/jobs enforce auth and reject invalid queries with 400 invalid_query", async () => {
+    const store = await createInitializedD1Coordinator();
+    const nodeToken = await store.createNodeCredential("node-auth-check", ["vpm"]);
+    try {
+      const validNodeCursor = encodeOperatorNodeCursor({ nodeId: "Node-A" });
+      const validJobCursor = encodeOperatorJobCursor({
+        createdAt: "2026-10-05T00:00:00.000Z",
+        jobId: "Job-A"
+      });
+
+      for (const path of ["/v1/operator/nodes", "/v1/operator/jobs"]) {
+        expect((await handleOperatorRequest(operatorRequest(path), store, "")).status).toBe(401);
+        expect(
+          (await handleOperatorRequest(operatorRequest(path, "GET", undefined, "b".repeat(64)), store, operatorToken))
+            .status
+        ).toBe(401);
+        expect(
+          (await handleOperatorRequest(operatorRequest(path, "GET", undefined, nodeToken), store, operatorToken)).status
+        ).toBe(401);
+        expect((await handleOperatorRequest(new Request(`http://localhost${path}`), store, operatorToken)).status).toBe(
+          401
+        );
+      }
+
+      expect((await handleOperatorRequest(operatorRequest("/v1/operator/nodes/abc"), store, operatorToken)).status).toBe(
+        404
+      );
+      expect(
+        (await handleOperatorRequest(operatorRequest("/v1/operator/nodes", "DELETE"), store, operatorToken)).status
+      ).toBe(404);
+      expect((await handleOperatorRequest(operatorRequest("/v1/operator/jobs/123"), store, operatorToken)).status).toBe(
+        404
+      );
+
+      const badNodeQueries = [
+        "limit=",
+        "limit=0",
+        "limit=101",
+        "limit=-1",
+        "limit=abc",
+        "limit=1.5",
+        "cursor=",
+        "cursor=not-valid",
+        `cursor=${encodeURIComponent(validNodeCursor + "=")}`,
+        `cursor=${encodeURIComponent(validJobCursor)}`,
+        "status=",
+        "status=unknown",
+        "status=active&status=revoked",
+        "limit=1&limit=2",
+        `cursor=${validNodeCursor}&cursor=${validNodeCursor}`,
+        "unknown=1"
+      ];
+      for (const query of badNodeQueries) {
+        const res = await handleOperatorRequest(
+          operatorRequest(`/v1/operator/nodes?${query}`),
+          store,
+          operatorToken
+        );
+        expect(res.status).toBe(400);
+        const body = (await res.json()) as { schemaVersion: number; code: string; error: string };
+        expect(body.schemaVersion).toBe(1);
+        expect(body.code).toBe("invalid_query");
+      }
+
+      const badJobQueries = [
+        "limit=",
+        "limit=0",
+        "limit=101",
+        "limit=-1",
+        "limit=abc",
+        "limit=1.5",
+        "cursor=",
+        "cursor=not-valid",
+        `cursor=${encodeURIComponent(validJobCursor + "=")}`,
+        `cursor=${encodeURIComponent(validNodeCursor)}`,
+        "state=",
+        "state=unknown",
+        "platform=",
+        "platform=unknown",
+        "state=pending&state=done",
+        "platform=vpm&platform=booth",
+        "limit=1&limit=2",
+        `cursor=${validJobCursor}&cursor=${validJobCursor}`,
+        "unknown=1"
+      ];
+      for (const query of badJobQueries) {
+        const res = await handleOperatorRequest(
+          operatorRequest(`/v1/operator/jobs?${query}`),
+          store,
+          operatorToken
+        );
+        expect(res.status).toBe(400);
+        const body = (await res.json()) as { schemaVersion: number; code: string; error: string };
+        expect(body.schemaVersion).toBe(1);
+        expect(body.code).toBe("invalid_query");
+      }
     } finally {
       store.close();
     }

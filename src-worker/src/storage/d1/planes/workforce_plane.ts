@@ -1,6 +1,11 @@
 import {
   EnqueueJobRequestSchema,
-  type EnqueueJobRequest
+  OperatorJobStateSchema,
+  encodeOperatorJobCursor,
+  type EnqueueJobRequest,
+  type OperatorJobState,
+  type OperatorJobRecord,
+  type OperatorJobCursor
 } from "vrc-packages-api";
 import { isIp, isPrivateOrReservedIp } from "vrc-packages-network/ip-policy";
 import {
@@ -344,6 +349,86 @@ export class WorkforcePlane {
       actor,
       reason: parsed.reason
     });
+  }
+
+  async listJobsPage(
+    filters?: { state?: OperatorJobState; platform?: Platform },
+    limit = 100,
+    cursor: OperatorJobCursor | null = null
+  ): Promise<{ jobs: OperatorJobRecord[]; nextCursor: string | null }> {
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error("Job limit must be 1..100");
+    if (filters?.state !== undefined) OperatorJobStateSchema.parse(filters.state);
+    if (filters?.platform !== undefined) PlatformSchema.parse(filters.platform);
+
+    const conditions: string[] = [];
+    const params: (string | number)[] = [];
+    if (filters?.state !== undefined) {
+      conditions.push("state = ?");
+      params.push(filters.state);
+    }
+    if (filters?.platform !== undefined) {
+      conditions.push("platform = ?");
+      params.push(filters.platform);
+    }
+    if (cursor) {
+      conditions.push("(created_at, job_id) < (?, ?)");
+      params.push(cursor.createdAt, cursor.jobId);
+    }
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+    params.push(limit + 1);
+
+    const res = await this.ctx.db
+      .prepare(
+        `SELECT job_id, platform, url, origin, state, job_purpose, next_fetch_at,
+          claimed_by, lease_expires_at, created_at, robots_deferred_until, source_rule_id, lease_profile_id
+      FROM crawl_jobs
+      ${where}
+      ORDER BY created_at DESC, job_id DESC
+      LIMIT ?`
+      )
+      .bind(...params)
+      .all<{
+        job_id: string;
+        platform: Platform;
+        url: string;
+        origin: string;
+        state: OperatorJobState;
+        job_purpose: SourcePurpose;
+        next_fetch_at: string;
+        claimed_by: string | null;
+        lease_expires_at: string | null;
+        created_at: string;
+        robots_deferred_until: string | null;
+        source_rule_id: string | null;
+        lease_profile_id: string | null;
+      }>();
+
+    const rows = res.results || [];
+    const visible = rows.slice(0, limit);
+    const jobs: OperatorJobRecord[] = visible.map((row) => ({
+      jobId: row.job_id,
+      platform: row.platform,
+      url: row.url,
+      origin: row.origin,
+      state: row.state,
+      purpose: row.job_purpose,
+      nextFetchAt: row.next_fetch_at,
+      claimedBy: row.claimed_by ?? null,
+      leaseExpiresAt: row.lease_expires_at ?? null,
+      createdAt: row.created_at,
+      robotsDeferredUntil: row.robots_deferred_until ?? null,
+      sourceRuleId: row.source_rule_id ?? null,
+      leaseProfileId: row.lease_profile_id ?? null
+    }));
+    const last = jobs.at(-1);
+
+    return {
+      jobs,
+      nextCursor:
+        rows.length > limit && last
+          ? encodeOperatorJobCursor({ createdAt: last.createdAt, jobId: last.jobId })
+          : null
+    };
   }
 
   async seedJob(
