@@ -20,6 +20,16 @@ import {
 	ModeratorAppListResponseSchema,
 	ModeratorReviewAppCandidateRequestSchema,
 	ModeratorReviewAppCandidateResponseSchema,
+	OperatorNodeStatusSchema,
+	OperatorNodeHeartbeatStateSchema,
+	OperatorNodeRecordSchema,
+	OperatorNodeListQuerySchema,
+	OperatorNodeListResponseSchema,
+	OperatorJobStateSchema,
+	OperatorJobRecordSchema,
+	OperatorJobListQuerySchema,
+	OperatorJobListResponseSchema,
+	PlatformSchema,
 	UmbrellaSchema,
 	type VRCPackageClientOptions,
 	type PublicCatalogListQuery,
@@ -44,6 +54,16 @@ import {
 	type IssueNodeCredential,
 	type NodeCredentialResponse,
 	type RevokeNodeResponse,
+	type OperatorNodeStatus,
+	type OperatorNodeHeartbeatState,
+	type OperatorNodeRecord,
+	type OperatorNodeListQuery,
+	type OperatorNodeListResponse,
+	type OperatorJobState,
+	type OperatorJobRecord,
+	type OperatorJobListQuery,
+	type OperatorJobListResponse,
+	type Platform,
 	type CatalogListResponse,
 	type TakedownListResponse,
 	type VerifyTakedownResponse,
@@ -92,6 +112,16 @@ export {
 	ModeratorAppListResponseSchema,
 	ModeratorReviewAppCandidateRequestSchema,
 	ModeratorReviewAppCandidateResponseSchema,
+	OperatorNodeStatusSchema,
+	OperatorNodeHeartbeatStateSchema,
+	OperatorNodeRecordSchema,
+	OperatorNodeListQuerySchema,
+	OperatorNodeListResponseSchema,
+	OperatorJobStateSchema,
+	OperatorJobRecordSchema,
+	OperatorJobListQuerySchema,
+	OperatorJobListResponseSchema,
+	PlatformSchema,
 	UmbrellaSchema,
 	isOperatorToken,
 	isUserToken,
@@ -119,6 +149,16 @@ export type {
 	ModeratorAppListResponse,
 	ModeratorReviewAppCandidateRequest,
 	ModeratorReviewAppCandidateResponse,
+	OperatorNodeStatus,
+	OperatorNodeHeartbeatState,
+	OperatorNodeRecord,
+	OperatorNodeListQuery,
+	OperatorNodeListResponse,
+	OperatorJobState,
+	OperatorJobRecord,
+	OperatorJobListQuery,
+	OperatorJobListResponse,
+	Platform,
 	Umbrella
 };
 
@@ -168,6 +208,14 @@ export class VRCPAdminClient {
 		init: (params: { autoSeed?: boolean } = {}): Promise<InitializeCoordinatorResponse> =>
 			this.sdk.operator.init(params),
 		jobs: {
+			list: (
+				params: {
+					state?: OperatorJobState;
+					platform?: Platform;
+					limit?: number;
+					cursor?: string;
+				} = {}
+			): Promise<OperatorJobListResponse> => this.sdk.operator.jobs.list(params),
 			enqueue: (request: EnqueueJobRequest): Promise<EnqueueJobResponse> =>
 				this.sdk.operator.jobs.enqueue(request)
 		},
@@ -199,6 +247,13 @@ export class VRCPAdminClient {
 				this.sdk.operator.autoQueueRules.disable(ruleId, reason)
 		},
 		nodes: {
+			list: (
+				params: {
+					status?: OperatorNodeStatus;
+					limit?: number;
+					cursor?: string;
+				} = {}
+			): Promise<OperatorNodeListResponse> => this.sdk.operator.nodes.list(params),
 			issue: (request: IssueNodeCredential): Promise<NodeCredentialResponse> =>
 				this.sdk.operator.nodes.issue(request),
 			revoke: (nodeId: string, reason: string): Promise<RevokeNodeResponse> =>

@@ -17,7 +17,8 @@
 		ArrowRight,
 		Activity,
 		Server,
-		Package
+		Package,
+		GitBranch
 	} from '@lucide/svelte';
 
 	let autoRedirectEnabled = $state(false);
@@ -43,14 +44,11 @@
 				<VRCPEmblem size={30} color="var(--sidebar-primary)" />
 			</div>
 			<div>
-				<span class="text-xs font-semibold uppercase tracking-wider text-sidebar-primary">
-					SECTOR 3 TIER 5 // DOWNSTREAM WEB CONSOLE
-				</span>
 				<h1 class="text-2xl font-bold tracking-tight text-foreground text-balance">
-					VRC Packages Governance &amp; Moderation Hub
+					VRC Packages Admin
 				</h1>
 				<p class="text-xs text-muted-foreground mt-0.5 text-pretty">
-					Cross-pipeline Operator and Moderator administration console consuming the preview SDK (<code class="font-mono text-sidebar-primary">vrc-packages-api-preview</code>).
+					Operator and Moderator console (<code class="font-mono text-sidebar-primary">vrc-packages-api-preview</code>).
 				</p>
 			</div>
 		</div>
@@ -63,7 +61,7 @@
 					size="sm"
 					href={adminSession.role === 'operator' ? '/operator' : '/moderator'}
 				>
-					<span>Open Active {adminSession.role === 'operator' ? 'Operator' : 'Moderator'} Console</span>
+					<span>Open {adminSession.role === 'operator' ? 'Operator' : 'Moderator'} Console</span>
 					<ArrowRight size={14} />
 				</Button>
 			{:else}
@@ -103,7 +101,7 @@
 		<StatCard
 			label="Protocol Bridge"
 			value={adminSession.pipelineInfo.previewBridgeActive ? 'HYBRID' : 'NATIVE'}
-			subtext="Native vrc-packages-api-preview SDK (no HTTP bridge)"
+			subtext="Native preview SDK delegation"
 			trend="TIER 3B -> 5"
 			trendDirection="up"
 			icon={Activity}
@@ -126,13 +124,13 @@
 				<Badge variant="emerald" size="xs">AUTH GATE</Badge>
 			{/snippet}
 
-			<p class="text-sm text-muted-foreground leading-relaxed mb-4 text-pretty">
-				Configure the target Cloudflare Worker Coordinator URL, run an unauthenticated public catalog &amp; CORS connectivity probe (<code class="font-mono text-xs text-foreground">GET /v1/app/index?limit=1</code>), and verify your runtime <code class="font-mono text-xs text-foreground">64-hex</code> operator or <code class="font-mono text-xs text-foreground">vrcp_usr_</code> moderator token.
+			<p class="text-sm text-muted-foreground text-pretty">
+				Coordinator target, public catalog CORS probe, and runtime bearer sign-in.
 			</p>
 
 			{#snippet footer()}
 				<div class="flex items-center justify-between">
-					<span class="font-mono text-[11px] text-muted-foreground">Zero static bundle secrets</span>
+					<span class="font-mono text-[11px] text-muted-foreground">Zero static secrets</span>
 					<Button variant="primary" size="sm" href="/login">
 						<KeyRound size={14} />
 						<span>Go to Admin Login</span>
@@ -150,9 +148,23 @@
 				<Badge variant="amber" size="xs">64-HEX TOKEN</Badge>
 			{/snippet}
 
-			<p class="text-sm text-muted-foreground leading-relaxed mb-4 text-pretty">
-				Manage D1 schema initialization (<code class="font-mono text-xs text-foreground">/v1/operator/init</code>), canonical package catalog inspection, source access profiles, auto-queue rules, discovery lead triage, manual crawl job enqueueing, crawler node credentials, takedowns, creator claims, and app delegation.
-			</p>
+			<div class="flex flex-col gap-3">
+				<p class="text-sm text-muted-foreground text-pretty">
+					Catalog, source policies, discovery leads, crawl jobs, nodes, and governance.
+				</p>
+				<div class="flex flex-wrap items-center gap-2">
+					<Button variant="outline" size="xs" href="/operator?tab=nodes">
+						<Server size={12} />
+						<span>Node Fleet</span>
+						<ArrowRight size={12} />
+					</Button>
+					<Button variant="outline" size="xs" href="/operator?tab=leads">
+						<GitBranch size={12} />
+						<span>Leads &amp; Jobs</span>
+						<ArrowRight size={12} />
+					</Button>
+				</div>
+			</div>
 
 			{#snippet footer()}
 				<div class="flex items-center justify-between">
@@ -174,13 +186,13 @@
 				<Badge variant="sky" size="xs">vrcp_usr_ TOKEN</Badge>
 			{/snippet}
 
-			<p class="text-sm text-muted-foreground leading-relaxed mb-4 text-pretty">
-				Triage package content rating reports (<code class="font-mono text-xs text-foreground">/v1/moderator/ratings</code>) across <code class="font-mono text-xs text-foreground">general</code>, <code class="font-mono text-xs text-foreground">mature</code>, <code class="font-mono text-xs text-foreground">sexual_suggestive</code>, <code class="font-mono text-xs text-foreground">adult_restricted</code>, <code class="font-mono text-xs text-foreground">unknown_restricted</code>, and <code class="font-mono text-xs text-foreground">prohibited</code>, and review downstream application candidates.
+			<p class="text-sm text-muted-foreground text-pretty">
+				Content rating reports and downstream app candidate trust reviews.
 			</p>
 
 			{#snippet footer()}
 				<div class="flex items-center justify-between">
-					<span class="font-mono text-[11px] text-muted-foreground">Requires age-verified moderator</span>
+					<span class="font-mono text-[11px] text-muted-foreground">Age-verified moderator</span>
 					<Button variant="secondary" size="sm" href="/moderator">
 						<Scale size={14} />
 						<span>Open Moderator Queue</span>
@@ -198,13 +210,13 @@
 				<Badge variant="neutral" size="xs">RULE 09</Badge>
 			{/snippet}
 
-			<p class="text-sm text-muted-foreground leading-relaxed mb-4 text-pretty">
-				Inspect all 39 Tier 1 UI primitives across <code class="font-mono text-xs text-foreground">forms/</code>, <code class="font-mono text-xs text-foreground">navigation/</code>, <code class="font-mono text-xs text-foreground">overlays/</code>, <code class="font-mono text-xs text-foreground">feedback/</code>, <code class="font-mono text-xs text-foreground">display/</code>, <code class="font-mono text-xs text-foreground">telemetry/</code>, and <code class="font-mono text-xs text-foreground">workbench/</code>, bound to <code class="font-mono text-xs text-foreground">tokens.ts</code> and <code class="font-mono text-xs text-foreground">CONTROL_HEIGHTS</code>.
+			<p class="text-sm text-muted-foreground text-pretty">
+				39 Tier 1 primitives and workbench layouts in Mist + Teal OKLCH tokens.
 			</p>
 
 			{#snippet footer()}
 				<div class="flex items-center justify-between">
-					<span class="font-mono text-[11px] text-muted-foreground">Mist + Teal OKLCH profile</span>
+					<span class="font-mono text-[11px] text-muted-foreground">Mist + Teal OKLCH</span>
 					<Button variant="secondary" size="sm" href="/design">
 						<Palette size={14} />
 						<span>Explore Design System</span>

@@ -36,8 +36,34 @@ const currentPath = Astro.url.pathname;
 		>
 			Skip to content
 		</a>
-		<AdminShell client:load {currentPath} {fullViewport}>
-			<slot />
-		</AdminShell>
+		<div
+			data-slot="admin-shell"
+			class="relative flex h-dvh w-screen overflow-hidden bg-background text-foreground"
+		>
+			<AdminShell client:load {currentPath} {fullViewport} navOnly={true} />
+			<div class="flex-1 flex flex-col h-full min-w-0 overflow-hidden relative">
+				{
+					fullViewport ? (
+						<main
+							id="main-content"
+							tabindex="-1"
+							class="flex-1 size-full relative overflow-hidden p-0 m-0 bg-background"
+						>
+							<slot />
+						</main>
+					) : (
+						<main
+							id="main-content"
+							tabindex="-1"
+							class="flex-1 size-full overflow-y-auto bg-background md:pl-24"
+						>
+							<div class="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+								<slot />
+							</div>
+						</main>
+					)
+				}
+			</div>
+		</div>
 	</body>
 </html>

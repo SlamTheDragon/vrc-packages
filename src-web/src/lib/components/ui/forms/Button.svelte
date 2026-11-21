@@ -9,6 +9,8 @@
 		variant = 'primary',
 		size = 'md',
 		disabled = false,
+		busy = false,
+		ariaDisabled = false,
 		class: className = '',
 		type = 'button',
 		title,
@@ -21,6 +23,8 @@
 		variant?: ButtonVariant;
 		size?: ControlSize;
 		disabled?: boolean;
+		busy?: boolean;
+		ariaDisabled?: boolean;
 		class?: string;
 		type?: 'button' | 'submit' | 'reset';
 		title?: string;
@@ -32,7 +36,7 @@
 	} = $props();
 
 	const buttonVariants = tv({
-		base: 'inline-flex items-center justify-center font-medium transition-colors select-none cursor-pointer disabled:opacity-50 disabled:pointer-events-none',
+		base: 'inline-flex items-center justify-center font-medium select-none cursor-pointer active:scale-[0.96] transition-[transform,color,background-color,border-color,opacity,box-shadow] duration-100 ease-out disabled:opacity-50 disabled:pointer-events-none disabled:active:scale-100 aria-disabled:active:scale-100 aria-busy:active:scale-100',
 		variants: {
 			variant: COMPONENT_PRESETS.button,
 			size: {
@@ -55,7 +59,7 @@
 		href={disabled ? undefined : href}
 		{title}
 		aria-label={ariaLabel}
-		aria-disabled={disabled || undefined}
+		aria-disabled={disabled || ariaDisabled || undefined}
 		role={disabled ? 'link' : undefined}
 		tabindex={disabled ? -1 : undefined}
 		onclick={(event) => {
@@ -68,7 +72,7 @@
 		class={cn(
 			buttonVariants({ variant, size }),
 			'no-underline',
-			disabled && 'opacity-50 pointer-events-none',
+			disabled && 'opacity-50 pointer-events-none active:scale-100',
 			className
 		)}
 	>
@@ -78,12 +82,24 @@
 	<button
 		data-slot="button"
 		{type}
-		{disabled}
+		disabled={disabled || busy}
+		aria-busy={busy || undefined}
+		aria-disabled={ariaDisabled || disabled || busy || undefined}
 		{title}
 		aria-label={ariaLabel}
 		aria-expanded={ariaExpanded}
-		{onclick}
-		class={cn(buttonVariants({ variant, size }), className)}
+		onclick={(event) => {
+			if (disabled || busy) {
+				event.preventDefault();
+				return;
+			}
+			onclick?.(event);
+		}}
+		class={cn(
+			buttonVariants({ variant, size }),
+			ariaDisabled && !disabled && !busy && 'opacity-60 cursor-not-allowed',
+			className
+		)}
 	>
 		{@render children?.()}
 	</button>

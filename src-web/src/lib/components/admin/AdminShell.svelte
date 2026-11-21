@@ -21,10 +21,12 @@
 	let {
 		currentPath = '/',
 		fullViewport = false,
+		navOnly = false,
 		children
 	}: {
 		currentPath?: string;
 		fullViewport?: boolean;
+		navOnly?: boolean;
 		children?: Snippet;
 	} = $props();
 
@@ -90,8 +92,7 @@
 	}
 </script>
 
-<div data-slot="admin-shell" class="relative flex h-dvh w-screen overflow-hidden bg-background text-foreground">
-	<!-- Desktop Floating Side Navigation Island (collapsed by default, expands on hover) -->
+{#snippet desktopRail()}
 	<aside
 		data-slot="floating-nav-island"
 		data-expanded={sidebarExpanded}
@@ -191,64 +192,75 @@
 			{/if}
 		</div>
 	</aside>
+{/snippet}
 
-	<div class="flex-1 flex flex-col h-full min-w-0 overflow-hidden relative">
-		<div class="md:hidden fixed bottom-4 left-4 z-40">
-			<Button
-				variant="secondary"
-				size="md"
-				aria-label="Open navigation menu"
-				onclick={() => (mobileMenuOpen = true)}
-				class="size-11 px-0 rounded-2xl border-sidebar-border bg-sidebar/95 text-sidebar-foreground backdrop-blur-md shadow-2xl hover:bg-sidebar-accent"
-			>
-				<Menu size={18} />
-			</Button>
-		</div>
-
-		<Sheet
-			bind:open={mobileMenuOpen}
-			side="left"
-			title="VRC Packages"
-			description="Navigation menu"
-			class="bg-sidebar text-sidebar-foreground border-sidebar-border p-4"
+{#snippet mobileNav()}
+	<div class="md:hidden fixed bottom-4 left-4 z-40">
+		<Button
+			variant="secondary"
+			size="md"
+			aria-label="Open navigation menu"
+			onclick={() => (mobileMenuOpen = true)}
+			class="size-11 px-0 rounded-2xl border-sidebar-border bg-sidebar/95 text-sidebar-foreground backdrop-blur-md shadow-2xl hover:bg-sidebar-accent"
 		>
-			<div class="flex flex-col h-full justify-between gap-4">
-				<SidebarNav
-					label="Mobile navigation"
-					{activeId}
-					onselect={() => (mobileMenuOpen = false)}
-					groups={[
-						{ items: workspaceLinks, variant: 'primary' },
-						{ items: systemLinks, variant: 'secondary' }
-					]}
-				/>
-				<div class="p-3 border-t border-sidebar-border mt-auto flex flex-col gap-2">
-					<div class="flex items-center justify-between text-xs text-muted-foreground px-1">
-						<span>Session</span>
-						<Badge variant={adminSession.authenticated ? 'emerald' : 'neutral'} size="xs">
-							{adminSession.authenticated ? adminSession.role : 'guest'}
-						</Badge>
-					</div>
-					{#if adminSession.authenticated}
-						<Button variant="ghost" size="xs" onclick={handleSignOut} class="w-full justify-start text-destructive">
-							<LogOut size={13} />
-							<span>Sign Out</span>
-						</Button>
-					{/if}
-				</div>
-			</div>
-		</Sheet>
-
-		{#if fullViewport}
-			<main id="main-content" tabindex="-1" class="flex-1 size-full relative overflow-hidden p-0 m-0 bg-background">
-				{@render children?.()}
-			</main>
-		{:else}
-			<main id="main-content" tabindex="-1" class="flex-1 size-full overflow-y-auto bg-background md:pl-24">
-				<div class="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-					{@render children?.()}
-				</div>
-			</main>
-		{/if}
+			<Menu size={18} />
+		</Button>
 	</div>
-</div>
+
+	<Sheet
+		bind:open={mobileMenuOpen}
+		side="left"
+		title="VRC Packages"
+		description="Navigation menu"
+		class="bg-sidebar text-sidebar-foreground border-sidebar-border p-4"
+	>
+		<div class="flex flex-col h-full justify-between gap-4">
+			<SidebarNav
+				label="Mobile navigation"
+				{activeId}
+				onselect={() => (mobileMenuOpen = false)}
+				groups={[
+					{ items: workspaceLinks, variant: 'primary' },
+					{ items: systemLinks, variant: 'secondary' }
+				]}
+			/>
+			<div class="p-3 border-t border-sidebar-border mt-auto flex flex-col gap-2">
+				<div class="flex items-center justify-between text-xs text-muted-foreground px-1">
+					<span>Session</span>
+					<Badge variant={adminSession.authenticated ? 'emerald' : 'neutral'} size="xs">
+						{adminSession.authenticated ? adminSession.role : 'guest'}
+					</Badge>
+				</div>
+				{#if adminSession.authenticated}
+					<Button variant="ghost" size="xs" onclick={handleSignOut} class="w-full justify-start text-destructive">
+						<LogOut size={13} />
+						<span>Sign Out</span>
+					</Button>
+				{/if}
+			</div>
+		</div>
+	</Sheet>
+{/snippet}
+
+{#if navOnly}
+	{@render desktopRail()}
+	{@render mobileNav()}
+{:else}
+	<div data-slot="admin-shell" class="relative flex h-dvh w-screen overflow-hidden bg-background text-foreground">
+		{@render desktopRail()}
+		<div class="flex-1 flex flex-col h-full min-w-0 overflow-hidden relative">
+			{@render mobileNav()}
+			{#if fullViewport}
+				<main id="main-content" tabindex="-1" class="flex-1 size-full relative overflow-hidden p-0 m-0 bg-background">
+					{@render children?.()}
+				</main>
+			{:else}
+				<main id="main-content" tabindex="-1" class="flex-1 size-full overflow-y-auto bg-background md:pl-24">
+					<div class="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+						{@render children?.()}
+					</div>
+				</main>
+			{/if}
+		</div>
+	</div>
+{/if}
