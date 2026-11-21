@@ -8,7 +8,9 @@ import {
   encodeRuleCursor,
   encodeTakedownCursor,
   encodeDelegatedClaimCursor,
-  encodeOperatorAppCursor
+  encodeOperatorAppCursor,
+  encodeOperatorNodeCursor,
+  encodeOperatorJobCursor
 } from "../src/protocol/operator.ts";
 import { encodeCatalogCursor, encodeCatalogDeltaCursor } from "../src/protocol/catalog.ts";
 
@@ -18,17 +20,19 @@ test("SDK list queries reject invalid bounds, cursors and unknown fields without
     userToken: "fixture-user",
     fetch: Object.assign(async () => { calls++; throw new Error("Invalid query reached transport"); }, { preconnect() {} }) });
   const lists = [client.index.syncDeltas, client.user.apps.list, client.operator.leads.list,
-    client.operator.sourceProfiles.list, client.operator.autoQueueRules.list, client.operator.catalog.list,
-    client.operator.takedowns.list, client.operator.claims.list, client.operator.apps.list,
-    client.moderator.ratings.list, client.moderator.apps.list];
+    client.operator.sourceProfiles.list, client.operator.autoQueueRules.list, client.operator.nodes.list,
+    client.operator.jobs.list, client.operator.catalog.list, client.operator.takedowns.list,
+    client.operator.claims.list, client.operator.apps.list, client.moderator.ratings.list,
+    client.moderator.apps.list];
   for (const params of [{ limit: 0 }, { limit: 101 }, { limit: NaN }, { limit: 1.5 }, { limit: "10" }, { limit: "abc" },
     { extra: true }]) {
     for (const list of lists) await expect(list(params as never)).rejects.toThrow();
     expect(calls).toBe(0);
   }
   const cursorLists = [client.index.syncDeltas, client.operator.leads.list, client.operator.sourceProfiles.list,
-    client.operator.autoQueueRules.list, client.operator.catalog.list, client.operator.takedowns.list,
-    client.operator.claims.list, client.operator.apps.list, client.moderator.ratings.list, client.moderator.apps.list];
+    client.operator.autoQueueRules.list, client.operator.nodes.list, client.operator.jobs.list,
+    client.operator.catalog.list, client.operator.takedowns.list, client.operator.claims.list,
+    client.operator.apps.list, client.moderator.ratings.list, client.moderator.apps.list];
   for (const params of [{ cursor: "" }, { cursor: "invalid!" }, { cursor: "YWJj" }]) {
     for (const list of cursorLists) await expect(list(params as never)).rejects.toThrow();
     expect(calls).toBe(0);
@@ -38,6 +42,11 @@ test("SDK list queries reject invalid bounds, cursors and unknown fields without
   const cursor = encodeLeadCursor({ status: "approved", firstSeenAt: "2026-10-04T00:00:00.000Z", leadKey: "a".repeat(64) });
   await expect(client.operator.leads.list({ status: "rejected", cursor })).rejects.toThrow();
   await expect(client.operator.leads.list({ status: "invalid" } as never)).rejects.toThrow();
+  await expect(client.operator.nodes.list({ status: "invalid" } as never)).rejects.toThrow();
+  await expect(client.operator.nodes.list({ cursor: encodeOperatorJobCursor({ createdAt: "2026-10-04T00:00:00.000Z", jobId: "job-b1" }) })).rejects.toThrow();
+  await expect(client.operator.jobs.list({ state: "invalid" } as never)).rejects.toThrow();
+  await expect(client.operator.jobs.list({ platform: "invalid" } as never)).rejects.toThrow();
+  await expect(client.operator.jobs.list({ cursor: encodeOperatorNodeCursor({ nodeId: "node-1" }) })).rejects.toThrow();
   await expect(client.operator.takedowns.list({ requesterType: "invalid" } as never)).rejects.toThrow();
   await expect(client.operator.claims.list({ reviewStatus: "invalid" } as never)).rejects.toThrow();
   await expect(client.operator.apps.list({ candidateStatus: "invalid" } as never)).rejects.toThrow();
@@ -59,7 +68,9 @@ test("SDK list queries preserve opaque cursor bytes and route-specific defaults"
     encodeCatalogCursor({ createdAt: time, canonicalId: "CaseSensitive.Package" }),
     encodeTakedownCursor({ recordedAt: time, takedownId: id }),
     encodeDelegatedClaimCursor({ recordedAt: time, claimId: id }),
-    encodeOperatorAppCursor({ createdAt: time, appId: id })
+    encodeOperatorAppCursor({ createdAt: time, appId: id }),
+    encodeOperatorNodeCursor({ nodeId: "Node.1" }),
+    encodeOperatorJobCursor({ createdAt: time, jobId: "job-b1" })
   ];
   const actions = [
     () => client.index.syncDeltas({ cursor: cursors[0] }),
@@ -69,7 +80,9 @@ test("SDK list queries preserve opaque cursor bytes and route-specific defaults"
     () => client.operator.catalog.list({ cursor: cursors[4] }),
     () => client.operator.takedowns.list({ requesterType: "user", cursor: cursors[5] }),
     () => client.operator.claims.list({ reviewStatus: "pending", cursor: cursors[6] }),
-    () => client.operator.apps.list({ candidateStatus: "review_pending", cursor: cursors[7] })
+    () => client.operator.apps.list({ candidateStatus: "review_pending", cursor: cursors[7] }),
+    () => client.operator.nodes.list({ status: "active", cursor: cursors[8] }),
+    () => client.operator.jobs.list({ state: "leased", platform: "booth", cursor: cursors[9] })
   ];
   for (const invoke of actions) await expect(invoke()).rejects.toThrow(rejection.message);
   for (const [index, url] of urls.entries()) {
@@ -80,6 +93,9 @@ test("SDK list queries preserve opaque cursor bytes and route-specific defaults"
   expect(urls[5]!.searchParams.get("requesterType")).toBe("user");
   expect(urls[6]!.searchParams.get("reviewStatus")).toBe("pending");
   expect(urls[7]!.searchParams.get("candidateStatus")).toBe("review_pending");
+  expect(urls[8]!.searchParams.get("status")).toBe("active");
+  expect(urls[9]!.searchParams.get("state")).toBe("leased");
+  expect(urls[9]!.searchParams.get("platform")).toBe("booth");
 });
 
 test("SDK UUID paths and raw app cursors use lowercase without changing node IDs", async () => {

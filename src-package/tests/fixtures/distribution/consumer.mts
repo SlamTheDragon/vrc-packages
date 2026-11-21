@@ -6,7 +6,13 @@ import {
   type ReportSubmissionRequest,
   type DemandSignalReportRequest,
   type IssueReportRequest,
-  type RemovalReportRequest
+  type RemovalReportRequest,
+  type OperatorNodeRecord,
+  type OperatorNodeListQuery,
+  type OperatorNodeListResponse,
+  type OperatorJobRecord,
+  type OperatorJobListQuery,
+  type OperatorJobListResponse
 } from 'vrc-packages-api/protocol';
 import { type Platform } from 'vrc-packages-api/types';
 import { UmbrellaSchema } from 'vrc-packages-api/taxonomy';
@@ -99,3 +105,33 @@ async function checkNarrowedReportsAndQueryLimits(report: ReportSubmissionReques
   await client.moderator.apps.list({ limit: '10' });
 }
 void checkNarrowedReportsAndQueryLimits;
+
+async function checkOperatorListingTypes() {
+  const nodeQuery: OperatorNodeListQuery = { status: 'active', limit: 25 };
+  const nodePage: OperatorNodeListResponse = await client.operator.nodes.list(nodeQuery);
+  const firstNode: OperatorNodeRecord | undefined = nodePage.nodes[0];
+  if (firstNode) {
+    const id: string = firstNode.nodeId;
+    // @ts-expect-error Node list records never expose credential tokens.
+    void firstNode.token;
+    // @ts-expect-error Node list records never expose credential token hashes.
+    void firstNode.token_hash;
+    void id;
+  }
+  const jobQuery: OperatorJobListQuery = { state: 'leased', platform: 'booth', limit: 50 };
+  const jobPage: OperatorJobListResponse = await client.operator.jobs.list(jobQuery);
+  const firstJob: OperatorJobRecord | undefined = jobPage.jobs[0];
+  if (firstJob) {
+    const jid: string = firstJob.jobId;
+    // @ts-expect-error Crawl job list records never expose active lease secrets.
+    void firstJob.leaseId;
+    // @ts-expect-error Crawl job list records never expose active snake-case lease secrets.
+    void firstJob.lease_id;
+    void jid;
+  }
+  // @ts-expect-error Operator node list limits must be numbers, not strings.
+  await client.operator.nodes.list({ limit: '10' });
+  // @ts-expect-error Operator job list limits must be numbers, not strings.
+  await client.operator.jobs.list({ limit: '10' });
+}
+void checkOperatorListingTypes;

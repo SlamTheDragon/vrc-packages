@@ -12,7 +12,13 @@ import {
   RemovalReportRequestSchema,
   UserAppListQuerySchema,
   ModeratorRatingListQuerySchema,
-  ModeratorAppListQuerySchema
+  ModeratorAppListQuerySchema,
+  encodeOperatorNodeCursor,
+  decodeOperatorNodeCursor,
+  OperatorNodeListResponseSchema,
+  encodeOperatorJobCursor,
+  decodeOperatorJobCursor,
+  OperatorJobListResponseSchema
 } from 'vrc-packages-api/protocol';
 import { CatalogPackageSchema } from 'vrc-packages-api/types';
 import * as taxonomy from 'vrc-packages-api/taxonomy';
@@ -202,4 +208,10 @@ const lead = { lead_key: 'a'.repeat(64), kind: 'vpm_listing', target_url: 'https
 assert.deepEqual(LeadRowSchema.parse(lead), lead);
 assert.equal(LeadRowSchema.safeParse({ ...lead, leadKey: lead.lead_key }).success, false);
 for (const schema of [ApproveLeadSchema, RejectLeadSchema]) assert.equal(schema.safeParse({ schemaVersion: 1 }).success, false);
+const packedNodeCursor = encodeOperatorNodeCursor({ nodeId: 'packed-node-1' });
+assert.deepEqual(decodeOperatorNodeCursor(packedNodeCursor), { nodeId: 'packed-node-1' });
+const packedJobCursor = encodeOperatorJobCursor({ createdAt: '2026-10-04T00:00:00.000Z', jobId: 'job-b1' });
+assert.deepEqual(decodeOperatorJobCursor(packedJobCursor), { createdAt: '2026-10-04T00:00:00.000Z', jobId: 'job-b1' });
+assert.equal(OperatorNodeListResponseSchema.safeParse({ schemaVersion: 1, nodes: [], nextCursor: packedNodeCursor }).success, true);
+assert.equal(OperatorJobListResponseSchema.safeParse({ schemaVersion: 1, jobs: [], nextCursor: packedJobCursor }).success, true);
 console.log('packed_node_exports_passed');

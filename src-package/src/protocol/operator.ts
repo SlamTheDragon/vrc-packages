@@ -21,6 +21,11 @@ import {
 
 export const OPERATOR_PROTOCOL_VERSION = 1 as const;
 
+const OperatorPageQuerySchema = z.strictObject({
+  limit: z.number().int().min(1).max(100).default(100),
+  cursor: CursorTokenSchema.optional()
+});
+
 export const InitializeCoordinatorRequestSchema = z.strictObject({
   schemaVersion: z.literal(OPERATOR_PROTOCOL_VERSION),
   autoSeed: z.boolean().optional()
@@ -333,6 +338,117 @@ export const RevokeNodeResponseSchema = z.strictObject({
 export type RevokeNodeResponse = z.infer<typeof RevokeNodeResponseSchema>;
 
 /* -------------------------------------------------------------------------- */
+/* Operator Node Listing                                                      */
+/* -------------------------------------------------------------------------- */
+
+const OperatorJobIdSchema = z.string().min(1).max(120);
+
+export const OperatorNodeStatusSchema = z.enum(["active", "revoked"]);
+export type OperatorNodeStatus = z.infer<typeof OperatorNodeStatusSchema>;
+
+export const OperatorNodeHeartbeatStateSchema = z.enum(["idle", "fetching"]);
+export type OperatorNodeHeartbeatState = z.infer<typeof OperatorNodeHeartbeatStateSchema>;
+
+export const OperatorNodeRecordSchema = z.strictObject({
+  nodeId: IssueNodeCredentialSchema.shape.nodeId,
+  capabilities: z.array(PlatformSchema).min(1).max(PlatformSchema.options.length),
+  status: OperatorNodeStatusSchema,
+  revokedAt: CursorTimestampSchema.nullable(),
+  lastSeenAt: CursorTimestampSchema.nullable(),
+  heartbeatState: OperatorNodeHeartbeatStateSchema.nullable(),
+  activeJobId: OperatorJobIdSchema.nullable()
+});
+export type OperatorNodeRecord = z.infer<typeof OperatorNodeRecordSchema>;
+
+export const OperatorNodeCursorSchema = z.strictObject({
+  nodeId: IssueNodeCredentialSchema.shape.nodeId
+});
+export type OperatorNodeCursor = z.infer<typeof OperatorNodeCursorSchema>;
+
+export function encodeOperatorNodeCursor(cursor: OperatorNodeCursor): string {
+  return encodeCursor(OperatorNodeCursorSchema.parse(cursor));
+}
+
+export function decodeOperatorNodeCursor(value: string): OperatorNodeCursor | null {
+  return decodeCursor(value, OperatorNodeCursorSchema);
+}
+
+export const OperatorNodeListQuerySchema = OperatorPageQuerySchema.extend({
+  status: OperatorNodeStatusSchema.optional()
+}).refine(
+  (query) => query.cursor === undefined || decodeOperatorNodeCursor(query.cursor) !== null,
+  "Invalid node cursor"
+);
+export type OperatorNodeListQuery = z.infer<typeof OperatorNodeListQuerySchema>;
+
+export const OperatorNodeListResponseSchema = z.strictObject({
+  schemaVersion: z.literal(OPERATOR_PROTOCOL_VERSION),
+  nodes: z.array(OperatorNodeRecordSchema),
+  nextCursor: CursorTokenSchema.refine(
+    (value) => decodeOperatorNodeCursor(value) !== null,
+    "Invalid node cursor"
+  ).nullable()
+});
+export type OperatorNodeListResponse = z.infer<typeof OperatorNodeListResponseSchema>;
+
+/* -------------------------------------------------------------------------- */
+/* Operator Crawl Job Listing                                                 */
+/* -------------------------------------------------------------------------- */
+
+export const OperatorJobStateSchema = z.enum(["pending", "leased", "done", "backoff", "blocked"]);
+export type OperatorJobState = z.infer<typeof OperatorJobStateSchema>;
+
+export const OperatorJobRecordSchema = z.strictObject({
+  jobId: OperatorJobIdSchema,
+  platform: PlatformSchema,
+  url: z.string(),
+  origin: z.string(),
+  state: OperatorJobStateSchema,
+  purpose: SourcePurposeSchema,
+  nextFetchAt: CursorTimestampSchema,
+  claimedBy: IssueNodeCredentialSchema.shape.nodeId.nullable(),
+  leaseExpiresAt: CursorTimestampSchema.nullable(),
+  createdAt: CursorTimestampSchema,
+  robotsDeferredUntil: CursorTimestampSchema.nullable(),
+  sourceRuleId: z.string().uuid().nullable(),
+  leaseProfileId: z.string().uuid().nullable()
+});
+export type OperatorJobRecord = z.infer<typeof OperatorJobRecordSchema>;
+
+export const OperatorJobCursorSchema = z.strictObject({
+  createdAt: CursorTimestampSchema,
+  jobId: OperatorJobIdSchema
+});
+export type OperatorJobCursor = z.infer<typeof OperatorJobCursorSchema>;
+
+export function encodeOperatorJobCursor(cursor: OperatorJobCursor): string {
+  return encodeCursor(OperatorJobCursorSchema.parse(cursor));
+}
+
+export function decodeOperatorJobCursor(value: string): OperatorJobCursor | null {
+  return decodeCursor(value, OperatorJobCursorSchema);
+}
+
+export const OperatorJobListQuerySchema = OperatorPageQuerySchema.extend({
+  state: OperatorJobStateSchema.optional(),
+  platform: PlatformSchema.optional()
+}).refine(
+  (query) => query.cursor === undefined || decodeOperatorJobCursor(query.cursor) !== null,
+  "Invalid job cursor"
+);
+export type OperatorJobListQuery = z.infer<typeof OperatorJobListQuerySchema>;
+
+export const OperatorJobListResponseSchema = z.strictObject({
+  schemaVersion: z.literal(OPERATOR_PROTOCOL_VERSION),
+  jobs: z.array(OperatorJobRecordSchema),
+  nextCursor: CursorTokenSchema.refine(
+    (value) => decodeOperatorJobCursor(value) !== null,
+    "Invalid job cursor"
+  ).nullable()
+});
+export type OperatorJobListResponse = z.infer<typeof OperatorJobListResponseSchema>;
+
+/* -------------------------------------------------------------------------- */
 /* Operator Catalog Page                                                      */
 /* -------------------------------------------------------------------------- */
 
@@ -399,10 +515,6 @@ export const VerifyTakedownResponseSchema = z.strictObject({
 });
 export type VerifyTakedownResponse = z.infer<typeof VerifyTakedownResponseSchema>;
 
-const OperatorPageQuerySchema = z.strictObject({
-  limit: z.number().int().min(1).max(100).default(100),
-  cursor: CursorTokenSchema.optional()
-});
 export const OperatorLeadListQuerySchema = OperatorPageQuerySchema.extend({
   status: LeadStatusSchema.default("pending_review")
 }).refine(query => query.cursor === undefined || decodeLeadCursor(query.cursor, query.status) !== null, "Invalid lead cursor");

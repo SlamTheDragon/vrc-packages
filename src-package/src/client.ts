@@ -106,6 +106,16 @@ import {
   type VerifyTakedownResponse,
   VerifyTakedownResponseSchema
 } from "./protocol/operator.ts";
+import {
+  type OperatorNodeStatus,
+  OperatorNodeListQuerySchema,
+  OperatorNodeListResponseSchema,
+  type OperatorNodeListResponse,
+  type OperatorJobState,
+  OperatorJobListQuerySchema,
+  OperatorJobListResponseSchema,
+  type OperatorJobListResponse
+} from "./protocol/index.ts";
 
 export const MAX_SDK_ERROR_BYTES = 64 * 1024;
 export const MAX_SDK_SUCCESS_BYTES = 4 * 1024 * 1024;
@@ -438,6 +448,27 @@ export class VRCPackageClient {
 
   readonly operator = {
     jobs: {
+      /**
+       * Lists operator crawl jobs with optional state and platform filters (GET /v1/operator/jobs).
+       */
+      list: async (params: {
+        state?: OperatorJobState;
+        platform?: Platform;
+        limit?: number;
+        cursor?: string;
+      } = {}): Promise<OperatorJobListResponse> => {
+        const query = OperatorJobListQuerySchema.parse(params);
+        const res = await this.request<unknown>("/v1/operator/jobs", "GET", {
+          auth: "operator",
+          queryParams: {
+            state: query.state,
+            platform: query.platform,
+            limit: query.limit,
+            cursor: query.cursor
+          }
+        });
+        return OperatorJobListResponseSchema.parse(res);
+      },
       /** Record a crawl candidate. Existing jobs keep their state and lease. */
       enqueue: async (request: EnqueueJobRequest): Promise<EnqueueJobResponse> => {
         const body = EnqueueJobRequestSchema.parse(request);
@@ -584,6 +615,25 @@ export class VRCPackageClient {
     },
 
     nodes: {
+      /**
+       * Lists registered crawler nodes and current heartbeat status (GET /v1/operator/nodes).
+       */
+      list: async (params: {
+        status?: OperatorNodeStatus;
+        limit?: number;
+        cursor?: string;
+      } = {}): Promise<OperatorNodeListResponse> => {
+        const query = OperatorNodeListQuerySchema.parse(params);
+        const res = await this.request<unknown>("/v1/operator/nodes", "GET", {
+          auth: "operator",
+          queryParams: {
+            status: query.status,
+            limit: query.limit,
+            cursor: query.cursor
+          }
+        });
+        return OperatorNodeListResponseSchema.parse(res);
+      },
       /** Revoke credentials without releasing a possibly in-flight origin reservation. */
       revoke: async (nodeId: string, reason: string): Promise<RevokeNodeResponse> => {
         RevokeNodeResponseSchema.shape.nodeId.parse(nodeId);

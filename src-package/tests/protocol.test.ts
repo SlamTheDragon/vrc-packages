@@ -40,6 +40,21 @@ import {
   decodeRuleCursor,
   IssueNodeCredentialSchema,
   NodeCredentialResponseSchema,
+  OperatorNodeStatusSchema,
+  OperatorNodeHeartbeatStateSchema,
+  OperatorNodeRecordSchema,
+  OperatorNodeCursorSchema,
+  encodeOperatorNodeCursor,
+  decodeOperatorNodeCursor,
+  OperatorNodeListQuerySchema,
+  OperatorNodeListResponseSchema,
+  OperatorJobStateSchema,
+  OperatorJobRecordSchema,
+  OperatorJobCursorSchema,
+  encodeOperatorJobCursor,
+  decodeOperatorJobCursor,
+  OperatorJobListQuerySchema,
+  OperatorJobListResponseSchema,
   encodeTakedownCursor,
   decodeTakedownCursor,
   VerifyTakedownRequestSchema,
@@ -700,5 +715,205 @@ describe("src-package wire protocols", () => {
       adjustedBy: "mod-user-1",
       updatedAt: "2026-10-01T12:00:00.000Z"
     })).not.toThrow();
+  });
+
+  it("validates operator node listing schemas, cursors, and strict secret exclusion", () => {
+    const activeWithHeartbeat = {
+      nodeId: "worker-node-1",
+      capabilities: ["vpm", "github"] as ("vpm" | "github")[],
+      status: "active" as const,
+      revokedAt: null,
+      lastSeenAt: "2026-10-01T12:00:00.000Z",
+      heartbeatState: "fetching" as const,
+      activeJobId: "job-b1"
+    };
+    const activeLongJobId = {
+      ...activeWithHeartbeat,
+      nodeId: "worker-node-2",
+      heartbeatState: "idle" as const,
+      activeJobId: "j".repeat(120)
+    };
+    const activeNoHeartbeat = {
+      nodeId: "worker-node-3",
+      capabilities: ["booth"] as ("booth")[],
+      status: "active" as const,
+      revokedAt: null,
+      lastSeenAt: null,
+      heartbeatState: null,
+      activeJobId: null
+    };
+    const revokedNode = {
+      nodeId: "worker-node-4",
+      capabilities: ["vpm"] as ("vpm")[],
+      status: "revoked" as const,
+      revokedAt: "2026-10-02T00:00:00.000Z",
+      lastSeenAt: "2026-10-01T23:55:00.000Z",
+      heartbeatState: null,
+      activeJobId: null
+    };
+
+    expect(OperatorNodeStatusSchema.parse("active")).toBe("active");
+    expect(OperatorNodeStatusSchema.parse("revoked")).toBe("revoked");
+    expect(OperatorNodeHeartbeatStateSchema.parse("idle")).toBe("idle");
+    expect(OperatorNodeHeartbeatStateSchema.parse("fetching")).toBe("fetching");
+
+    for (const row of [activeWithHeartbeat, activeLongJobId, activeNoHeartbeat, revokedNode]) {
+      expect(OperatorNodeRecordSchema.parse(row)).toEqual(row);
+    }
+
+    for (const invalid of [
+      { ...activeWithHeartbeat, token: "vrcp_" + "a".repeat(68) },
+      { ...activeWithHeartbeat, token_hash: "b".repeat(64) },
+      { ...activeWithHeartbeat, extra: true },
+      { ...activeWithHeartbeat, activeJobId: "" },
+      { ...activeWithHeartbeat, activeJobId: "j".repeat(121) },
+      { ...activeWithHeartbeat, status: "offline" },
+      { ...activeWithHeartbeat, heartbeatState: "running" },
+      { ...activeWithHeartbeat, capabilities: [] },
+      { ...activeWithHeartbeat, nodeId: "." },
+      { ...activeWithHeartbeat, nodeId: ".." }
+    ]) {
+      expect(OperatorNodeRecordSchema.safeParse(invalid).success).toBe(false);
+    }
+
+    const nodeCursor = { nodeId: "worker-node-1" };
+    const encodedNodeCursor = encodeOperatorNodeCursor(nodeCursor);
+    expect(decodeOperatorNodeCursor(encodedNodeCursor)).toEqual(nodeCursor);
+    expect(decodeOperatorNodeCursor("invalid-node-cursor")).toBeNull();
+    const tamperedNodeCursor = btoa(JSON.stringify({ nodeId: "worker-node-1", extra: true }))
+      .replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
+    expect(decodeOperatorNodeCursor(tamperedNodeCursor)).toBeNull();
+    const dotNodeCursor = btoa(JSON.stringify({ nodeId: ".." }))
+      .replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
+    expect(OperatorNodeCursorSchema.safeParse({ nodeId: ".." }).success).toBe(false);
+    expect(decodeOperatorNodeCursor(dotNodeCursor)).toBeNull();
+
+    expect(OperatorNodeListQuerySchema.parse({})).toEqual({ limit: 100 });
+    expect(OperatorNodeListQuerySchema.parse({ status: "revoked", limit: 25, cursor: encodedNodeCursor })).toEqual({
+      status: "revoked",
+      limit: 25,
+      cursor: encodedNodeCursor
+    });
+    expect(OperatorNodeListQuerySchema.safeParse({ cursor: tamperedNodeCursor }).success).toBe(false);
+    expect(OperatorNodeListQuerySchema.safeParse({ extra: true }).success).toBe(false);
+
+    expect(OperatorNodeListResponseSchema.parse({
+      schemaVersion: 1,
+      nodes: [activeWithHeartbeat, activeNoHeartbeat, revokedNode],
+      nextCursor: encodedNodeCursor
+    }).nodes).toHaveLength(3);
+    expect(OperatorNodeListResponseSchema.safeParse({
+      schemaVersion: 1,
+      nodes: [{ ...activeWithHeartbeat, token_hash: "c".repeat(64) }],
+      nextCursor: null
+    }).success).toBe(false);
+    expect(OperatorNodeListResponseSchema.safeParse({
+      schemaVersion: 1,
+      nodes: [],
+      nextCursor: tamperedNodeCursor
+    }).success).toBe(false);
+  });
+
+  it("validates operator crawl job listing schemas, cursors, and strict lease-id exclusion", () => {
+    const ruleId = "123e4567-e89b-12d3-a456-426614174000";
+    const profileId = "123e4567-e89b-12d3-a456-426614174001";
+    const legacyJob = {
+      jobId: "job-b1",
+      platform: "booth" as const,
+      url: "https://booth.pm/ja/items/12345",
+      origin: "https://booth.pm",
+      state: "leased" as const,
+      purpose: "metadata" as const,
+      nextFetchAt: "2026-10-01T12:00:00.000Z",
+      claimedBy: "worker-node-1",
+      leaseExpiresAt: "2026-10-01T12:02:00.000Z",
+      createdAt: "2026-10-01T11:55:00.000Z",
+      robotsDeferredUntil: null,
+      sourceRuleId: null,
+      leaseProfileId: profileId
+    };
+    const uuidJob = {
+      jobId: "123e4567-e89b-12d3-a456-426614174099",
+      platform: "vpm" as const,
+      url: "https://vpm.example.com/index.json",
+      origin: "https://vpm.example.com",
+      state: "pending" as const,
+      purpose: "discovery" as const,
+      nextFetchAt: "2026-10-01T12:05:00.000Z",
+      claimedBy: null,
+      leaseExpiresAt: null,
+      createdAt: "2026-10-01T11:56:00.000Z",
+      robotsDeferredUntil: "2026-10-01T12:10:00.000Z",
+      sourceRuleId: ruleId,
+      leaseProfileId: null
+    };
+
+    for (const state of ["pending", "leased", "done", "backoff", "blocked"] as const) {
+      expect(OperatorJobStateSchema.parse(state)).toBe(state);
+    }
+    expect(OperatorJobRecordSchema.parse(legacyJob)).toEqual(legacyJob);
+    expect(OperatorJobRecordSchema.parse(uuidJob)).toEqual(uuidJob);
+    expect(OperatorJobRecordSchema.parse({ ...legacyJob, jobId: "k".repeat(120) }).jobId).toHaveLength(120);
+
+    for (const invalid of [
+      { ...legacyJob, leaseId: "lease-1" },
+      { ...legacyJob, lease_id: "lease-1" },
+      { ...legacyJob, extra: true },
+      { ...legacyJob, jobId: "" },
+      { ...legacyJob, jobId: "k".repeat(121) },
+      { ...legacyJob, state: "queued" },
+      { ...legacyJob, platform: "unknown" },
+      { ...legacyJob, purpose: "crawl" },
+      { ...legacyJob, sourceRuleId: "not-a-uuid" },
+      { ...legacyJob, leaseProfileId: "not-a-uuid" },
+      { ...legacyJob, claimedBy: ".." }
+    ]) {
+      expect(OperatorJobRecordSchema.safeParse(invalid).success).toBe(false);
+    }
+
+    const jobCursor = { createdAt: "2026-10-01T11:55:00.000Z", jobId: "job-b1" };
+    const encodedJobCursor = encodeOperatorJobCursor(jobCursor);
+    expect(decodeOperatorJobCursor(encodedJobCursor)).toEqual(jobCursor);
+    expect(decodeOperatorJobCursor("invalid-job-cursor")).toBeNull();
+    const tamperedJobCursor = btoa(JSON.stringify({ createdAt: "2026-10-01T11:55:00.000Z", jobId: "job-b1", extra: true }))
+      .replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
+    expect(decodeOperatorJobCursor(tamperedJobCursor)).toBeNull();
+    expect(OperatorJobCursorSchema.safeParse({ createdAt: "bad-date", jobId: "job-b1" }).success).toBe(false);
+
+    expect(OperatorJobListQuerySchema.parse({})).toEqual({ limit: 100 });
+    expect(OperatorJobListQuerySchema.parse({
+      state: "leased",
+      platform: "booth",
+      limit: 50,
+      cursor: encodedJobCursor
+    })).toEqual({
+      state: "leased",
+      platform: "booth",
+      limit: 50,
+      cursor: encodedJobCursor
+    });
+    expect(OperatorJobListQuerySchema.safeParse({ cursor: tamperedJobCursor }).success).toBe(false);
+    expect(OperatorJobListQuerySchema.safeParse({ extra: true }).success).toBe(false);
+
+    expect(OperatorJobListResponseSchema.parse({
+      schemaVersion: 1,
+      jobs: [legacyJob, uuidJob],
+      nextCursor: encodedJobCursor
+    }).jobs).toHaveLength(2);
+    expect(OperatorJobListResponseSchema.safeParse({
+      schemaVersion: 1,
+      jobs: [{ ...legacyJob, leaseId: "lease-secret" }],
+      nextCursor: null
+    }).success).toBe(false);
+    expect(OperatorJobListResponseSchema.safeParse({
+      schemaVersion: 1,
+      jobs: [{ ...legacyJob, lease_id: "lease-secret" }],
+      nextCursor: null
+    }).success).toBe(false);
+    expect(OperatorJobListResponseSchema.safeParse({
+      schemaVersion: 1,
+      jobs: [],
+      nextCursor: tamperedJobCursor
+    }).success).toBe(false);
   });
 });

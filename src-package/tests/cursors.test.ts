@@ -31,7 +31,13 @@ const families = [
     query: sdk.OperatorClaimListQuerySchema, response: sdk.DelegatedClaimListResponseSchema, body: { records: [] } },
   { value: { createdAt: time, appId: id },
     encode: sdk.encodeOperatorAppCursor, decode: sdk.decodeOperatorAppCursor,
-    query: sdk.OperatorAppListQuerySchema, response: sdk.OperatorAppListResponseSchema, body: { apps: [] } }
+    query: sdk.OperatorAppListQuerySchema, response: sdk.OperatorAppListResponseSchema, body: { apps: [] } },
+  { value: { nodeId: "node-1" },
+    encode: sdk.encodeOperatorNodeCursor, decode: sdk.decodeOperatorNodeCursor,
+    query: sdk.OperatorNodeListQuerySchema, response: sdk.OperatorNodeListResponseSchema, body: { nodes: [] } },
+  { value: { createdAt: time, jobId: "界".repeat(120) },
+    encode: sdk.encodeOperatorJobCursor, decode: sdk.decodeOperatorJobCursor,
+    query: sdk.OperatorJobListQuerySchema, response: sdk.OperatorJobListResponseSchema, body: { jobs: [] } }
 ] as const;
 
 describe("bounded UTF-8 pagination contracts", () => {
@@ -113,5 +119,17 @@ describe("bounded UTF-8 pagination contracts", () => {
     expect((await client.index.query({ cursor })).nextCursor).toBe(cursor);
     expect((await client.index.search({ queryOrigin: "user_authored", cursor })).nextCursor).toBe(cursor);
     expect(requests).toHaveLength(2);
+  });
+
+  test("operator node and job cursors enforce identifier bounds and reject tampering", () => {
+    const jobCursor = sdk.encodeOperatorJobCursor({ createdAt: time, jobId: "job-b1" });
+    expect(sdk.decodeOperatorJobCursor(jobCursor)).toEqual({ createdAt: time, jobId: "job-b1" });
+    expect(() => sdk.encodeOperatorJobCursor({ createdAt: time, jobId: "x".repeat(121) })).toThrow();
+    expect(() => sdk.encodeOperatorJobCursor({ createdAt: time, jobId: "" })).toThrow();
+
+    const nodeCursor = sdk.encodeOperatorNodeCursor({ nodeId: "Node.1" });
+    expect(sdk.decodeOperatorNodeCursor(nodeCursor)).toEqual({ nodeId: "Node.1" });
+    expect(() => sdk.encodeOperatorNodeCursor({ nodeId: ".." })).toThrow();
+    expect(() => sdk.encodeOperatorNodeCursor({ nodeId: "node_界" })).toThrow();
   });
 });

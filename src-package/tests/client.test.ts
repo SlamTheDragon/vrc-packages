@@ -1,6 +1,11 @@
 import { describe, it, expect } from "bun:test";
 import { VRCPackageClient, VRCPApiError } from "../src/client.ts";
-import { encodeLeadCursor, decodeLeadCursor } from "../src/protocol/operator.ts";
+import {
+  encodeLeadCursor,
+  decodeLeadCursor,
+  encodeOperatorNodeCursor,
+  encodeOperatorJobCursor
+} from "../src/protocol/operator.ts";
 import { encodeCatalogCursor } from "../src/types/package.ts";
 import { encodeCatalogDeltaCursor } from "../src/protocol/catalog.ts";
 
@@ -662,6 +667,206 @@ describe("VRCPackageClient SDK", () => {
     expect(catalogRes.packages[0]?.displayName).toBe("Operator Monitored Package");
   });
 
+  it("exercises operator nodes list with filtering, cursors, and strict schema validation", async () => {
+    const requests: Array<{ url: string; method: string; auth: string | null }> = [];
+    const cursor = encodeOperatorNodeCursor({ nodeId: "node-alpha" });
+    const nextCursor = encodeOperatorNodeCursor({ nodeId: "node-beta" });
+    let returnExtraSecret = false;
+
+    const client = new VRCPackageClient({
+      baseUrl: "https://api.vrc-packages.example",
+      operatorToken: dummyOperatorToken,
+      fetch: createMockFetch(async (input, init) => {
+        const req = new Request(input, init);
+        requests.push({
+          url: req.url,
+          method: req.method,
+          auth: req.headers.get("Authorization")
+        });
+        if (returnExtraSecret) {
+          return Response.json({
+            schemaVersion: 1,
+            nodes: [
+              {
+                nodeId: "node-secret",
+                capabilities: ["vpm"],
+                status: "active",
+                revokedAt: null,
+                lastSeenAt: null,
+                heartbeatState: null,
+                activeJobId: null,
+                token_hash: "a".repeat(64)
+              }
+            ],
+            nextCursor: null
+          });
+        }
+        return Response.json({
+          schemaVersion: 1,
+          nodes: [
+            {
+              nodeId: "node-alpha",
+              capabilities: ["vpm", "booth"],
+              status: "active",
+              revokedAt: null,
+              lastSeenAt: "2026-10-01T12:00:00.000Z",
+              heartbeatState: "fetching",
+              activeJobId: "job-b1"
+            },
+            {
+              nodeId: "node-beta",
+              capabilities: ["github"],
+              status: "revoked",
+              revokedAt: "2026-10-02T00:00:00.000Z",
+              lastSeenAt: null,
+              heartbeatState: null,
+              activeJobId: null
+            }
+          ],
+          nextCursor
+        });
+      })
+    });
+
+    const filteredRes = await client.operator.nodes.list({ status: "active", limit: 25, cursor });
+    expect(requests[0]?.method).toBe("GET");
+    expect(requests[0]?.auth).toBe(`Bearer ${dummyOperatorToken}`);
+    const firstUrl = new URL(requests[0]!.url);
+    expect(firstUrl.pathname).toBe("/v1/operator/nodes");
+    expect(firstUrl.searchParams.get("status")).toBe("active");
+    expect(firstUrl.searchParams.get("limit")).toBe("25");
+    expect(firstUrl.searchParams.get("cursor")).toBe(cursor);
+    expect(filteredRes.nodes).toHaveLength(2);
+    expect(filteredRes.nodes[0]?.activeJobId).toBe("job-b1");
+    expect(filteredRes.nodes[1]?.revokedAt).toBe("2026-10-02T00:00:00.000Z");
+    expect(filteredRes.nextCursor).toBe(nextCursor);
+
+    const defaultRes = await client.operator.nodes.list();
+    const secondUrl = new URL(requests[1]!.url);
+    expect(secondUrl.searchParams.get("limit")).toBe("100");
+    expect(secondUrl.searchParams.has("status")).toBe(false);
+    expect(secondUrl.searchParams.has("cursor")).toBe(false);
+    expect(defaultRes.nodes).toHaveLength(2);
+
+    returnExtraSecret = true;
+    await expect(client.operator.nodes.list()).rejects.toThrow();
+  });
+
+  it("exercises operator jobs list with state, platform, cursors, and strict schema validation", async () => {
+    const requests: Array<{ url: string; method: string; auth: string | null }> = [];
+    const cursor = encodeOperatorJobCursor({ createdAt: "2026-10-01T10:00:00.000Z", jobId: "job-b1" });
+    const nextCursor = encodeOperatorJobCursor({
+      createdAt: "2026-10-01T10:05:00.000Z",
+      jobId: "123e4567-e89b-12d3-a456-426614174000"
+    });
+    const ruleId = "123e4567-e89b-12d3-a456-426614174010";
+    const profileId = "123e4567-e89b-12d3-a456-426614174011";
+    let returnLeaseId = false;
+
+    const client = new VRCPackageClient({
+      baseUrl: "https://api.vrc-packages.example",
+      operatorToken: dummyOperatorToken,
+      fetch: createMockFetch(async (input, init) => {
+        const req = new Request(input, init);
+        requests.push({
+          url: req.url,
+          method: req.method,
+          auth: req.headers.get("Authorization")
+        });
+        if (returnLeaseId) {
+          return Response.json({
+            schemaVersion: 1,
+            jobs: [
+              {
+                jobId: "job-b1",
+                platform: "booth",
+                url: "https://booth.pm/ja/items/12345",
+                origin: "https://booth.pm",
+                state: "leased",
+                purpose: "metadata",
+                nextFetchAt: "2026-10-01T10:00:00.000Z",
+                claimedBy: "node-alpha",
+                leaseExpiresAt: "2026-10-01T10:02:00.000Z",
+                createdAt: "2026-10-01T09:55:00.000Z",
+                robotsDeferredUntil: null,
+                sourceRuleId: null,
+                leaseProfileId: profileId,
+                leaseId: "should-never-leak"
+              }
+            ],
+            nextCursor: null
+          });
+        }
+        return Response.json({
+          schemaVersion: 1,
+          jobs: [
+            {
+              jobId: "job-b1",
+              platform: "booth",
+              url: "https://booth.pm/ja/items/12345",
+              origin: "https://booth.pm",
+              state: "leased",
+              purpose: "metadata",
+              nextFetchAt: "2026-10-01T10:00:00.000Z",
+              claimedBy: "node-alpha",
+              leaseExpiresAt: "2026-10-01T10:02:00.000Z",
+              createdAt: "2026-10-01T09:55:00.000Z",
+              robotsDeferredUntil: null,
+              sourceRuleId: null,
+              leaseProfileId: profileId
+            },
+            {
+              jobId: "123e4567-e89b-12d3-a456-426614174000",
+              platform: "vpm",
+              url: "https://vpm.example.com/index.json",
+              origin: "https://vpm.example.com",
+              state: "pending",
+              purpose: "discovery",
+              nextFetchAt: "2026-10-01T10:05:00.000Z",
+              claimedBy: null,
+              leaseExpiresAt: null,
+              createdAt: "2026-10-01T10:00:00.000Z",
+              robotsDeferredUntil: "2026-10-01T10:15:00.000Z",
+              sourceRuleId: ruleId,
+              leaseProfileId: null
+            }
+          ],
+          nextCursor
+        });
+      })
+    });
+
+    const filteredRes = await client.operator.jobs.list({
+      state: "leased",
+      platform: "booth",
+      limit: 20,
+      cursor
+    });
+    expect(requests[0]?.method).toBe("GET");
+    expect(requests[0]?.auth).toBe(`Bearer ${dummyOperatorToken}`);
+    const firstUrl = new URL(requests[0]!.url);
+    expect(firstUrl.pathname).toBe("/v1/operator/jobs");
+    expect(firstUrl.searchParams.get("state")).toBe("leased");
+    expect(firstUrl.searchParams.get("platform")).toBe("booth");
+    expect(firstUrl.searchParams.get("limit")).toBe("20");
+    expect(firstUrl.searchParams.get("cursor")).toBe(cursor);
+    expect(filteredRes.jobs).toHaveLength(2);
+    expect(filteredRes.jobs[0]?.jobId).toBe("job-b1");
+    expect(filteredRes.jobs[1]?.sourceRuleId).toBe(ruleId);
+    expect(filteredRes.nextCursor).toBe(nextCursor);
+
+    const defaultRes = await client.operator.jobs.list();
+    const secondUrl = new URL(requests[1]!.url);
+    expect(secondUrl.searchParams.get("limit")).toBe("100");
+    expect(secondUrl.searchParams.has("state")).toBe(false);
+    expect(secondUrl.searchParams.has("platform")).toBe(false);
+    expect(secondUrl.searchParams.has("cursor")).toBe(false);
+    expect(defaultRes.jobs).toHaveLength(2);
+
+    returnLeaseId = true;
+    await expect(client.operator.jobs.list()).rejects.toThrow();
+  });
+
   it("exercises operator takedowns: list and verify", async () => {
     const takedownId = crypto.randomUUID();
     const mockTakedown = {
@@ -899,6 +1104,8 @@ describe("VRCPackageClient SDK", () => {
     });
 
     await expect(client.operator.leads.list()).rejects.toThrow(VRCPApiError);
+    await expect(client.operator.nodes.list()).rejects.toThrow(VRCPApiError);
+    await expect(client.operator.jobs.list()).rejects.toThrow(VRCPApiError);
     await expect(client.operator.sourceProfiles.list()).rejects.toThrow(VRCPApiError);
     await expect(client.operator.autoQueueRules.list()).rejects.toThrow(VRCPApiError);
     await expect(client.operator.catalog.list()).rejects.toThrow(VRCPApiError);
