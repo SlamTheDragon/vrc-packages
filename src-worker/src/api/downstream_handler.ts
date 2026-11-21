@@ -35,8 +35,7 @@ function json(body: unknown, status = 200): Response {
     status,
     headers: {
       "Content-Type": "application/json; charset=utf-8",
-      "Cache-Control": "no-store",
-      "Access-Control-Allow-Origin": "*"
+      "Cache-Control": "no-store"
     }
   });
 }
@@ -197,7 +196,6 @@ export async function handleDownstreamRequest(
       metadata: {
         ...data.metadata,
         reportType: data.reportType,
-        reportKind: data.reportKind,
         canonicalId: data.canonicalId,
         ...(data.reason !== undefined ? { reason: data.reason } : {})
       }

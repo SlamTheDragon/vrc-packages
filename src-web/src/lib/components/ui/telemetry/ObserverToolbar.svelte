@@ -19,14 +19,14 @@
 	} = $props();
 </script>
 
-<div class="inline-flex items-center gap-1 p-1 bg-white border border-slate-200 rounded-xl shadow-sm {className}">
+<div class="inline-flex items-center gap-1 p-1 bg-slate-900 border border-slate-800 rounded-xl shadow-sm {className}">
 	<Button variant="ghost" size="xs" onclick={onZoomIn} title="Zoom In" aria-label="Zoom In">
 		<ZoomIn size={14} />
 	</Button>
 	<Button variant="ghost" size="xs" onclick={onZoomOut} title="Zoom Out" aria-label="Zoom Out">
 		<ZoomOut size={14} />
 	</Button>
-	<div class="w-px h-4 bg-slate-200 mx-0.5"></div>
+	<div class="w-px h-4 bg-slate-800 mx-0.5"></div>
 	<Button variant="ghost" size="xs" onclick={onReset} title="Reset View" aria-label="Reset View">
 		<RotateCcw size={14} />
 	</Button>

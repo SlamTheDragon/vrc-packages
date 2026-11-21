@@ -78,8 +78,8 @@
 		{onkeydown}
 		class="{COMPONENT_PRESETS.input.base} {heightClass} {sizePaddings[size]} w-full
 			{leftIcon ? 'pl-9' : ''} {rightIcon ? 'pr-9' : ''}
-			{error ? 'border-red-500 focus:border-red-600 focus:ring-red-600' : ''}
-			{disabled ? 'bg-slate-100 text-slate-400 cursor-not-allowed border-slate-200' : ''}
+			{error ? 'border-red-500 focus:border-red-500 focus:ring-red-500' : ''}
+			{disabled ? 'bg-slate-900 text-slate-500 cursor-not-allowed border-slate-800' : ''}
 			{className}"
 	/>
 

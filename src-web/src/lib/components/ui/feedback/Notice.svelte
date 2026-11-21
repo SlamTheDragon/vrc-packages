@@ -15,17 +15,17 @@
 	} = $props();
 
 	const variantStyles = {
-		info: 'bg-sky-50 text-sky-900 border-sky-200',
-		success: 'bg-emerald-50 text-emerald-900 border-emerald-200',
-		warning: 'bg-amber-50 text-amber-900 border-amber-200',
-		danger: 'bg-red-50 text-red-900 border-red-200'
+		info: 'bg-sky-950/50 text-sky-200 border-sky-800/70',
+		success: 'bg-emerald-950/50 text-emerald-200 border-emerald-800/70',
+		warning: 'bg-amber-950/50 text-amber-200 border-amber-800/70',
+		danger: 'bg-red-950/50 text-red-200 border-red-800/70'
 	};
 
 	const iconStyles = {
-		info: 'text-sky-600',
-		success: 'text-emerald-600',
-		warning: 'text-amber-600',
-		danger: 'text-red-600'
+		info: 'text-sky-400',
+		success: 'text-emerald-400',
+		warning: 'text-amber-400',
+		danger: 'text-red-400'
 	};
 </script>
 

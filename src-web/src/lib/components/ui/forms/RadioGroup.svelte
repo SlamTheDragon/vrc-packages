@@ -46,17 +46,17 @@
 				class="sr-only"
 			/>
 			<div
-				class="h-4 w-4 rounded-full border bg-white flex items-center justify-center transition-colors shadow-2xs
-					{isSelected ? 'border-emerald-600' : 'border-slate-300'}"
+				class="h-4 w-4 rounded-full border bg-slate-950 flex items-center justify-center transition-colors shadow-2xs
+					{isSelected ? 'border-emerald-500' : 'border-slate-600'}"
 			>
 				{#if isSelected}
-					<div class="h-2 w-2 rounded-full bg-emerald-600"></div>
+					<div class="h-2 w-2 rounded-full bg-emerald-500"></div>
 				{/if}
 			</div>
 			<div class="flex flex-col">
-				<span class="text-sm font-medium text-slate-700">{opt.label}</span>
+				<span class="text-sm font-medium text-slate-200">{opt.label}</span>
 				{#if opt.description}
-					<span class="text-xs text-slate-500">{opt.description}</span>
+					<span class="text-xs text-slate-400">{opt.description}</span>
 				{/if}
 			</div>
 		</label>

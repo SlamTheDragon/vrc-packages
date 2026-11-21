@@ -39,10 +39,10 @@
 	<Primitive.Trigger
 		class="flex items-center justify-between w-full px-3 text-sm font-medium transition-colors select-none cursor-pointer
 			{COMPONENT_PRESETS.dropdownSelect.trigger} {heightClass}
-			focus:outline-none focus:ring-2 focus:ring-emerald-600/30 focus:border-emerald-600
+			focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500
 			disabled:opacity-50 disabled:pointer-events-none {className}"
 	>
-		<span class="truncate {selectedOption ? 'text-slate-900' : 'text-slate-400 font-normal'}">
+		<span class="truncate {selectedOption ? 'text-slate-100' : 'text-slate-500 font-normal'}">
 			{selectedOption ? selectedOption.label : placeholder}
 		</span>
 		<ChevronDown size={16} class="text-slate-400 shrink-0 ml-2" />
@@ -58,17 +58,17 @@
 					value={opt.value}
 					disabled={opt.disabled}
 					class="flex items-center justify-between px-3 py-2 text-sm rounded-lg transition-colors cursor-pointer select-none
-						hover:bg-slate-100 hover:text-slate-900 data-[highlighted]:bg-slate-100 data-[highlighted]:text-slate-900
+						hover:bg-slate-800 hover:text-white data-[highlighted]:bg-slate-800 data-[highlighted]:text-white
 						data-[disabled]:opacity-40 data-[disabled]:pointer-events-none"
 				>
 					<div class="flex flex-col min-w-0">
 						<span class="font-medium truncate">{opt.label}</span>
 						{#if opt.description}
-							<span class="text-xs text-slate-500 truncate">{opt.description}</span>
+							<span class="text-xs text-slate-400 truncate">{opt.description}</span>
 						{/if}
 					</div>
 					{#if value === opt.value}
-						<Check size={16} class="text-emerald-600 shrink-0 ml-2" />
+						<Check size={16} class="text-emerald-400 shrink-0 ml-2" />
 					{/if}
 				</Primitive.Item>
 			{/each}

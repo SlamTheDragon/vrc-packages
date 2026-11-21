@@ -24,7 +24,7 @@
 	}
 </script>
 
-<div class="relative rounded-2xl border border-slate-200 bg-slate-900 overflow-hidden shadow-xs {className}">
+<div class="relative rounded-2xl border border-slate-800 bg-slate-950 overflow-hidden shadow-xs {className}">
 	<div class="flex items-center justify-between px-4 py-2 border-b border-slate-800 bg-slate-950/60 text-xs">
 		<span class="font-mono text-slate-400 font-semibold uppercase tracking-wider">{language}</span>
 		<button

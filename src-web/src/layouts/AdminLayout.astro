@@ -1,0 +1,38 @@
+---
+import '../app.css';
+import { version } from '../../package.json';
+import AdminShell from '$lib/components/admin/AdminShell.svelte';
+
+interface Props {
+	title?: string;
+	description?: string;
+	fullViewport?: boolean;
+}
+
+const {
+	title = 'VRC Packages · Admin Console',
+	description = 'Downstream Operator and Moderator Governance Console for VRC Packages (VRCP).',
+	fullViewport = false
+} = Astro.props;
+
+const currentPath = Astro.url.pathname;
+---
+
+<html lang="en" class="dark" data-theme="dark">
+	<head>
+		<meta charset="utf-8" />
+		<link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+		<link rel="icon" href="/favicon.ico" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<meta name="generator" content={Astro.generator} />
+		<meta name="vrc-packages-version" content={version} />
+		<meta name="description" content={description} />
+		<title>{title}</title>
+	</head>
+	<body>
+		<a class="skip-link" href="#main-content">Skip to content</a>
+		<AdminShell client:load {currentPath} {fullViewport}>
+			<slot />
+		</AdminShell>
+	</body>
+</html>

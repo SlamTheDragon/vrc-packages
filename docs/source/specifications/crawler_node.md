@@ -4,7 +4,7 @@
 > **Owning Sector:** Sector 1 (`crawler-network`)  
 > **Related Schemas:** [`crawler_node_sqlite.md`](../schemas/crawler_node_sqlite.md), [`logging_and_telemetry.md`](../schemas/logging_and_telemetry.md), [`wire_and_protocol_contracts.md`](../schemas/wire_and_protocol_contracts.md)
 
-The Crawler Node is a headless, continuously running daemon designed for Linux VPS / Docker fleets and Windows local development. It fetches public metadata strictly under unexpired Coordinator leases and has no embedded coordinator binary or interactive CLI setup commands (`R16-C19`).
+The Crawler Node is a headless daemon for Linux VPS / Docker fleets and Windows local development. It fetches public metadata strictly under unexpired Coordinator leases. It has no embedded coordinator binary or interactive CLI setup commands.
 
 ## 1. Execution Lifecycle and Dynamic Heartbeat Sequence
 
@@ -42,8 +42,8 @@ sequenceDiagram
 
 | Subsystem | Live Executable Constant / Rule |
 | :--- | :--- |
-| **Fixed lease deadline** | Coordinator issues `120_000 ms` (120s) leases; runner enforces an independent monotonic deadline adjusted by `clockOffsetMs` from `serverTime` and aborts fetching/staging on expiry (`R13-C9-LEASE-DEADLINE`). |
-| **Active lease heartbeat** | Scales dynamically between **`5_000 ms` and `30_000 ms`**: origin EMA (`0.7 * prev + 0.3 * durationMs`) seeds initial interval `clamp(round(avg / 2), 5s, 30s)`; in-flight timer reschedules via `min(30s, max(5s, round(elapsed / 2)))`. |
+| **Fixed lease deadline** | Coordinator issues `120_000 ms` (120s) leases. Runner enforces a monotonic deadline adjusted by `clockOffsetMs` from `serverTime` and aborts fetching on expiry. |
+| **Active lease heartbeat** | Scales dynamically between **`5_000 ms` and `30_000 ms`**. Origin EMA (`0.7 * prev + 0.3 * durationMs`) seeds initial interval `clamp(round(avg / 2), 5s, 30s)`. In-flight timer reschedules via `min(30s, max(5s, round(elapsed / 2)))`. |
 | **Idle heartbeat** | `30_000 ms` (30s) inside `daemon.step()`. |
 | **Idle backoff ladder** | `minIdleDelayMs = 5_000`, `maxIdleDelayMs = 60_000`, `idleBackoffMultiplier = 1.5`, `jitterRatio = 0.2`, clamped to `[base, ceiling]`. Resets immediately when jobs are leased. |
 | **Delegated robots preflight** | Wired in `daemon.ts` when `claim.status === "empty"`: calls `claimRobotsRefresh()` -> `retrieveRobotsSnapshot()` -> `submitRobotsResult()`. |
@@ -54,10 +54,12 @@ sequenceDiagram
 ## 3. Configuration and Docker Fleet Deployment
 
 ### Environment Variables (`runtime_config.ts`, `main.ts`, `logger.ts`)
+
 - **Required**: `NODE_TOKEN` (`vrcp_<64-hex><4-hex>`).
 - **Optional**: `NODE_ID`, `COORDINATOR_URL` (default `http://127.0.0.1:8787`), `NODE_CAPABILITIES` (default all 10 platforms), `NODE_DB_PATH` (default `<cwd>/node.db`), `NODE_CONFIG_PATH` (default `<cwd>/node.config.json`, max 64 KiB), `CRAWLER_LOGS_DIR`, `DEBUG` / `LOG_LEVEL=debug`, `GITHUB_TOKEN` / `GH_TOKEN`.
 
 ### Docker Compose Fleet Invariants (`src-crawler/docker-compose.yml`)
+
 - Pin container images strictly by immutable digest (`VRCP_NODE_IMAGE`).
-- Mount an isolated persistent data volume per node (`node-data-1:/app/data`) to prevent SQLite write locks; set `CRAWLER_LOGS_DIR=/app/data/logs`.
-- Automated host-socket updaters (Watchtower) and host Docker socket mounts are permanently prohibited (`FLEET-S3`).
+- Mount an isolated persistent data volume per node (`node-data-1:/app/data`) to prevent SQLite write locks. Set `CRAWLER_LOGS_DIR=/app/data/logs`.
+- Automated host-socket updaters (Watchtower) and host Docker socket mounts remain permanently forbidden.

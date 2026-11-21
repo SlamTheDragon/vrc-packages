@@ -23,7 +23,7 @@
 	<Primitive.Portal>
 		<Primitive.Content
 			sideOffset={6}
-			class="z-50 w-72 rounded-2xl bg-white p-4 shadow-xl border border-slate-200 text-slate-800 animate-in fade-in-0 zoom-in-95 {className}"
+			class="z-50 w-72 rounded-2xl bg-slate-900 p-4 shadow-2xl border border-slate-700 text-slate-100 animate-in fade-in-0 zoom-in-95 {className}"
 		>
 			{@render children?.()}
 		</Primitive.Content>

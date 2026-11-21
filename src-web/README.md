@@ -1,43 +1,30 @@
-# Astro Starter Kit: Minimal
+# VRC Packages Web Console (`vrcp-web`)
 
-```sh
-bun create astro@latest -- --template minimal
+`src-web/` is the Astro 7 and Svelte 5 Operator and Moderator Admin UI for VRC Packages (VRCP). It belongs to **Sector 3 (`api-web`, Tier 5)**.
+
+## Routes
+
+- `/`: Entry router that directs authenticated sessions to `/operator` or `/moderator` and guests to `/login`.
+- `/login`: Runtime bearer token authentication gate and unauthenticated public catalog CORS probe.
+- `/operator`: Operator Governance Dashboard for schema initialization, catalog inspection, source access profiles, auto-queue rules, discovery leads, crawl job enqueue, node credentials, takedowns, creator claims, and registered application delegation.
+- `/moderator`: Moderator Review Dashboard for content rating queue adjustments and application candidate reviews.
+- `/design`: Six-domain UI primitive showcase (`forms/`, `navigation/`, `overlays/`, `feedback/`, `display/`, `telemetry/`, and `workbench/`).
+
+## Cross-Pipeline Integration
+
+`src-web/` consumes the release SDK package (`vrc-packages-api`) strictly over HTTP without sibling relative imports. Static bundles do not store operator or user tokens.
+
+Prepare the checked release SDK tarball from the repository root before building:
+
+```powershell
+bun run prepare:dev preview web
 ```
 
-> 🧑‍🚀 **Seasoned astronaut?** Delete this file. Have fun!
+## Verification Commands
 
-## 🚀 Project Structure
+Run these commands inside `src-web/`:
 
-Inside of your Astro project, you'll see the following folders and files:
-
-```text
-/
-├── public/
-├── src/
-│   └── pages/
-│       └── index.astro
-└── package.json
+```powershell
+bun run check
+bun run build
 ```
-
-Astro looks for `.astro` or `.md` files in the `src/pages/` directory. Each page is exposed as a route based on its file name.
-
-There's nothing special about `src/components/`, but that's where we like to put any Astro/React/Vue/Svelte/Preact components.
-
-Any static assets, like images, can be placed in the `public/` directory.
-
-## 🧞 Commands
-
-All commands are run from the root of the project, from a terminal:
-
-| Command                   | Action                                           |
-| :------------------------ | :----------------------------------------------- |
-| `bun install`             | Installs dependencies                            |
-| `bun dev`             | Starts local dev server at `localhost:4321`      |
-| `bun build`           | Build your production site to `./dist/`          |
-| `bun preview`         | Preview your build locally, before deploying     |
-| `bun astro ...`       | Run CLI commands like `astro add`, `astro check` |
-| `bun astro -- --help` | Get help using the Astro CLI                     |
-
-## 👀 Want to learn more?
-
-Feel free to check [our documentation](https://docs.astro.build) or jump into our [Discord server](https://astro.build/chat).

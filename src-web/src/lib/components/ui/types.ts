@@ -1,5 +1,3 @@
-import type { Component } from 'svelte';
-
 export type ControlSize = 'xs' | 'sm' | 'md' | 'lg';
 
 export type ButtonVariant = 'primary' | 'secondary' | 'outline' | 'ghost' | 'destructive' | 'amber';

@@ -1403,4 +1403,73 @@ describe("separate operator control API", () => {
       store.close();
     }
   });
+
+  test("durable claim-time retry promotes pending leads after transient post-commit promotion failure (R47-C26)", async () => {
+    let now = Date.parse("2026-09-28T00:00:00.000Z");
+    const store = await createInitializedD1Coordinator(":memory:", () => now);
+    const token = await store.createNodeCredential("node", ["vpm"]);
+    const principal = (await store.authenticate("node", token))!;
+    await seedApprovedFixtureJob(store, "https://reviewed.example.org/source.json", "vpm", 0);
+    await approveFixtureSource(store, "https://reviewed.example.org/index.json", "vpm", "discovery");
+    await store.recordRobotsSnapshot("https://reviewed.example.org", 404);
+    try {
+      const rule = await store.createAutoQueueRule(
+        {
+          schemaVersion: 1,
+          leadKind: "vpm_listing",
+          origin: "https://reviewed.example.org",
+          pathScope: "/index.json",
+          minDelayMs: 1000,
+          expiresAt: "2026-10-01T00:00:00.000Z",
+          reviewReference: "docs/SOURCE_ACCESS_REVIEW.md#vpm",
+          reason: "Reviewed this host for VPM listings"
+        },
+        "operator-api"
+      );
+      const claim1 = await store.claim({ schemaVersion: 1, nodeId: "node", capabilities: ["vpm"] }, principal);
+      expect(claim1.status).toBe("leased");
+      if (claim1.status !== "leased") throw new Error("Expected recipe lease");
+
+      store.sqlite.run(
+        "CREATE TRIGGER reject_auto_promotion BEFORE INSERT ON crawl_jobs WHEN NEW.source_rule_id IS NOT NULL BEGIN SELECT RAISE(ABORT,'transient promotion failure'); END;"
+      );
+      const submitRes = await store.submit(
+        {
+          schemaVersion: 1,
+          nodeId: "node",
+          jobId: claim1.job.jobId,
+          leaseId: claim1.job.leaseId,
+          idempotencyKey: "transient-promotion-failure-discovery",
+          outcome: {
+            kind: "discovery",
+            leads: [{ kind: "vpm_listing", url: "https://reviewed.example.org/index.json" }]
+          }
+        },
+        principal
+      );
+      store.sqlite.run("DROP TRIGGER reject_auto_promotion;");
+
+      expect(submitRes.status).toBe("accepted");
+      expect((store.sqlite.prepare("SELECT count(*) AS n FROM job_results").get() as { n: number }).n).toBe(1);
+      expect(
+        (store.sqlite.prepare("SELECT status FROM source_leads").get() as { status: string }).status
+      ).toBe("pending_review");
+      expect((store.sqlite.prepare("SELECT count(*) AS n FROM crawl_jobs").get() as { n: number }).n).toBe(1);
+      const failAudits = await store.listAuditLogs({ entityType: "rule", entityId: rule.ruleId });
+      expect(failAudits.some((a) => a.action === "promotion_failed")).toBe(true);
+
+      now += 1500;
+      const claim2 = await store.claim({ schemaVersion: 1, nodeId: "node", capabilities: ["vpm"] }, principal);
+      expect(claim2.status).toBe("leased");
+      if (claim2.status !== "leased") throw new Error("Expected promoted listing lease");
+      expect(claim2.job.url).toBe("https://reviewed.example.org/index.json");
+      expect(
+        (store.sqlite.prepare("SELECT status FROM source_leads").get() as { status: string }).status
+      ).toBe("approved");
+      expect((store.sqlite.prepare("SELECT count(*) AS n FROM crawl_jobs").get() as { n: number }).n).toBe(2);
+      expect(await store.retryPendingAutoPromotions()).toBe(0);
+    } finally {
+      store.close();
+    }
+  });
 });

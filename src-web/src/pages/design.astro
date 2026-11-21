@@ -1,0 +1,11 @@
+---
+import AdminLayout from '../layouts/AdminLayout.astro';
+import DesignSystemShowcase from '$lib/components/admin/DesignSystemShowcase.svelte';
+---
+
+<AdminLayout
+	title="Design System · VRC Packages"
+	description="6-Domain + Workbench UI Primitive Showcase for VRC Packages (VRCP)."
+>
+	<DesignSystemShowcase client:load />
+</AdminLayout>

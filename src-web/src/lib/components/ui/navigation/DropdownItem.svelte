@@ -28,8 +28,8 @@
 	onSelect={onclick}
 	class="flex items-center justify-between w-full px-2.5 py-1.5 text-xs font-medium rounded-xl transition-colors cursor-pointer select-none
 		{destructive
-			? 'text-red-600 hover:bg-red-50'
-			: 'text-slate-700 hover:bg-slate-100 hover:text-slate-900'}
+			? 'text-red-400 hover:bg-red-950/60'
+			: 'text-slate-200 hover:bg-slate-800 hover:text-white'}
 		data-[disabled]:opacity-40 data-[disabled]:pointer-events-none {className}"
 >
 	<div class="flex items-center gap-2 min-w-0">

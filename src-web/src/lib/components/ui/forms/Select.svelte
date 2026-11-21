@@ -41,9 +41,9 @@
 		{required}
 		bind:value
 		{onchange}
-		class="appearance-none w-full bg-white text-slate-900 border border-slate-200 rounded-xl
-			focus:border-emerald-600 focus:ring-1 focus:ring-emerald-600 transition-colors shadow-xs
-			disabled:bg-slate-100 disabled:text-slate-400 disabled:cursor-not-allowed cursor-pointer
+		class="appearance-none w-full bg-slate-950/90 text-slate-100 border border-slate-700 rounded-xl
+			focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 transition-colors shadow-xs
+			disabled:bg-slate-900 disabled:text-slate-500 disabled:cursor-not-allowed cursor-pointer
 			{heightClass} {sizePaddings[size]} {className}"
 	>
 		{#each options as opt}

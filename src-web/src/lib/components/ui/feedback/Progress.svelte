@@ -14,9 +14,9 @@
 	} = $props();
 
 	const colorStyles = {
-		emerald: 'bg-emerald-600',
-		amber: 'bg-amber-600',
-		sky: 'bg-sky-600'
+		emerald: 'bg-emerald-500',
+		amber: 'bg-amber-500',
+		sky: 'bg-sky-400'
 	};
 
 	let pct = $derived(Math.min(100, Math.max(0, (value / max) * 100)));
@@ -25,7 +25,7 @@
 <Primitive.Root
 	{value}
 	{max}
-	class="relative h-2 w-full overflow-hidden rounded-full bg-slate-100 border border-slate-200 {className}"
+	class="relative h-2 w-full overflow-hidden rounded-full bg-slate-800 border border-slate-700 {className}"
 >
 	<div
 		class="h-full transition-all duration-300 ease-out {colorStyles[color]}"

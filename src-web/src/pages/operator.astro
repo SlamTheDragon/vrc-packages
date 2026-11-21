@@ -1,0 +1,11 @@
+---
+import AdminLayout from '../layouts/AdminLayout.astro';
+import OperatorDashboard from '$lib/components/admin/operator/OperatorDashboard.svelte';
+---
+
+<AdminLayout
+	title="Operator Console · VRC Packages"
+	description="Operator Governance Dashboard for VRC Packages (VRCP)."
+>
+	<OperatorDashboard client:load />
+</AdminLayout>

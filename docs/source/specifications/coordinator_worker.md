@@ -14,9 +14,9 @@ Each route below matches `src-worker/src/worker_entry.ts` and `src-worker/src/ap
 
 Requires `Authorization: Bearer vrcp_<64-hex><4-hex>`:
 
-- `POST /v1/node/jobs/claim`: Claims 1 to 10 (`maxJobs`, default 1) eligible jobs matching node capabilities, active `SourceAccessProfile`, and valid robots snapshot. Scans up to `MAX_CLAIM_SCAN_PAGES = 3` pages (`LIMIT 100`, max 300 candidates). Empty claims return `retryAfterMs = 5000`.
+- `POST /v1/node/jobs/claim`: Runs a best-effort durable promotion sweep (`retryPendingAutoPromotions`) for `pending_review` leads matching active `lead_autoqueue_rules`, then claims 1 to 10 (`maxJobs`, default 1) eligible jobs matching node capabilities, active `SourceAccessProfile`, and valid robots snapshot. Scans up to `MAX_CLAIM_SCAN_PAGES = 3` pages (`LIMIT 100`, max 300 candidates). Empty claims return `retryAfterMs = 5000`.
 - `POST /v1/node/heartbeat`: Verifies active lease authority and updates `node_heartbeats`. Does **not** extend the 120s lease deadline.
-- `POST /v1/node/jobs/result`: Submits one observation, lead, or diagnostic outcome (also accepts batch arrays when `Array.isArray(payload.results)`). Commits leads, source events, receipt, and lease updates in one D1 batch.
+- `POST /v1/node/jobs/result`: Submits one observation, lead, or diagnostic outcome (also accepts batch arrays when `Array.isArray(payload.results)`). Commits leads, source events, receipt, and lease updates in one D1 batch, then attempts post-commit auto-queue promotion (logging `promotion_failed` in `operator_audit_log` on error for retry on subsequent node claims).
 - `POST /v1/node/jobs/results`: Submits a batch of up to `MAX_BATCH_RESULTS = 10` results atomically per item.
 - `POST /v1/node/robots/claim`: Claims a 45s lease (`ROBOTS_REFRESH_LEASE_MS`) to fetch missing or stale `robots.txt` for a target origin. Empty claims return `retryAfterMs = 60000`.
 - `POST /v1/node/robots/result`: Stores the node-fetched `origin_robots` snapshot (24h TTL on 2xx, 404, or 410. 1h TTL on other statuses).
@@ -45,18 +45,18 @@ Requires `Authorization: Bearer vrcp_usr_<64-hex>`:
 
 ### 1.4 Public Catalog Protocol (`/v1/app/*`, `public_handler.ts`)
 
-Unauthenticated read routes (`Access-Control-Allow-Origin: *`):
+Unauthenticated read routes (`Access-Control-Allow-Origin: *` on `GET` and `OPTIONS` preflight):
 
 - `GET /v1/app/index`: Lists published general-rated catalog packages with keyset pagination.
 - `GET /v1/app/index/delta`: Streams general-rated package upserts unioned with `catalog_tombstones`, ascending by timestamp and identifier.
 
 ### 1.5 Downstream Application Protocol (`/v1/app/*`, `downstream_handler.ts`)
 
-Sets `Access-Control-Allow-Origin: *` and `Cache-Control: no-store`:
+Sets `Cache-Control: no-store` and applies origin-validated CORS via `cors.ts`:
 
 - `POST /v1/app/register` (`201`): Requires `vrcp_usr_` or `OPERATOR_TOKEN`. Issues a scoped `vrcp_app_` credential.
 - `POST /v1/app/index/search`: Requires `vrcp_app_` with `catalog:search`. Unverified apps clamp strictly to `content_rating = 'general'`. Verified apps can pass an optional `rating` filter.
-- `POST /v1/app/report`: Requires `vrcp_app_`. `demand_signal` (`200`) requires `demand:feedback`. `issue_report` (`200`) writes `metadata_issue`, `rating_dispute`, or `safety_quarantine` tickets. `removal_request` (`202`) requires a trusted app (`candidate_status = 'trusted'`, `takedowns:submit`, or `claims:delegate`) and writes a pending `removal_report` ticket.
+- `POST /v1/app/report`: Requires `vrcp_app_`. Validates payloads with the strict three-branch `ReportSubmissionRequestSchema` discriminated union. `demand_signal` (`200`) requires `demand:feedback`. `issue_report` (`200`) writes `metadata_issue`, `rating_dispute`, or `safety_quarantine` tickets. `removal_request` (`202`) requires a trusted app (`candidate_status = 'trusted'`, `takedowns:submit`, or `claims:delegate`) and writes a pending `removal_report` ticket.
 - `POST /v1/app/claims/intake` (`202`): Requires `vrcp_app_` with `claims:delegate`.
 
 ### 1.6 Moderator Protocol (`/v1/moderator/*`, `moderator_handler.ts`)
@@ -86,7 +86,11 @@ Requires `Authorization: Bearer vrcp_usr_<64-hex>` with `isModerator` and `ageVe
 | `OPERATOR_ROUTES` | 1,200 | `/v1/operator/*` |
 
 - **Standard API error envelope:** All routes (including `/v1/operator/init` and global 404 or 500 fallbacks in `worker_entry.ts`) emit `{ schemaVersion: 1, code, error }`.
-- **Rate-limit headers:** Success responses attach `X-RateLimit-Limit` and `X-RateLimit-Remaining`. `429` responses emit `{ schemaVersion, code: "rate_limited", error }` with `Retry-After`, `X-RateLimit-Limit`, `X-RateLimit-Remaining: "0"`, `X-RateLimit-Reset`, `Cache-Control: no-store`, and `Access-Control-Allow-Origin: *`.
+- **Rate-limit headers:** Success responses attach `X-RateLimit-Limit` and `X-RateLimit-Remaining`. `429` responses emit `{ schemaVersion, code: "rate_limited", error }` with `Retry-After`, `X-RateLimit-Limit`, `X-RateLimit-Remaining: "0"`, `X-RateLimit-Reset`, and `Cache-Control: no-store`.
+- **Origin-validated CORS (`src-worker/src/api/cors.ts`):**
+  - **Public catalog routes** (`/v1/app/index`, `/v1/app/index/delta`): Emit `Access-Control-Allow-Origin: *` on all responses and respond to `OPTIONS` preflight with `204 No Content` (`Access-Control-Allow-Methods: GET, OPTIONS`, `Access-Control-Allow-Headers: Content-Type`, `Access-Control-Max-Age: 600`, `Cache-Control: public, max-age=60`).
+  - **Authenticated browser and application routes** (`/v1/operator/*`, `/v1/moderator/*`, `/v1/user/*`, `/v1/app/register`, `/v1/app/report`, `/v1/app/index/search`, `/v1/app/claims/intake`): Validate `Origin` against `CORS_ALLOWED_ORIGINS` (comma-separated exact origins normalized with `new URL(o).origin`). Never emit wildcard `Access-Control-Allow-Origin: *`. Handle `OPTIONS` preflight in `worker_entry.ts` before authentication and rate limiting: allowlisted origins receive `204 No Content` with `Access-Control-Allow-Origin: <origin>`, `Vary: Origin`, `Access-Control-Allow-Methods: GET, POST, DELETE, OPTIONS`, `Access-Control-Allow-Headers: Authorization, Content-Type`, `Access-Control-Max-Age: 600`, and `Cache-Control: no-store`. Missing or unlisted origins on `OPTIONS` receive `403` `{ schemaVersion: 1, code: "cors_origin_forbidden", error: "Origin not allowed" }` without `Access-Control-Allow-Origin`. Non-`OPTIONS` responses to allowlisted origins include `Access-Control-Allow-Origin: <origin>`, `Access-Control-Expose-Headers: X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Reset, Retry-After`, and `Vary: Origin`. Non-`OPTIONS` responses without a matching `Origin` omit `Access-Control-Allow-Origin`.
+  - **Node lease routes** (`/v1/node/*`): Strictly non-CORS. Never emit `Access-Control-Allow-Origin`.
 - **Caching:** `GET /v1/app/index` and `GET /v1/app/index/delta` set `Cache-Control: public, max-age=60` on `<400` and `Cache-Control: no-store` on errors. All other routes set `Cache-Control: no-store`.
 
 ## 3. Storage Plane Rules (`src-worker/src/storage/d1/planes/`)

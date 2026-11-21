@@ -1,0 +1,11 @@
+---
+import AdminLayout from '../layouts/AdminLayout.astro';
+import AdminLoginView from '$lib/components/admin/AdminLoginView.svelte';
+---
+
+<AdminLayout
+	title="Admin Login · VRC Packages"
+	description="Runtime Operator and Moderator Authentication Gate for VRC Packages (VRCP)."
+>
+	<AdminLoginView client:load />
+</AdminLayout>

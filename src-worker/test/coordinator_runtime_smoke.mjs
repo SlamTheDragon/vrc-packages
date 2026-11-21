@@ -452,7 +452,10 @@ const runtime = new Miniflare(
 				compatibilityFlags: workerConfig.compatibility_flags,
 				d1Databases: { VRCP_D1: randomUUID() },
 				kvNamespaces: { RATE_LIMIT_KV: randomUUID() },
-				bindings: { OPERATOR_TOKEN: operatorToken },
+				bindings: {
+					...(workerConfig.vars ?? {}),
+					OPERATOR_TOKEN: operatorToken
+				},
 				outboundService: () => {
 					externalFetches++;
 					return new Response('External requests disabled', { status: 403 });
@@ -572,7 +575,43 @@ try {
     }
   }
   assert.deepEqual(reportStatuses, [200, 200, 202]);
-  console.log(JSON.stringify({ check: 'native_HTTP_report_sdk_receipts', statuses: reportStatuses, passed: true }));
+  const crossVariantReport = await runtime.dispatchFetch('https://offline.test/v1/app/report', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: 'Bearer ' + reportApp.appToken },
+    body: JSON.stringify({
+      schemaVersion: 1,
+      reportType: 'demand_signal',
+      signalKind: 'search_miss',
+      reportKind: 'wrong_metadata',
+      query: 'cross variant probe',
+      zeroHits: true
+    })
+  });
+  assert.equal(crossVariantReport.status, 400, 'Cross-variant reportKind inside demand_signal must reject 400');
+  assert.equal((await crossVariantReport.json()).code, 'invalid_payload');
+  console.log(JSON.stringify({ check: 'native_HTTP_report_sdk_receipts', statuses: reportStatuses, crossVariantRejected: true, passed: true }));
+
+  const unlistedPreflight = await runtime.dispatchFetch('https://offline.test/v1/operator/catalog', {
+    method: 'OPTIONS',
+    headers: { Origin: 'https://unlisted-browser.example' }
+  });
+  assert.equal(unlistedPreflight.status, 403, 'Unlisted browser origin OPTIONS preflight must reject 403');
+  assert.equal(unlistedPreflight.headers.get('access-control-allow-origin'), null);
+  assert.equal((await unlistedPreflight.json()).code, 'cors_origin_forbidden');
+  if (buildChannel === 'preview') {
+    const allowlistedPreflight = await runtime.dispatchFetch('https://offline.test/v1/operator/catalog', {
+      method: 'OPTIONS',
+      headers: {
+        Origin: 'http://localhost:4321',
+        'Access-Control-Request-Method': 'GET',
+        'Access-Control-Request-Headers': 'Authorization, Content-Type'
+      }
+    });
+    assert.equal(allowlistedPreflight.status, 204, 'Preview allowlisted OPTIONS preflight must return 204');
+    assert.equal(allowlistedPreflight.headers.get('access-control-allow-origin'), 'http://localhost:4321');
+    assert.equal(allowlistedPreflight.headers.get('vary'), 'Origin');
+  }
+  console.log(JSON.stringify({ check: 'native_HTTP_cors_preflight', channel: buildChannel, passed: true }));
   for (const token of ['', 'vrcp_usr_' + '0'.repeat(64)]) {
     const removedNodeIssue = await runtime.dispatchFetch('https://offline.test/v1/user/nodes', {
       method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer ' + token },

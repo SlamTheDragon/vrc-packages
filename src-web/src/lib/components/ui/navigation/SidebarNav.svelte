@@ -35,7 +35,7 @@
 >
 	{#each groups as group, gi (gi)}
 		{#if gi > 0}
-			<div class="my-2 border-t border-slate-200"></div>
+			<div class="my-2 border-t border-slate-800"></div>
 		{/if}
 		{#if !collapsed && group.title}
 			<div class="px-3 pt-2 pb-1 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
@@ -49,8 +49,8 @@
 				collapsed ? 'justify-center' : 'justify-between'
 			} ${
 				active
-					? 'bg-emerald-50 text-emerald-950 border border-emerald-300/80 font-semibold shadow-2xs'
-					: 'text-slate-600 hover:text-slate-900 hover:bg-slate-100 border border-transparent'
+					? 'bg-emerald-950/70 text-emerald-200 border border-emerald-700/70 font-semibold shadow-2xs'
+					: 'text-slate-300 hover:text-white hover:bg-slate-800/80 border border-transparent'
 			}`}
 			{#snippet content()}
 				<div class="flex items-center gap-3 min-w-0">
@@ -58,8 +58,8 @@
 						<Icon
 							size={18}
 							class="shrink-0 transition-colors {active
-								? 'text-emerald-700'
-								: 'text-slate-500 group-hover:text-slate-900'}"
+								? 'text-emerald-400'
+								: 'text-slate-400 group-hover:text-white'}"
 						/>
 					{/if}
 					{#if !collapsed}
@@ -69,13 +69,13 @@
 				{#if !collapsed && item.badge}
 					<span
 						class="text-[10px] font-semibold px-1.5 py-0.5 rounded border shrink-0 {active
-							? 'bg-emerald-100 text-emerald-800 border-emerald-200'
-							: 'bg-slate-100 text-slate-600 border-slate-200'}"
+							? 'bg-emerald-900/80 text-emerald-200 border-emerald-700'
+							: 'bg-slate-800 text-slate-300 border-slate-700'}"
 					>
 						{item.badge}
 					</span>
 				{:else if !collapsed && item.count !== undefined}
-					<span class="text-[11px] px-1.5 py-0.2 rounded font-mono bg-slate-100 text-slate-600 border border-slate-200 shrink-0">
+					<span class="text-[11px] px-1.5 py-0.2 rounded font-mono bg-slate-800 text-slate-300 border border-slate-700 shrink-0">
 						{item.count}
 					</span>
 				{/if}

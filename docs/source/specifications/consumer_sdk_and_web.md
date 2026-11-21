@@ -24,7 +24,7 @@ This specification defines the live executable state and integration boundaries 
 
 | Project | Package Name and Version Authority | Stack | Live State | Declared SDK Dependency |
 | :--- | :--- | :--- | :--- | :--- |
-| **`src-web/`** | `vrcp-web` ([`config.versions.json`](../../../config.versions.json) and [`config.preview.versions.json`](../../../config.preview.versions.json)) | Astro 7 + Svelte 5 | Starter page (`src/pages/index.astro`: `<h1>VRC Packages</h1>` and version meta tag). Admin UI packets live in [`IMPLEMENTATION_PLAN.md`](../../scratch-api-web/IMPLEMENTATION_PLAN.md). | `"vrc-packages-api": "latest"` |
+| **`src-web/`** | `vrcp-web` ([`config.versions.json`](../../../config.versions.json) and [`config.preview.versions.json`](../../../config.preview.versions.json)) | Astro 7 + Svelte 5 | Operator and Moderator Admin UI (`/`, `/login`, `/operator`, `/moderator`, `/design`) in permanent dark mode consuming `vrc-packages-api`. Public registry and legal pages live in [`IMPLEMENTATION_PLAN.md`](../../scratch-api-web/IMPLEMENTATION_PLAN.md). | `"vrc-packages-api": "latest"` |
 | **`src-web-search/`** *(Git submodule)* | `vrc-packages-search` (`src-web-search/package.json`) | Astro 7 + Svelte 5 | Starter page (`src/pages/index.astro`: `<h1>Astro</h1>`). No search UI wired at this time. | `"vrc-packages-api": "^0.0.6"` |
 
 ## 3. Integration and Security Boundaries

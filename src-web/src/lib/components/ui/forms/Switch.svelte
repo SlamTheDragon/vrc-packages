@@ -31,9 +31,9 @@
 				onCheckedChange?.(val);
 			}
 		}}
-		class="w-9 h-5 rounded-full p-0.5 bg-slate-200 transition-colors cursor-pointer
-			data-[state=checked]:bg-emerald-600
-			focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600/30
+		class="w-9 h-5 rounded-full p-0.5 bg-slate-800 border border-slate-700 transition-colors cursor-pointer
+			data-[state=checked]:bg-emerald-600 data-[state=checked]:border-emerald-500
+			focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/30
 			disabled:cursor-not-allowed disabled:opacity-50 inline-flex items-center"
 	>
 		<Primitive.Thumb
@@ -43,7 +43,7 @@
 	</Primitive.Root>
 
 	{#if label}
-		<label for={id} class="text-sm font-medium text-slate-700 cursor-pointer {disabled ? 'opacity-50 cursor-not-allowed' : ''}">
+		<label for={id} class="text-sm font-medium text-slate-200 cursor-pointer {disabled ? 'opacity-50 cursor-not-allowed' : ''}">
 			{label}
 		</label>
 	{/if}

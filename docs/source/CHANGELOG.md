@@ -147,12 +147,14 @@ See full history at [docs/changelogs/vrcp-crawler-client/preview](https://github
 ## VRC Packages Crawler - `vrcp-crawler-node-preview`
 
 <!-- vrcp-crawler-node-preview-DESCRIPTION_SUMMARY -->
-Execute delegated robots.txt preflight refreshes during empty job claims using pinned DNS lookups and SSRF defenses. Scale heartbeat pulse intervals dynamically between 5 and 30 seconds based on origin duration. Remove Watchtower and host socket mounts from Docker compose. Require pinned image digests and isolate multi-node data volumes. Verify multi-platform fleet crawl simulation under concurrent node leases and crash recovery. Document environment variables.
+Execute delegated robots.txt preflight refreshes during empty job claims using pinned DNS lookups and SSRF defenses. Scale heartbeat pulse intervals dynamically between 5 and 30 seconds based on origin duration. Remove Watchtower and host socket mounts from Docker compose. Require pinned image digests and isolate multi-node data volumes. Verify multi-platform fleet crawl simulation and multi-process crash-restart outbox batch replay. Validate robots refresh wire payloads with shared network schemas and remove dead pre-lease modules.
 <!-- vrcp-crawler-node-preview-DESCRIPTION_SUMMARY -->
 ### Added
 - **Dynamic Heartbeat Scaling**: Scale crawler heartbeat intervals dynamically between 5 and 30 seconds based on origin response durations (R54-C39B). Reduces coordinator subrequest traffic while maintaining lease authority during slow fetches.
 - **Fleet Crawl Simulation Suite**: Verify concurrent multi-node lease isolation, multi-driver ingestion (VPM, GitHub, Booth, Ko-fi), outbox edge retry, and crash-restart recovery (FLEET-S4).
+- **Multi-Process Fleet and Outbox Replay Verification**: Verify concurrent separate-process origin-lease mutual exclusion and crash-restart SQLite outbox batch replay across isolated node databases.
 - **Delegated Robots Preflight Ingestion**: Ingest leased robots.txt preflight refresh tasks when job claims return empty (R24-C21). Retrieve snapshots using SSRF-safe pinned metadata transport and submit results to coordinator.
+- **Robots Refresh Wire Validation**: Validate `/v1/node/robots/claim` and `/v1/node/robots/result` payloads in `CoordinatorClient` with `vrc-packages-network/node` schemas.
 - **Batch Claim Queueing**: Queue multiple claimed jobs from coordinator responses to prevent abandoned leases in daemon execution.
 - **Clock Offset Calibration**: Calibrate local lease deadlines against coordinator serverTime received in heartbeats and date headers.
 - **Activity and Finding Broadcast**: Broadcast operational activities and discovery findings with dedicated tags to the node log file.
@@ -163,6 +165,8 @@ Execute delegated robots.txt preflight refreshes during empty job claims using p
 - **Outbox Settlement**: Ignore late failures for sent or terminal entries. Repeated acknowledgments preserve the first receipt and completion metrics.
 - **Lease Deadline**: Abort source work when the lease expires, even if a heartbeat is pending. An expired lease starts no fetch.
 ### Changes
+- **Shared Target and Binary Guards**: Enforce `ARCHIVE_BINARY_EXTENSIONS`, `isArchiveOrBinaryUrl`, `isStorefrontProductTarget`, `parseGitHubOwnerRepo`, and `normalizeGitHubRepositoryUrl` from `vrc-packages-network/source-targets`.
+- **Pre-Lease Surplus Removal**: Delete unused pre-lease circuit breaker, adaptive limiter, local robots parser, SimHash, IANA registry, and token identity modules from `src-crawler/`.
 - **Docker Fleet Configuration**: Removed unverified Watchtower updater and host Docker socket bindings. Required pinned container image digests and documented multi-node volume isolation.
 - **Environment Template**: Rewrote .env.example with documented configuration values for headless node and Docker fleet deployments.
 - **Runbook Reconciliation**: Updated node and network specifications to reflect environment-variable configuration, activity logging, and delta tombstones.
@@ -194,10 +198,14 @@ See full history at [docs/changelogs/vrcp-web/preview](https://github.com/SlamTh
 ## VRC Packages Worker - `vrcp-worker-preview`
 
 <!-- vrcp-worker-preview-DESCRIPTION_SUMMARY -->
+Enforce origin-validated browser CORS and pre-authentication OPTIONS preflight headers on authenticated endpoints, adopt the Layer B preview SDK discriminated report union, and retry pending auto-queue lead promotions during node job claims.
 <!-- vrcp-worker-preview-DESCRIPTION_SUMMARY -->
 ### Added
+- **Origin-Validated Browser CORS and Preflight**: Centralize Worker CORS headers in `src/api/cors.ts`, validate `Origin` against `CORS_ALLOWED_ORIGINS` on `/v1/operator/*`, `/v1/moderator/*`, `/v1/user/*`, and authenticated `/v1/app/*` routes, handle `OPTIONS` preflight before authentication, keep `/v1/node/*` non-CORS, and preserve wildcard CORS only on `/v1/app/index` and `/v1/app/index/delta`.
+- **Durable Auto-Queue Lead Promotion Retry**: Run `retryPendingAutoPromotions` during node job claims so `pending_review` leads matching active auto-queue rules promote durably after transient post-commit failures.
 ### Bugs Fixed
 ### Changes
+- **Layer B Preview SDK Adoption**: Adopt `vrc-packages-api-preview` `2026.11.1-pre` and `vrc-packages-network` `2026.11.1` with strict three-branch discriminated report validation on `POST /v1/app/report`.
 See full history at [docs/changelogs/vrcp-worker/preview](https://github.com/SlamTheDragon/vrc-packages/tree/main/docs/changelogs/vrcp-worker/preview)
 
 ---

@@ -1,120 +1,120 @@
 /**
  * ============================================================================
- * VRCP WEB DESIGN SYSTEM // TOKENS & THEMES
+ * VRCP WEB DESIGN SYSTEM // TOKENS & THEMES (PERMANENT DARK MODE)
  * ============================================================================
  * Canonical TypeScript control file centralizing all colors, dimensions,
  * control heights, typography, evidence tokens, component presets, and palette swatches.
  *
- * Designed with a clean, high-contrast modern white surface profile.
+ * Designed with a permanent high-contrast dark carbon surface profile.
  */
 
-/** Reconciled semantic colors and palette tokens */
+/** Reconciled semantic colors and palette tokens (Permanent Dark Mode) */
 export const COLORS = {
-	/** Semantic Surface Tiers (White Color Profile) */
+	/** Semantic Surface Tiers (Dark Carbon Profile) */
 	surface: {
-		/** Pure white page void base */
-		base: '#ffffff',
+		/** Deep carbon void root page background */
+		base: '#090d16',
 		/** Canvas floor / page backdrop */
-		canvas: '#f8fafc',
+		canvas: '#0b0f19',
 		/** Sub-toolbars, dock strips, table headers */
-		subtle: '#f8fafc',
+		subtle: '#0f172a',
 		/** Panel containers, artboard surfaces, modals */
-		panel: '#ffffff',
+		panel: '#111827',
 		/** Resting cards */
-		card: '#ffffff',
+		card: '#131c2e',
 		/** Elevated cards, active selections, dropdown menus */
-		elevated: '#ffffff',
+		elevated: '#1e293b',
 		/** Tech controls, button secondary bg */
-		control: '#f1f5f9',
+		control: '#1e293b',
 		/** Input field background */
-		input: '#ffffff',
+		input: '#0f172a',
 		/** Dialog and modal surface */
-		dialog: '#ffffff',
+		dialog: '#111827',
 		/** Dropdown menu base */
-		dropdown: '#ffffff',
+		dropdown: '#111827',
 		/** Interactive hover state on surface controls */
-		hover: '#f1f5f9'
+		hover: '#1e293b'
 	},
 
 	/** Semantic Border Tiers */
 	border: {
 		/** Default container, card, and control outline */
-		default: '#e2e8f0',
+		default: '#1e293b',
 		/** Subtle dividers, resting internal lines */
-		subtle: '#f1f5f9',
+		subtle: '#172033',
 		/** Strong border, resting tabs, secondary button border */
-		strong: '#cbd5e1',
+		strong: '#334155',
 		/** Bright border, focused controls, active container outlines */
-		bright: '#94a3b8',
+		bright: '#475569',
 		/** Primary interactive border (Emerald) */
-		interactive: '#059669',
+		interactive: '#10b981',
 		/** Secondary interactive border (Amber) */
-		interactiveAmber: '#d97706',
+		interactiveAmber: '#f59e0b',
 		/** Tertiary interactive border (Sky) */
-		interactiveSky: '#0284c7',
+		interactiveSky: '#38bdf8',
 		/** Card resting border */
-		cardResting: '#e2e8f0',
+		cardResting: '#1e293b',
 		/** Card hover border */
-		cardHover: '#cbd5e1',
+		cardHover: '#334155',
 		/** Input resting border */
-		inputResting: '#e2e8f0'
+		inputResting: '#334155'
 	},
 
-	/** Brand Accents: Culinary Green, Thermal Amber, and Hydration Sky */
+	/** Brand Accents: Biolum Emerald, Thermal Amber, and Telemetry Sky */
 	accent: {
-		/** Primary brand identifier (Emerald 600) */
-		emerald: '#059669',
-		emeraldHover: '#047857',
-		emeraldActive: '#065f46',
-		emeraldSubtle: 'rgba(5, 150, 105, 0.08)',
-		emeraldBorder: 'rgba(5, 150, 105, 0.30)',
+		/** Primary brand identifier (Emerald 500) */
+		emerald: '#10b981',
+		emeraldHover: '#059669',
+		emeraldActive: '#047857',
+		emeraldSubtle: 'rgba(16, 185, 129, 0.14)',
+		emeraldBorder: 'rgba(16, 185, 129, 0.40)',
 
-		/** Secondary thermal / Maillard accent (Amber 600) */
-		amber: '#d97706',
-		amberHover: '#b45309',
-		amberActive: '#92400e',
-		amberSubtle: 'rgba(217, 119, 6, 0.08)',
-		amberBorder: 'rgba(217, 119, 6, 0.30)',
+		/** Secondary thermal accent (Amber 500) */
+		amber: '#f59e0b',
+		amberHover: '#d97706',
+		amberActive: '#b45309',
+		amberSubtle: 'rgba(245, 158, 11, 0.14)',
+		amberBorder: 'rgba(245, 158, 11, 0.40)',
 
-		/** Tertiary aqueous / moisture accent (Sky 600) */
-		sky: '#0284c7',
-		skyHover: '#0369a1',
-		skyActive: '#075985',
-		skySubtle: 'rgba(2, 132, 199, 0.08)',
-		skyBorder: 'rgba(2, 132, 199, 0.30)'
+		/** Tertiary telemetry accent (Sky 400) */
+		sky: '#38bdf8',
+		skyHover: '#0284c7',
+		skyActive: '#0369a1',
+		skySubtle: 'rgba(56, 189, 248, 0.14)',
+		skyBorder: 'rgba(56, 189, 248, 0.40)'
 	},
 
 	/** Semantic Status Tokens */
 	status: {
 		success: '#10b981',
-		successBg: 'rgba(16, 185, 129, 0.08)',
-		successBorder: 'rgba(16, 185, 129, 0.30)',
+		successBg: 'rgba(16, 185, 129, 0.14)',
+		successBorder: 'rgba(16, 185, 129, 0.40)',
 
 		warning: '#f59e0b',
-		warningBg: 'rgba(245, 158, 11, 0.08)',
-		warningBorder: 'rgba(245, 158, 11, 0.30)',
+		warningBg: 'rgba(245, 158, 11, 0.14)',
+		warningBorder: 'rgba(245, 158, 11, 0.40)',
 
 		danger: '#ef4444',
-		dangerBg: 'rgba(239, 68, 68, 0.08)',
-		dangerBorder: 'rgba(239, 68, 68, 0.30)',
+		dangerBg: 'rgba(239, 68, 68, 0.14)',
+		dangerBorder: 'rgba(239, 68, 68, 0.40)',
 
-		info: '#0284c7',
-		infoBg: 'rgba(2, 132, 199, 0.08)',
-		infoBorder: 'rgba(2, 132, 199, 0.30)'
+		info: '#38bdf8',
+		infoBg: 'rgba(56, 189, 248, 0.14)',
+		infoBorder: 'rgba(56, 189, 248, 0.40)'
 	},
 
-	/** High-Contrast Text Tokens */
+	/** High-Contrast Dark Mode Text Tokens */
 	text: {
-		/** High-contrast primary heading & brand text (Slate 900) */
-		main: '#0f172a',
-		/** High-contrast body text (Slate 700) */
-		body: '#334155',
-		/** Readable muted labels & captions (Slate 500) */
-		muted: '#64748b',
-		/** Low-emphasis secondary metadata (Slate 400) */
-		dim: '#94a3b8',
-		/** High-contrast inverted text on dark fills */
-		inverse: '#ffffff'
+		/** Crisp bright primary heading & brand text (Slate 50) */
+		main: '#f8fafc',
+		/** High-contrast body text (Slate 200) */
+		body: '#e2e8f0',
+		/** Readable muted labels & captions (Slate 400) */
+		muted: '#94a3b8',
+		/** Low-emphasis secondary metadata (Slate 500) */
+		dim: '#64748b',
+		/** Inverted text on bright fills */
+		inverse: '#090d16'
 	}
 } as const;
 
@@ -155,35 +155,35 @@ export const TYPOGRAPHY = {
 	eyebrow: { size: 'text-xs', weight: 'font-semibold', tracking: 'tracking-wider', transform: 'uppercase' }
 } as const;
 
-/** Component Preset Styling Classes */
+/** Component Preset Styling Classes (Permanent Dark Mode) */
 export const COMPONENT_PRESETS = {
 	button: {
-		primary: 'bg-emerald-600 text-white hover:bg-emerald-700 active:bg-emerald-800 shadow-sm border border-emerald-700/50',
-		secondary: 'bg-white text-slate-800 border border-slate-200 hover:bg-slate-50 hover:border-slate-300 shadow-xs',
-		outline: 'bg-transparent text-slate-700 border border-slate-300 hover:bg-slate-50 hover:text-slate-900',
-		ghost: 'bg-transparent text-slate-600 hover:bg-slate-100 hover:text-slate-900',
-		destructive: 'bg-red-600 text-white hover:bg-red-700 active:bg-red-800 shadow-sm border border-red-700/50',
-		amber: 'bg-amber-600 text-white hover:bg-amber-700 active:bg-amber-800 shadow-sm border border-amber-700/50'
+		primary: 'bg-emerald-600 text-white hover:bg-emerald-500 active:bg-emerald-700 shadow-sm border border-emerald-500/40',
+		secondary: 'bg-slate-800/90 text-slate-100 border border-slate-700 hover:bg-slate-700/90 hover:border-slate-600 shadow-xs',
+		outline: 'bg-transparent text-slate-200 border border-slate-700 hover:bg-slate-800/80 hover:text-white',
+		ghost: 'bg-transparent text-slate-300 hover:bg-slate-800/80 hover:text-white',
+		destructive: 'bg-red-600 text-white hover:bg-red-500 active:bg-red-700 shadow-sm border border-red-500/40',
+		amber: 'bg-amber-600 text-white hover:bg-amber-500 active:bg-amber-700 shadow-sm border border-amber-500/40'
 	},
 	badge: {
-		neutral: 'bg-slate-100 text-slate-700 border border-slate-200 rounded-full',
-		emerald: 'bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-full',
-		amber: 'bg-amber-50 text-amber-700 border border-amber-200 rounded-full',
-		sky: 'bg-sky-50 text-sky-700 border border-sky-200 rounded-full',
-		danger: 'bg-red-50 text-red-700 border border-red-200 rounded-full',
-		outline: 'bg-transparent text-slate-600 border border-slate-300 rounded-full'
+		neutral: 'bg-slate-800 text-slate-200 border border-slate-700 rounded-full',
+		emerald: 'bg-emerald-950/80 text-emerald-300 border border-emerald-700/60 rounded-full',
+		amber: 'bg-amber-950/80 text-amber-300 border border-amber-700/60 rounded-full',
+		sky: 'bg-sky-950/80 text-sky-300 border border-sky-700/60 rounded-full',
+		danger: 'bg-red-950/80 text-red-300 border border-red-700/60 rounded-full',
+		outline: 'bg-transparent text-slate-300 border border-slate-700 rounded-full'
 	},
 	input: {
-		base: 'bg-white text-slate-900 border border-slate-200 rounded-xl focus:border-emerald-600 focus:ring-1 focus:ring-emerald-600 transition-colors shadow-xs placeholder:text-slate-400'
+		base: 'bg-slate-950/90 text-slate-100 border border-slate-700 rounded-xl focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 transition-colors shadow-xs placeholder:text-slate-500'
 	},
 	card: {
-		base: 'bg-white border border-slate-200 rounded-2xl shadow-xs transition-shadow hover:shadow-md',
-		flat: 'bg-white border border-slate-200 rounded-2xl',
-		elevated: 'bg-white border border-slate-200/80 rounded-2xl shadow-md'
+		base: 'bg-slate-900/90 border border-slate-800 rounded-2xl shadow-xs transition-shadow hover:shadow-md',
+		flat: 'bg-slate-900/80 border border-slate-800 rounded-2xl',
+		elevated: 'bg-slate-900 border border-slate-700/90 rounded-2xl shadow-lg'
 	},
 	dropdownSelect: {
-		trigger: 'bg-white border border-slate-200 rounded-xl text-slate-900 hover:border-slate-300 shadow-xs',
-		content: 'bg-white border border-slate-200 rounded-2xl shadow-lg text-slate-800 z-50'
+		trigger: 'bg-slate-950/90 border border-slate-700 rounded-xl text-slate-100 hover:border-slate-600 shadow-xs',
+		content: 'bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl text-slate-100 z-50'
 	}
 } as const;
 
@@ -530,38 +530,38 @@ export const BLENDER_NODE_SHORTCUTS: readonly NodeGraphShortcutSpec[] = [
 export const EVIDENCE_TOKENS = {
 	measured: {
 		label: 'MEASURED',
-		color: '#059669',
-		badgeClass: 'bg-emerald-50 text-emerald-800 border border-emerald-200 rounded-md',
+		color: '#10b981',
+		badgeClass: 'bg-emerald-950/80 text-emerald-300 border border-emerald-700/60 rounded-md',
 		description: 'Verified directly against live Coordinator D1 or leased observation receipt.'
 	},
 	qualified: {
 		label: 'QUALIFIED',
-		color: '#0284c7',
-		badgeClass: 'bg-sky-50 text-sky-800 border border-sky-200 rounded-md',
+		color: '#38bdf8',
+		badgeClass: 'bg-sky-950/80 text-sky-300 border border-sky-700/60 rounded-md',
 		description: 'Checked against scoped source access profile and RFC 9309 robots snapshot.'
 	},
 	illustrative: {
 		label: 'PROVISIONAL',
-		color: '#475569',
-		badgeClass: 'bg-slate-100 text-slate-700 border border-slate-300 rounded-md',
+		color: '#94a3b8',
+		badgeClass: 'bg-slate-800 text-slate-300 border border-slate-700 rounded-md',
 		description: 'Heuristic discovery lead pending operator review.'
 	},
 	unavailable: {
 		label: 'UNAVAILABLE',
 		color: '#64748b',
-		badgeClass: 'bg-slate-50 text-slate-500 border border-slate-200 rounded-md',
+		badgeClass: 'bg-slate-900 text-slate-400 border border-slate-800 rounded-md',
 		description: 'Target origin or coordinator endpoint currently unreachable.'
 	},
 	failed: {
 		label: 'REJECTED',
-		color: '#dc2626',
-		badgeClass: 'bg-red-50 text-red-700 border border-red-200 rounded-md',
+		color: '#ef4444',
+		badgeClass: 'bg-red-950/80 text-red-300 border border-red-700/60 rounded-md',
 		description: 'Failed validation, revoked lease, or denied by policy.'
 	},
 	unverified: {
 		label: 'UNVERIFIED',
-		color: '#d97706',
-		badgeClass: 'bg-amber-50 text-amber-800 border border-amber-200 rounded-md',
+		color: '#f59e0b',
+		badgeClass: 'bg-amber-950/80 text-amber-300 border border-amber-700/60 rounded-md',
 		description: 'Awaiting operator or moderator verification.'
 	}
 } as const;

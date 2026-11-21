@@ -1,7 +1,7 @@
 <script lang="ts">
 	import type { EvidenceState } from '$lib/components/ui/types';
 	import { EVIDENCE_TOKENS, CONTROL_HEIGHTS } from '$lib/components/ui/tokens';
-	import { ShieldCheck, CheckCircle2, Sparkles, HelpCircle, AlertTriangle, Clock } from 'lucide-svelte';
+	import { ShieldCheck, CheckCircle2, Sparkles, HelpCircle, AlertTriangle, Clock } from '@lucide/svelte';
 
 	let {
 		state = 'illustrative',
@@ -30,8 +30,8 @@
 	let IconComponent = $derived(stateIcons[state] ?? Sparkles);
 	let heightClass = $derived(
 		size === 'sm'
-			? `${CONTROL_HEIGHTS.xs.class} text-[10px] px-2`
-			: `${CONTROL_HEIGHTS.sm.class} text-xs px-2.5`
+			? `${CONTROL_HEIGHTS.xs} text-[10px] px-2`
+			: `${CONTROL_HEIGHTS.sm} text-xs px-2.5`
 	);
 </script>
 

@@ -26,15 +26,15 @@
 			onValueChange?.(String(val));
 		}
 	}}
-	class="inline-flex items-center gap-1 p-1 bg-slate-100 rounded-xl border border-slate-200 {className}"
+	class="inline-flex items-center gap-1 p-1 bg-slate-900 rounded-xl border border-slate-800 {className}"
 >
 	{#each options as opt}
 		<Primitive.Item
 			value={opt.value}
 			disabled={opt.disabled}
 			class="px-3 py-1 text-xs font-medium rounded-lg transition-all cursor-pointer select-none
-				text-slate-600 hover:text-slate-900
-				data-[state=on]:bg-white data-[state=on]:text-emerald-700 data-[state=on]:shadow-xs data-[state=on]:font-semibold
+				text-slate-300 hover:text-white
+				data-[state=on]:bg-slate-800 data-[state=on]:text-emerald-300 data-[state=on]:shadow-xs data-[state=on]:font-semibold
 				disabled:opacity-40 disabled:cursor-not-allowed"
 		>
 			{opt.label}

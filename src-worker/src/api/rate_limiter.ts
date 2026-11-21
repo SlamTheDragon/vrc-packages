@@ -180,8 +180,7 @@ export function rateLimitResponse(
         "X-RateLimit-Limit": String(result.limit),
         "X-RateLimit-Remaining": "0",
         "X-RateLimit-Reset": String(resetAtEpoch),
-        "Cache-Control": "no-store",
-        "Access-Control-Allow-Origin": "*"
+        "Cache-Control": "no-store"
       }
     }
   );

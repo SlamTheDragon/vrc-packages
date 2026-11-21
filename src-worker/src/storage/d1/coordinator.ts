@@ -143,8 +143,17 @@ export class Coordinator
     return this.workforce.heartbeat(request, principal);
   }
 
-  claim(request: ClaimRequest, principal: NodePrincipal): Promise<ClaimResponse> {
+  async claim(request: ClaimRequest, principal: NodePrincipal): Promise<ClaimResponse> {
+    try {
+      await this.observation.retryPendingAutoPromotions();
+    } catch {
+      // Best-effort durable lead promotion sweep before claim scan
+    }
     return this.workforce.claim(request, principal);
+  }
+
+  retryPendingAutoPromotions(limit?: number): Promise<number> {
+    return this.observation.retryPendingAutoPromotions(limit);
   }
 
   submit(request: ResultRequest, principal: NodePrincipal): Promise<ResultResponse> {

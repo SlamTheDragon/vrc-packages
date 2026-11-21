@@ -1,0 +1,11 @@
+---
+import AdminLayout from '../layouts/AdminLayout.astro';
+import ModeratorDashboard from '$lib/components/admin/moderator/ModeratorDashboard.svelte';
+---
+
+<AdminLayout
+	title="Moderator Queue · VRC Packages"
+	description="Moderator Content Rating and Application Review Queue for VRC Packages (VRCP)."
+>
+	<ModeratorDashboard client:load />
+</AdminLayout>

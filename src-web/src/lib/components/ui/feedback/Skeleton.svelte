@@ -6,4 +6,4 @@
 	} = $props();
 </script>
 
-<div class="animate-pulse rounded-xl bg-slate-200/80 {className}"></div>
+<div class="animate-pulse rounded-xl bg-slate-800/80 {className}"></div>

@@ -910,6 +910,51 @@ export class ObservationPlane {
     return response;
   }
 
+  async retryPendingAutoPromotions(limit = 20): Promise<number> {
+    const now = new Date(this.ctx.now()).toISOString();
+    const activeRule = await this.ctx.db
+      .prepare("SELECT 1 FROM lead_autoqueue_rules WHERE disabled_at IS NULL AND expires_at > ? LIMIT 1")
+      .bind(now)
+      .first();
+    if (!activeRule) return 0;
+
+    const boundedLimit = Math.max(1, Math.min(limit, 50));
+    const pendingRes = await this.ctx.db
+      .prepare(
+        `SELECT lead_key, kind, target_url AS url FROM source_leads
+      WHERE status = 'pending_review'
+      ORDER BY last_seen_at DESC, lead_key ASC
+      LIMIT ?`
+      )
+      .bind(boundedLimit)
+      .all<{ lead_key: string; kind: string; url: string }>();
+    const rows = pendingRes.results || [];
+    let promoted = 0;
+    for (const row of rows) {
+      const rule = await this.ctx.activeAutoQueueRuleForLead(row.kind, row.url);
+      if (!rule) continue;
+      try {
+        await this.approveDiscoveryLeadFn(
+          row.lead_key,
+          rule.minDelayMs,
+          `auto-rule:${rule.ruleId}`,
+          "Matched reviewed auto-queue rule",
+          rule.ruleId
+        );
+        promoted++;
+      } catch (cause) {
+        await this.ctx.db
+          .prepare(
+            `INSERT INTO operator_audit_log(entity_type,entity_id,actor,action,reason,occurred_at)
+          VALUES ('rule',?,'coordinator','promotion_failed',?,?)`
+          )
+          .bind(rule.ruleId, cause instanceof Error ? cause.message.slice(0, 300) : "Unknown promotion failure", now)
+          .run();
+      }
+    }
+    return promoted;
+  }
+
   async submitBatch(request: BatchResultRequest, principal: NodePrincipal): Promise<BatchResultResponse> {
     if (request.nodeId !== principal.nodeId) throw new CoordinatorConflict("Node identity mismatch", 403);
     const receipts: BatchResultReceipt[] = [];

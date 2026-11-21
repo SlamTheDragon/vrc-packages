@@ -26,7 +26,7 @@
 		<Primitive.Portal>
 			<Primitive.Content
 				sideOffset={4}
-				class="z-50 overflow-hidden rounded-lg bg-slate-900 px-2.5 py-1 text-xs text-white shadow-md animate-in fade-in-0 zoom-in-95 {className}"
+				class="z-50 overflow-hidden rounded-lg bg-slate-800 border border-slate-700 px-2.5 py-1 text-xs text-slate-100 shadow-lg animate-in fade-in-0 zoom-in-95 {className}"
 			>
 				{#if content}
 					{@render content()}

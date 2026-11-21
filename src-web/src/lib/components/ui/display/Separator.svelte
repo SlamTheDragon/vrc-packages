@@ -12,7 +12,7 @@
 
 <Primitive.Root
 	{orientation}
-	class="bg-slate-200 shrink-0
+	class="bg-slate-800 shrink-0
 		{orientation === 'horizontal' ? 'h-px w-full' : 'h-full w-px'}
 		{className}"
 />

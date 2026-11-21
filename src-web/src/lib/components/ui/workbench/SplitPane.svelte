@@ -98,20 +98,20 @@
 			onpointerdown={handlePointerDown}
 			onkeydown={handleKeyDown}
 			class="{direction === 'horizontal'
-				? 'w-2 cursor-col-resize hover:bg-emerald-500/20'
-				: 'h-2 cursor-row-resize hover:bg-emerald-500/20'} bg-slate-200/80 transition-colors flex items-center justify-center shrink-0 z-20 focus:outline-hidden focus:bg-emerald-500/30"
+				? 'w-2 cursor-col-resize hover:bg-emerald-500/30'
+				: 'h-2 cursor-row-resize hover:bg-emerald-500/30'} bg-slate-800 transition-colors flex items-center justify-center shrink-0 z-20 focus:outline-hidden focus:bg-emerald-500/40"
 		>
 			<div
 				class="{direction === 'horizontal'
 					? 'w-0.5 h-8'
-					: 'h-0.5 w-8'} rounded-full bg-slate-400"
+					: 'h-0.5 w-8'} rounded-full bg-slate-500"
 			></div>
 		</div>
 
 		<!-- Second Pane -->
 		<div
 			data-slot="split-pane-second"
-			class="flex-1 min-w-0 min-h-0 relative overflow-hidden bg-white"
+			class="flex-1 min-w-0 min-h-0 relative overflow-hidden bg-slate-900"
 		>
 			{@render second()}
 		</div>

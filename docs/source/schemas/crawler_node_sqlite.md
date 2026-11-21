@@ -5,7 +5,7 @@
 > **Owning Sector:** Sector 1 (`crawler-network`)  
 > **Schema Version:** `2`
 
-Each headless Crawler Node maintains an isolated local SQLite database strictly for run journals, task telemetry, and durable outbox replay. Nodes never access Coordinator D1 directly.
+Each headless Crawler Node maintains an isolated local SQLite database for run journals, task telemetry, and durable outbox replay. Nodes never access Coordinator D1 directly.
 
 ## 1. Connection Pragmas
 
@@ -13,7 +13,7 @@ Each headless Crawler Node maintains an isolated local SQLite database strictly 
 - `PRAGMA foreign_keys = ON;`
 - `PRAGMA busy_timeout = 10000;`
 
-In Docker Compose deployments, mount one isolated persistent volume per node container (for example `node-data-1:/app/data`) so two processes never contend on one `node.db`.
+In Docker Compose deployments, mount one isolated persistent volume per node container (such as `node-data-1:/app/data`). Two processes must never share one `node.db`.
 
 ## 2. Exact SQLite Tables (4 Tables)
 
@@ -35,8 +35,10 @@ In Docker Compose deployments, mount one isolated persistent volume per node con
 ## 4. Durable Outbox Bounds and Settlement Invariants
 
 Verified against `src-crawler/src/runner/daemon.ts` and `local_sqlite.ts`:
+
 - **Pending quota**: `maxPendingOutboxQuota = 1000` rows. Reaching quota pauses new `/v1/node/jobs/claim` calls until the outbox drains.
 - **Retention TTL**: `outboxTtlMs = 86_400_000` (24 hours), pruned on `outboxPruneIntervalMs = 3_600_000` (1 hour). Expired rows lose replay eligibility.
 - **Batch flush bounds**: `flushOutbox` reads up to `batchLimit = 50` due rows and submits in chunks of `MAX_BATCH_RESULTS = 10` (`POST /v1/node/jobs/results`).
+
 - **Retry backoff**: Transient delivery failures schedule `next_retry_at = now + min(5_000 * 2^retryCount, 60_000)` ms.
-- **Settled-row protection (`R15-C17`)**: Active-state SQL guards prevent late failure bookkeeping from reopening `sent` or `dead` rows; duplicate accepted receipts preserve the original receipt and counters atomically.
+- **Settled-row protection**: Active-state SQL guards prevent late failure updates from reopening `sent` or `dead` rows. Duplicate accepted receipts preserve the original receipt and counters atomically.

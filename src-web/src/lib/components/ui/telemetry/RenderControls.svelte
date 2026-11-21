@@ -19,7 +19,7 @@
 	const speeds = [0.5, 1, 2, 5];
 </script>
 
-<div class="inline-flex items-center gap-2 p-1.5 bg-white border border-slate-200 rounded-xl shadow-sm {className}">
+<div class="inline-flex items-center gap-2 p-1.5 bg-slate-900 border border-slate-800 rounded-xl shadow-sm {className}">
 	<Button
 		variant={isPlaying ? 'amber' : 'primary'}
 		size="xs"
@@ -44,7 +44,7 @@
 		<RotateCcw size={13} />
 	</Button>
 
-	<div class="w-px h-4 bg-slate-200 mx-0.5"></div>
+	<div class="w-px h-4 bg-slate-800 mx-0.5"></div>
 
 	<div class="inline-flex items-center gap-0.5">
 		{#each speeds as s}
@@ -53,8 +53,8 @@
 				onclick={() => (speed = s)}
 				class="px-1.5 py-0.5 text-[10px] font-mono rounded cursor-pointer transition-colors
 					{speed === s
-						? 'bg-slate-900 text-white font-bold'
-						: 'text-slate-600 hover:bg-slate-100'}"
+						? 'bg-emerald-600 text-white font-bold'
+						: 'text-slate-300 hover:bg-slate-800'}"
 			>
 				{s}x
 			</button>

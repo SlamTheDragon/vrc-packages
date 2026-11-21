@@ -1,18 +1,11 @@
 ---
-import { version } from '../../package.json';
+import AdminLayout from '../layouts/AdminLayout.astro';
+import AdminIndexView from '$lib/components/admin/AdminIndexView.svelte';
 ---
 
-<html lang="en">
-	<head>
-		<meta charset="utf-8" />
-		<link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-		<link rel="icon" href="/favicon.ico" />
-		<meta name="viewport" content="width=device-width" />
-		<meta name="generator" content={Astro.generator} />
-		<meta name="vrc-packages-version" content={version} />
-		<title>VRC Packages</title>
-	</head>
-	<body>
-		<h1>VRC Packages</h1>
-	</body>
-</html>
+<AdminLayout
+	title="VRC Packages · Governance & Moderation Hub"
+	description="Downstream Operator and Moderator Governance Console for VRC Packages (VRCP)."
+>
+	<AdminIndexView client:load />
+</AdminLayout>
