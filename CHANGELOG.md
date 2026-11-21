@@ -198,14 +198,10 @@ See full history at [docs/changelogs/vrcp-web/preview](https://github.com/SlamTh
 ## VRC Packages Worker - `vrcp-worker-preview`
 
 <!-- vrcp-worker-preview-DESCRIPTION_SUMMARY -->
-Enforce origin-validated browser CORS and pre-authentication OPTIONS preflight headers on authenticated endpoints, adopt the Layer B preview SDK discriminated report union, and retry pending auto-queue lead promotions during node job claims.
 <!-- vrcp-worker-preview-DESCRIPTION_SUMMARY -->
 ### Added
-- **Origin-Validated Browser CORS and Preflight**: Centralize Worker CORS headers in `src/api/cors.ts`, validate `Origin` against `CORS_ALLOWED_ORIGINS` on `/v1/operator/*`, `/v1/moderator/*`, `/v1/user/*`, and authenticated `/v1/app/*` routes, handle `OPTIONS` preflight before authentication, keep `/v1/node/*` non-CORS, and preserve wildcard CORS only on `/v1/app/index` and `/v1/app/index/delta`.
-- **Durable Auto-Queue Lead Promotion Retry**: Run `retryPendingAutoPromotions` during node job claims so `pending_review` leads matching active auto-queue rules promote durably after transient post-commit failures.
 ### Bugs Fixed
 ### Changes
-- **Layer B Preview SDK Adoption**: Adopt `vrc-packages-api-preview` `2026.11.1-pre` and `vrc-packages-network` `2026.11.1` with strict three-branch discriminated report validation on `POST /v1/app/report`.
 See full history at [docs/changelogs/vrcp-worker/preview](https://github.com/SlamTheDragon/vrc-packages/tree/main/docs/changelogs/vrcp-worker/preview)
 
 ---
