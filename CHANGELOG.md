@@ -147,39 +147,27 @@ See full history at [docs/changelogs/vrcp-crawler-client/preview](https://github
 ## VRC Packages Crawler - `vrcp-crawler-node-preview`
 
 <!-- vrcp-crawler-node-preview-DESCRIPTION_SUMMARY -->
-Execute delegated robots.txt preflight refreshes during empty job claims using pinned DNS lookups and SSRF defenses. Scale heartbeat pulse intervals dynamically between 5 and 30 seconds based on origin duration. Remove Watchtower and host socket mounts from Docker compose. Require pinned image digests and isolate multi-node data volumes. Verify multi-platform fleet crawl simulation and multi-process crash-restart outbox batch replay. Validate robots refresh wire payloads with shared network schemas and remove dead pre-lease modules.
+Adopt shared network robots validation and target guards, remove obsolete pre-lease modules, and verify multi-process fleet exclusion and outbox replay.
 <!-- vrcp-crawler-node-preview-DESCRIPTION_SUMMARY -->
 ### Added
-- **Dynamic Heartbeat Scaling**: Scale crawler heartbeat intervals dynamically between 5 and 30 seconds based on origin response durations (R54-C39B). Reduces coordinator subrequest traffic while maintaining lease authority during slow fetches.
-- **Fleet Crawl Simulation Suite**: Verify concurrent multi-node lease isolation, multi-driver ingestion (VPM, GitHub, Booth, Ko-fi), outbox edge retry, and crash-restart recovery (FLEET-S4).
-- **Multi-Process Fleet and Outbox Replay Verification**: Verify concurrent separate-process origin-lease mutual exclusion and crash-restart SQLite outbox batch replay across isolated node databases.
-- **Delegated Robots Preflight Ingestion**: Ingest leased robots.txt preflight refresh tasks when job claims return empty (R24-C21). Retrieve snapshots using SSRF-safe pinned metadata transport and submit results to coordinator.
-- **Robots Refresh Wire Validation**: Validate `/v1/node/robots/claim` and `/v1/node/robots/result` payloads in `CoordinatorClient` with `vrc-packages-network/node` schemas.
-- **Batch Claim Queueing**: Queue multiple claimed jobs from coordinator responses to prevent abandoned leases in daemon execution.
-- **Clock Offset Calibration**: Calibrate local lease deadlines against coordinator serverTime received in heartbeats and date headers.
-- **Activity and Finding Broadcast**: Broadcast operational activities and discovery findings with dedicated tags to the node log file.
-- **Recovery Checks**: Exercise abrupt process termination over loopback HTTP and actual SQLite-full rollback without filling host disks.
+- **Multi-process fleet and outbox replay verification:** Verify concurrent multi-process origin-lease mutual exclusion and crash-restart SQLite outbox batch replay across isolated node processes.
 ### Bugs Fixed
-- **Zero-Binary Ingestion**: Reject URL targets with binary extensions and responses with binary content types before socket or body processing.
-- **Timestamp Provenance**: Removed the storefront creation-date fallback from modification evidence. Valid modification metadata remains available.
-- **Outbox Settlement**: Ignore late failures for sent or terminal entries. Repeated acknowledgments preserve the first receipt and completion metrics.
-- **Lease Deadline**: Abort source work when the lease expires, even if a heartbeat is pending. An expired lease starts no fetch.
 ### Changes
-- **Shared Target and Binary Guards**: Enforce `ARCHIVE_BINARY_EXTENSIONS`, `isArchiveOrBinaryUrl`, `isStorefrontProductTarget`, `parseGitHubOwnerRepo`, and `normalizeGitHubRepositoryUrl` from `vrc-packages-network/source-targets`.
-- **Pre-Lease Surplus Removal**: Delete unused pre-lease circuit breaker, adaptive limiter, local robots parser, SimHash, IANA registry, and token identity modules from `src-crawler/`.
-- **Docker Fleet Configuration**: Removed unverified Watchtower updater and host Docker socket bindings. Required pinned container image digests and documented multi-node volume isolation.
-- **Environment Template**: Rewrote .env.example with documented configuration values for headless node and Docker fleet deployments.
-- **Runbook Reconciliation**: Updated node and network specifications to reflect environment-variable configuration, activity logging, and delta tombstones.
+- **Robots refresh wire validation:** Validate `/v1/node/robots/claim` and `/v1/node/robots/result` payloads in `CoordinatorClient` with `vrc-packages-network/node` schemas and typed daemon calls.
+- **Shared target and binary guards:** Enforce `ARCHIVE_BINARY_EXTENSIONS`, `isArchiveOrBinaryUrl`, `isStorefrontProductTarget`, `parseGitHubOwnerRepo`, and `normalizeGitHubRepositoryUrl` from `vrc-packages-network/source-targets`.
+- **Pre-lease surplus removal:** Delete unused pre-lease circuit breaker, adaptive limiter, local robots parser, SimHash, IANA registry, and token identity modules from `src-crawler/`.
 See full history at [docs/changelogs/vrcp-crawler-node/preview](https://github.com/SlamTheDragon/vrc-packages/tree/main/docs/changelogs/vrcp-crawler-node/preview)
 
 ## VRC Packages API - `vrcp-packages-api-preview`
 
 <!-- vrcp-packages-api-preview-DESCRIPTION_SUMMARY -->
+Wrap fetch invocation inside `VRCPackageClient` so browser callers do not fail on `Window.fetch` receiver binding.
 <!-- vrcp-packages-api-preview-DESCRIPTION_SUMMARY -->
 ### Added
 ### Bugs Fixed
+- **Browser fetch receiver binding:** Wrap `fetch` invocation inside `VRCPackageClient` so browser callers never throw `Illegal invocation` on `Window.fetch`.
 ### Changes
-See full history at [docs/changelogs/vrcp-packages-api/preview](https://github.com/SlamTheDragon/vrc-packages/tree/main/docs/changelogs/vrcp-packages-api/preview)
+See full history at [docs/changelogs/vrcp-packages-api/preview](https://github.com/SlamTheDragon/vrc-packages/tree/main/docs/changelogs/vrc-packages-api/preview)
 
 ---
 

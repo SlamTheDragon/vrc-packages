@@ -161,11 +161,9 @@ See full history at [docs/changelogs/vrcp-crawler-node/preview](https://github.c
 ## VRC Packages API - `vrcp-packages-api-preview`
 
 <!-- vrcp-packages-api-preview-DESCRIPTION_SUMMARY -->
-Wrap fetch invocation inside `VRCPackageClient` so browser callers do not fail on `Window.fetch` receiver binding.
 <!-- vrcp-packages-api-preview-DESCRIPTION_SUMMARY -->
 ### Added
 ### Bugs Fixed
-- **Browser fetch receiver binding:** Wrap `fetch` invocation inside `VRCPackageClient` so browser callers never throw `Illegal invocation` on `Window.fetch`.
 ### Changes
 See full history at [docs/changelogs/vrcp-packages-api/preview](https://github.com/SlamTheDragon/vrc-packages/tree/main/docs/changelogs/vrc-packages-api/preview)
 
