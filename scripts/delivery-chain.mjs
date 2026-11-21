@@ -41,7 +41,7 @@ import {
 } from "./pipeline-utils.mjs";
 import { allowedBinary, checkedAssetBytes, checkSourceRun, checkRemoteTag, sameSourceRunLink, sourceRunID } from "./release-assets.mjs";
 import { checkWorkerArtifacts, downloadActionsArchive } from "./worker-artifacts.mjs";
-import { checkRecoveryReceipts, checkRecoveryRun, recoveryIdentity } from "./delivery-recovery.mjs";
+import { checkRecoveryReceipts, checkRecoveryRun, recoveryIdentity, supersededPreviewTag } from "./delivery-recovery.mjs";
 import { extractProductChangelog } from "./changelog.mjs";
 import * as p from "@clack/prompts";
 import { defineCommand, runMain } from "citty";
@@ -160,8 +160,10 @@ export async function planDelivery(channel, product, workspace = root, now = new
     try {
       const checked = publicationProof === inspectDelivery
         ? await inspectPredecessorAssets(channel, product, previous, workspace, undefined, git)
-        : await requirePublicationProof(channel, product, previous, workspace, publicationProof);
-      predecessorProof = { verified: true, tag: `${productTagPrefixes[product]}/v${previous}`, status: checked.status };
+        : await requirePredecessorPublicationProof(channel, product, previous, workspace, publicationProof);
+      const effectiveTag = checked?.tag ||
+        `${productTagPrefixes[product]}/v${resolveEffectivePredecessor(channel, product, previous, workspace).version}`;
+      predecessorProof = { verified: true, tag: effectiveTag, status: checked.status };
     } catch (error) {
       blockers.push(`Predecessor publication proof failed for ${productTagPrefixes[product]}/v${previous}: ${error instanceof Error ? error.message : String(error)}`);
       predecessorProof = { verified: false, tag: `${productTagPrefixes[product]}/v${previous}` };
@@ -279,7 +281,7 @@ export async function startDelivery(channel, product, execute = false, workspace
       throw new Error(`Force release is authorized only for repository owner/admin ${repoOwner} (got ${user.login})`);
     }
   }
-  await requirePublicationProof(channel, product, plan.previous, workspace, publicationProof);
+  await requirePredecessorPublicationProof(channel, product, plan.previous, workspace, publicationProof);
   if (git(workspace, "rev-parse", "HEAD") !== plan.head || git(workspace, "symbolic-ref", "--short", "HEAD") !== plan.branch) {
     throw new Error("Repository changed after planning");
   }
@@ -485,6 +487,7 @@ export async function inspectPredecessorAssets(channel, product, version, worksp
   if (!Object.hasOwn(workflows, product) || !["release", "preview"].includes(channel) || semver.valid(version) !== version) {
     throw new Error("Invalid predecessor identity");
   }
+  version = resolveEffectivePredecessor(channel, product, version, workspace).version;
   const tag = `${productTagPrefixes[product]}/v${version}`;
   const repository = repositoryFromRemote(git(workspace, "remote", "get-url", "origin"));
   const base = `/repos/${repository}`;
@@ -556,6 +559,37 @@ export async function requirePublicationProof(channel, product, version, workspa
   return current;
 }
 
+export function resolveEffectivePredecessor(channel, product, version, workspace = root) {
+  if (channel !== "preview") {
+    return { version, supersededFrom: [] };
+  }
+  const seen = new Set([version]);
+  const supersededFrom = [];
+  let currentVersion = version;
+  while (supersededFrom.length < 16) {
+    const tag = `${productTagPrefixes[product]}/v${currentVersion}`;
+    const entry = supersededPreviewTag(tag, workspace);
+    if (!entry) {
+      return { version: currentVersion, supersededFrom };
+    }
+    if (entry.product !== product || entry.channel !== channel || entry.version !== currentVersion) {
+      throw new Error(`Superseded preview entry for ${tag} does not match ${channel} ${product} v${currentVersion}`);
+    }
+    if (seen.has(entry.supersededByPredecessor)) {
+      throw new Error(`Cycle detected in supersededPreviewTags for ${tag}`);
+    }
+    seen.add(entry.supersededByPredecessor);
+    supersededFrom.push(tag);
+    currentVersion = entry.supersededByPredecessor;
+  }
+  throw new Error(`Superseded preview chain exceeded maximum depth for ${product} v${version}`);
+}
+
+export async function requirePredecessorPublicationProof(channel, product, version, workspace = root, inspect = inspectDelivery) {
+  const { version: effectiveVersion } = resolveEffectivePredecessor(channel, product, version, workspace);
+  return requirePublicationProof(channel, product, effectiveVersion, workspace, inspect);
+}
+
 /**
  * Read the VRCP-Previous-Version trailer from the local tag annotation and verify that the
  * predecessor has a confirmed GitHub Release page with checked artifacts before CI proceeds.
@@ -574,7 +608,7 @@ export async function verifyPredecessor(tag, workspace = root, git = runGit, pub
       /^26\.10\.0-pre$/.test(previousVersion) || /^2026\.10\.0(-pre)?$/.test(previousVersion)) {
     return { readOnly: true, skipped: true, reason: "initial-placeholder", tag, previousTag };
   }
-  await requirePublicationProof(selected.channel, selected.product, previousVersion, workspace, publicationProof);
+  await requirePredecessorPublicationProof(selected.channel, selected.product, previousVersion, workspace, publicationProof);
   return { readOnly: true, skipped: false, tag, previousTag, channel: selected.channel, product: selected.product };
 }
 

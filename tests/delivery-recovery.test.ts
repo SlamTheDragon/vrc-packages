@@ -1,11 +1,13 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { recoveryIdentity, recoveryRunMatches, checkRecoveryRun, checkRecoveryRetry, checkRecoveryReceipts, requireRecoveryCI, ciSourceCommit, authorizeRecovery, diagnoseFailure, rerunWorkflowRun, revertDeliveryTag, createPatchBranch, mergeAndCleanupPatchBranch, promptInteractiveRecovery } from "../scripts/delivery-recovery.mjs";
-import { deliveryTroubleshooting } from "../scripts/delivery-chain.mjs";
+import { zipSync } from "fflate";
+import { recoveryIdentity, recoveryRunMatches, checkRecoveryRun, checkRecoveryRetry, checkRecoveryReceipts, requireRecoveryCI, ciSourceCommit, authorizeRecovery, diagnoseFailure, rerunWorkflowRun, revertDeliveryTag, createPatchBranch, mergeAndCleanupPatchBranch, promptInteractiveRecovery, supersededPreviewTag } from "../scripts/delivery-recovery.mjs";
+import { deliveryTroubleshooting, resolveEffectivePredecessor, requirePredecessorPublicationProof, requirePublicationProof, inspectPredecessorAssets, planDelivery } from "../scripts/delivery-chain.mjs";
 
 function fixture(tag = "vrcp-crawler/v0.0.6") {
   const identity = recoveryIdentity(tag);
@@ -736,6 +738,276 @@ test("delivery-recovery CLI patch-branch defaults omitted action to create", () 
     expect(res.branch).toBe("release/patch/package/v0.0.1");
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("supersededPreviewTag returns null when manifest is missing and fails closed when malformed", () => {
+  const missingDir = mkdtempSync(join(tmpdir(), "vrcp-superseded-missing-"));
+  const malformedDir = mkdtempSync(join(tmpdir(), "vrcp-superseded-bad-"));
+  try {
+    expect(supersededPreviewTag("cloudflare-worker/v2026.11.12-pre", missingDir)).toBeNull();
+    mkdirSync(join(malformedDir, ".github"), { recursive: true });
+    writeFileSync(join(malformedDir, ".github", "delivery-recoveries.json"), "{broken json");
+    expect(() => supersededPreviewTag("cloudflare-worker/v2026.11.12-pre", malformedDir)).toThrow();
+  } finally {
+    rmSync(missingDir, { recursive: true, force: true });
+    rmSync(malformedDir, { recursive: true, force: true });
+  }
+});
+
+test("supersededPreviewTag rejects non-deliverable web, release channel, invalid progression, and placeholder fallback", () => {
+  const baseCommit = "01e5ba428327dc70d29fe9faca9b2cafe8240d4f";
+  const baseTagObj = "e25b7f358b261b5c73c9612e11915628f9dc9713";
+  const cases = [
+    {
+      tag: "web/v2026.11.1-pre",
+      entry: {
+        product: "web", channel: "preview", version: "2026.11.1-pre",
+        commit: baseCommit, tagObject: baseTagObj, failedRun: 123, failedStage: "deploy",
+        supersededByPredecessor: "2026.10.1-pre", reason: "web is non-deliverable"
+      }
+    },
+    {
+      tag: "cloudflare-worker/v2026.11.12",
+      entry: {
+        product: "worker", channel: "release", version: "2026.11.12",
+        commit: baseCommit, tagObject: baseTagObj, failedRun: 123, failedStage: "deploy",
+        supersededByPredecessor: "2026.10.11", reason: "release tags are never superseded"
+      }
+    },
+    {
+      tag: "cloudflare-worker/v2026.11.12-pre",
+      entry: {
+        product: "worker", channel: "preview", version: "2026.11.12-pre",
+        commit: baseCommit, tagObject: baseTagObj, failedRun: 123, failedStage: "deploy",
+        supersededByPredecessor: "2026.11.13-pre", reason: "forward predecessor invalid"
+      }
+    },
+    {
+      tag: "cloudflare-worker/v2026.11.12-pre",
+      entry: {
+        product: "worker", channel: "preview", version: "2026.11.12-pre",
+        commit: baseCommit, tagObject: baseTagObj, failedRun: 123, failedStage: "deploy",
+        supersededByPredecessor: "2026.10.0-pre", reason: "initial placeholder predecessor rejected"
+      }
+    },
+    {
+      tag: "cloudflare-worker/v2026.11.12-pre",
+      entry: {
+        product: "worker", channel: "preview", version: "2026.11.12-pre",
+        commit: "badsha", tagObject: baseTagObj, failedRun: 123, failedStage: "deploy",
+        supersededByPredecessor: "2026.10.11-pre", reason: "bad commit sha"
+      }
+    },
+    {
+      tag: "cloudflare-worker/v2026.11.12-pre",
+      entry: {
+        product: "worker", channel: "preview", version: "2026.11.12-pre",
+        commit: baseCommit, tagObject: baseTagObj, failedRun: 123, failedStage: "deploy",
+        supersededByPredecessor: "2026.10.11-pre", reason: "   "
+      }
+    }
+  ];
+
+  for (const testCase of cases) {
+    const dir = mkdtempSync(join(tmpdir(), "vrcp-superseded-invalid-"));
+    try {
+      mkdirSync(join(dir, ".github"), { recursive: true });
+      writeFileSync(
+        join(dir, ".github", "delivery-recoveries.json"),
+        JSON.stringify({
+          schemaVersion: 1,
+          repository: "SlamTheDragon/vrc-packages",
+          tags: {},
+          supersededPreviewTags: { [testCase.tag]: testCase.entry }
+        })
+      );
+      expect(() => supersededPreviewTag(testCase.tag, dir)).toThrow();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+});
+
+test("requirePredecessorPublicationProof resolves superseded preview tag while requirePublicationProof stays exact", async () => {
+  const valid = supersededPreviewTag("cloudflare-worker/v2026.11.12-pre");
+  expect(valid).not.toBeNull();
+  expect(valid?.supersededByPredecessor).toBe("2026.10.11-pre");
+
+  const resolved = resolveEffectivePredecessor("preview", "worker", "2026.11.12-pre");
+  expect(resolved).toEqual({
+    version: "2026.10.11-pre",
+    supersededFrom: ["cloudflare-worker/v2026.11.12-pre"]
+  });
+
+  const releaseResolved = resolveEffectivePredecessor("release", "worker", "2026.11.12-pre");
+  expect(releaseResolved).toEqual({
+    version: "2026.11.12-pre",
+    supersededFrom: []
+  });
+
+  const mockInspect = async (tag) => {
+    if (tag === "cloudflare-worker/v2026.10.11-pre") {
+      return {
+        tag,
+        product: "worker",
+        channel: "preview",
+        version: "2026.10.11-pre",
+        artifactsVerified: true,
+        status: "preview-deployed-no-release-assets"
+      };
+    }
+    return {
+      tag,
+      product: "worker",
+      channel: "preview",
+      version: "2026.11.12-pre",
+      artifactsVerified: false,
+      status: "deploy-failed"
+    };
+  };
+
+  const pred = await requirePredecessorPublicationProof("preview", "worker", "2026.11.12-pre", undefined, mockInspect);
+  expect(pred.tag).toBe("cloudflare-worker/v2026.10.11-pre");
+  expect(pred.artifactsVerified).toBe(true);
+
+  await expect(
+    requirePublicationProof("preview", "worker", "2026.11.12-pre", undefined, mockInspect)
+  ).rejects.toThrow(/lacks publication\/artifact proof/);
+
+  const bundleBytes = Buffer.from("export default { fetch() { return new Response('ok'); } };\n");
+  const bundleSha = createHash("sha256").update(bundleBytes).digest("hex");
+  const receiptBytes = Buffer.from(JSON.stringify({
+    purpose: "ci-release",
+    product: "worker",
+    channel: "preview",
+    version: "2026.10.11-pre",
+    tag: "cloudflare-worker/v2026.10.11-pre",
+    commit: "01e5ba428327dc70d29fe9faca9b2cafe8240d4f",
+    environment: "cloudflare-preview",
+    sha256: bundleSha
+  }));
+  const archiveBytes = Buffer.from(zipSync({
+    "worker_entry.js": bundleBytes,
+    "worker_entry.js.json": receiptBytes
+  }));
+  const archiveDigest = `sha256:${createHash("sha256").update(archiveBytes).digest("hex")}`;
+
+  const inspectedPredecessor = await inspectPredecessorAssets(
+    "preview",
+    "worker",
+    "2026.11.12-pre",
+    undefined,
+    async (path) => {
+      if (path.endsWith("/git/ref/tags/cloudflare-worker%2Fv2026.10.11-pre")) {
+        return {
+          ref: "refs/tags/cloudflare-worker/v2026.10.11-pre",
+          object: { sha: "01e5ba428327dc70d29fe9faca9b2cafe8240d4f", type: "commit" }
+        };
+      }
+      if (path.includes("/actions/workflows/cloudflare-worker.yml/runs")) {
+        return {
+          workflow_runs: [
+            {
+              id: 99,
+              path: ".github/workflows/cloudflare-worker.yml",
+              head_sha: "01e5ba428327dc70d29fe9faca9b2cafe8240d4f",
+              head_branch: "cloudflare-worker/v2026.10.11-pre",
+              status: "completed",
+              conclusion: "success"
+            }
+          ]
+        };
+      }
+      if (path.includes("/actions/runs/99/jobs")) {
+        return {
+          jobs: [
+            { name: "build", status: "completed", conclusion: "success" },
+            { name: "deploy", status: "completed", conclusion: "success" }
+          ]
+        };
+      }
+      if (path.includes("/actions/runs/99/artifacts")) {
+        return {
+          total_count: 1,
+          artifacts: [
+            {
+              id: 501,
+              name: "worker-preview-bundle",
+              expired: false,
+              size_in_bytes: archiveBytes.byteLength,
+              digest: archiveDigest,
+              workflow_run: { head_sha: "01e5ba428327dc70d29fe9faca9b2cafe8240d4f" }
+            }
+          ]
+        };
+      }
+      if (path.endsWith("/actions/artifacts/501/zip")) {
+        return archiveBytes;
+      }
+      if (path.endsWith("/releases/tags/cloudflare-worker%2Fv2026.10.11-pre")) {
+        return null;
+      }
+      throw new Error(`Unexpected GitHub path ${path}`);
+    },
+    (_cwd, ...args) =>
+      args.flat().includes("remote")
+        ? "https://github.com/SlamTheDragon/vrc-packages.git"
+        : "01e5ba428327dc70d29fe9faca9b2cafe8240d4f"
+  );
+  expect(inspectedPredecessor.tag).toBe("cloudflare-worker/v2026.10.11-pre");
+  expect(inspectedPredecessor.status).toBe("preview-deployed-no-release-assets");
+
+  const planDir = mkdtempSync(join(tmpdir(), "vrcp-superseded-plan-"));
+  try {
+    mkdirSync(join(planDir, ".github"), { recursive: true });
+    writeFileSync(join(planDir, "config.preview.versions.json"), JSON.stringify({
+      "preview-crawler": "2026.10.10-pre",
+      "preview-crawler-client": "26.10.8-pre",
+      "preview-package": "2026.11.12-pre",
+      "preview-web": "2026.10.0-pre",
+      "preview-worker": "2026.11.12-pre",
+      "preview-network": "2026.11.9"
+    }));
+    writeFileSync(join(planDir, "config.versions.json"), JSON.stringify({
+      "release-crawler": "0.0.1",
+      "release-crawler-client": "0.0.1",
+      "release-package": "0.0.1",
+      "release-web": "0.0.1",
+      "release-worker": "0.0.1"
+    }));
+    writeFileSync(
+      join(planDir, ".github", "delivery-recoveries.json"),
+      readFileSync(new URL("../.github/delivery-recoveries.json", import.meta.url), "utf8")
+    );
+    const mockPlanGit = (_cwd, ...args) => {
+      if (args[0] === "symbolic-ref") return "preview/crawler-network";
+      if (args[0] === "remote") return "https://github.com/SlamTheDragon/vrc-packages.git";
+      if (args[0] === "status" || args[0] === "for-each-ref") return "";
+      if (args[0] === "rev-parse") return "a".repeat(40);
+      if (args[0] === "ls-remote") {
+        return `${"a".repeat(40)}\trefs/heads/preview/crawler-network\n${"b".repeat(40)}\trefs/heads/main\n`;
+      }
+      if (args[0] === "show") return JSON.stringify({ "preview-worker": "2026.10.11-pre" });
+      return "";
+    };
+    const planned = await planDelivery(
+      "preview",
+      "worker",
+      planDir,
+      new Date("2026-11-21T00:00:00Z"),
+      mockPlanGit,
+      false,
+      false,
+      "patch",
+      mockInspect
+    );
+    expect(planned.blockers).toEqual([]);
+    expect(planned.version).toBe("2026.11.13-pre");
+    expect(planned.predecessorProof?.tag).toBe("cloudflare-worker/v2026.10.11-pre");
+    expect(planned.predecessorProof?.verified).toBe(true);
+  } finally {
+    rmSync(planDir, { recursive: true, force: true });
   }
 });
 

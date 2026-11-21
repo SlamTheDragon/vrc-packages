@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { defineCommand } from "citty";
@@ -79,6 +79,70 @@ export function recoveryIdentity(tag, workspace = root) {
   }
 
   return { ...identity, tag, repository: manifest.repository };
+}
+
+const supersededDeliverableProducts = new Set(["package", "network", "crawler", "crawler-client", "worker"]);
+const supersededAllowedStages = new Set(["build", "deploy", "release", "npm", "verify"]);
+
+function isInitialPlaceholderPreviewVersion(version) {
+  return version === "0.0.0" || version === "0.0.0-pre" ||
+    /^26\.10\.0-pre$/.test(version) || /^2026\.10\.0(-pre)?$/.test(version);
+}
+
+function isValidPreviewVersionForProduct(product, version) {
+  if (typeof version !== "string" || semver.valid(version) !== version) {
+    return false;
+  }
+  return product === "network" ? semver.prerelease(version) === null : version.endsWith("-pre");
+}
+
+export function supersededPreviewTag(tag, workspace = root) {
+  const filePath = resolve(workspace, manifestPath);
+  if (!existsSync(filePath)) {
+    return null;
+  }
+
+  let manifest;
+  try {
+    manifest = JSON.parse(readFileSync(filePath, "utf8"));
+  } catch (error) {
+    throw new Error(`Invalid recovery manifest at ${filePath}: ${error.message}`);
+  }
+
+  if (!manifest || typeof manifest !== "object" || Array.isArray(manifest) ||
+      manifest.schemaVersion !== 1 || manifest.repository !== "SlamTheDragon/vrc-packages") {
+    throw new Error("Superseded preview check failed closed: invalid recovery manifest header.");
+  }
+
+  if (manifest.supersededPreviewTags === undefined) {
+    return null;
+  }
+  if (!manifest.supersededPreviewTags || typeof manifest.supersededPreviewTags !== "object" ||
+      Array.isArray(manifest.supersededPreviewTags)) {
+    throw new Error("Superseded preview check failed closed: invalid supersededPreviewTags object.");
+  }
+  if (!Object.hasOwn(manifest.supersededPreviewTags, tag)) {
+    return null;
+  }
+
+  const entry = manifest.supersededPreviewTags[tag];
+  if (!entry || typeof entry !== "object" || Array.isArray(entry) ||
+      !supersededDeliverableProducts.has(entry.product) ||
+      !Object.hasOwn(productTagPrefixes, entry.product) ||
+      entry.channel !== "preview" ||
+      !isValidPreviewVersionForProduct(entry.product, entry.version) ||
+      `${productTagPrefixes[entry.product]}/v${entry.version}` !== tag ||
+      !isValidPreviewVersionForProduct(entry.product, entry.supersededByPredecessor) ||
+      isInitialPlaceholderPreviewVersion(entry.supersededByPredecessor) ||
+      !semver.lt(entry.supersededByPredecessor, entry.version) ||
+      !sha(entry.commit) || !sha(entry.tagObject) ||
+      !Number.isSafeInteger(entry.failedRun) || entry.failedRun < 1 ||
+      (entry.failedStage !== undefined && !supersededAllowedStages.has(entry.failedStage)) ||
+      typeof entry.reason !== "string" || entry.reason.trim().length === 0) {
+    throw new Error(`Superseded preview entry for ${tag} failed strict validation.`);
+  }
+
+  return { ...entry, tag, repository: manifest.repository };
 }
 
 /** This only selects a candidate. Every caller must also check its remote evidence. */
