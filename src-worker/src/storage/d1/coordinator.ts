@@ -174,6 +174,10 @@ export class Coordinator
     return this.operator.revokeNode(nodeId, input, actor);
   }
 
+  pruneNode(nodeId: string, actor: string, reason: string): Promise<void> {
+    return this.operator.pruneNode(nodeId, actor, reason);
+  }
+
   createNodeCredential(
     nodeId: string,
     capabilities: Platform[],

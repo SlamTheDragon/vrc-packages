@@ -40,6 +40,7 @@ import {
   decodeRuleCursor,
   IssueNodeCredentialSchema,
   NodeCredentialResponseSchema,
+  PruneNodeResponseSchema,
   OperatorNodeStatusSchema,
   OperatorNodeHeartbeatStateSchema,
   OperatorNodeRecordSchema,
@@ -459,6 +460,25 @@ describe("src-package wire protocols", () => {
       capabilities: ["vpm", "github"],
       reason: "Primary production worker"
     })).not.toThrow();
+
+    expect(() => PruneNodeResponseSchema.parse({
+      schemaVersion: 1,
+      nodeId: "primary-node",
+      status: "pruned"
+    })).not.toThrow();
+
+    expect(PruneNodeResponseSchema.safeParse({
+      schemaVersion: 1,
+      nodeId: "primary-node",
+      status: "revoked"
+    }).success).toBe(false);
+
+    expect(PruneNodeResponseSchema.safeParse({
+      schemaVersion: 1,
+      nodeId: "primary-node",
+      status: "pruned",
+      extra: true
+    }).success).toBe(false);
 
     expect(() => VerifyTakedownRequestSchema.parse({
       schemaVersion: 1,

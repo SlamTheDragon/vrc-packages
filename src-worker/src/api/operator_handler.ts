@@ -117,6 +117,7 @@ export async function handleOperatorRequest(
   const nodeListing = request.method === "GET" && url.pathname === "/v1/operator/nodes";
   const nodeIssue = request.method === "POST" && url.pathname === "/v1/operator/nodes";
   const nodeRevoke = request.method === "POST" && /^\/v1\/operator\/nodes\/([A-Za-z0-9._-]{1,100})\/revoke$/.exec(url.pathname);
+  const nodePrune = request.method === "DELETE" && /^\/v1\/operator\/nodes\/([A-Za-z0-9._-]{1,100})$/.exec(url.pathname);
   const jobListing = request.method === "GET" && url.pathname === "/v1/operator/jobs";
   const jobEnqueue = request.method === "POST" && url.pathname === "/v1/operator/jobs";
   const profileDisable = request.method === "POST" && /^\/v1\/operator\/source-profiles\/([^/]+)\/disable$/.exec(url.pathname);
@@ -132,6 +133,7 @@ export async function handleOperatorRequest(
   if (
     !nodeListing &&
     !nodeRevoke &&
+    !nodePrune &&
     !jobListing &&
     !jobEnqueue &&
     !listing &&
@@ -408,12 +410,14 @@ export async function handleOperatorRequest(
   }
 
   let body: unknown;
-  try {
-    body = await readJson(request);
-  } catch (error) {
-    if (error instanceof RangeError) return failure(413, "invalid_payload", error.message);
-    if (error instanceof UnsupportedMediaTypeError) return failure(error.status, "invalid_payload", error.message);
-    return failure(400, "bad_json", "Request body must be bounded valid JSON");
+  if (!nodePrune) {
+    try {
+      body = await readJson(request);
+    } catch (error) {
+      if (error instanceof RangeError) return failure(413, "invalid_payload", error.message);
+      if (error instanceof UnsupportedMediaTypeError) return failure(error.status, "invalid_payload", error.message);
+      return failure(400, "bad_json", "Request body must be bounded valid JSON");
+    }
   }
   try {
     if (nodeRevoke) {
@@ -427,6 +431,13 @@ export async function handleOperatorRequest(
           status: "revoked"
         })
       );
+    }
+    if (nodePrune) {
+      const body = await request.json().catch(() => ({}));
+      const parsed = RevokeNodeRequestSchema.safeParse(body);
+      if (!parsed.success) return failure(400, "invalid_body", parsed.error.issues[0]?.message ?? "Invalid request body");
+      await store.pruneNode(nodePrune[1], "operator-api", parsed.data.reason);
+      return ok({ schemaVersion: OPERATOR_PROTOCOL_VERSION, nodeId: nodePrune[1], status: "pruned" });
     }
     if (jobEnqueue) {
       const parsed = EnqueueJobRequestSchema.safeParse(body);
@@ -555,6 +566,7 @@ export async function handleOperatorRequest(
     );
   } catch (error) {
     const message = error instanceof Error ? error.message : "Operator action failed";
+    if (message === "Node not revoked") return failure(409, "not_revoked", "Node must be revoked before it can be pruned.");
     const missing =
       message === "Lead not found" ||
       message === "Rule not found" ||

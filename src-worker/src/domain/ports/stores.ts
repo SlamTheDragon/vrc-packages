@@ -82,6 +82,7 @@ export interface CoordinatorStore {
 
 export interface OperatorStore {
   revokeNode(nodeId: string, input: RevokeNodeRequest, actor: string): Promise<void> | void;
+  pruneNode(nodeId: string, actor: string, reason: string): Promise<void> | void;
   enqueueJob(input: EnqueueJobRequest, actor: string): Promise<string> | string;
   issueNodeCredential(input: IssueNodeCredential, actor: string): Promise<string> | string;
   listNodesPage(

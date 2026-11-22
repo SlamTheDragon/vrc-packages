@@ -2053,4 +2053,124 @@ describe("separate operator control API", () => {
       store.close();
     }
   });
+
+  test("DELETE /v1/operator/nodes/{nodeId} prunes revoked nodes with audit logging and rejects invalid requests", async () => {
+    let now = Date.parse("2026-10-06T00:00:00.000Z");
+    const store = await createInitializedD1Coordinator(":memory:", () => now);
+    try {
+      // 1. Issue and revoke a node
+      await store.issueNodeCredential(
+        { schemaVersion: 1, nodeId: "prune-node-1", capabilities: ["vpm"], reason: "Prune test fixture" },
+        "fixture"
+      );
+      now += 1000;
+      await store.revokeNode("prune-node-1", { schemaVersion: 1, reason: "Rotated node" }, "operator-api");
+
+      // 1. Happy path: prune node
+      const pruneRes = await handleOperatorRequest(
+        operatorRequest("/v1/operator/nodes/prune-node-1", "DELETE", {
+          schemaVersion: 1,
+          reason: "Decommissioned test node"
+        }),
+        store,
+        operatorToken
+      );
+      expect(pruneRes.status).toBe(200);
+      const pruneBody = (await pruneRes.json()) as { schemaVersion: number; nodeId: string; status: string };
+      expect(pruneBody).toEqual({
+        schemaVersion: 1,
+        nodeId: "prune-node-1",
+        status: "pruned"
+      });
+
+      // Verify node is gone
+      const listAfter = await store.listNodesPage();
+      expect(listAfter.nodes.some((n) => n.nodeId === "prune-node-1")).toBe(false);
+
+      // 2. 404 if node does not exist (including pruned node)
+      const notFoundRes = await handleOperatorRequest(
+        operatorRequest("/v1/operator/nodes/prune-node-1", "DELETE", {
+          schemaVersion: 1,
+          reason: "Decommissioned test node"
+        }),
+        store,
+        operatorToken
+      );
+      expect(notFoundRes.status).toBe(404);
+      const notFoundBody = (await notFoundRes.json()) as { schemaVersion: number; code: string; error: string };
+      expect(notFoundBody.schemaVersion).toBe(1);
+      expect(notFoundBody.code).toBe("not_found");
+
+      const nonExistentRes = await handleOperatorRequest(
+        operatorRequest("/v1/operator/nodes/never-existed-node", "DELETE", {
+          schemaVersion: 1,
+          reason: "Decommissioned test node"
+        }),
+        store,
+        operatorToken
+      );
+      expect(nonExistentRes.status).toBe(404);
+      const nonExistentBody = (await nonExistentRes.json()) as { schemaVersion: number; code: string; error: string };
+      expect(nonExistentBody.schemaVersion).toBe(1);
+      expect(nonExistentBody.code).toBe("not_found");
+
+      // 3. 409 not_revoked if node is still active
+      await store.issueNodeCredential(
+        { schemaVersion: 1, nodeId: "active-node-1", capabilities: ["booth"], reason: "Active node fixture" },
+        "fixture"
+      );
+      const activeRes = await handleOperatorRequest(
+        operatorRequest("/v1/operator/nodes/active-node-1", "DELETE", {
+          schemaVersion: 1,
+          reason: "Decommissioned test node"
+        }),
+        store,
+        operatorToken
+      );
+      expect(activeRes.status).toBe(409);
+      const activeBody = (await activeRes.json()) as { schemaVersion: number; code: string; error: string };
+      expect(activeBody.schemaVersion).toBe(1);
+      expect(activeBody.code).toBe("not_revoked");
+      expect(activeBody.error).toBe("Node must be revoked before it can be pruned.");
+
+      // 4. 400 invalid_body if body is missing or reason is empty/invalid
+      const missingBodyRes = await handleOperatorRequest(
+        operatorRequest("/v1/operator/nodes/active-node-1", "DELETE"),
+        store,
+        operatorToken
+      );
+      expect(missingBodyRes.status).toBe(400);
+      const missingBodyData = (await missingBodyRes.json()) as { schemaVersion: number; code: string; error: string };
+      expect(missingBodyData.schemaVersion).toBe(1);
+      expect(missingBodyData.code).toBe("invalid_body");
+
+      const emptyReasonRes = await handleOperatorRequest(
+        operatorRequest("/v1/operator/nodes/active-node-1", "DELETE", {
+          schemaVersion: 1,
+          reason: "   "
+        }),
+        store,
+        operatorToken
+      );
+      expect(emptyReasonRes.status).toBe(400);
+      const emptyReasonData = (await emptyReasonRes.json()) as { schemaVersion: number; code: string; error: string };
+      expect(emptyReasonData.schemaVersion).toBe(1);
+      expect(emptyReasonData.code).toBe("invalid_body");
+
+      const invalidVersionRes = await handleOperatorRequest(
+        operatorRequest("/v1/operator/nodes/active-node-1", "DELETE", {
+          schemaVersion: 2,
+          reason: "Decommissioned test node"
+        }),
+        store,
+        operatorToken
+      );
+      expect(invalidVersionRes.status).toBe(400);
+      const invalidVersionData = (await invalidVersionRes.json()) as { schemaVersion: number; code: string; error: string };
+      expect(invalidVersionData.schemaVersion).toBe(1);
+      expect(invalidVersionData.code).toBe("invalid_body");
+    } finally {
+      store.close();
+    }
+  });
 });

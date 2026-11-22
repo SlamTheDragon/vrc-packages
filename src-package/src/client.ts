@@ -77,6 +77,7 @@ import {
   type VerifyDelegatedClaimResponse,
   DelegatedClaimListResponseSchema, type DelegatedClaimListResponse,
   RevokeNodeRequestSchema, RevokeNodeResponseSchema, type RevokeNodeResponse,
+  PruneNodeResponseSchema, type PruneNodeResponse,
   EnqueueJobRequestSchema, EnqueueJobResponseSchema,
   type EnqueueJobRequest, type EnqueueJobResponse,
   InitializeCoordinatorRequestSchema,
@@ -640,6 +641,16 @@ export class VRCPackageClient {
         const body = RevokeNodeRequestSchema.parse({ schemaVersion: 1, reason });
         const response = await this.request<unknown>(`/v1/operator/nodes/${encodeURIComponent(nodeId)}/revoke`, "POST", { auth: "operator", body });
         return RevokeNodeResponseSchema.parse(response);
+      },
+      /** Hard-deletes a revoked crawler node from the registry (DELETE /v1/operator/nodes/{nodeId}). */
+      prune: async (nodeId: string, reason: string): Promise<PruneNodeResponse> => {
+        const body = RevokeNodeRequestSchema.parse({ schemaVersion: 1, reason });
+        const response = await this.request<unknown>(
+          `/v1/operator/nodes/${encodeURIComponent(nodeId)}`,
+          "DELETE",
+          { auth: "operator", body }
+        );
+        return PruneNodeResponseSchema.parse(response);
       },
       /**
        * Issues an audited node credential with assigned capabilities (POST /v1/operator/nodes).

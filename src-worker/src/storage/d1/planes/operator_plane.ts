@@ -79,6 +79,34 @@ export class OperatorPlane {
     if ((result[0]?.meta as { changes?: number } | undefined)?.changes !== 1) throw new Error("Node not found");
   }
 
+  async pruneNode(nodeId: string, actor: string, reason: string): Promise<void> {
+    RevokeNodeResponseSchema.shape.nodeId.parse(nodeId);
+    if (!actor.trim() || actor.length > 100) throw new Error("Operator actor required");
+    RevokeNodeRequestSchema.shape.reason.parse(reason);
+    const now = new Date(this.ctx.now()).toISOString();
+    const result = await this.ctx.db.batch([
+      this.ctx.db
+        .prepare(
+          `INSERT INTO operator_audit_log(entity_type,entity_id,actor,action,reason,occurred_at)
+       SELECT 'node',node_id,?,'prune',?,? FROM node_credentials
+       WHERE node_id=? AND revoked_at IS NOT NULL`
+        )
+        .bind(actor, reason.trim(), now, nodeId),
+      this.ctx.db
+        .prepare("DELETE FROM node_credentials WHERE node_id=? AND revoked_at IS NOT NULL")
+        .bind(nodeId)
+    ]);
+    const auditChanges = (result[0]?.meta as { changes?: number } | undefined)?.changes;
+    if (auditChanges !== 1) {
+      const exists = await this.ctx.db
+        .prepare("SELECT revoked_at FROM node_credentials WHERE node_id=?")
+        .bind(nodeId)
+        .first<{ revoked_at: string | null }>();
+      if (!exists) throw new Error("Node not found");
+      throw new Error("Node not revoked");
+    }
+  }
+
   async createNodeCredential(
     nodeId: string,
     capabilities: Platform[],

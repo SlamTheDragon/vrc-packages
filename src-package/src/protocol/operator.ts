@@ -337,6 +337,13 @@ export const RevokeNodeResponseSchema = z.strictObject({
 });
 export type RevokeNodeResponse = z.infer<typeof RevokeNodeResponseSchema>;
 
+export const PruneNodeResponseSchema = z.strictObject({
+  schemaVersion: z.literal(OPERATOR_PROTOCOL_VERSION),
+  nodeId: IssueNodeCredentialSchema.shape.nodeId,
+  status: z.literal("pruned")
+});
+export type PruneNodeResponse = z.infer<typeof PruneNodeResponseSchema>;
+
 /* -------------------------------------------------------------------------- */
 /* Operator Node Listing                                                      */
 /* -------------------------------------------------------------------------- */

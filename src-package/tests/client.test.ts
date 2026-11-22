@@ -667,6 +667,47 @@ describe("VRCPackageClient SDK", () => {
     expect(catalogRes.packages[0]?.displayName).toBe("Operator Monitored Package");
   });
 
+  it("exercises operator nodes prune with DELETE method, body validation, and response schema", async () => {
+    let capturedRequest: { url: string; method: string; body: unknown; auth: string | null } | null = null;
+    const client = new VRCPackageClient({
+      baseUrl: "https://api.vrc-packages.example",
+      operatorToken: dummyOperatorToken,
+      fetch: createMockFetch(async (input, init) => {
+        const req = new Request(input, init);
+        capturedRequest = {
+          url: req.url,
+          method: req.method,
+          body: await req.json(),
+          auth: req.headers.get("Authorization")
+        };
+        return new Response(JSON.stringify({
+          schemaVersion: 1,
+          nodeId: "node-123",
+          status: "pruned"
+        }), { status: 200, headers: { "Content-Type": "application/json" } });
+      })
+    });
+
+    const res = await client.operator.nodes.prune("node-123", "Decommissioned node");
+    expect(res).toEqual({
+      schemaVersion: 1,
+      nodeId: "node-123",
+      status: "pruned"
+    });
+    expect(capturedRequest).not.toBeNull();
+    expect(capturedRequest!.method).toBe("DELETE");
+    expect(new URL(capturedRequest!.url).pathname).toBe("/v1/operator/nodes/node-123");
+    expect(capturedRequest!.auth).toBe(`Bearer ${dummyOperatorToken}`);
+    expect(capturedRequest!.body).toEqual({
+      schemaVersion: 1,
+      reason: "Decommissioned node"
+    });
+
+    // Verify empty reason throws validation error before transport
+    await expect(client.operator.nodes.prune("node-123", "")).rejects.toThrow();
+    await expect(client.operator.nodes.prune("node-123", "   ")).rejects.toThrow();
+  });
+
   it("exercises operator nodes list with filtering, cursors, and strict schema validation", async () => {
     const requests: Array<{ url: string; method: string; auth: string | null }> = [];
     const cursor = encodeOperatorNodeCursor({ nodeId: "node-alpha" });
