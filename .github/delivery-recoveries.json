@@ -56,6 +56,17 @@
     }
   },
   "supersededPreviewTags": {
+    "cloudflare-worker/v2026.11.3-pre": {
+      "product": "worker",
+      "channel": "preview",
+      "version": "2026.11.3-pre",
+      "supersededByPredecessor": "2026.11.2-pre",
+      "commit": "e8fa8634b636c06d44f009d97cabd361e9b9ff8e",
+      "tagObject": "9d964bd03e29593a338a6c7d0e5e3e43571d5897",
+      "failedRun": 44967075356,
+      "failedStage": "build",
+      "reason": "Run 44967075356 failed in Prepare distributed dependencies because vrc-packages-network@2026.11.3 rejected consumer preview SDK 2026.11.4-pre; resolved by delivering vrc-packages-network@2026.11.4; superseded by verified predecessor cloudflare-worker/v2026.11.2-pre."
+    },
     "vrcp-crawler/v2026.11.0-pre": {
       "product": "crawler",
       "channel": "preview",
