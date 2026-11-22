@@ -34,24 +34,41 @@
 	let ratingSearchQuery = $state('');
 	let ratingPage = $state(0);
 	let selectedCanonicalId = $state('');
+	let selectedCanonicalIds = $state<string[]>([]);
 
 	let adjustDialogOpen = $state(false);
+	let bulkAdjustDialogOpen = $state(false);
 	let targetRating = $state<ContentRating>('general');
+	let bulkTargetRating = $state<ContentRating>('general');
 	let adjustReason = $state('Verified storefront content classification against VRCP rating taxonomy');
+	let bulkAdjustReason = $state('Bulk moderator classification update against VRCP rating taxonomy');
 	let adjustError = $state<string | null>(null);
+	let bulkAdjustError = $state<string | null>(null);
 	let isSubmitting = $state(false);
+	let isBulkRatingSubmitting = $state(false);
 
 	let apps = $state<AppCandidateRecord[]>([]);
 	let candidateFilter = $state<string>('all');
 	let appSearchQuery = $state('');
 	let appPage = $state(0);
 	let selectedAppId = $state('');
+	let selectedAppIds = $state<string[]>([]);
 
 	let reviewAppDialogOpen = $state(false);
+	let bulkReviewAppDialogOpen = $state(false);
 	let appVerdict = $state<'none' | 'reviewed' | 'trusted'>('reviewed');
+	let bulkAppVerdict = $state<'none' | 'reviewed' | 'trusted'>('reviewed');
 	let appGrantDelegation = $state(false);
+	let bulkAppGrantDelegation = $state(false);
 	let appNotes = $state('Reviewed downstream application candidate under moderator review queue');
+	let bulkAppNotes = $state('Bulk reviewed downstream application candidates under moderator review queue');
 	let reviewAppError = $state<string | null>(null);
+	let bulkReviewAppError = $state<string | null>(null);
+	let isBulkAppSubmitting = $state(false);
+
+	let selectedRatings = $derived(ratings.filter((r) => selectedCanonicalIds.includes(r.canonicalId)));
+	let selectedApps = $derived(apps.filter((a) => selectedAppIds.includes(a.appId)));
+	let bulkAdjustReasonValid = $derived(bulkAdjustReason.trim().length >= 3);
 
 	let hasModeratorSession = $derived(
 		adminSession.authenticated && adminSession.role === 'moderator' && adminSession.tokenValidation.valid
@@ -225,10 +242,22 @@
 		adjustDialogOpen = true;
 	}
 
+	function openBulkAdjustDialog() {
+		bulkAdjustReason = 'Bulk moderator classification update against VRCP rating taxonomy';
+		bulkAdjustError = null;
+		bulkAdjustDialogOpen = true;
+	}
+
 	function openReviewAppDialog(app: AppCandidateRecord) {
 		selectedAppId = app.appId;
 		reviewAppError = null;
 		reviewAppDialogOpen = true;
+	}
+
+	function openBulkReviewAppDialog() {
+		bulkAppNotes = 'Bulk reviewed downstream application candidates under moderator review queue';
+		bulkReviewAppError = null;
+		bulkReviewAppDialogOpen = true;
 	}
 
 	async function handleAdjustRating() {
@@ -256,6 +285,44 @@
 		}
 	}
 
+	async function handleBulkAdjustRating() {
+		if (!bulkAdjustReasonValid || selectedRatings.length === 0) return;
+		bulkAdjustError = null;
+		isBulkRatingSubmitting = true;
+		let successCount = 0;
+		let failCount = 0;
+		const targets = [...selectedRatings];
+		const adjustedIds: string[] = [];
+
+		for (const item of targets) {
+			try {
+				await adminSession.client.moderator.ratings.adjust(item.canonicalId, {
+					newRating: bulkTargetRating,
+					reason: bulkAdjustReason.trim()
+				});
+				successCount++;
+				adjustedIds.push(item.canonicalId);
+			} catch (_) {
+				failCount++;
+			}
+		}
+
+		isBulkRatingSubmitting = false;
+		bulkAdjustDialogOpen = false;
+		selectedCanonicalIds = selectedCanonicalIds.filter((id) => !adjustedIds.includes(id));
+
+		if (successCount > 0) {
+			toastStore.success(
+				`Adjusted ratings for ${successCount} package(s) to "${bulkTargetRating}".`,
+				'Bulk Ratings Updated'
+			);
+		}
+		if (failCount > 0) {
+			toastStore.error(`Failed to adjust ${failCount} package(s).`, 'Bulk Partial Failure');
+		}
+		await refreshModeratorQueues();
+	}
+
 	async function handleReviewAppCandidate() {
 		if (!selectedAppRow) return;
 		reviewAppError = null;
@@ -277,6 +344,45 @@
 		} finally {
 			isSubmitting = false;
 		}
+	}
+
+	async function handleBulkReviewApps() {
+		if (selectedApps.length === 0) return;
+		bulkReviewAppError = null;
+		isBulkAppSubmitting = true;
+		let successCount = 0;
+		let failCount = 0;
+		const targets = [...selectedApps];
+		const reviewedIds: string[] = [];
+
+		for (const app of targets) {
+			try {
+				await adminSession.client.moderator.apps.reviewCandidate(app.appId, {
+					candidateStatus: bulkAppVerdict,
+					grantDelegation: bulkAppGrantDelegation,
+					notes: bulkAppNotes.trim() || undefined
+				});
+				successCount++;
+				reviewedIds.push(app.appId);
+			} catch (_) {
+				failCount++;
+			}
+		}
+
+		isBulkAppSubmitting = false;
+		bulkReviewAppDialogOpen = false;
+		selectedAppIds = selectedAppIds.filter((id) => !reviewedIds.includes(id));
+
+		if (successCount > 0) {
+			toastStore.success(
+				`Reviewed ${successCount} application(s) as "${bulkAppVerdict}".`,
+				'Bulk Apps Reviewed'
+			);
+		}
+		if (failCount > 0) {
+			toastStore.error(`Failed to review ${failCount} application(s).`, 'Bulk Partial Failure');
+		}
+		await refreshModeratorQueues();
 	}
 </script>
 
@@ -384,6 +490,8 @@
 				data={filteredRatings}
 				keyField="canonicalId"
 				bind:selectedId={selectedCanonicalId}
+				selectable={hasModeratorSession}
+				bind:selectedIds={selectedCanonicalIds}
 				bind:page={ratingPage}
 				loading={isLoading}
 				ariaLabel="Content rating review queue"
@@ -394,6 +502,20 @@
 				inspectorTitle={selectedRatingRow?.displayName ?? 'Rating Inspector'}
 				inspectorDescription={selectedRatingRow?.canonicalId}
 			>
+				{#snippet bulkActions()}
+					<div class="flex items-center gap-2">
+						{#if selectedRatings.length > 0}
+							<Button
+								variant="primary"
+								size="xs"
+								onclick={openBulkAdjustDialog}
+							>
+								<Scale size={13} />
+								<span>Adjust Ratings ({selectedRatings.length})</span>
+							</Button>
+						{/if}
+					</div>
+				{/snippet}
 				{#snippet toolbar()}
 					<AdminFilterBar
 						bind:searchQuery={ratingSearchQuery}
@@ -492,6 +614,8 @@
 				data={filteredApps}
 				keyField="appId"
 				bind:selectedId={selectedAppId}
+				selectable={hasModeratorSession}
+				bind:selectedIds={selectedAppIds}
 				bind:page={appPage}
 				loading={isLoading}
 				ariaLabel="Application candidate review queue"
@@ -502,6 +626,20 @@
 				inspectorTitle={selectedAppRow?.appName ?? 'Application Inspector'}
 				inspectorDescription={selectedAppRow?.appId}
 			>
+				{#snippet bulkActions()}
+					<div class="flex items-center gap-2">
+						{#if selectedApps.length > 0}
+							<Button
+								variant="primary"
+								size="xs"
+								onclick={openBulkReviewAppDialog}
+							>
+								<ShieldCheck size={13} />
+								<span>Review Apps ({selectedApps.length})</span>
+							</Button>
+						{/if}
+					</div>
+				{/snippet}
 				{#snippet toolbar()}
 					<AdminFilterBar
 						bind:searchQuery={appSearchQuery}
@@ -669,6 +807,102 @@
 			</Button>
 			<Button variant="primary" size="sm" busy={isSubmitting} onclick={handleReviewAppCandidate}>
 				{isSubmitting ? 'Submitting...' : 'Submit Review'}
+			</Button>
+		{/snippet}
+	</Dialog>
+
+	<Dialog
+		bind:open={bulkAdjustDialogOpen}
+		title="Bulk Adjust Content Ratings"
+		description={`Update classification for ${selectedRatings.length} selected package(s).`}
+	>
+		<div class="flex flex-col gap-3">
+			{#if bulkAdjustError}
+				<Notice variant="danger" title="Bulk Adjustment Failed">
+					{bulkAdjustError}
+				</Notice>
+			{/if}
+
+			<Field label="Target Content Rating" required={true}>
+				<DropdownSelect
+					bind:value={bulkTargetRating}
+					options={ratingTargetOptions}
+					onValueChange={(v) => (bulkTargetRating = v as ContentRating)}
+				/>
+			</Field>
+
+			<Field id="bulk-adjust-reason" label="Audit Reason (>=3 chars)" required={true}>
+				<Textarea id="bulk-adjust-reason" bind:value={bulkAdjustReason} rows={2} />
+			</Field>
+		</div>
+		{#snippet actions()}
+			<Button
+				variant="secondary"
+				size="sm"
+				disabled={isBulkRatingSubmitting}
+				onclick={() => (bulkAdjustDialogOpen = false)}
+			>
+				Cancel
+			</Button>
+			<Button
+				variant="primary"
+				size="sm"
+				busy={isBulkRatingSubmitting}
+				ariaDisabled={!bulkAdjustReasonValid || selectedRatings.length === 0}
+				onclick={handleBulkAdjustRating}
+			>
+				{isBulkRatingSubmitting ? 'Updating...' : `Adjust (${selectedRatings.length})`}
+			</Button>
+		{/snippet}
+	</Dialog>
+
+	<Dialog
+		bind:open={bulkReviewAppDialogOpen}
+		title="Bulk Review App Candidates"
+		description={`Review ${selectedApps.length} selected application candidate(s).`}
+	>
+		<div class="flex flex-col gap-3">
+			{#if bulkReviewAppError}
+				<Notice variant="danger" title="Bulk Review Failed">
+					{bulkReviewAppError}
+				</Notice>
+			{/if}
+
+			<Field label="Candidate Verdict" required={true}>
+				<DropdownSelect
+					bind:value={bulkAppVerdict}
+					options={candidateVerdictOptions}
+					onValueChange={(v) => (bulkAppVerdict = v as 'none' | 'reviewed' | 'trusted')}
+				/>
+			</Field>
+
+			<Switch
+				id="bulk-mod-grant-del"
+				bind:checked={bulkAppGrantDelegation}
+				label="Recommend creator claim delegation"
+			/>
+
+			<Field id="bulk-mod-app-notes" label="Notes (Optional)">
+				<Textarea id="bulk-mod-app-notes" bind:value={bulkAppNotes} rows={2} />
+			</Field>
+		</div>
+		{#snippet actions()}
+			<Button
+				variant="secondary"
+				size="sm"
+				disabled={isBulkAppSubmitting}
+				onclick={() => (bulkReviewAppDialogOpen = false)}
+			>
+				Cancel
+			</Button>
+			<Button
+				variant="primary"
+				size="sm"
+				busy={isBulkAppSubmitting}
+				ariaDisabled={selectedApps.length === 0}
+				onclick={handleBulkReviewApps}
+			>
+				{isBulkAppSubmitting ? 'Submitting...' : `Review (${selectedApps.length})`}
 			</Button>
 		{/snippet}
 	</Dialog>

@@ -62,16 +62,30 @@
 
 	let selectedLeadKey = $state('');
 	let selectedJobId = $state('');
+	let selectedLeadKeys = $state<string[]>([]);
+	let selectedPendingLeads = $derived(
+		leads.filter((l) => selectedLeadKeys.includes(l.lead_key) && l.status === 'pending_review')
+	);
 
 	let approveDialogOpen = $state(false);
 	let rejectDialogOpen = $state(false);
 	let enqueueDialogOpen = $state(false);
+	let bulkApproveDialogOpen = $state(false);
+	let bulkRejectDialogOpen = $state(false);
+
 	let approveMinDelayMs = $state(2000);
 	let approveReason = $state('Verified public metadata source under active profile');
 	let approveError = $state<string | null>(null);
 	let rejectReason = $state('Out of scope or unapproved origin');
 	let rejectError = $state<string | null>(null);
 	let isTriaging = $state(false);
+
+	let bulkApproveMinDelayMs = $state(2000);
+	let bulkApproveReason = $state('Verified public metadata source under active profile');
+	let bulkApproveError = $state<string | null>(null);
+	let bulkRejectReason = $state('Out of scope or unapproved origin');
+	let bulkRejectError = $state<string | null>(null);
+	let isBulkTriaging = $state(false);
 
 	let jobUrl = $state('https://vrchat-community.github.io/template-package/index.json');
 	let jobPlatform = $state<Platform>('vpm');
@@ -227,6 +241,8 @@
 	);
 	let approveReasonValid = $derived(approveReason.trim().length >= 3);
 	let rejectReasonValid = $derived(rejectReason.trim().length >= 3);
+	let bulkApproveReasonValid = $derived(bulkApproveReason.trim().length >= 3);
+	let bulkRejectReasonValid = $derived(bulkRejectReason.trim().length >= 3);
 
 	const leadColumns = [
 		{
@@ -297,6 +313,18 @@
 		rejectDialogOpen = true;
 	}
 
+	function openBulkApproveDialog() {
+		bulkApproveReason = 'Verified public metadata source under active profile';
+		bulkApproveError = null;
+		bulkApproveDialogOpen = true;
+	}
+
+	function openBulkRejectDialog() {
+		bulkRejectReason = 'Out of scope or unapproved origin';
+		bulkRejectError = null;
+		bulkRejectDialogOpen = true;
+	}
+
 	async function handleApproveLead() {
 		if (!selectedLead || !approveReasonValid) return;
 		approveError = null;
@@ -339,6 +367,75 @@
 		}
 	}
 
+	async function handleBulkApprove() {
+		if (!bulkApproveReasonValid || selectedPendingLeads.length === 0) return;
+		bulkApproveError = null;
+		isBulkTriaging = true;
+		let successCount = 0;
+		let failCount = 0;
+		const targets = [...selectedPendingLeads];
+		const approvedKeys: string[] = [];
+
+		for (const lead of targets) {
+			try {
+				await adminSession.client.operator.leads.approve(lead.lead_key, {
+					minDelayMs: Number(bulkApproveMinDelayMs),
+					reason: bulkApproveReason.trim()
+				});
+				successCount++;
+				approvedKeys.push(lead.lead_key);
+			} catch (_) {
+				failCount++;
+			}
+		}
+
+		isBulkTriaging = false;
+		bulkApproveDialogOpen = false;
+		selectedLeadKeys = selectedLeadKeys.filter((k) => !approvedKeys.includes(k));
+
+		if (successCount > 0) {
+			toastStore.success(`Approved ${successCount} lead(s).`, 'Bulk Approval Complete');
+		}
+		if (failCount > 0) {
+			toastStore.error(`Failed to approve ${failCount} lead(s).`, 'Bulk Partial Failure');
+		}
+		await onRefresh?.();
+	}
+
+	async function handleBulkReject() {
+		if (!bulkRejectReasonValid || selectedPendingLeads.length === 0) return;
+		bulkRejectError = null;
+		isBulkTriaging = true;
+		let successCount = 0;
+		let failCount = 0;
+		const targets = [...selectedPendingLeads];
+		const rejectedKeys: string[] = [];
+
+		for (const lead of targets) {
+			try {
+				await adminSession.client.operator.leads.reject(lead.lead_key, {
+					reason: bulkRejectReason.trim()
+				});
+				successCount++;
+				rejectedKeys.push(lead.lead_key);
+			} catch (_) {
+				failCount++;
+			}
+		}
+
+		isBulkTriaging = false;
+		bulkRejectDialogOpen = false;
+		selectedLeadKeys = selectedLeadKeys.filter((k) => !rejectedKeys.includes(k));
+
+		if (successCount > 0) {
+			toastStore.success(`Rejected ${successCount} lead(s).`, 'Bulk Rejection Complete');
+		}
+		if (failCount > 0) {
+			toastStore.error(`Failed to reject ${failCount} lead(s).`, 'Bulk Partial Failure');
+		}
+		await onRefresh?.();
+	}
+
 	async function handleEnqueueJob() {
 		if (!enqueueFormValid) return;
 		enqueueError = null;
@@ -370,6 +467,8 @@
 			data={filteredLeads}
 			keyField="lead_key"
 			bind:selectedId={selectedLeadKey}
+			selectable={true}
+			bind:selectedIds={selectedLeadKeys}
 			bind:page
 			loading={isLoading}
 			ariaLabel="Discovery leads queue"
@@ -378,6 +477,28 @@
 			inspectorTitle={selectedLead?.kind ?? 'Lead Inspector'}
 			inspectorDescription={selectedLead?.lead_key}
 		>
+			{#snippet bulkActions()}
+				<div class="flex items-center gap-2">
+					{#if selectedPendingLeads.length > 0}
+						<Button
+							variant="primary"
+							size="xs"
+							onclick={openBulkApproveDialog}
+						>
+							<Check size={13} />
+							<span>Approve ({selectedPendingLeads.length})</span>
+						</Button>
+						<Button
+							variant="destructive"
+							size="xs"
+							onclick={openBulkRejectDialog}
+						>
+							<X size={13} />
+							<span>Reject ({selectedPendingLeads.length})</span>
+						</Button>
+					{/if}
+				</div>
+			{/snippet}
 			{#snippet toolbar()}
 				<AdminFilterBar
 					bind:searchQuery
@@ -804,6 +925,84 @@
 				onclick={handleRejectLead}
 			>
 				{isTriaging ? 'Rejecting...' : 'Reject Lead'}
+			</Button>
+		{/snippet}
+	</Dialog>
+
+	<Dialog
+		bind:open={bulkApproveDialogOpen}
+		title="Bulk Approve Discovery Leads"
+		description={`Queue crawl jobs for ${selectedPendingLeads.length} selected pending lead(s).`}
+	>
+		<div class="flex flex-col gap-3">
+			{#if bulkApproveError}
+				<Notice variant="danger" title="Bulk Approval Failed">
+					{bulkApproveError}
+				</Notice>
+			{/if}
+
+			<Field id="bulk-app-lead-delay" label="Minimum Origin Delay (ms)">
+				<Input id="bulk-app-lead-delay" type="number" min={0} bind:value={bulkApproveMinDelayMs} />
+			</Field>
+			<Field id="bulk-app-lead-reason" label="Approval Reason (>=3 chars)" required={true}>
+				<Textarea id="bulk-app-lead-reason" bind:value={bulkApproveReason} rows={2} />
+			</Field>
+		</div>
+		{#snippet actions()}
+			<Button
+				variant="secondary"
+				size="sm"
+				disabled={isBulkTriaging}
+				onclick={() => (bulkApproveDialogOpen = false)}
+			>
+				Cancel
+			</Button>
+			<Button
+				variant="primary"
+				size="sm"
+				busy={isBulkTriaging}
+				ariaDisabled={!bulkApproveReasonValid || selectedPendingLeads.length === 0}
+				onclick={handleBulkApprove}
+			>
+				{isBulkTriaging ? 'Approving...' : `Approve (${selectedPendingLeads.length})`}
+			</Button>
+		{/snippet}
+	</Dialog>
+
+	<Dialog
+		bind:open={bulkRejectDialogOpen}
+		alert={true}
+		title="Bulk Reject Discovery Leads"
+		description={`Reject ${selectedPendingLeads.length} selected pending lead(s).`}
+	>
+		<div class="flex flex-col gap-3">
+			{#if bulkRejectError}
+				<Notice variant="danger" title="Bulk Rejection Failed">
+					{bulkRejectError}
+				</Notice>
+			{/if}
+
+			<Field id="bulk-rej-lead-reason" label="Rejection Reason (>=3 chars)" required={true}>
+				<Textarea id="bulk-rej-lead-reason" bind:value={bulkRejectReason} rows={2} />
+			</Field>
+		</div>
+		{#snippet actions()}
+			<Button
+				variant="secondary"
+				size="sm"
+				disabled={isBulkTriaging}
+				onclick={() => (bulkRejectDialogOpen = false)}
+			>
+				Cancel
+			</Button>
+			<Button
+				variant="destructive"
+				size="sm"
+				busy={isBulkTriaging}
+				ariaDisabled={!bulkRejectReasonValid || selectedPendingLeads.length === 0}
+				onclick={handleBulkReject}
+			>
+				{isBulkTriaging ? 'Rejecting...' : `Reject (${selectedPendingLeads.length})`}
 			</Button>
 		{/snippet}
 	</Dialog>
