@@ -184,10 +184,13 @@ See full history at [docs/changelogs/vrcp-web/preview](https://github.com/SlamTh
 ## VRC Packages Worker - `vrcp-worker-preview`
 
 <!-- vrcp-worker-preview-DESCRIPTION_SUMMARY -->
+Add hard-prune endpoint for revoked crawler nodes and update internal network package dependency.
 <!-- vrcp-worker-preview-DESCRIPTION_SUMMARY -->
 ### Added
+- **Hard-prune endpoint:** Add DELETE /v1/operator/nodes/{nodeId} to permanently delete revoked crawler nodes, origin leases, and assigned jobs from D1 storage.
 ### Bugs Fixed
 ### Changes
+- **Internal network dependency:** Update vrc-packages-network dependency to 2026.11.4 accepting consumer SDK 2026.11.4-pre.
 See full history at [docs/changelogs/vrcp-worker/preview](https://github.com/SlamTheDragon/vrc-packages/tree/main/docs/changelogs/vrcp-worker/preview)
 
 ---
@@ -197,9 +200,7 @@ See full history at [docs/changelogs/vrcp-worker/preview](https://github.com/Sla
 ## VRC Packages Network `vrcp-packages-network`
 
 <!-- vrcp-packages-network-DESCRIPTION_SUMMARY -->
-Update peer dependency to accept consumer SDK 2026.11.4-pre.
 <!-- vrcp-packages-network-DESCRIPTION_SUMMARY -->
 ### Added
 ### Changes
-- **Consumer SDK peer bounds:** Update peer dependency to accept vrc-packages-api-preview 2026.11.4-pre.
 See full history at [docs/changelogs/vrcp-packages-network/](https://github.com/SlamTheDragon/vrc-packages/tree/main/docs/changelogs/vrcp-packages-network/)
