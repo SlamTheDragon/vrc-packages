@@ -102,8 +102,10 @@ export class Logger {
         fs.writeFileSync(this.latestLogPath, "");
       } catch (_) {}
     }
-    if (!this.latestLogStream) {
-      this.latestLogStream = fs.createWriteStream(this.latestLogPath, { flags: "a" });
+    if (!this.latestLogStream || this.latestLogStream.destroyed || this.latestLogStream.writableEnded) {
+      const stream = fs.createWriteStream(this.latestLogPath, { flags: "a" });
+      stream.on("error", () => {});
+      this.latestLogStream = stream;
     }
   }
 
@@ -123,8 +125,11 @@ export class Logger {
       if (!fs.existsSync(this.errorLogPath)) fs.writeFileSync(this.errorLogPath, "");
 
       this.crawlerLogStream = fs.createWriteStream(this.crawlerLogPath, { flags: "a" });
+      this.crawlerLogStream.on("error", () => {});
       this.rateLimitLogStream = fs.createWriteStream(this.rateLimitLogPath, { flags: "a" });
+      this.rateLimitLogStream.on("error", () => {});
       this.errorLogStream = fs.createWriteStream(this.errorLogPath, { flags: "a" });
+      this.errorLogStream.on("error", () => {});
     } catch (_) {}
   }
 
@@ -218,10 +223,11 @@ export class Logger {
 
       // Close current latestLogStream before reading and clearing
       if (this.latestLogStream) {
-        try {
-          this.latestLogStream.end();
-        } catch (_) {}
+        const streamToClose = this.latestLogStream;
         this.latestLogStream = undefined;
+        try {
+          streamToClose.end();
+        } catch (_) {}
       }
 
       const content = fs.readFileSync(this.latestLogPath);
@@ -233,7 +239,7 @@ export class Logger {
 
       // Re-establish append stream if still open
       if (!this.isClosed && this.enableLatestLog) {
-        this.latestLogStream = fs.createWriteStream(this.latestLogPath, { flags: "a" });
+        this.ensureLatestLogStream();
       }
 
       return archiveFilePath;
@@ -248,10 +254,11 @@ export class Logger {
   public async archiveAndClearLatestLog(dateStr?: string): Promise<string | null> {
     if (this.isRotating) return null;
     if (this.latestLogStream) {
-      await new Promise<void>((resolve) => {
-        this.latestLogStream?.end(() => resolve());
-      });
+      const streamToClose = this.latestLogStream;
       this.latestLogStream = undefined;
+      await new Promise<void>((resolve) => {
+        streamToClose.end(() => resolve());
+      });
     }
     return this.archiveAndClearLatestLogSync(dateStr);
   }
@@ -337,14 +344,22 @@ export class Logger {
     }
   }
 
+  private safeWrite(stream?: fs.WriteStream, line: string = ""): void {
+    if (stream && !this.isClosed && !this.isRotating && !stream.destroyed && !stream.writableEnded) {
+      try {
+        stream.write(line, () => {});
+      } catch (_) {}
+    }
+  }
+
   private writeToLatest(line: string): void {
     if (this.isClosed) return;
     this.initialize();
     try {
-      if (!this.latestLogStream) {
+      if (!this.latestLogStream || this.latestLogStream.destroyed || this.latestLogStream.writableEnded) {
         this.ensureLatestLogStream();
       }
-      this.latestLogStream?.write(line);
+      this.safeWrite(this.latestLogStream, line);
     } catch (_) {}
   }
 
@@ -352,9 +367,7 @@ export class Logger {
     this.checkRotation().catch(() => {});
     const line = `[${this.timestamp()}] [DEBUG] ${msg} ${meta ? JSON.stringify(meta) : ""}\n`;
     this.writeToLatest(line);
-    if (this.crawlerLogStream && !this.isClosed && !this.isRotating) {
-      try { this.crawlerLogStream.write(line); } catch (_) {}
-    }
+    this.safeWrite(this.crawlerLogStream, line);
     if (process.env.DEBUG || process.env.LOG_LEVEL === "debug") {
       console.log(`\x1b[36m[DEBUG]\x1b[0m ${msg}`, meta ? meta : "");
     }
@@ -364,9 +377,7 @@ export class Logger {
     this.checkRotation().catch(() => {});
     const line = `[${this.timestamp()}] [INFO] ${msg} ${meta ? JSON.stringify(meta) : ""}\n`;
     this.writeToLatest(line);
-    if (this.crawlerLogStream && !this.isClosed && !this.isRotating) {
-      try { this.crawlerLogStream.write(line); } catch (_) {}
-    }
+    this.safeWrite(this.crawlerLogStream, line);
     console.log(`\x1b[32m[INFO]\x1b[0m ${msg}`, meta ? meta : "");
   }
 
@@ -374,9 +385,7 @@ export class Logger {
     this.checkRotation().catch(() => {});
     const line = `[${this.timestamp()}] [ACTIVITY] ${msg} ${meta ? JSON.stringify(meta) : ""}\n`;
     this.writeToLatest(line);
-    if (this.crawlerLogStream && !this.isClosed && !this.isRotating) {
-      try { this.crawlerLogStream.write(line); } catch (_) {}
-    }
+    this.safeWrite(this.crawlerLogStream, line);
     console.log(`\x1b[34m[ACTIVITY]\x1b[0m ${msg}`, meta ? meta : "");
   }
 
@@ -384,9 +393,7 @@ export class Logger {
     this.checkRotation().catch(() => {});
     const line = `[${this.timestamp()}] [FINDING] ${msg} ${meta ? JSON.stringify(meta) : ""}\n`;
     this.writeToLatest(line);
-    if (this.crawlerLogStream && !this.isClosed && !this.isRotating) {
-      try { this.crawlerLogStream.write(line); } catch (_) {}
-    }
+    this.safeWrite(this.crawlerLogStream, line);
     console.log(`\x1b[36m[FINDING]\x1b[0m ${msg}`, meta ? meta : "");
   }
 
@@ -394,9 +401,7 @@ export class Logger {
     this.checkRotation().catch(() => {});
     const line = `[${this.timestamp()}] [WARN] ${msg} ${meta ? JSON.stringify(meta) : ""}\n`;
     this.writeToLatest(line);
-    if (this.crawlerLogStream && !this.isClosed && !this.isRotating) {
-      try { this.crawlerLogStream.write(line); } catch (_) {}
-    }
+    this.safeWrite(this.crawlerLogStream, line);
     console.log(`\x1b[33m[WARN]\x1b[0m ${msg}`, meta ? meta : "");
   }
 
@@ -405,12 +410,8 @@ export class Logger {
     const errDetail = error instanceof Error ? error.stack || error.message : JSON.stringify(error || "");
     const line = `[${this.timestamp()}] [ERROR] ${msg} - ${errDetail}\n`;
     this.writeToLatest(line);
-    if (this.errorLogStream && !this.isClosed && !this.isRotating) {
-      try { this.errorLogStream.write(line); } catch (_) {}
-    }
-    if (this.crawlerLogStream && !this.isClosed && !this.isRotating) {
-      try { this.crawlerLogStream.write(line); } catch (_) {}
-    }
+    this.safeWrite(this.errorLogStream, line);
+    this.safeWrite(this.crawlerLogStream, line);
     console.error(`\x1b[31m[ERROR]\x1b[0m ${msg}`, errDetail);
   }
 
@@ -418,12 +419,8 @@ export class Logger {
     this.checkRotation().catch(() => {});
     const line = `[${this.timestamp()}] [RATE_LIMIT] [${platform}] Remaining: ${remaining} | Reset: ${resetTime} | Sleeping: ${waitMs}ms\n`;
     this.writeToLatest(line);
-    if (this.rateLimitLogStream && !this.isClosed && !this.isRotating) {
-      try { this.rateLimitLogStream.write(line); } catch (_) {}
-    }
-    if (this.crawlerLogStream && !this.isClosed && !this.isRotating) {
-      try { this.crawlerLogStream.write(line); } catch (_) {}
-    }
+    this.safeWrite(this.rateLimitLogStream, line);
+    this.safeWrite(this.crawlerLogStream, line);
     console.log(`\x1b[35m[RATE_LIMIT]\x1b[0m [${platform}] Remaining: ${remaining} -> Pausing ${Math.round(waitMs / 1000)}s`);
   }
 
