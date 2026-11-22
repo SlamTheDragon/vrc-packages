@@ -42,6 +42,7 @@ if (existsSync(stopFile)) {
 
 const client = new CoordinatorClient(baseUrl, token, nodeId, capabilities);
 logger.activity(`Crawler node ${nodeId} connected to ${baseUrl}; capabilities: ${capabilities.join(",")}; database: ${databasePath}`);
+logger.info(`Crawler node logging to ${logger.getActiveLogPath()}`);
 
 const daemon = new CrawlerNodeDaemon(config, nodeStore, client, {
   runOnce,
