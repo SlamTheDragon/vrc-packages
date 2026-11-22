@@ -34,6 +34,7 @@ Record accepted legal covenants, owner dispositions, platform clearance verdicts
 | source_sector | notice_id | status | summary | local_slice_id |
 | :--- | :--- | :--- | :--- | :--- |
 | `pipeline` | `PN-001` | acknowledged | Departmental Handoff Cascade active: Sector 5 owns Tier 1 outbound handoffs and defers all verified ledger row clearing to Sector 4 Pipeline without product version bumps. | `G-LEGAL-CLEARANCE` |
+| `pipeline` | `PN-009` | acknowledged | Updated [`VISION.md`](../research/decisions/VISION.md) (`[P18]`) and [`owner_dispositions.md`](../research/decisions/owner_dispositions.md) for Version 0 reorientation. Queued `REORIENT-LR-01` online research across 7 preview pools and custom-domain rules before `HO-L1-003`. | `REORIENT-LR-01` |
 
 ---
 

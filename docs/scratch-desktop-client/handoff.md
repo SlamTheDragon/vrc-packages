@@ -28,6 +28,7 @@
 | `api-web` | `HO-S3B-001` | pending | Consume preview-channel `vrc-packages-api-preview` (`vrc-packages-api`, `VRCPackageClient`) for desktop node management and consumer API actions. | `R47-C27-CLIENT` |
 | `pipeline` | `PN-001` | acknowledged | Departmental Handoff Cascade active: submit Publication Requests here and defer changelog edits and verified-row clearing to Sector 4 Pipeline. | `G9-CLIENT` |
 | `pipeline` | `PN-008` | integrated | Aligned `src-crawler-client/package.json`, `src-crawler-client/AGENTS.md`, `docs/source/specifications/desktop_client.md`, and Sector 2 ledgers to `vrc-packages-api-preview` (`npm:vrc-packages-api-preview@latest`). Install and build checks await `vrcp-api/v2026.11.2-pre`. | `G9-CLIENT` |
+| `pipeline` | `PN-009` | acknowledged | Version 0 reorientation ([`VISION.md`](../research/decisions/VISION.md) `[P18]`, [`PN-009`](../scratch-pipeline/handoff.md)). Crawler nodes offload heavy sanitization, diagnostics, and `304` diffing across the 7-lane preview pool. Coordinator purges `"curated"` from `PlatformSchema` and auto-generates node capabilities on registration. All runtime apps consume `vrc-packages-api-preview` under [`docs/research/UIUX/`](../research/UIUX/README.md) rules. Follow the 6-stage flow: research, review, `untangle-codebase`, `docs/source/` blueprint `/grill-me`, plan, and execute. | `REORIENT-DC-01` |
 
 ---
 

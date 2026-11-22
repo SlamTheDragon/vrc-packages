@@ -1,6 +1,6 @@
 # VRCP Vision and Owner Truth
 
-Updated: 2026-11-20. This file owns **current owner intent, canonical terminology, responsibility sectors, and superseded directions** for VRC Packages (VRCP). Current executable source truth (system reliability and agreed schemas) lives in [`docs/source/`](../../source/README.md). Human-readable application wikis live in [`docs/applications/`](../../applications/README.md) and stay untouched until owner approval. Investigative research and legal expansion studies live in [`docs/research/`](../README.md). Direct instructions from the repository owner take precedence.
+Updated: 2026-11-22. This file owns **current owner intent, canonical terminology, responsibility sectors, and superseded directions** for VRC Packages (VRCP). Current executable source truth (system reliability and agreed schemas) lives in [`docs/source/`](../../source/README.md). Human-readable application wikis live in [`docs/applications/`](../../applications/README.md) and stay untouched until owner approval. Investigative research and legal expansion studies live in [`docs/research/`](../README.md). Direct instructions from the repository owner take precedence.
 
 Use the Table of Contents to read only the required section. Stable `Txx` section IDs support targeted searches. `Pxx` anchors identify retained owner decisions in [T10](#t10-owner-decision-provenance-and-coverage).
 
@@ -60,21 +60,25 @@ There must be no build or test artifacts in the repository root. [P01]
 
 ## T03: Component and Sector Responsibilities
 
-**Crawler Node (`src-crawler/`)** [P01]:
-1. Poll the coordinator for job leases (`/v1/node/jobs/claim`).
-2. Accept assigned jobs matching node capabilities.
-3. Crawl only leased jobs under fixed monotonic deadlines.
-4. Report each result as success, rate-limited, or failure via durable SQLite outbox.
-5. Never shut down by itself. Survive interruption and coordinator loss (fetching stops whenever no valid lease exists).
-6. Log every activity (`[ACTIVITY]`) and discovery finding (`[FINDING]`).
+**Crawler Node (`src-crawler/`)** [P01, P18]:
+1. Poll the coordinator continuously for leased jobs (`/v1/node/jobs/claim`) using tiered recrawl cadences.
+2. Accept leased jobs across `tools`, `avatars`, and `assets` under coordinator-assigned capabilities.
+3. Crawl only leased jobs under fixed monotonic deadlines and RFC 9309 `robots.txt` preflight rules.
+4. Execute discovery drivers across all seven preview pools: `vpm` lead feeds and manifests, `booth`, `gumroad`, `jinxxy`, `itch` tag pages (never `/search`), `shopify` sitemaps, and `github` REST.
+5. Treat community `"curated"` lists strictly as discovery leads, never as canonical truth.
+6. Run heavy HTML/JSON sanitization locally on the node to offload compute from Coordinator Workers Free limits.
+7. Filter results for VRChat relevance, extract tags and avatar compatibility, and run deterministic VPM skeleton, fork, and completeness checks (`unverified` default).
+8. Run conditional `304` diffing locally before reporting results as success, rate-limited, or failure via durable SQLite outbox.
+9. Never shut down by itself. Survive interruption and coordinator loss (fetching stops whenever no valid lease exists).
+10. Log every activity (`[ACTIVITY]`) and discovery finding (`[FINDING]`).
 
-**Coordinator (`src-worker/`)** [P01]:
-1. Node registration and capability-scoped workforce distribution (`vrcp_<64-hex><4-hex>`).
-2. Centralized origin lease scheduling and rate-limit management. No botnet-like behavior.
-3. Report ingestion, lead triage, and seeding.
-4. Final verdict on canonical identities served to downstream clients.
-5. Authenticated search, reports, and moderation for registered downstream applications and moderators.
-6. Reduced unauthenticated index and delta sync feeds.
+**Coordinator (`src-worker/`)** [P01, P18]:
+1. Register nodes (`vrcp_<64-hex><4-hex>`) and auto-generate capabilities from claimable jobs and demand signals (zero manual capability picking at registration).
+2. Schedule centralized origin leases across four priority lanes. Rank (1) fresh VPM manifests and demand signals, (2) discovery roots, (3) storefront metadata and recrawls, (4) custom-domain bulk review.
+3. Enforce loose domain-pool steering profiles and origin rate limits with no botnet-like behavior.
+4. Ingest reports, triage leads, and hold final verdict on canonical identities served to downstream clients.
+5. Keep crawled observations `unverified` by default. Restrict creator-verified status and audited metadata corrections to trusted downstream application attestations (`candidate_status = 'trusted'`, `claims:delegate`).
+6. Serve authenticated search, reports, moderation, and reduced unauthenticated index and delta sync feeds.
 
 **Crawler Desktop Client (`src-crawler-client/`)** [P01]:
 - Windows GUI installation and supervision of the node runtime, plus consumer SDK actions.
@@ -92,7 +96,7 @@ There must be no build or test artifacts in the repository root. [P01]
 ## T04: Safety, Lease, and Source-Access Boundaries
 
 1. **Leased-only ingestion**: Crawler nodes fetch strictly under unexpired 120s coordinator leases. Coordinator loss halts all fetching (fail closed). There is no coordinator binary inside `src-crawler/`. [P01, P03]
-2. **Source access profiles and RFC 9309 robots preflight**: A queued URL does not authorize fetching. Every crawl requires an active scoped `SourceAccessProfile` and RFC 9309 `robots.txt` compliance (preflight delegated to nodes under leases). [P03, P11]
+2. **Source access profiles and RFC 9309 robots**: A queued URL does not authorize fetching. Every crawl requires an active loose domain-pool steering profile plus node-delegated RFC 9309 `robots.txt` preflight. Steering profiles define `*.domain-name.root` scope, bounded pagination query patterns, built-in `autoPromote`, retain/publish bounds, origin pacing, and instant kill-switches. Unknown custom domains that fail to prove VRChat relevance park in `source_leads` (`pending_review`) for bulk operator approval or hard suppression. Preview Jinxxy crawling honors RFC 9309 `robots.txt`, polite pacing, and instant kill-switches. Formal Jinxxy permission outreach stays required in Sector 5 before public production launch, because preview testing is not formal clearance. Permanent hard exclusions block VRCArena DOM scraping, itch.io `/search`, binary downloads, auth/CAPTCHA bypasses, and private GitHub repos. [P03, P11, P18]
 3. **Credential protection**: Node credentials use capability-encoded tokens stored strictly as SHA-256 hashes. GitHub tokens serve only scoped API requests. Never log or hardcode secrets. [P03]
 4. **Provenance and zero binary downloads**: Third-party directories are discovery leads, not canonical authority. Zero executable or archive binary crawling (`.zip`, `.unitypackage`, `.vpmz`, `.fbx`). [P03]
 5. **Publication rights and report partitioning**: Enforce `publishClasses` strictly in catalog and delta projections (emit `catalog_tombstones` on withdrawal). Partition `rating_dispute` to `/v1/moderator` and `safety_quarantine` to operators only. [P11, P12]
@@ -103,7 +107,7 @@ There must be no build or test artifacts in the repository root. [P01]
 - Treat each `src-*` folder as an independent project. [P04]
 - Never import sibling source or tests through relative paths, path aliases, or symlinks. [P04]
 - Consume shared code only as declared distributed dependencies (`vrc-packages-api`, `vrc-packages-network`). A `file:../src-*` link does not prove isolation. [P04]
-- Channel separation: Crawler Node and Coordinator consume preview SDK (`vrc-packages-api-preview`); Desktop Client and Web consume release SDK (`vrc-packages-api`); `vrc-packages-network` uses one single-stream GitHub Release tarball. [P04, P08]
+- Channel separation: Runtime downstream consumers (Crawler Node, Coordinator, Desktop Client, and Web) consume preview SDK (`vrc-packages-api-preview`) while pre-production contracts iterate. Submodule `src-web-search/` stays on release SDK until submodule alignment. Package `vrc-packages-network` uses one single-stream GitHub Release tarball. [P04, P08]
 
 ## T06: SDK, Wire Contracts, and Frontend Invariants
 
@@ -130,6 +134,10 @@ There must be no build or test artifacts in the repository root. [P01]
 | Worker-side direct `robots.txt` fetching | Delegate `robots.txt` preflight fetching to crawler nodes under coordinator leases (`R24-C21`). | P11 |
 | Always-on pre-edit guard for every file edit | Thresholded edit-guard: disabled by default; activates at 10+ files OR cross-project contract/wire/schema/legal/pipeline boundary changes. | P14 |
 | Storing research inside `docs/scratch/research/` and monolithic `docs/source/` candidate docs | Standalone orthogonal `docs/research/` corpus (`legal/`, `markets/`, `architecture/`, `audits/`, `decisions/`), orthogonal `docs/source/` reliability/schema truth (`schemas/`, `specifications/`, `reliability/`), untouched `docs/applications/` wiki, and five 3-file `docs/scratch-<sector>/` ledgers (`IMPLEMENTATION_PLAN.md`, `task_tracker.md`, `handoff.md`). | P13, P15, P16, P17 |
+| `"curated"` as a catalog ingestion platform | Purge `"curated"` from `PlatformSchema`. Treat community registries strictly as discovery lead feeds. | P18 |
+| Manual node capability selection on registration | Coordinator auto-generates node capabilities from claimable jobs and demand signals. Defer manual and dynamic overrides to later gates. | P18 |
+| Strict per-URL exact profiles and Coordinator-heavy sanitization | Use loose domain-pool steering profiles (`*.domain-name.root`, pagination patterns, `autoPromote`, kill-switch). Offload parsing, sanitization, VPM quality checks, and `304` diffing to nodes. | P18 |
+| Crawler-claimed catalog verification | Crawled observations stay `unverified` by default. Only trusted downstream apps (`claims:delegate`) attest creator verification. | P18 |
 
 ## T09: Targeted Context Retrieval
 
@@ -165,3 +173,4 @@ Select-String -Path docs/source/SYSTEM_MAP.md -Pattern '^## '
 | P15 | Owner Legal Research Addendum (2026-11-20) | Establish Sector 5 (`legal-research`) for legal truth covenants and expansion actions; strictly partition `docs/research/` away from `docs/source/`. |
 | P16 | Owner Restructuring Directives (2026-11-20) | Five `docs/scratch-<sector>/` ledgers; orthogonal rewrite of `docs/research/` (purging raw transcripts and superseded status snapshots) and `docs/source/` (truth for reliability and agreed schemas); keep `docs/applications/` untouched (staging proposals in `docs/source/`) while migrating broken links; retire legacy `docs/scratch/` via Sector 4 pipeline gate (`PIPELINE-SCRATCH-RETIRE`). |
 | P17 | Owner Handoff Cascade Directives (2026-11-20) | Add `handoff.md` to every `docs/scratch-<sector>/` folder (strictly 3 files per folder) with labeled 5-tier cascade sections (`Tier 1 Legal/Vision` -> `Tier 2 Worker/Schemas` -> `Tier 3 API/Network` -> `Tier 4 Crawler/Desktop` -> `Tier 5 Web`); enforce strict sector write containment with read-upstream handoff propagation; require written Publication Requests strictly inside each sector's `handoff.md`; grant Sector 4 Pipeline exclusive authority to oversee all handoffs, maintain `docs/source/CHANGELOG.md`, clear verified ledger rows post-transfer, and run root publication scripts. |
+| P18 | Owner `/grill-me` Reorientation (2026-11-22) | Adopt VPM-first and VRChat storefront ingestion (`tools`, `avatars`, `assets`) and purge `"curated"` as a catalog platform. Run 7-lane preview discovery with Jinxxy preview robots and Sector 5 permission tracking. Enforce loose domain-pool steering, bulk custom-domain review, priority lanes, coordinator-only node capabilities, and node-offloaded sanitization. Restrict verification attestation to trusted apps, and execute the full 6-stage cascading blueprint workflow (`docs/source/` as next `/grill-me` gate). |
