@@ -32,6 +32,10 @@ Sweep all sector `handoff.md` files and stage accepted intake rows here in stric
 | `INT-005` | `crawler-network` | `PR-CN-WRK-002` | `worker` | `preview` | `yes (package 2026.11.1-pre, network 2026.11.1 verified; target 2026.11.1-pre)` | `yes` | `no` | `in_progress` |
 | `INT-006` | `crawler-network` | `PR-CN-CRAWL-001` | `crawler` | `preview` | `yes (package 2026.11.1-pre, network 2026.11.1 verified; 2026.10.10-pre superseded to 2026.10.9-pre; target 2026.11.0-pre)` | `yes` | `no` | `in_progress` |
 | `INT-007` | `api-web` | `PR-AW-WEB-001` | `web` | `preview` | `yes (release SDK vrc-packages-api@0.0.8 installed via prepare:dev preview web; astro check & build verified; remote web hosting deferred)` | `no (hosting deferred)` | `no` | `verified` |
+| `INT-008` | `api-web` | `PR-AW-SDK-004` | `package` | `preview` | `yes (NODE-PRUNE-01 published as 2026.11.4-pre, run 44970428581)` | `yes` | `no` | `verified` |
+| `INT-009` | `crawler-network` | `PR-CN-NET-002` | `network` | `preview` | `yes (package 2026.11.4-pre verified; published 2026.11.4, run 44970869402)` | `yes` | `no` | `verified` |
+| `INT-010` | `crawler-network` | `PR-CN-WRK-003` | `worker` | `preview` | `yes (package 2026.11.4-pre, network 2026.11.4 verified; deployed 2026.11.4-pre, run 44971664056, live crawl verified)` | `yes` | `no` | `verified` |
+| `INT-011` | `api-web` | `PR-AW-WEB-004` | `web` | `preview` | `yes (package 2026.11.4-pre verified; WEB-BULK-01..03 astro check & build verified; remote web hosting deferred)` | `no (hosting deferred)` | `no` | `verified` |
 
 ---
 
