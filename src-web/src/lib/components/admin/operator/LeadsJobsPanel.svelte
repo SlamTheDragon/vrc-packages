@@ -676,6 +676,12 @@
 				</Notice>
 			{/if}
 
+			<Notice variant="warning" title="Source Access Profile Required">
+				The job will stay in <code class="font-mono">pending</code> state until a matching
+				<strong>SourceAccessProfile</strong> exists for the target URL in the Policies panel.
+				Create one before the crawler node can claim this job.
+			</Notice>
+
 			<Field id="job-url" label="Target HTTPS URL" required={true}>
 				<Input id="job-url" bind:value={jobUrl} />
 			</Field>

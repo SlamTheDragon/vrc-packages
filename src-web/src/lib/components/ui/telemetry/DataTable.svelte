@@ -8,6 +8,8 @@
 		data: any[];
 		keyField?: string;
 		selectedId?: string;
+		selectable?: boolean;
+		selectedIds?: string[];
 		embedded?: boolean;
 		density?: 'compact' | 'default';
 		ariaLabel?: string;
@@ -23,6 +25,8 @@
 		data = [],
 		keyField = 'id',
 		selectedId = $bindable(''),
+		selectable = false,
+		selectedIds = $bindable([]),
 		embedded = false,
 		density = 'compact',
 		ariaLabel = 'Data records',
@@ -35,7 +39,52 @@
 
 	const instanceId = $props.id();
 	let activeIndex = $state(-1);
+	let lastCheckedIndex = $state<number | null>(null);
 	let containerEl = $state<HTMLDivElement | null>(null);
+
+	let isAllSelected = $derived(
+		selectable && data.length > 0 && data.every((r) => selectedIds.includes(String(r[keyField] ?? '')))
+	);
+	let isIndeterminate = $derived(
+		selectable && !isAllSelected && data.some((r) => selectedIds.includes(String(r[keyField] ?? '')))
+	);
+
+	function toggleSelectAll() {
+		if (isAllSelected) {
+			const visibleKeys = new Set(data.map((r) => String(r[keyField] ?? '')));
+			selectedIds = selectedIds.filter((id) => !visibleKeys.has(id));
+		} else {
+			const allKeys = data.map((r) => String(r[keyField] ?? ''));
+			selectedIds = Array.from(new Set([...selectedIds, ...allKeys]));
+		}
+	}
+
+	function handleCheckboxClick(event: MouseEvent, index: number, key: string) {
+		const target = event.target as HTMLInputElement;
+		const checked = target.checked;
+
+		if (event.shiftKey && lastCheckedIndex !== null && lastCheckedIndex !== index) {
+			const start = Math.min(lastCheckedIndex, index);
+			const end = Math.max(lastCheckedIndex, index);
+			const keysInRange = data.slice(start, end + 1).map((r) => String(r[keyField] ?? ''));
+
+			if (checked) {
+				selectedIds = Array.from(new Set([...selectedIds, ...keysInRange]));
+			} else {
+				const removeSet = new Set(keysInRange);
+				selectedIds = selectedIds.filter((id) => !removeSet.has(id));
+			}
+		} else {
+			if (checked) {
+				if (!selectedIds.includes(key)) {
+					selectedIds = [...selectedIds, key];
+				}
+			} else {
+				selectedIds = selectedIds.filter((id) => id !== key);
+			}
+			lastCheckedIndex = index;
+		}
+	}
 
 	let effectiveIndex = $derived.by(() => {
 		if (data.length === 0) return -1;
@@ -124,6 +173,18 @@
 	<table class="w-full text-left text-xs border-collapse">
 		<thead class="sticky top-0 z-10 bg-card/95 backdrop-blur-xs">
 			<tr class="border-b border-border text-muted-foreground font-semibold uppercase tracking-wider">
+				{#if selectable}
+					<th scope="col" class={cn(headerCellClass, 'w-10 text-center')}>
+						<input
+							type="checkbox"
+							checked={isAllSelected}
+							indeterminate={isIndeterminate}
+							aria-label="Select all visible rows"
+							onclick={(e) => { e.stopPropagation(); toggleSelectAll(); }}
+							class="size-4 rounded-sm border border-input bg-background accent-primary cursor-pointer"
+						/>
+					</th>
+				{/if}
 				{#each columns as col (col.key)}
 					<th
 						scope="col"
@@ -148,7 +209,7 @@
 			{#if data.length === 0}
 				<tr>
 					<td
-						colspan={columns.length + (rowActions ? 1 : 0)}
+						colspan={columns.length + (rowActions ? 1 : 0) + (selectable ? 1 : 0)}
 						class="px-4 py-8 text-center text-muted-foreground font-sans"
 					>
 						No data available.
@@ -172,6 +233,19 @@
 									: 'text-foreground'
 						)}
 					>
+						{#if selectable}
+							{@const rowKey = String(row[keyField] ?? '')}
+							{@const isChecked = selectedIds.includes(rowKey)}
+							<td class={cn(bodyCellClass, 'w-10 text-center')} onclick={(e) => e.stopPropagation()}>
+								<input
+									type="checkbox"
+									checked={isChecked}
+									aria-label={`Select row ${rowKey}`}
+									onclick={(e) => handleCheckboxClick(e, idx, rowKey)}
+									class="size-4 rounded-sm border border-input bg-background accent-primary cursor-pointer"
+								/>
+							</td>
+						{/if}
 						{#each columns as col (col.key)}
 							{@const cellVal = row[col.key]}
 							<td

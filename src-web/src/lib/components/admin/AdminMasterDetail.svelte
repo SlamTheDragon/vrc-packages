@@ -16,6 +16,8 @@
 		data: any[];
 		keyField?: string;
 		selectedId?: string;
+		selectable?: boolean;
+		selectedIds?: string[];
 		loading?: boolean;
 		density?: 'compact' | 'default';
 		ariaLabel?: string;
@@ -33,6 +35,7 @@
 		class?: string;
 		toolbar?: Snippet;
 		banner?: Snippet;
+		bulkActions?: Snippet<[{ selectedCount: number; selectedIds: string[]; clearSelection: () => void }]>;
 		rowActions?: Snippet<[any]>;
 		inspector?: Snippet;
 		paginationFooter?: Snippet;
@@ -46,6 +49,8 @@
 		data = [],
 		keyField = 'id',
 		selectedId = $bindable(''),
+		selectable = false,
+		selectedIds = $bindable([]),
 		loading = false,
 		density = 'compact',
 		ariaLabel = 'Workspace records',
@@ -63,6 +68,7 @@
 		class: className = '',
 		toolbar,
 		banner,
+		bulkActions,
 		rowActions,
 		inspector,
 		paginationFooter,
@@ -105,6 +111,10 @@
 		onClearSelection?.();
 	}
 
+	function clearMultiSelection() {
+		selectedIds = [];
+	}
+
 	function getMobileSheetOpen(): boolean {
 		return !isDesktop && hasSelection;
 	}
@@ -133,6 +143,27 @@
 	{#if banner}
 		<div class="px-4 py-2.5 border-b border-border bg-muted/20 shrink-0">
 			{@render banner()}
+		</div>
+	{/if}
+
+	{#if selectable && selectedIds.length > 0 && bulkActions}
+		<div class="px-4 py-2 border-b border-primary/25 bg-primary/10 flex items-center justify-between gap-3 shrink-0">
+			<div class="flex items-center gap-2">
+				<span class="text-xs font-semibold text-primary">
+					{selectedIds.length} {selectedIds.length === 1 ? 'item' : 'items'} selected
+				</span>
+				<Button
+					variant="ghost"
+					size="xs"
+					onclick={clearMultiSelection}
+					class="text-xs text-muted-foreground hover:text-foreground"
+				>
+					Clear
+				</Button>
+			</div>
+			<div class="flex items-center gap-2">
+				{@render bulkActions({ selectedCount: selectedIds.length, selectedIds, clearSelection: clearMultiSelection })}
+			</div>
 		</div>
 	{/if}
 
@@ -168,6 +199,8 @@
 								data={visibleRows}
 								{keyField}
 								bind:selectedId
+								{selectable}
+								bind:selectedIds
 								embedded={true}
 								{density}
 								{ariaLabel}

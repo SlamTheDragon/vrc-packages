@@ -23,7 +23,7 @@
 	import AdminMasterDetail from '$lib/components/admin/AdminMasterDetail.svelte';
 	import { adminSession, formatAdminError } from '$lib/stores/admin-session.svelte';
 	import { toastStore } from '$lib/stores/toast.svelte';
-	import { Plus, KeyRound, ShieldAlert, X, ChevronRight, MoreHorizontal } from '@lucide/svelte';
+	import { Plus, KeyRound, ShieldAlert, Trash2, X, ChevronRight, MoreHorizontal } from '@lucide/svelte';
 
 	const ALL_PLATFORMS: Platform[] = [
 		'vpm',
@@ -82,6 +82,26 @@
 	let revokeAttempted = $state(false);
 	let isRevoking = $state(false);
 	let revokeError = $state<string | null>(null);
+
+	let pruneDialogOpen = $state(false);
+	let pruneTargetId = $state('');
+	let pruneReason = $state('');
+	let pruneAttempted = $state(false);
+	let isPruning = $state(false);
+	let pruneError = $state<string | null>(null);
+
+	let selectedNodeIds = $state<string[]>([]);
+	let bulkRevokeDialogOpen = $state(false);
+	let bulkRevokeReason = $state('');
+	let bulkRevokeAttempted = $state(false);
+	let isBulkRevoking = $state(false);
+	let bulkRevokeError = $state<string | null>(null);
+
+	let bulkPruneDialogOpen = $state(false);
+	let bulkPruneReason = $state('');
+	let bulkPruneAttempted = $state(false);
+	let isBulkPruning = $state(false);
+	let bulkPruneError = $state<string | null>(null);
 
 	const facets = $derived<FacetGroup[]>([
 		{
@@ -166,6 +186,31 @@
 	let revokeReasonValid = $derived(trimmedRevokeReason.length >= 1 && trimmedRevokeReason.length <= 300);
 	let revokeReasonError = $derived(
 		revokeAttempted && !revokeReasonValid ? 'Enter 1-300 characters for the audit reason.' : undefined
+	);
+
+	let trimmedPruneReason = $derived(pruneReason.trim());
+	let pruneReasonValid = $derived(trimmedPruneReason.length >= 1 && trimmedPruneReason.length <= 300);
+	let pruneReasonError = $derived(
+		pruneAttempted && !pruneReasonValid ? 'Enter 1-300 characters for the audit reason.' : undefined
+	);
+
+	let trimmedBulkRevokeReason = $derived(bulkRevokeReason.trim());
+	let bulkRevokeReasonValid = $derived(trimmedBulkRevokeReason.length >= 1 && trimmedBulkRevokeReason.length <= 300);
+	let bulkRevokeReasonError = $derived(
+		bulkRevokeAttempted && !bulkRevokeReasonValid ? 'Enter 1-300 characters for the audit reason.' : undefined
+	);
+
+	let trimmedBulkPruneReason = $derived(bulkPruneReason.trim());
+	let bulkPruneReasonValid = $derived(trimmedBulkPruneReason.length >= 1 && trimmedBulkPruneReason.length <= 300);
+	let bulkPruneReasonError = $derived(
+		bulkPruneAttempted && !bulkPruneReasonValid ? 'Enter 1-300 characters for the audit reason.' : undefined
+	);
+
+	let selectedActiveNodes = $derived(
+		nodes.filter((n) => selectedNodeIds.includes(n.nodeId) && n.status === 'active')
+	);
+	let selectedRevokedNodes = $derived(
+		nodes.filter((n) => selectedNodeIds.includes(n.nodeId) && n.status === 'revoked')
 	);
 
 	let selectedInspectorProperties = $derived.by(() => {
@@ -337,6 +382,123 @@
 			isRevoking = false;
 		}
 	}
+
+	function openPruneDialog(node: OperatorNodeRecord) {
+		pruneTargetId = node.nodeId;
+		pruneReason = 'Permanently prune revoked crawler node';
+		pruneAttempted = false;
+		pruneError = null;
+		pruneDialogOpen = true;
+	}
+
+	async function handlePruneNode() {
+		pruneAttempted = true;
+		pruneError = null;
+		if (!pruneReasonValid || !pruneTargetId) return;
+
+		isPruning = true;
+		try {
+			const res = await adminSession.client.operator.nodes.prune(
+				pruneTargetId,
+				trimmedPruneReason
+			);
+			pruneDialogOpen = false;
+			if (selectedNodeId === pruneTargetId) {
+				selectedNodeId = '';
+			}
+			selectedNodeIds = selectedNodeIds.filter((id) => id !== pruneTargetId);
+			toastStore.success(`Permanently pruned node ${res.nodeId}.`, 'Node Pruned');
+			await onRefresh?.();
+		} catch (err) {
+			pruneError = formatAdminError(err);
+		} finally {
+			isPruning = false;
+		}
+	}
+
+	function openBulkRevokeDialog() {
+		bulkRevokeReason = 'Operator bulk credential revocation';
+		bulkRevokeAttempted = false;
+		bulkRevokeError = null;
+		bulkRevokeDialogOpen = true;
+	}
+
+	async function handleBulkRevoke() {
+		bulkRevokeAttempted = true;
+		bulkRevokeError = null;
+		if (!bulkRevokeReasonValid || selectedActiveNodes.length === 0) return;
+
+		isBulkRevoking = true;
+		let successCount = 0;
+		let failCount = 0;
+		const targets = [...selectedActiveNodes];
+
+		for (const node of targets) {
+			try {
+				await adminSession.client.operator.nodes.revoke(node.nodeId, trimmedBulkRevokeReason);
+				successCount++;
+			} catch (_) {
+				failCount++;
+			}
+		}
+
+		isBulkRevoking = false;
+		bulkRevokeDialogOpen = false;
+
+		if (successCount > 0) {
+			toastStore.success(`Revoked ${successCount} node(s).`, 'Bulk Revocation Complete');
+		}
+		if (failCount > 0) {
+			toastStore.error(`Failed to revoke ${failCount} node(s).`, 'Bulk Partial Failure');
+		}
+		await onRefresh?.();
+	}
+
+	function openBulkPruneDialog() {
+		bulkPruneReason = 'Operator bulk node registry pruning';
+		bulkPruneAttempted = false;
+		bulkPruneError = null;
+		bulkPruneDialogOpen = true;
+	}
+
+	async function handleBulkPrune() {
+		bulkPruneAttempted = true;
+		bulkPruneError = null;
+		if (!bulkPruneReasonValid || selectedRevokedNodes.length === 0) return;
+
+		isBulkPruning = true;
+		let successCount = 0;
+		let failCount = 0;
+		const targets = [...selectedRevokedNodes];
+		const prunedIds: string[] = [];
+
+		for (const node of targets) {
+			try {
+				await adminSession.client.operator.nodes.prune(node.nodeId, trimmedBulkPruneReason);
+				successCount++;
+				prunedIds.push(node.nodeId);
+			} catch (_) {
+				failCount++;
+			}
+		}
+
+		isBulkPruning = false;
+		bulkPruneDialogOpen = false;
+
+		const prunedSet = new Set(prunedIds);
+		selectedNodeIds = selectedNodeIds.filter((id) => !prunedSet.has(id));
+		if (prunedSet.has(selectedNodeId)) {
+			selectedNodeId = '';
+		}
+
+		if (successCount > 0) {
+			toastStore.success(`Permanently pruned ${successCount} node(s).`, 'Bulk Prune Complete');
+		}
+		if (failCount > 0) {
+			toastStore.error(`Failed to prune ${failCount} node(s).`, 'Bulk Partial Failure');
+		}
+		await onRefresh?.();
+	}
 </script>
 
 <div data-slot="nodes-panel" class="flex flex-col gap-3">
@@ -345,6 +507,8 @@
 		data={filteredNodes}
 		keyField="nodeId"
 		bind:selectedId={selectedNodeId}
+		selectable={true}
+		bind:selectedIds={selectedNodeIds}
 		bind:page
 		loading={isLoading}
 		ariaLabel="Registered crawler nodes"
@@ -353,6 +517,30 @@
 		inspectorTitle={selectedNode?.nodeId ?? 'Node Inspector'}
 		inspectorDescription={selectedNode ? `${selectedNode.status} · ${selectedNode.heartbeatState ?? 'offline'}` : undefined}
 	>
+		{#snippet bulkActions()}
+			<div class="flex items-center gap-2">
+				{#if selectedActiveNodes.length > 0}
+					<Button
+						variant="destructive"
+						size="xs"
+						onclick={openBulkRevokeDialog}
+					>
+						<ShieldAlert size={13} />
+						<span>Revoke ({selectedActiveNodes.length})</span>
+					</Button>
+				{/if}
+				{#if selectedRevokedNodes.length > 0}
+					<Button
+						variant="destructive"
+						size="xs"
+						onclick={openBulkPruneDialog}
+					>
+						<Trash2 size={13} />
+						<span>Prune ({selectedRevokedNodes.length})</span>
+					</Button>
+				{/if}
+			</div>
+		{/snippet}
 		{#snippet toolbar()}
 			<AdminFilterBar
 				bind:searchQuery
@@ -403,6 +591,8 @@
 					<DropdownItem label="Rotate / Re-issue Token" onclick={() => openRotateDialog(node)} />
 					{#if node.status === 'active'}
 						<DropdownItem label="Revoke Node" destructive={true} onclick={() => openRevokeDialog(node)} />
+					{:else if node.status === 'revoked'}
+						<DropdownItem label="Prune Node" destructive={true} onclick={() => openPruneDialog(node)} />
 					{/if}
 				</DropdownMenu>
 			</div>
@@ -447,6 +637,15 @@
 								>
 									<ShieldAlert size={14} />
 									<span>Revoke</span>
+								</Button>
+							{:else if selectedNode.status === 'revoked'}
+								<Button
+									variant="destructive"
+									size="sm"
+									onclick={() => openPruneDialog(selectedNode)}
+								>
+									<Trash2 size={14} />
+									<span>Prune Node</span>
 								</Button>
 							{/if}
 						</div>
@@ -643,6 +842,178 @@
 			>
 				<ShieldAlert size={13} />
 				<span>{isRevoking ? 'Revoking...' : 'Revoke Node'}</span>
+			</Button>
+		{/snippet}
+	</Dialog>
+
+	<!-- Single Prune Dialog -->
+	<Dialog
+		bind:open={pruneDialogOpen}
+		alert={true}
+		title="Permanently Prune Node"
+		description={`Hard-delete all records for ${pruneTargetId} from the registry. This cannot be undone.`}
+	>
+		<div class="flex flex-col gap-4">
+			{#if pruneError}
+				<Notice variant="danger" title="Prune Failed">
+					{pruneError}
+				</Notice>
+			{/if}
+
+			<Field id="prune-node-id" label="Target Node ID">
+				<Input
+					id="prune-node-id"
+					value={pruneTargetId}
+					readonly={true}
+					class="bg-muted/60 text-muted-foreground"
+				/>
+			</Field>
+
+			<Field
+				id="prune-node-reason"
+				label="Prune Audit Reason"
+				required={true}
+				error={pruneReasonError}
+			>
+				<Textarea
+					id="prune-node-reason"
+					bind:value={pruneReason}
+					rows={2}
+					error={Boolean(pruneReasonError)}
+				/>
+			</Field>
+		</div>
+
+		{#snippet actions()}
+			<Button
+				variant="secondary"
+				size="sm"
+				disabled={isPruning}
+				onclick={() => (pruneDialogOpen = false)}
+			>
+				Cancel
+			</Button>
+			<Button
+				variant="destructive"
+				size="sm"
+				busy={isPruning}
+				ariaDisabled={!pruneReasonValid}
+				onclick={handlePruneNode}
+			>
+				<Trash2 size={13} />
+				<span>{isPruning ? 'Pruning...' : 'Prune Node'}</span>
+			</Button>
+		{/snippet}
+	</Dialog>
+
+	<!-- Bulk Revoke Dialog -->
+	<Dialog
+		bind:open={bulkRevokeDialogOpen}
+		alert={true}
+		title="Bulk Revoke Nodes"
+		description={`Immediately cut active leases for ${selectedActiveNodes.length} selected active node(s). This cannot be undone.`}
+	>
+		<div class="flex flex-col gap-4">
+			{#if bulkRevokeError}
+				<Notice variant="danger" title="Bulk Revocation Failed">
+					{bulkRevokeError}
+				</Notice>
+			{/if}
+
+			<Notice variant="warning" title="Bulk Revocation">
+				This will revoke {selectedActiveNodes.length} active node(s) sequentially.
+				Active leases will expire immediately.
+			</Notice>
+
+			<Field
+				id="bulk-revoke-reason"
+				label="Revocation Audit Reason"
+				required={true}
+				error={bulkRevokeReasonError}
+			>
+				<Textarea
+					id="bulk-revoke-reason"
+					bind:value={bulkRevokeReason}
+					rows={2}
+					error={Boolean(bulkRevokeReasonError)}
+				/>
+			</Field>
+		</div>
+
+		{#snippet actions()}
+			<Button
+				variant="secondary"
+				size="sm"
+				disabled={isBulkRevoking}
+				onclick={() => (bulkRevokeDialogOpen = false)}
+			>
+				Cancel
+			</Button>
+			<Button
+				variant="destructive"
+				size="sm"
+				busy={isBulkRevoking}
+				ariaDisabled={!bulkRevokeReasonValid}
+				onclick={handleBulkRevoke}
+			>
+				<ShieldAlert size={13} />
+				<span>{isBulkRevoking ? 'Revoking...' : `Revoke ${selectedActiveNodes.length}`}</span>
+			</Button>
+		{/snippet}
+	</Dialog>
+
+	<!-- Bulk Prune Dialog -->
+	<Dialog
+		bind:open={bulkPruneDialogOpen}
+		alert={true}
+		title="Bulk Prune Nodes"
+		description={`Hard-delete all registry records for ${selectedRevokedNodes.length} selected revoked node(s). This cannot be undone.`}
+	>
+		<div class="flex flex-col gap-4">
+			{#if bulkPruneError}
+				<Notice variant="danger" title="Bulk Prune Failed">
+					{bulkPruneError}
+				</Notice>
+			{/if}
+
+			<Notice variant="warning" title="Permanent Deletion">
+				This will permanently delete {selectedRevokedNodes.length} revoked node(s) from the registry.
+				All associated lease and job records will be removed.
+			</Notice>
+
+			<Field
+				id="bulk-prune-reason"
+				label="Prune Audit Reason"
+				required={true}
+				error={bulkPruneReasonError}
+			>
+				<Textarea
+					id="bulk-prune-reason"
+					bind:value={bulkPruneReason}
+					rows={2}
+					error={Boolean(bulkPruneReasonError)}
+				/>
+			</Field>
+		</div>
+
+		{#snippet actions()}
+			<Button
+				variant="secondary"
+				size="sm"
+				disabled={isBulkPruning}
+				onclick={() => (bulkPruneDialogOpen = false)}
+			>
+				Cancel
+			</Button>
+			<Button
+				variant="destructive"
+				size="sm"
+				busy={isBulkPruning}
+				ariaDisabled={!bulkPruneReasonValid}
+				onclick={handleBulkPrune}
+			>
+				<Trash2 size={13} />
+				<span>{isBulkPruning ? 'Pruning...' : `Prune ${selectedRevokedNodes.length}`}</span>
 			</Button>
 		{/snippet}
 	</Dialog>
