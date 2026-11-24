@@ -1,13 +1,17 @@
 import assert from 'node:assert/strict';
 import { VRCPackageClient, VRCPApiError, PlatformSchema } from 'vrc-packages-api';
-import { RevokeNodeRequestSchema, LeadCursorSchema, encodeLeadCursor, decodeLeadCursor,
-  CreateSourceAccessProfileSchema, isCanonicalSourceAccessPath, CreateAutoQueueRuleSchema,
-  NodeCredentialResponseSchema, encodeCatalogCursor, PublicCatalogListQuerySchema } from 'vrc-packages-api/protocol';
-import { encodeCatalogDeltaCursor, CatalogDeltaQuerySchema, OperatorLeadListQuerySchema } from 'vrc-packages-api/protocol';
-import { LeadRowSchema, ApproveLeadSchema, RejectLeadSchema } from 'vrc-packages-api/protocol';
 import {
+  RevokeNodeRequestSchema, LeadCursorSchema, encodeLeadCursor, decodeLeadCursor,
+  CreateSteeringProfileSchema, UpdateSteeringProfileSchema, isCanonicalSourceAccessPath,
+  CreateSuppressedTargetSchema, OperatorStatusResponseSchema, SystemPurgeRequestSchema,
+  UpdateJobRequestSchema, BulkApproveLeadsRequestSchema, SuppressLeadDomainRequestSchema,
+  IssueNodeCredentialSchema, NodeCredentialResponseSchema,
+  encodeCatalogCursor, PublicCatalogListQuerySchema,
+  encodeCatalogDeltaCursor, CatalogDeltaQuerySchema, OperatorLeadListQuerySchema,
+  LeadRowSchema, ApproveLeadSchema, RejectLeadSchema,
   ReportSubmissionRequestSchema,
   DemandSignalReportRequestSchema,
+  RelationshipFeedbackReportRequestSchema,
   IssueReportRequestSchema,
   RemovalReportRequestSchema,
   UserAppListQuerySchema,
@@ -18,18 +22,27 @@ import {
   OperatorNodeListResponseSchema,
   encodeOperatorJobCursor,
   decodeOperatorJobCursor,
-  OperatorJobListResponseSchema
+  OperatorJobListResponseSchema,
+  encodeSteeringProfileCursor,
+  decodeSteeringProfileCursor,
+  encodeSuppressedTargetCursor,
+  decodeSuppressedTargetCursor
 } from 'vrc-packages-api/protocol';
 import { CatalogPackageSchema } from 'vrc-packages-api/types';
 import * as taxonomy from 'vrc-packages-api/taxonomy';
 import * as sdkExports from 'vrc-packages-api';
-import { formatAppToken, isAppToken } from 'vrc-packages-api/auth';
+import { formatAppToken, isAppToken, isNodeToken, NODE_TOKEN_REGEX } from 'vrc-packages-api/auth';
 
 assert.equal(PlatformSchema.parse('vpm'), 'vpm');
+assert.equal(PlatformSchema.safeParse('curated').success, false);
+assert.equal(PlatformSchema.options.length, 9);
 assert.equal(typeof VRCPackageClient, 'function');
 assert.equal(typeof VRCPApiError, 'function');
 assert.equal(new VRCPApiError(403, 'Fixture rejection').name, 'VRCPApiError');
-for (const retiredName of ['VrcPackagesClient', 'VrcApiError', 'VRCPPackageClient', 'VRCPPackagesClient']) {
+for (const retiredName of [
+  'VrcPackagesClient', 'VrcApiError', 'VRCPPackageClient', 'VRCPPackagesClient',
+  'CreateSourceAccessProfileSchema', 'CreateAutoQueueRuleSchema', 'CatalogIdentityLinkSchema'
+]) {
   assert.equal(Object.hasOwn(sdkExports, retiredName), false);
 }
 const publicCursor = encodeCatalogCursor({ createdAt: '2026-10-01T12:00:00.000Z', canonicalId: '界'.repeat(500) });
@@ -80,6 +93,28 @@ await assert.rejects(anonymousRegistration.app.register({ schemaVersion: 1, appN
 assert.equal(anonymousRegistrationCalls, 0);
 assert.equal(RevokeNodeRequestSchema.parse({ schemaVersion: 1, reason: 'Packed fixture' }).reason, 'Packed fixture');
 assert.equal(typeof CatalogPackageSchema.parse, 'function');
+const parsedPackage = CatalogPackageSchema.parse({
+  canonicalId: 'pkg-packed-1',
+  umbrella: 'tools',
+  category: 'vpm_tool',
+  lifecycle: 'active',
+  displayName: 'Packed Tool',
+  ownerKey: 'github:owner',
+  ownerName: 'Owner',
+  verificationStatus: 'unverified',
+  vpmId: 'com.owner.tool',
+  vpmLatestVersion: '1.0.0',
+  summary: 'Packed summary',
+  tags: ['utility'],
+  qualityFlags: ['incomplete_metadata'],
+  createdAt: '2026-10-01T00:00:00.000Z',
+  updatedAt: '2026-10-01T00:00:00.000Z',
+  sources: [],
+  relations: []
+});
+assert.equal(parsedPackage.verificationStatus, 'unverified');
+assert.equal(CatalogPackageSchema.safeParse({ ...parsedPackage, acceptedLinks: [] }).success, false);
+assert.equal(CatalogPackageSchema.safeParse({ ...parsedPackage, fronts: [] }).success, false);
 assert.equal(taxonomy.UmbrellaSchema.parse('tools'), 'tools');
 assert.deepEqual(Object.keys(taxonomy), ['ContentRatingSchema', 'UmbrellaSchema']);
 assert.equal(taxonomy.ContentRatingSchema.parse('adult_restricted'), 'adult_restricted');
@@ -90,32 +125,61 @@ for (const name of ['isVpmVersion', 'compareVpmVersions', 'cleanVpmVersion',
   assert.equal(name in sdkExports, false);
 }
 assert.equal(isAppToken(formatAppToken('0'.repeat(64))), true);
+assert.equal(isNodeToken('vrcp_' + '0'.repeat(64) + '01ff'), true);
+assert.equal(NODE_TOKEN_REGEX.test('vrcp_' + 'a'.repeat(64) + '0001'), true);
 const cursor = { status: 'pending_review', firstSeenAt: '2026-10-01T12:00:00.000Z', leadKey: 'a'.repeat(64) };
 assert.deepEqual(decodeLeadCursor(encodeLeadCursor(cursor), 'pending_review'), cursor);
 assert.equal(decodeLeadCursor(encodeLeadCursor(cursor), 'rejected'), null);
 assert.equal(LeadCursorSchema.safeParse({ leadKey: cursor.leadKey }).success, false);
-const profile = { schemaVersion: 1, platform: 'vpm', origin: 'https://packages.example.org',
-  pathScope: '/index.json', method: 'GET', purpose: 'discovery', minDelayMs: 1000,
-  expiresAt: '2027-01-01T00:00:00.000Z', reviewReference: 'Packed fixture review',
-  reason: 'Packed profile fixture', retainClasses: ['normalized_facts'], publishClasses: [] };
-assert.equal(CreateSourceAccessProfileSchema.safeParse(profile).success, true);
-assert.equal(CreateSourceAccessProfileSchema.safeParse({ ...profile, pathScope: '/*' }).success, false);
-assert.equal(CreateSourceAccessProfileSchema.safeParse({ ...profile, publishClasses: ['creator_prose'] }).success, false);
+const profile = {
+  schemaVersion: 1,
+  platform: 'vpm',
+  hostMatchMode: 'any_vpm_https',
+  hostPattern: '*',
+  pathScope: '/index.json',
+  queryMode: 'none',
+  method: 'GET',
+  purpose: 'discovery',
+  minDelayMs: 1000,
+  expiresAt: '2027-01-01T00:00:00.000Z',
+  reviewReference: 'Packed fixture review',
+  reason: 'Packed profile fixture',
+  retainClasses: ['normalized_facts'],
+  publishClasses: []
+};
+assert.equal(CreateSteeringProfileSchema.safeParse(profile).success, true);
+assert.equal(CreateSteeringProfileSchema.safeParse({ ...profile, platform: 'booth' }).success, false);
+assert.equal(CreateSteeringProfileSchema.safeParse({
+  ...profile, hostMatchMode: 'wildcard_subdomain', hostPattern: '*.booth.pm', pathScope: '/ja/browse/', queryMode: 'pagination', queryScope: 'page'
+}).success, true);
+assert.equal(CreateSteeringProfileSchema.safeParse({ ...profile, hostMatchMode: 'exact', hostPattern: '127.0.0.1' }).success, false);
+assert.equal(CreateSteeringProfileSchema.safeParse({ ...profile, pathScope: '/*' }).success, false);
+assert.equal(CreateSteeringProfileSchema.safeParse({ ...profile, publishClasses: ['creator_prose'] }).success, false);
+assert.equal(UpdateSteeringProfileSchema.safeParse({ schemaVersion: 1, minDelayMs: 2000, reason: 'Adjust delay' }).success, true);
+assert.equal(UpdateSteeringProfileSchema.safeParse({ schemaVersion: 1, reason: 'Empty update' }).success, false);
 assert.equal(isCanonicalSourceAccessPath('/ja/%E3%81%82'), true);
 assert.equal(isCanonicalSourceAccessPath('/ja/%2F'), false);
-const rule = { schemaVersion: 1, leadKind: 'vpm_listing', origin: profile.origin,
-  pathScope: '/index.json', minDelayMs: 1000, expiresAt: profile.expiresAt,
-  reviewReference: 'Packed rule review', reason: 'Packed rule fixture' };
-assert.equal(CreateAutoQueueRuleSchema.safeParse(rule).success, true);
-assert.equal(CreateAutoQueueRuleSchema.safeParse({ ...rule, leadKind: 'storefront_product' }).success, false);
-assert.equal(CreateAutoQueueRuleSchema.safeParse({ ...rule, pathScope: '/*' }).success, false);
+assert.equal(CreateSuppressedTargetSchema.safeParse({ schemaVersion: 1, target: 'spam.example', scope: 'domain', reason: 'Blocked host' }).success, true);
+assert.equal(CreateSuppressedTargetSchema.safeParse({ schemaVersion: 1, target: 'localhost', scope: 'domain', reason: 'Blocked host' }).success, false);
+assert.equal(OperatorStatusResponseSchema.safeParse({
+  schemaVersion: 1,
+  environment: 'development',
+  purgeEnabled: true,
+  d1SchemaState: 'v0-17',
+  queueReadiness: { claimableJobs: 1, blockedJobs: 0, pendingLeads: 2, unresolvedDemandSignals: 0, activeNodes: 1, activeSteeringProfiles: 3 }
+}).success, true);
+assert.equal(SystemPurgeRequestSchema.safeParse({ schemaVersion: 1, confirm: 'PURGE_DEVELOPMENT_D1' }).success, true);
+assert.equal(SystemPurgeRequestSchema.safeParse({ schemaVersion: 1, confirm: 'WRONG' }).success, false);
+assert.equal(UpdateJobRequestSchema.safeParse({ schemaVersion: 1, priorityLane: 1, reason: 'Promote job' }).success, true);
+assert.equal(BulkApproveLeadsRequestSchema.safeParse({ schemaVersion: 1, leadKeys: ['a'.repeat(64)], reason: 'Bulk approve' }).success, true);
+assert.equal(SuppressLeadDomainRequestSchema.safeParse({ schemaVersion: 1, targetHost: 'bad.example', reason: 'Spam domain' }).success, true);
 const credential = { schemaVersion: 1, nodeId: 'packed-fixture', capabilities: ['vpm'],
   token: 'vrcp_' + '0'.repeat(64) + '0004' };
-for (const schema of [NodeCredentialResponseSchema]) {
-  assert.equal(schema.safeParse(credential).success, true);
-  assert.equal(schema.safeParse({ ...credential, nodeId: '' }).success, false);
-  assert.equal(schema.safeParse({ ...credential, capabilities: [] }).success, false);
-}
+assert.equal(NodeCredentialResponseSchema.safeParse(credential).success, true);
+assert.equal(NodeCredentialResponseSchema.safeParse({ ...credential, nodeId: '' }).success, false);
+assert.equal(NodeCredentialResponseSchema.safeParse({ ...credential, capabilities: [] }).success, false);
+assert.equal(IssueNodeCredentialSchema.safeParse({ schemaVersion: 1, nodeId: 'packed-fixture', reason: 'Packed issue' }).success, true);
+assert.equal(IssueNodeCredentialSchema.safeParse({ schemaVersion: 1, nodeId: 'packed-fixture', capabilities: ['vpm'], reason: 'Manual caps disallowed' }).success, false);
 await assert.rejects(import('vrc-packages-api/src/client.ts'), { code: 'ERR_PACKAGE_PATH_NOT_EXPORTED' });
 let requests = 0;
 const transportClient = new VRCPackageClient({ baseUrl: 'https://packed-worker.test/',
@@ -145,6 +209,10 @@ assert.equal(Object.hasOwn(sdkExports, 'DownstreamFeedbackRequestSchema'), false
 assert.equal(Object.hasOwn(sdkExports, 'DownstreamFeedbackResponseSchema'), false);
 assert.equal(DemandSignalReportRequestSchema.safeParse({ schemaVersion: 1, reportType: 'demand_signal',
   signalKind: 'search_miss', query: 'packed query' }).success, true);
+assert.equal(RelationshipFeedbackReportRequestSchema.safeParse({ schemaVersion: 1, reportType: 'relationship_feedback',
+  canonicalId: 'packed-target', targetAvatarBase: 'Kikyo', relationType: 'compatible_with_avatar', vote: 'up' }).success, true);
+assert.equal(ReportSubmissionRequestSchema.safeParse({ schemaVersion: 1, reportType: 'relationship_feedback',
+  canonicalId: 'packed-target', relationType: 'compatible_with_avatar', vote: 'up' }).success, false);
 assert.equal(IssueReportRequestSchema.safeParse({ schemaVersion: 1, reportType: 'issue_report',
   reportKind: 'broken_link', canonicalId: 'packed-target' }).success, true);
 assert.equal(RemovalReportRequestSchema.safeParse({ schemaVersion: 1, reportType: 'removal_request',
@@ -156,8 +224,6 @@ assert.equal(ReportSubmissionRequestSchema.safeParse({ schemaVersion: 1, reportT
 assert.equal(UserAppListQuerySchema.safeParse({ limit: '10' }).success, false);
 assert.equal(ModeratorRatingListQuerySchema.safeParse({ limit: '10' }).success, false);
 assert.equal(ModeratorAppListQuerySchema.safeParse({ limit: '10' }).success, false);
-assert.equal(ReportSubmissionRequestSchema.safeParse({ schemaVersion: 1, reportType: 'removal_request',
-  canonicalId: 'packed-target', reason: 'Packed removal test' }).success, true);
 const reportClient = new VRCPackageClient({ baseUrl: 'https://packed-worker.test', appToken: 'packed-test-only',
   fetch: async (input, init) => {
     const request = new Request(input, init);
@@ -203,8 +269,9 @@ await assert.rejects(deltaClient.index.syncDeltas({ cursor: 'YWJj' }), { name: '
 await assert.rejects(deltaClient.index.syncDeltas({ limit: 101 }), { name: 'ZodError' });
 assert.equal(deltaRequests, 1);
 const lead = { lead_key: 'a'.repeat(64), kind: 'vpm_listing', target_url: 'https://publisher.example/index.json',
-  claimed_package_id: null, discovered_from_url: 'https://directory.example/catalog', discovered_from_item_key: null,
-  status: 'pending_review', first_seen_at: '2026-10-04T00:00:00.000Z', last_seen_at: '2026-10-04T00:00:00.000Z' };
+  target_host: 'publisher.example', claimed_package_id: null, discovered_from_url: 'https://directory.example/catalog',
+  discovered_from_item_key: null, status: 'pending_review', first_seen_at: '2026-10-04T00:00:00.000Z',
+  last_seen_at: '2026-10-04T00:00:00.000Z' };
 assert.deepEqual(LeadRowSchema.parse(lead), lead);
 assert.equal(LeadRowSchema.safeParse({ ...lead, leadKey: lead.lead_key }).success, false);
 for (const schema of [ApproveLeadSchema, RejectLeadSchema]) assert.equal(schema.safeParse({ schemaVersion: 1 }).success, false);
@@ -212,6 +279,10 @@ const packedNodeCursor = encodeOperatorNodeCursor({ nodeId: 'packed-node-1' });
 assert.deepEqual(decodeOperatorNodeCursor(packedNodeCursor), { nodeId: 'packed-node-1' });
 const packedJobCursor = encodeOperatorJobCursor({ createdAt: '2026-10-04T00:00:00.000Z', jobId: 'job-b1' });
 assert.deepEqual(decodeOperatorJobCursor(packedJobCursor), { createdAt: '2026-10-04T00:00:00.000Z', jobId: 'job-b1' });
+const packedProfileCursor = encodeSteeringProfileCursor({ createdAt: '2026-10-04T00:00:00.000Z', profileId: '00000000-0000-4000-8000-000000000001' });
+assert.equal(decodeSteeringProfileCursor(packedProfileCursor)?.profileId, '00000000-0000-4000-8000-000000000001');
+const packedSuppressedCursor = encodeSuppressedTargetCursor({ suppressedAt: '2026-10-04T00:00:00.000Z', target: 'bad.example' });
+assert.equal(decodeSuppressedTargetCursor(packedSuppressedCursor)?.target, 'bad.example');
 assert.equal(OperatorNodeListResponseSchema.safeParse({ schemaVersion: 1, nodes: [], nextCursor: packedNodeCursor }).success, true);
 assert.equal(OperatorJobListResponseSchema.safeParse({ schemaVersion: 1, jobs: [], nextCursor: packedJobCursor }).success, true);
 console.log('packed_node_exports_passed');

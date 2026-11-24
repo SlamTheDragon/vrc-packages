@@ -40,6 +40,7 @@ Sweep all sector `handoff.md` files and stage accepted intake rows here in stric
 | `INT-013` | `api-web` | `PR-AW-WEB-002` | `web` | `preview` | `yes (package 2026.11.2-pre verified; WEB-PREVIEW-SDK astro check & build verified; remote web hosting deferred)` | `yes` | `yes` | `cleared` |
 | `INT-014` | `api-web` | `PR-AW-WEB-003` | `web` | `preview` | `yes (package 2026.11.3-pre verified; WEB-OP-FLEET-UX & WEB-UX-REFRAME-01 astro check & build verified; remote web hosting deferred)` | `yes` | `yes` | `cleared` |
 | `INT-015` | `legal-research` | `CLR-LR-001` | `non_product_audit_only` | `n/a` | `yes (REORIENT-LR-01 Stage 1 checks, owner_dispositions.md 2026-11-24, and HO-L1-003 verified on disk; zero product changes)` | `n/a (non-product)` | `yes` | `cleared` |
+| `INT-016` | `api-web` | `PR-AW-SDK-005` | `package` | `preview` | `none (REORIENT-AW-02 verified: typecheck, 93/93 unit tests, packed test:distribution)` | `yes` | `no` | `in_progress` |
 
 ---
 

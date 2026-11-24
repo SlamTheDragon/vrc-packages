@@ -5,6 +5,15 @@
 
 export const IDENTITY_PREFIX = "vrcp_" as const;
 
+/**
+ * Crawler node credentials prepend `vrcp_` followed by 64-hex entropy and a 4-hex capability bitmask.
+ */
+export const NODE_TOKEN_REGEX = /^vrcp_([0-9a-fA-F]{64})([0-9a-fA-F]{4})$/;
+
+export function isNodeToken(token: string): boolean {
+  return NODE_TOKEN_REGEX.test(token);
+}
+
 /** Downstream application credentials prepend `vrcp_app_` followed by 64-hex entropy. */
 export const APP_TOKEN_PREFIX = "vrcp_app_" as const;
 export const APP_TOKEN_REGEX = /^vrcp_app_[a-f0-9]{64}$/;

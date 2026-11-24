@@ -7,7 +7,6 @@ export const PlatformSchema = z.enum([
   "gumroad",
   "jinxxy",
   "itch",
-  "curated",
   "shopify",
   "sellfy",
   "custom_domain"

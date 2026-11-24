@@ -18,11 +18,11 @@ const families = [
     encode: sdk.encodeLeadCursor, decode: sdk.decodeLeadCursor,
     query: sdk.OperatorLeadListQuerySchema, response: sdk.LeadListResponseSchema, body: { leads: [] } },
   { value: { createdAt: time, profileId: id },
-    encode: sdk.encodeProfileCursor, decode: sdk.decodeProfileCursor,
-    query: sdk.OperatorProfileListQuerySchema, response: sdk.SourceAccessProfileListResponseSchema, body: { profiles: [] } },
-  { value: { createdAt: time, ruleId: id },
-    encode: sdk.encodeRuleCursor, decode: sdk.decodeRuleCursor,
-    query: sdk.OperatorRuleListQuerySchema, response: sdk.AutoQueueRuleListResponseSchema, body: { rules: [] } },
+    encode: sdk.encodeSteeringProfileCursor, decode: sdk.decodeSteeringProfileCursor,
+    query: sdk.OperatorSteeringProfileListQuerySchema, response: sdk.SteeringProfileListResponseSchema, body: { profiles: [] } },
+  { value: { suppressedAt: time, target: "https://example.com/" + "界".repeat(200) },
+    encode: sdk.encodeSuppressedTargetCursor, decode: sdk.decodeSuppressedTargetCursor,
+    query: sdk.OperatorSuppressedTargetListQuerySchema, response: sdk.SuppressedTargetListResponseSchema, body: { targets: [] } },
   { value: { recordedAt: time, takedownId: id },
     encode: sdk.encodeTakedownCursor, decode: sdk.decodeTakedownCursor,
     query: sdk.OperatorTakedownListQuerySchema, response: sdk.TakedownListResponseSchema, body: { records: [] } },
@@ -121,15 +121,21 @@ describe("bounded UTF-8 pagination contracts", () => {
     expect(requests).toHaveLength(2);
   });
 
-  test("operator node and job cursors enforce identifier bounds and reject tampering", () => {
+  test("operator node, job, and suppressed target cursors enforce identifier bounds and reject tampering", () => {
     const jobCursor = sdk.encodeOperatorJobCursor({ createdAt: time, jobId: "job-b1" });
     expect(sdk.decodeOperatorJobCursor(jobCursor)).toEqual({ createdAt: time, jobId: "job-b1" });
     expect(() => sdk.encodeOperatorJobCursor({ createdAt: time, jobId: "x".repeat(121) })).toThrow();
     expect(() => sdk.encodeOperatorJobCursor({ createdAt: time, jobId: "" })).toThrow();
+    expect(() => sdk.encodeOperatorJobCursor({ createdAt: time, jobId: ".." })).toThrow();
 
     const nodeCursor = sdk.encodeOperatorNodeCursor({ nodeId: "Node.1" });
     expect(sdk.decodeOperatorNodeCursor(nodeCursor)).toEqual({ nodeId: "Node.1" });
     expect(() => sdk.encodeOperatorNodeCursor({ nodeId: ".." })).toThrow();
     expect(() => sdk.encodeOperatorNodeCursor({ nodeId: "node_界" })).toThrow();
+
+    const suppressedCursor = sdk.encodeSuppressedTargetCursor({ suppressedAt: time, target: "bad.example" });
+    expect(sdk.decodeSuppressedTargetCursor(suppressedCursor)).toEqual({ suppressedAt: time, target: "bad.example" });
+    expect(() => sdk.encodeSuppressedTargetCursor({ suppressedAt: time, target: "" })).toThrow();
+    expect(() => sdk.encodeSuppressedTargetCursor({ suppressedAt: time, target: "x".repeat(2049) })).toThrow();
   });
 });

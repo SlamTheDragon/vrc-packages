@@ -1,10 +1,14 @@
 import { z } from "zod";
 import { APP_TOKEN_REGEX } from "../auth/tokens.ts";
 import { CursorTokenSchema, CursorTimestampSchema } from "../encoding/cursor.ts";
-import { decodeCatalogCursor, CatalogPackageSchema, type CatalogPackage } from "../types/package.ts";
-import { PlatformSchema, type Platform } from "../types/platform.ts";
+import {
+  decodeCatalogCursor,
+  CatalogPackageSchema,
+  CatalogRelationTypeSchema
+} from "../types/package.ts";
+import { PlatformSchema } from "../types/platform.ts";
 import { HttpsUrlSchema } from "../types/url.ts";
-import { ContentRatingSchema, UmbrellaSchema, type ContentRating, type Umbrella } from "../taxonomy/taxonomy.ts";
+import { ContentRatingSchema, UmbrellaSchema } from "../taxonomy/taxonomy.ts";
 
 export const DOWNSTREAM_PROTOCOL_VERSION = 1 as const;
 
@@ -56,7 +60,12 @@ export const CatalogSearchResponseSchema = z.strictObject({
 export type CatalogSearchResponse = z.infer<typeof CatalogSearchResponseSchema>;
 
 /** Consolidated reporting contract for POST /v1/app/report. */
-export const ConsolidatedReportTypeSchema = z.enum(["demand_signal", "issue_report", "removal_request"]);
+export const ConsolidatedReportTypeSchema = z.enum([
+  "demand_signal",
+  "relationship_feedback",
+  "issue_report",
+  "removal_request"
+]);
 export type ConsolidatedReportType = z.infer<typeof ConsolidatedReportTypeSchema>;
 
 export const IssueReportKindSchema = z.enum([
@@ -82,6 +91,19 @@ export const DemandSignalReportRequestSchema = z.strictObject({
 });
 export type DemandSignalReportRequest = z.infer<typeof DemandSignalReportRequestSchema>;
 
+export const RelationshipFeedbackReportRequestSchema = z.strictObject({
+  schemaVersion: z.literal(DOWNSTREAM_PROTOCOL_VERSION),
+  reportType: z.literal("relationship_feedback"),
+  canonicalId: z.string().trim().min(1).max(500),
+  relatedCanonicalId: z.string().trim().min(1).max(500).optional(),
+  targetAvatarBase: z.string().trim().min(1).max(200).optional(),
+  relationType: CatalogRelationTypeSchema,
+  vote: z.enum(["up", "down"]),
+  reason: z.string().trim().min(1).max(1000).optional(),
+  metadata: z.record(z.string().max(100), z.unknown()).optional()
+});
+export type RelationshipFeedbackReportRequest = z.infer<typeof RelationshipFeedbackReportRequestSchema>;
+
 export const IssueReportRequestSchema = z.strictObject({
   schemaVersion: z.literal(DOWNSTREAM_PROTOCOL_VERSION),
   reportType: z.literal("issue_report"),
@@ -106,12 +128,23 @@ export type RemovalReportRequest = z.infer<typeof RemovalReportRequestSchema>;
 /** Discriminated report submission payload for POST /v1/app/report. */
 export const ReportSubmissionRequestSchema = z.discriminatedUnion("reportType", [
   DemandSignalReportRequestSchema,
+  RelationshipFeedbackReportRequestSchema,
   IssueReportRequestSchema,
   RemovalReportRequestSchema
-]).refine(
-  (data) => data.reportType !== "removal_request" || Boolean(data.targetUrl || data.canonicalId),
-  { message: "Removal requests require a target and reason" }
-);
+]).superRefine((data, ctx) => {
+  if (data.reportType === "removal_request" && !data.targetUrl && !data.canonicalId) {
+    ctx.addIssue({
+      code: "custom",
+      message: "Removal requests require a target and reason"
+    });
+  }
+  if (data.reportType === "relationship_feedback" && !data.relatedCanonicalId && !data.targetAvatarBase) {
+    ctx.addIssue({
+      code: "custom",
+      message: "Relationship feedback requires relatedCanonicalId or targetAvatarBase"
+    });
+  }
+});
 export type ReportSubmissionRequest = z.infer<typeof ReportSubmissionRequestSchema>;
 
 export const ReportSubmissionResponseSchema = z.strictObject({

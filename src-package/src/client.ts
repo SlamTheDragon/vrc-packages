@@ -29,26 +29,28 @@ import {
   CreatorClaimIntakeResponseSchema,
   type QueryOrigin
 } from "./protocol/downstream.ts";
-import { UserAppListQuerySchema, UserAppListResponseSchema, UserAppResponseSchema, UserAppSchema,
-  type UserAppListQuery, type UserAppListResponse, type UserAppResponse } from "./protocol/user.ts";
+import {
+  UserAppListQuerySchema,
+  UserAppListResponseSchema,
+  UserAppResponseSchema,
+  UserAppSchema,
+  type UserAppListQuery,
+  type UserAppListResponse,
+  type UserAppResponse
+} from "./protocol/user.ts";
 import {
   MODERATOR_PROTOCOL_VERSION,
-  type ModeratorRatingRecord,
   ModeratorRatingRecordSchema,
-  type ModeratorRatingListQuery,
-  ModeratorRatingListQuerySchema,
   type ModeratorRatingListResponse,
   ModeratorRatingListResponseSchema,
-  type SetRatingAdjustmentRequest,
+  ModeratorRatingListQuerySchema,
   SetRatingAdjustmentRequestSchema,
   type SetRatingAdjustmentResponse,
   SetRatingAdjustmentResponseSchema,
   ModeratorAppCursorSchema,
-  type ModeratorAppListQuery,
   ModeratorAppListQuerySchema,
   type ModeratorAppListResponse,
   ModeratorAppListResponseSchema,
-  type ModeratorReviewAppCandidateRequest,
   ModeratorReviewAppCandidateRequestSchema,
   type ModeratorReviewAppCandidateResponse,
   ModeratorReviewAppCandidateResponseSchema
@@ -57,57 +59,74 @@ import { type ContentRating, type Umbrella } from "./taxonomy/taxonomy.ts";
 import {
   type LeadStatus,
   type CandidateStatus,
-  CandidateStatusSchema,
+  type PriorityLane,
+  OperatorJobIdSchema,
+  OperatorStatusResponseSchema,
+  type OperatorStatusResponse,
+  SystemPurgeRequestSchema,
+  type SystemPurgeRequest,
+  SystemPurgeResponseSchema,
+  type SystemPurgeResponse,
+  OperatorLeadListQuerySchema,
+  OperatorSteeringProfileListQuerySchema,
+  OperatorSuppressedTargetListQuerySchema,
+  OperatorCatalogListQuerySchema,
+  OperatorTakedownListQuerySchema,
+  OperatorClaimListQuerySchema,
+  OperatorAppListQuerySchema,
+  OperatorAppListResponseSchema,
+  type OperatorAppListResponse,
+  SetAppDelegationRequestSchema,
+  SetAppDelegationResponseSchema,
+  type SetAppDelegationResponse,
   ReviewAppCandidateRequestSchema,
   ReviewAppCandidateResponseSchema,
-  type ReviewAppCandidateRequest,
   type ReviewAppCandidateResponse,
-  OperatorLeadListQuerySchema, OperatorProfileListQuerySchema, OperatorRuleListQuerySchema,
-  OperatorCatalogListQuerySchema, OperatorTakedownListQuerySchema, OperatorClaimListQuerySchema,
-  OperatorAppListQuerySchema, type OperatorAppListQuery,
-  OperatorAppListResponseSchema, type OperatorAppListResponse,
-  SetAppDelegationRequestSchema, SetAppDelegationResponseSchema,
-  type SetAppDelegationRequest, type SetAppDelegationResponse,
-  LeadCursorSchema, ProfileCursorSchema, RuleCursorSchema, TakedownCursorSchema, DelegatedClaimCursorSchema, OperatorAppCursorSchema,
-  ApproveLeadSchema, RejectLeadSchema,
-  CreateSourceAccessProfileSchema, DisableSourceAccessProfileSchema,
-  CreateAutoQueueRuleSchema, DisableAutoQueueRuleSchema,
-  IssueNodeCredentialSchema, VerifyTakedownRequestSchema,
-  VerifyDelegatedClaimRequestSchema, VerifyDelegatedClaimResponseSchema,
-  type VerifyDelegatedClaimResponse,
-  DelegatedClaimListResponseSchema, type DelegatedClaimListResponse,
-  RevokeNodeRequestSchema, RevokeNodeResponseSchema, type RevokeNodeResponse,
-  PruneNodeResponseSchema, type PruneNodeResponse,
-  EnqueueJobRequestSchema, EnqueueJobResponseSchema,
-  type EnqueueJobRequest, type EnqueueJobResponse,
-  InitializeCoordinatorRequestSchema,
-  InitializeCoordinatorResponseSchema,
-  type InitializeCoordinatorResponse,
-  type LeadListResponse,
-  LeadListResponseSchema,
-  type LeadActionResponse,
-  LeadActionResponseSchema,
-  type SourceAccessProfileListResponse,
-  SourceAccessProfileListResponseSchema,
-  type CreateSourceAccessProfile,
-  type SourceAccessProfileResponse,
-  SourceAccessProfileResponseSchema,
-  type AutoQueueRuleListResponse,
-  AutoQueueRuleListResponseSchema,
-  type CreateAutoQueueRule,
-  type AutoQueueRuleResponse,
-  AutoQueueRuleResponseSchema,
+  LeadCursorSchema,
+  SteeringProfileCursorSchema,
+  TakedownCursorSchema,
+  DelegatedClaimCursorSchema,
+  OperatorAppCursorSchema,
+  ApproveLeadSchema,
+  RejectLeadSchema,
+  BulkApproveLeadsRequestSchema,
+  type BulkApproveLeadsRequest,
+  BulkApproveLeadsResponseSchema,
+  type BulkApproveLeadsResponse,
+  SuppressLeadDomainRequestSchema,
+  type SuppressLeadDomainRequest,
+  SuppressLeadDomainResponseSchema,
+  type SuppressLeadDomainResponse,
+  CreateSteeringProfileSchema,
+  type CreateSteeringProfile,
+  UpdateSteeringProfileSchema,
+  type UpdateSteeringProfile,
+  SteeringProfileActionSchema,
+  SteeringProfileDeleteResponseSchema,
+  type SteeringProfileDeleteResponse,
+  SteeringProfileResponseSchema,
+  type SteeringProfileResponse,
+  SteeringProfileListResponseSchema,
+  type SteeringProfileListResponse,
+  CreateSuppressedTargetSchema,
+  type CreateSuppressedTarget,
+  DeleteSuppressedTargetSchema,
+  type DeleteSuppressedTarget,
+  SuppressedTargetResponseSchema,
+  type SuppressedTargetResponse,
+  SuppressedTargetListResponseSchema,
+  type SuppressedTargetListResponse,
+  SuppressedTargetDeleteResponseSchema,
+  type SuppressedTargetDeleteResponse,
+  IssueNodeCredentialSchema,
   type IssueNodeCredential,
-  type NodeCredentialResponse,
   NodeCredentialResponseSchema,
-  type CatalogListResponse,
-  CatalogListResponseSchema,
-  type TakedownListResponse,
-  TakedownListResponseSchema,
-  type VerifyTakedownResponse,
-  VerifyTakedownResponseSchema
-} from "./protocol/operator.ts";
-import {
+  type NodeCredentialResponse,
+  RevokeNodeRequestSchema,
+  RevokeNodeResponseSchema,
+  type RevokeNodeResponse,
+  PruneNodeResponseSchema,
+  type PruneNodeResponse,
   type OperatorNodeStatus,
   OperatorNodeListQuerySchema,
   OperatorNodeListResponseSchema,
@@ -115,8 +134,42 @@ import {
   type OperatorJobState,
   OperatorJobListQuerySchema,
   OperatorJobListResponseSchema,
-  type OperatorJobListResponse
-} from "./protocol/index.ts";
+  type OperatorJobListResponse,
+  EnqueueJobRequestSchema,
+  EnqueueJobResponseSchema,
+  type EnqueueJobRequest,
+  type EnqueueJobResponse,
+  UpdateJobRequestSchema,
+  type UpdateJobRequest,
+  UpdateJobResponseSchema,
+  type UpdateJobResponse,
+  RequeueJobRequestSchema,
+  type RequeueJobRequest,
+  RequeueJobResponseSchema,
+  type RequeueJobResponse,
+  DeleteJobRequestSchema,
+  DeleteJobResponseSchema,
+  type DeleteJobResponse,
+  InitializeCoordinatorRequestSchema,
+  InitializeCoordinatorResponseSchema,
+  type InitializeCoordinatorResponse,
+  type LeadListResponse,
+  LeadListResponseSchema,
+  type LeadActionResponse,
+  LeadActionResponseSchema,
+  type CatalogListResponse,
+  CatalogListResponseSchema,
+  type TakedownListResponse,
+  TakedownListResponseSchema,
+  VerifyTakedownRequestSchema,
+  type VerifyTakedownResponse,
+  VerifyTakedownResponseSchema,
+  VerifyDelegatedClaimRequestSchema,
+  VerifyDelegatedClaimResponseSchema,
+  type VerifyDelegatedClaimResponse,
+  DelegatedClaimListResponseSchema,
+  type DelegatedClaimListResponse
+} from "./protocol/operator.ts";
 
 export const MAX_SDK_ERROR_BYTES = 64 * 1024;
 export const MAX_SDK_SUCCESS_BYTES = 4 * 1024 * 1024;
@@ -222,7 +275,7 @@ export class VRCPackageClient {
 
   private async request<T>(
     path: string,
-    method: "GET" | "POST" | "DELETE",
+    method: "GET" | "POST" | "PATCH" | "DELETE",
     options: {
       auth?: "app" | "user" | "operator" | "none";
       body?: unknown;
@@ -304,7 +357,7 @@ export class VRCPackageClient {
   }
 
   /* ------------------------------------------------------------------------ */
-  /* Public & App Catalog Namespace (/v1/app/*)                               */
+  /* Public and App Catalog Namespace (/v1/app/*)                             */
   /* ------------------------------------------------------------------------ */
 
   readonly index = {
@@ -361,7 +414,6 @@ export class VRCPackageClient {
       });
       return CatalogDeltaResponseSchema.parse(res);
     }
-
   };
 
   readonly app = {
@@ -399,7 +451,7 @@ export class VRCPackageClient {
 
   readonly reports = {
     /**
-     * Submits demand, issue or pending removal reports (POST /v1/app/report).
+     * Submits demand, relationship feedback, issue, or pending removal reports (POST /v1/app/report).
      * Requires downstream application token.
      */
     submit: async (report: ReportSubmissionRequest): Promise<ReportSubmissionResponse> => {
@@ -434,11 +486,15 @@ export class VRCPackageClient {
       list: async (params: Partial<UserAppListQuery> = {}): Promise<UserAppListResponse> => {
         const query = UserAppListQuerySchema.parse(params);
         if (query.cursor) query.cursor = query.cursor.toLowerCase();
-        return UserAppListResponseSchema.parse(await this.request<unknown>("/v1/user/apps", "GET", { auth: "user", queryParams: query }));
+        return UserAppListResponseSchema.parse(
+          await this.request<unknown>("/v1/user/apps", "GET", { auth: "user", queryParams: query })
+        );
       },
       get: async (appId: string): Promise<UserAppResponse> => {
         const id = UserAppSchema.shape.appId.parse(appId).toLowerCase();
-        return UserAppResponseSchema.parse(await this.request<unknown>(`/v1/user/apps/${id}`, "GET", { auth: "user" }));
+        return UserAppResponseSchema.parse(
+          await this.request<unknown>(`/v1/user/apps/${id}`, "GET", { auth: "user" })
+        );
       }
     }
   };
@@ -448,13 +504,41 @@ export class VRCPackageClient {
   /* ------------------------------------------------------------------------ */
 
   readonly operator = {
+    /**
+     * Reads Coordinator environment, development purge availability, and queue readiness (GET /v1/operator/status).
+     */
+    status: async (): Promise<OperatorStatusResponse> => {
+      const res = await this.request<unknown>("/v1/operator/status", "GET", { auth: "operator" });
+      return OperatorStatusResponseSchema.parse(res);
+    },
+
+    /**
+     * Executes a development-only D1 schema purge and rebuild (POST /v1/operator/system/purge).
+     */
+    systemPurge: async (request: SystemPurgeRequest): Promise<SystemPurgeResponse> => {
+      const body = SystemPurgeRequestSchema.parse(request);
+      const res = await this.request<unknown>("/v1/operator/system/purge", "POST", {
+        auth: "operator",
+        body
+      });
+      return SystemPurgeResponseSchema.parse(res);
+    },
+
+    /** Initialize Coordinator storage schema without auto-seeding unauthorized source grants. */
+    init: async (params: { autoSeed?: false } = {}): Promise<InitializeCoordinatorResponse> => {
+      const body = InitializeCoordinatorRequestSchema.parse({ schemaVersion: 1, ...params });
+      const response = await this.request<unknown>("/v1/operator/init", "POST", { auth: "operator", body });
+      return InitializeCoordinatorResponseSchema.parse(response);
+    },
+
     jobs: {
       /**
-       * Lists operator crawl jobs with optional state and platform filters (GET /v1/operator/jobs).
+       * Lists operator crawl jobs with optional state, platform, and priority lane filters (GET /v1/operator/jobs).
        */
       list: async (params: {
         state?: OperatorJobState;
         platform?: Platform;
+        priorityLane?: PriorityLane;
         limit?: number;
         cursor?: string;
       } = {}): Promise<OperatorJobListResponse> => {
@@ -464,25 +548,67 @@ export class VRCPackageClient {
           queryParams: {
             state: query.state,
             platform: query.platform,
+            priorityLane: query.priorityLane,
             limit: query.limit,
             cursor: query.cursor
           }
         });
         return OperatorJobListResponseSchema.parse(res);
       },
+
       /** Record a crawl candidate. Existing jobs keep their state and lease. */
       enqueue: async (request: EnqueueJobRequest): Promise<EnqueueJobResponse> => {
         const body = EnqueueJobRequestSchema.parse(request);
         const response = await this.request<unknown>("/v1/operator/jobs", "POST", { auth: "operator", body });
         return EnqueueJobResponseSchema.parse(response);
+      },
+
+      /**
+       * Updates priority lane, recrawl interval, or next fetch time on a crawl job (PATCH /v1/operator/jobs/{jobId}).
+       */
+      update: async (
+        jobId: string,
+        request: Omit<UpdateJobRequest, "schemaVersion">
+      ): Promise<UpdateJobResponse> => {
+        const id = OperatorJobIdSchema.parse(jobId);
+        const body = UpdateJobRequestSchema.parse({ schemaVersion: 1, ...request });
+        const response = await this.request<unknown>(`/v1/operator/jobs/${encodeURIComponent(id)}`, "PATCH", {
+          auth: "operator",
+          body
+        });
+        return UpdateJobResponseSchema.parse(response);
+      },
+
+      /**
+       * Requeues an unleased or completed crawl job for immediate dispatch (POST /v1/operator/jobs/{jobId}/requeue).
+       */
+      requeue: async (
+        jobId: string,
+        request: Omit<RequeueJobRequest, "schemaVersion">
+      ): Promise<RequeueJobResponse> => {
+        const id = OperatorJobIdSchema.parse(jobId);
+        const body = RequeueJobRequestSchema.parse({ schemaVersion: 1, ...request });
+        const response = await this.request<unknown>(`/v1/operator/jobs/${encodeURIComponent(id)}/requeue`, "POST", {
+          auth: "operator",
+          body
+        });
+        return RequeueJobResponseSchema.parse(response);
+      },
+
+      /**
+       * Deletes an unleased crawl job from the queue (DELETE /v1/operator/jobs/{jobId}).
+       */
+      delete: async (jobId: string, reason: string): Promise<DeleteJobResponse> => {
+        const id = OperatorJobIdSchema.parse(jobId);
+        const body = DeleteJobRequestSchema.parse({ schemaVersion: 1, reason });
+        const response = await this.request<unknown>(`/v1/operator/jobs/${encodeURIComponent(id)}`, "DELETE", {
+          auth: "operator",
+          body
+        });
+        return DeleteJobResponseSchema.parse(response);
       }
     },
-    /** Initialize storage and optionally queue candidates, without granting source access. */
-    init: async (params: { autoSeed?: boolean } = {}): Promise<InitializeCoordinatorResponse> => {
-      const body = InitializeCoordinatorRequestSchema.parse({ schemaVersion: 1, ...params });
-      const response = await this.request<unknown>("/v1/operator/init", "POST", { auth: "operator", body });
-      return InitializeCoordinatorResponseSchema.parse(response);
-    },
+
     leads: {
       /**
        * Lists pending, approved, or rejected discovery leads (GET /v1/operator/leads).
@@ -532,86 +658,148 @@ export class VRCPackageClient {
           body: RejectLeadSchema.parse({ schemaVersion: 1, ...params })
         });
         return LeadActionResponseSchema.parse(res);
+      },
+
+      /**
+       * Bulk-approves multiple pending discovery leads (POST /v1/operator/leads/bulk-approve).
+       */
+      bulkApprove: async (request: BulkApproveLeadsRequest): Promise<BulkApproveLeadsResponse> => {
+        const body = BulkApproveLeadsRequestSchema.parse(request);
+        const res = await this.request<unknown>("/v1/operator/leads/bulk-approve", "POST", {
+          auth: "operator",
+          body
+        });
+        return BulkApproveLeadsResponseSchema.parse(res);
+      },
+
+      /**
+       * Suppresses a target host domain and rejects matching pending leads (POST /v1/operator/leads/suppress-domain).
+       */
+      suppressDomain: async (request: SuppressLeadDomainRequest): Promise<SuppressLeadDomainResponse> => {
+        const body = SuppressLeadDomainRequestSchema.parse(request);
+        const res = await this.request<unknown>("/v1/operator/leads/suppress-domain", "POST", {
+          auth: "operator",
+          body
+        });
+        return SuppressLeadDomainResponseSchema.parse(res);
       }
     },
 
-    sourceProfiles: {
+    steeringProfiles: {
       /**
-       * Lists source-access profiles (GET /v1/operator/source-profiles).
+       * Lists unified steering profiles (GET /v1/operator/steering-profiles).
        */
-      list: async (params: { limit?: number; cursor?: string } = {}): Promise<SourceAccessProfileListResponse> => {
-        const query = OperatorProfileListQuerySchema.parse(params);
-        const res = await this.request<unknown>("/v1/operator/source-profiles", "GET", {
+      list: async (params: { limit?: number; cursor?: string } = {}): Promise<SteeringProfileListResponse> => {
+        const query = OperatorSteeringProfileListQuerySchema.parse(params);
+        const res = await this.request<unknown>("/v1/operator/steering-profiles", "GET", {
           auth: "operator",
           queryParams: {
             limit: query.limit,
             cursor: query.cursor
           }
         });
-        return SourceAccessProfileListResponseSchema.parse(res);
+        return SteeringProfileListResponseSchema.parse(res);
       },
 
       /**
-       * Creates a source-access profile (POST /v1/operator/source-profiles).
+       * Creates a unified steering profile (POST /v1/operator/steering-profiles).
        */
-      create: async (request: CreateSourceAccessProfile): Promise<SourceAccessProfileResponse> => {
-        const res = await this.request<unknown>("/v1/operator/source-profiles", "POST", {
+      create: async (request: CreateSteeringProfile): Promise<SteeringProfileResponse> => {
+        const res = await this.request<unknown>("/v1/operator/steering-profiles", "POST", {
           auth: "operator",
-          body: CreateSourceAccessProfileSchema.parse(request)
+          body: CreateSteeringProfileSchema.parse(request)
         });
-        return SourceAccessProfileResponseSchema.parse(res);
+        return SteeringProfileResponseSchema.parse(res);
       },
 
       /**
-       * Disables a source-access profile (POST /v1/operator/source-profiles/{id}/disable).
+       * Updates mutable fields on a steering profile (PATCH /v1/operator/steering-profiles/{id}).
        */
-      disable: async (profileId: string, reason: string): Promise<SourceAccessProfileResponse> => {
-        const id = ProfileCursorSchema.shape.profileId.parse(profileId).toLowerCase();
-        const res = await this.request<unknown>(`/v1/operator/source-profiles/${id}/disable`, "POST", {
+      update: async (
+        profileId: string,
+        request: Omit<UpdateSteeringProfile, "schemaVersion">
+      ): Promise<SteeringProfileResponse> => {
+        const id = SteeringProfileCursorSchema.shape.profileId.parse(profileId).toLowerCase();
+        const res = await this.request<unknown>(`/v1/operator/steering-profiles/${id}`, "PATCH", {
           auth: "operator",
-          body: DisableSourceAccessProfileSchema.parse({ schemaVersion: 1, reason })
+          body: UpdateSteeringProfileSchema.parse({ schemaVersion: 1, ...request })
         });
-        return SourceAccessProfileResponseSchema.parse(res);
+        return SteeringProfileResponseSchema.parse(res);
+      },
+
+      /**
+       * Re-enables a disabled steering profile (POST /v1/operator/steering-profiles/{id}/enable).
+       */
+      enable: async (profileId: string, reason: string): Promise<SteeringProfileResponse> => {
+        const id = SteeringProfileCursorSchema.shape.profileId.parse(profileId).toLowerCase();
+        const res = await this.request<unknown>(`/v1/operator/steering-profiles/${id}/enable`, "POST", {
+          auth: "operator",
+          body: SteeringProfileActionSchema.parse({ schemaVersion: 1, reason })
+        });
+        return SteeringProfileResponseSchema.parse(res);
+      },
+
+      /**
+       * Disables a steering profile via instant kill-switch (POST /v1/operator/steering-profiles/{id}/disable).
+       */
+      disable: async (profileId: string, reason: string): Promise<SteeringProfileResponse> => {
+        const id = SteeringProfileCursorSchema.shape.profileId.parse(profileId).toLowerCase();
+        const res = await this.request<unknown>(`/v1/operator/steering-profiles/${id}/disable`, "POST", {
+          auth: "operator",
+          body: SteeringProfileActionSchema.parse({ schemaVersion: 1, reason })
+        });
+        return SteeringProfileResponseSchema.parse(res);
+      },
+
+      /**
+       * Permanently deletes a steering profile (DELETE /v1/operator/steering-profiles/{id}).
+       */
+      delete: async (profileId: string, reason: string): Promise<SteeringProfileDeleteResponse> => {
+        const id = SteeringProfileCursorSchema.shape.profileId.parse(profileId).toLowerCase();
+        const res = await this.request<unknown>(`/v1/operator/steering-profiles/${id}`, "DELETE", {
+          auth: "operator",
+          body: SteeringProfileActionSchema.parse({ schemaVersion: 1, reason })
+        });
+        return SteeringProfileDeleteResponseSchema.parse(res);
       }
     },
 
-    autoQueueRules: {
+    suppressedTargets: {
       /**
-       * Lists auto-queue rules (GET /v1/operator/autoqueue-rules).
+       * Lists suppressed targets across URL, origin, and domain scopes (GET /v1/operator/suppressed-targets).
        */
-      list: async (params: { limit?: number; cursor?: string } = {}): Promise<AutoQueueRuleListResponse> => {
-        const query = OperatorRuleListQuerySchema.parse(params);
-        const res = await this.request<unknown>("/v1/operator/autoqueue-rules", "GET", {
+      list: async (params: { limit?: number; cursor?: string } = {}): Promise<SuppressedTargetListResponse> => {
+        const query = OperatorSuppressedTargetListQuerySchema.parse(params);
+        const res = await this.request<unknown>("/v1/operator/suppressed-targets", "GET", {
           auth: "operator",
           queryParams: {
             limit: query.limit,
             cursor: query.cursor
           }
         });
-        return AutoQueueRuleListResponseSchema.parse(res);
+        return SuppressedTargetListResponseSchema.parse(res);
       },
 
       /**
-       * Creates an auto-queue rule (POST /v1/operator/autoqueue-rules).
+       * Adds a hard block entry in suppressed_targets (POST /v1/operator/suppressed-targets).
        */
-      create: async (request: CreateAutoQueueRule): Promise<AutoQueueRuleResponse> => {
-        const res = await this.request<unknown>("/v1/operator/autoqueue-rules", "POST", {
+      create: async (request: CreateSuppressedTarget): Promise<SuppressedTargetResponse> => {
+        const res = await this.request<unknown>("/v1/operator/suppressed-targets", "POST", {
           auth: "operator",
-          body: CreateAutoQueueRuleSchema.parse(request)
+          body: CreateSuppressedTargetSchema.parse(request)
         });
-        return AutoQueueRuleResponseSchema.parse(res);
+        return SuppressedTargetResponseSchema.parse(res);
       },
 
       /**
-       * Disables an auto-queue rule (POST /v1/operator/autoqueue-rules/{id}/disable).
+       * Deletes a suppressed target entry (DELETE /v1/operator/suppressed-targets).
        */
-      disable: async (ruleId: string, reason: string): Promise<AutoQueueRuleResponse> => {
-        const id = RuleCursorSchema.shape.ruleId.parse(ruleId).toLowerCase();
-        const res = await this.request<unknown>(`/v1/operator/autoqueue-rules/${id}/disable`, "POST", {
+      delete: async (request: DeleteSuppressedTarget): Promise<SuppressedTargetDeleteResponse> => {
+        const res = await this.request<unknown>("/v1/operator/suppressed-targets", "DELETE", {
           auth: "operator",
-          body: DisableAutoQueueRuleSchema.parse({ schemaVersion: 1, reason })
+          body: DeleteSuppressedTargetSchema.parse(request)
         });
-        return AutoQueueRuleResponseSchema.parse(res);
+        return SuppressedTargetDeleteResponseSchema.parse(res);
       }
     },
 
@@ -635,15 +823,21 @@ export class VRCPackageClient {
         });
         return OperatorNodeListResponseSchema.parse(res);
       },
+
       /** Revoke credentials without releasing a possibly in-flight origin reservation. */
       revoke: async (nodeId: string, reason: string): Promise<RevokeNodeResponse> => {
         RevokeNodeResponseSchema.shape.nodeId.parse(nodeId);
         const body = RevokeNodeRequestSchema.parse({ schemaVersion: 1, reason });
-        const response = await this.request<unknown>(`/v1/operator/nodes/${encodeURIComponent(nodeId)}/revoke`, "POST", { auth: "operator", body });
+        const response = await this.request<unknown>(`/v1/operator/nodes/${encodeURIComponent(nodeId)}/revoke`, "POST", {
+          auth: "operator",
+          body
+        });
         return RevokeNodeResponseSchema.parse(response);
       },
+
       /** Hard-deletes a revoked crawler node from the registry (DELETE /v1/operator/nodes/{nodeId}). */
       prune: async (nodeId: string, reason: string): Promise<PruneNodeResponse> => {
+        IssueNodeCredentialSchema.shape.nodeId.parse(nodeId);
         const body = RevokeNodeRequestSchema.parse({ schemaVersion: 1, reason });
         const response = await this.request<unknown>(
           `/v1/operator/nodes/${encodeURIComponent(nodeId)}`,
@@ -652,8 +846,9 @@ export class VRCPackageClient {
         );
         return PruneNodeResponseSchema.parse(response);
       },
+
       /**
-       * Issues an audited node credential with assigned capabilities (POST /v1/operator/nodes).
+       * Issues an audited node credential with Coordinator-derived capabilities (POST /v1/operator/nodes).
        */
       issue: async (request: IssueNodeCredential): Promise<NodeCredentialResponse> => {
         const res = await this.request<unknown>("/v1/operator/nodes", "POST", {

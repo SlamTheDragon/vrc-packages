@@ -21,17 +21,26 @@ function createMockFetch(handler: MockFetchHandler): typeof fetch {
 
 describe("VRCPackageClient SDK", () => {
   it("reads owned app metadata through user-authenticated GET routes", async () => {
-    const app = { appId: "00000000-0000-4000-8000-000000000002", appName: "Owned app",
-      permissions: ["catalog:search"], createdAt: "2026-10-01T00:00:00.000Z", revokedAt: null };
-    const client = new VRCPackageClient({ baseUrl: "https://worker.example", userToken: dummyUserToken,
+    const app = {
+      appId: "00000000-0000-4000-8000-000000000002",
+      appName: "Owned app",
+      permissions: ["catalog:search"],
+      createdAt: "2026-10-01T00:00:00.000Z",
+      revokedAt: null
+    };
+    const client = new VRCPackageClient({
+      baseUrl: "https://worker.example",
+      userToken: dummyUserToken,
       fetch: createMockFetch(async (input, init) => {
         const request = new Request(input, init);
         expect(request.method).toBe("GET");
         expect(request.headers.get("authorization")).toBe(`Bearer ${dummyUserToken}`);
         expect(request.body).toBeNull();
         return Response.json(new URL(request.url).pathname.endsWith(app.appId)
-          ? { schemaVersion: 1, app } : { schemaVersion: 1, apps: [app], nextCursor: null });
-      }) });
+          ? { schemaVersion: 1, app }
+          : { schemaVersion: 1, apps: [app], nextCursor: null });
+      })
+    });
     expect((await client.user.apps.list()).apps).toEqual([app]);
     expect((await client.user.apps.get(app.appId)).app).toEqual(app);
     expect("registerApp" in client.user).toBe(false);
@@ -123,21 +132,88 @@ describe("VRCPackageClient SDK", () => {
     }
   });
 
-  it("requires operator auth for initialization and validates responses", async () => {
+  it("requires operator auth for init, status, and systemPurge and validates responses", async () => {
     let calls = 0;
-    const fetchFn = createMockFetch(async () => {
+    let mode: "init-invalid" | "init-valid" | "status" | "purge" = "init-invalid";
+    const capturedRequests: Array<{ method: string; path: string; body: unknown }> = [];
+    const fetchFn = createMockFetch(async (input, init) => {
       calls++;
-      return Response.json({ status: "ok", message: "Schema initialized", autoSeed: true });
+      const req = new Request(input, init);
+      const path = new URL(req.url).pathname;
+      const body = req.body ? await req.json() : null;
+      capturedRequests.push({ method: req.method, path, body });
+      if (mode === "init-invalid") {
+        return Response.json({ schemaVersion: 1, status: "ok", message: "Schema initialized", autoSeed: true });
+      }
+      if (mode === "init-valid") {
+        return Response.json({ schemaVersion: 1, status: "ok", message: "Schema initialized", autoSeed: false });
+      }
+      if (mode === "status") {
+        return Response.json({
+          schemaVersion: 1,
+          environment: "development",
+          purgeEnabled: true,
+          d1SchemaState: "v0-17",
+          queueReadiness: {
+            claimableJobs: 3,
+            blockedJobs: 1,
+            pendingLeads: 4,
+            unresolvedDemandSignals: 2,
+            activeNodes: 1,
+            activeSteeringProfiles: 2
+          }
+        });
+      }
+      return Response.json({
+        schemaVersion: 1,
+        status: "purged",
+        d1SchemaState: "v0-17",
+        preservedNodes: 1,
+        seededProfiles: 0
+      });
     });
+
     const anonymous = new VRCPackageClient({ baseUrl: "https://worker.example", fetch: fetchFn });
     await expect(anonymous.operator.init()).rejects.toThrow(VRCPApiError);
+    await expect(anonymous.operator.status()).rejects.toThrow(VRCPApiError);
+    await expect(anonymous.operator.systemPurge({ schemaVersion: 1, confirm: "PURGE_DEVELOPMENT_D1" })).rejects.toThrow(VRCPApiError);
     expect(calls).toBe(0);
+
     const operator = new VRCPackageClient({ baseUrl: "https://worker.example", operatorToken: dummyOperatorToken, fetch: fetchFn });
     await expect(operator.operator.init()).rejects.toThrow();
     expect(calls).toBe(1);
+
+    mode = "init-valid";
+    const initRes = await operator.operator.init({ autoSeed: false });
+    expect(initRes.autoSeed).toBe(false);
+
+    mode = "status";
+    const statusRes = await operator.operator.status();
+    expect(statusRes.environment).toBe("development");
+    expect(statusRes.purgeEnabled).toBe(true);
+    expect(statusRes.d1SchemaState).toBe("v0-17");
+    expect(statusRes.queueReadiness.claimableJobs).toBe(3);
+
+    mode = "purge";
+    const purgeRes = await operator.operator.systemPurge({
+      schemaVersion: 1,
+      confirm: "PURGE_DEVELOPMENT_D1"
+    });
+    expect(purgeRes.status).toBe("purged");
+    expect(purgeRes.preservedNodes).toBe(1);
+    expect(capturedRequests.at(-1)).toEqual({
+      method: "POST",
+      path: "/v1/operator/system/purge",
+      body: {
+        schemaVersion: 1,
+        confirm: "PURGE_DEVELOPMENT_D1",
+        preserveNodes: true,
+        seedPreviewStarter: false
+      }
+    });
   });
 
-  it("queries the public package index without auth", async () => {
+  it("queries the public package index without auth and parses extended V0 package fields", async () => {
     let requestedUrl = "";
     const cursor = encodeCatalogCursor({ createdAt: "2026-10-01T10:00:00.000Z", canonicalId: "item-2" });
     const nextCursor = encodeCatalogCursor({ createdAt: "2026-10-01T10:00:00.000Z", canonicalId: "item-1" });
@@ -154,11 +230,38 @@ describe("VRCPackageClient SDK", () => {
               category: "companion_client",
               lifecycle: "active",
               displayName: "Test Client",
-              vpmId: null,
+              ownerKey: "github:creator",
+              ownerName: "Creator",
+              verificationStatus: "unverified",
+              vpmId: "com.creator.client",
+              vpmLatestVersion: "0.2.0",
+              summary: "Helpful VPM tool",
+              tags: ["vpm", "utility"],
+              qualityFlags: ["missing_zip_sha256"],
               createdAt: "2026-10-01T10:00:00.000Z",
               updatedAt: "2026-10-01T10:00:00.000Z",
-              acceptedLinks: [],
-              fronts: []
+              sources: [
+                {
+                  sourceLinkId: "123e4567-e89b-12d3-a456-426614174000",
+                  sourceKey: "vpm:com.creator.client",
+                  platform: "vpm",
+                  storefrontUrl: "https://creator.example/index.json",
+                  evidenceKind: "vpm_id",
+                  confidence: 1,
+                  observedAt: "2026-10-01T10:00:00.000Z"
+                }
+              ],
+              relations: [
+                {
+                  relationId: "123e4567-e89b-12d3-a456-426614174001",
+                  sourceCanonicalId: "item-1",
+                  targetAvatarBase: "Kikyo",
+                  relationType: "compatible_with_avatar",
+                  scope: "named_base",
+                  confidence: 0.85,
+                  evidenceSource: "title_bracket"
+                }
+              ]
             }
           ],
           nextCursor
@@ -176,6 +279,11 @@ describe("VRCPackageClient SDK", () => {
     expect("count" in res).toBe(false);
     expect(res.packages.length).toBe(1);
     expect(res.packages[0]?.canonicalId).toBe("item-1");
+    expect(res.packages[0]?.verificationStatus).toBe("unverified");
+    expect(res.packages[0]?.ownerKey).toBe("github:creator");
+    expect(res.packages[0]?.qualityFlags).toEqual(["missing_zip_sha256"]);
+    expect(res.packages[0]?.sources[0]?.availability).toBe("available");
+    expect(res.packages[0]?.relations[0]?.feedbackUpCount).toBe(0);
   });
 
   it("executes bounded search with app auth, queryOrigin, umbrella, and rating", async () => {
@@ -260,9 +368,10 @@ describe("VRCPackageClient SDK", () => {
     expect(res.deltas.length).toBe(1);
   });
 
-  it("submits reports with appToken", async () => {
+  it("submits demand and relationship_feedback reports with appToken", async () => {
     let capturedHeaders: HeadersInit | undefined;
     let capturedMethod = "";
+    const capturedBodies: unknown[] = [];
     const testReportId = crypto.randomUUID();
     const client = new VRCPackageClient({
       baseUrl: "https://api.vrc-packages.example",
@@ -271,6 +380,7 @@ describe("VRCPackageClient SDK", () => {
         expect(new URL(input.toString()).pathname).toBe("/v1/app/report");
         capturedMethod = init?.method ?? "GET";
         capturedHeaders = init?.headers;
+        capturedBodies.push(JSON.parse(init?.body as string));
         return new Response(JSON.stringify({
           schemaVersion: 1,
           status: "accepted",
@@ -280,16 +390,29 @@ describe("VRCPackageClient SDK", () => {
       })
     });
 
-    const res = await client.reports.submit({
+    const demandRes = await client.reports.submit({
       schemaVersion: 1,
       reportType: "demand_signal",
       signalKind: "search_miss",
       query: "rare tool"
     });
-
     expect(capturedMethod).toBe("POST");
     expect((capturedHeaders as Record<string, string>)["Authorization"]).toBe(`Bearer ${dummyAppToken}`);
-    expect(res.status).toBe("accepted");
+    expect(demandRes.status).toBe("accepted");
+
+    const feedbackRes = await client.reports.submit({
+      schemaVersion: 1,
+      reportType: "relationship_feedback",
+      canonicalId: "pkg-outfit-1",
+      targetAvatarBase: "Kikyo",
+      relationType: "compatible_with_avatar",
+      vote: "up",
+      reason: "Confirmed compatibility in Unity"
+    });
+    expect(feedbackRes.status).toBe("accepted");
+    expect(capturedBodies).toHaveLength(2);
+    expect((capturedBodies[1] as { reportType: string; vote: string }).reportType).toBe("relationship_feedback");
+    expect((capturedBodies[1] as { reportType: string; vote: string }).vote).toBe("up");
   });
 
   it("does not expose the retired user delisting method", () => {
@@ -301,17 +424,23 @@ describe("VRCPackageClient SDK", () => {
     const valid = { schemaVersion: 1, packages: [], nextCursor: null };
     for (const body of [{ packages: [] }, { items: [], count: 0 }, { ...valid, count: 0 },
       { ...valid, schemaVersion: 2 }, { ...valid, packages: [{}] }, { ...valid, nextCursor: "bad!cursor" }]) {
-      const client = new VRCPackageClient({ baseUrl: "https://worker.example",
-        fetch: createMockFetch(async () => Response.json(body)) });
+      const client = new VRCPackageClient({
+        baseUrl: "https://worker.example",
+        fetch: createMockFetch(async () => Response.json(body))
+      });
       await expect(client.index.query()).rejects.toThrow();
     }
   });
 
   it("rejects unsupported public options and invalid paging before transport", async () => {
     let calls = 0;
-    const client = new VRCPackageClient({ baseUrl: "https://worker.example",
-      fetch: createMockFetch(async () => { calls++; return Response.json({ schemaVersion: 1,
-        packages: [], nextCursor: null }); }) });
+    const client = new VRCPackageClient({
+      baseUrl: "https://worker.example",
+      fetch: createMockFetch(async () => {
+        calls++;
+        return Response.json({ schemaVersion: 1, packages: [], nextCursor: null });
+      })
+    });
     for (const params of [{ query: "filter" }, { umbrella: "tools" }, { category: "tool" },
       { platform: "vpm" }, { tags: ["vpm"] }, { limit: 0 }, { limit: 101 }, { limit: 1.5 },
       { limit: NaN }, { limit: "10" }, { cursor: "invalid!" }, { cursor: "YWJj" }, { cursor: "" }]) {
@@ -382,23 +511,29 @@ describe("VRCPackageClient SDK", () => {
     expect("registerNode" in client.user).toBe(false);
   });
 
-  it("exercises operator leads: list, approve, and reject", async () => {
+  it("exercises operator leads: list, approve, reject, bulkApprove, and suppressDomain", async () => {
     let requestedPath = "";
+    const requests: Array<{ method: string; path: string; body: unknown }> = [];
 
     const client = new VRCPackageClient({
       baseUrl: "https://api.vrc-packages.example",
       operatorToken: dummyOperatorToken,
-      fetch: createMockFetch(async (input) => {
-        requestedPath = input.toString();
+      fetch: createMockFetch(async (input, init) => {
+        const req = new Request(input, init);
+        requestedPath = req.url;
+        const path = new URL(req.url).pathname;
+        const body = req.body ? await req.json() : null;
+        requests.push({ method: req.method, path, body });
 
-        if (requestedPath.includes("/v1/operator/leads?") || requestedPath.endsWith("/v1/operator/leads")) {
-          return new Response(JSON.stringify({
+        if (path === "/v1/operator/leads") {
+          return Response.json({
             schemaVersion: 1,
             leads: [
               {
                 lead_key: "a".repeat(64),
                 kind: "vpm_listing",
                 target_url: "https://example.com/vpm.json",
+                target_host: "example.com",
                 first_seen_at: "2026-10-01T10:00:00.000Z",
                 last_seen_at: "2026-10-01T10:00:00.000Z",
                 status: "pending_review",
@@ -408,24 +543,41 @@ describe("VRCPackageClient SDK", () => {
               }
             ],
             nextCursor: null
-          }), { status: 200, headers: { "Content-Type": "application/json" } });
+          });
         }
 
-        if (requestedPath.includes("/approve")) {
-          return new Response(JSON.stringify({
+        if (path.endsWith("/approve")) {
+          return Response.json({
             schemaVersion: 1,
             leadKey: "a".repeat(64),
             status: "approved",
             jobId: "job-101"
-          }), { status: 200, headers: { "Content-Type": "application/json" } });
+          });
         }
 
-        if (requestedPath.includes("/reject")) {
-          return new Response(JSON.stringify({
+        if (path.endsWith("/reject")) {
+          return Response.json({
             schemaVersion: 1,
             leadKey: "a".repeat(64),
             status: "rejected"
-          }), { status: 200, headers: { "Content-Type": "application/json" } });
+          });
+        }
+
+        if (path === "/v1/operator/leads/bulk-approve") {
+          return Response.json({
+            schemaVersion: 1,
+            approved: [{ leadKey: "a".repeat(64), jobId: "job-102" }],
+            skipped: []
+          });
+        }
+
+        if (path === "/v1/operator/leads/suppress-domain") {
+          return Response.json({
+            schemaVersion: 1,
+            targetHost: "spam.example",
+            scope: "domain",
+            rejectedLeadCount: 6
+          });
         }
 
         return new Response("Not found", { status: 404 });
@@ -434,6 +586,7 @@ describe("VRCPackageClient SDK", () => {
 
     const listRes = await client.operator.leads.list({ status: "pending_review" });
     expect(listRes.leads.length).toBe(1);
+    expect(listRes.leads[0]?.target_host).toBe("example.com");
     expect(requestedPath).toContain("status=pending_review");
 
     const approveRes = await client.operator.leads.approve("a".repeat(64), { reason: "Approved manually" });
@@ -444,6 +597,31 @@ describe("VRCPackageClient SDK", () => {
 
     const rejectRes = await client.operator.leads.reject("a".repeat(64), { reason: "Irrelevant" });
     expect(rejectRes.status).toBe("rejected");
+
+    const bulkRes = await client.operator.leads.bulkApprove({
+      schemaVersion: 1,
+      leadKeys: ["a".repeat(64)],
+      priorityLane: 1,
+      reason: "Trusted VPM creator batch"
+    });
+    expect(bulkRes.approved).toEqual([{ leadKey: "a".repeat(64), jobId: "job-102" }]);
+
+    const suppressRes = await client.operator.leads.suppressDomain({
+      schemaVersion: 1,
+      targetHost: "spam.example",
+      reason: "Non-VRChat store domain"
+    });
+    expect(suppressRes.rejectedLeadCount).toBe(6);
+    expect(requests.at(-1)).toEqual({
+      method: "POST",
+      path: "/v1/operator/leads/suppress-domain",
+      body: {
+        schemaVersion: 1,
+        targetHost: "spam.example",
+        rejectPendingLeads: true,
+        reason: "Non-VRChat store domain"
+      }
+    });
   });
 
   it("parses coordinator snake_case wire responses for operator leads and decodes cursors", async () => {
@@ -457,13 +635,14 @@ describe("VRCPackageClient SDK", () => {
       baseUrl: "https://api.vrc-packages.example",
       operatorToken: dummyOperatorToken,
       fetch: createMockFetch(async () => {
-        return new Response(JSON.stringify({
+        return Response.json({
           schemaVersion: 1,
           leads: [
             {
               lead_key: "b".repeat(64),
               kind: "vpm_listing",
               target_url: "https://example.com/feed.json",
+              target_host: "example.com",
               claimed_package_id: null,
               discovered_from_url: "https://example.com",
               discovered_from_item_key: null,
@@ -473,13 +652,14 @@ describe("VRCPackageClient SDK", () => {
             }
           ],
           nextCursor: coordCursor
-        }), { status: 200, headers: { "Content-Type": "application/json" } });
+        });
       })
     });
 
     const res = await client.operator.leads.list({ status: "pending_review" });
     expect(res.leads.length).toBe(1);
     expect(res.leads[0].lead_key).toBe("b".repeat(64));
+    expect(res.leads[0].target_host).toBe("example.com");
     expect(res.leads[0].kind).toBe("vpm_listing");
     expect(res.leads[0].target_url).toBe("https://example.com/feed.json");
     expect("leadKey" in res.leads[0]).toBe(false);
@@ -490,16 +670,22 @@ describe("VRCPackageClient SDK", () => {
     expect(decoded?.leadKey).toBe("b".repeat(64));
   });
 
-  it("exercises operator source profiles: list, create, and disable", async () => {
+  it("exercises operator steering profiles full CRUD: list, create, update (PATCH), enable, disable, and delete", async () => {
+    const profileId = crypto.randomUUID();
     const mockProfile = {
-      schemaVersion: 1,
-      profileId: crypto.randomUUID(),
+      profileId,
       platform: "booth" as const,
-      origin: "https://booth.pm",
-      pathScope: "/ja/items/",
+      hostMatchMode: "wildcard_subdomain" as const,
+      hostPattern: "*.booth.pm",
+      pathScope: "/ja/browse/",
+      queryMode: "pagination" as const,
+      queryScope: "page",
       method: "GET" as const,
-      purpose: "metadata" as const,
+      purpose: "discovery" as const,
+      autoPromote: true,
+      recrawlIntervalMs: 14_400_000,
       minDelayMs: 2000,
+      maxPaginationDepth: 10,
       expiresAt: "2027-01-01T00:00:00.000Z",
       reviewReference: "REV-2026-BOOTH",
       reason: "Permitted storefront ingestion",
@@ -508,129 +694,160 @@ describe("VRCPackageClient SDK", () => {
       createdAt: "2026-10-01T10:00:00.000Z",
       disabledAt: null
     };
+    const calls: Array<{ method: string; path: string; body: unknown }> = [];
 
     const client = new VRCPackageClient({
       baseUrl: "https://api.vrc-packages.example",
       operatorToken: dummyOperatorToken,
       fetch: createMockFetch(async (input, init) => {
-        const url = input.toString();
-        if (url.includes("/disable")) {
-          return new Response(JSON.stringify({
-            schemaVersion: 1,
-            profile: { ...mockProfile, disabledAt: "2026-10-01T12:00:00.000Z" }
-          }), { status: 200, headers: { "Content-Type": "application/json" } });
+        const req = new Request(input, init);
+        const path = new URL(req.url).pathname;
+        const body = req.body ? await req.json() : null;
+        calls.push({ method: req.method, path, body });
+
+        if (req.method === "GET") {
+          return Response.json({ schemaVersion: 1, profiles: [mockProfile], nextCursor: null });
         }
-        if (init?.method === "POST") {
-          return new Response(JSON.stringify({
-            schemaVersion: 1,
-            profile: mockProfile
-          }), { status: 201, headers: { "Content-Type": "application/json" } });
+        if (req.method === "POST" && path === "/v1/operator/steering-profiles") {
+          return Response.json({ schemaVersion: 1, profile: mockProfile }, { status: 201 });
         }
-        return new Response(JSON.stringify({
-          schemaVersion: 1,
-          profiles: [mockProfile],
-          nextCursor: null
-        }), { status: 200, headers: { "Content-Type": "application/json" } });
+        if (req.method === "PATCH") {
+          return Response.json({ schemaVersion: 1, profile: { ...mockProfile, minDelayMs: 3000 } });
+        }
+        if (path.endsWith("/disable")) {
+          return Response.json({ schemaVersion: 1, profile: { ...mockProfile, disabledAt: "2026-10-01T12:00:00.000Z" } });
+        }
+        if (path.endsWith("/enable")) {
+          return Response.json({ schemaVersion: 1, profile: { ...mockProfile, disabledAt: null } });
+        }
+        if (req.method === "DELETE") {
+          return Response.json({ schemaVersion: 1, profileId, status: "deleted" });
+        }
+        return new Response("Not found", { status: 404 });
       })
     });
 
-    const listRes = await client.operator.sourceProfiles.list();
+    const listRes = await client.operator.steeringProfiles.list();
     expect(listRes.profiles.length).toBe(1);
 
-    const createRes = await client.operator.sourceProfiles.create({
+    const createRes = await client.operator.steeringProfiles.create({
       schemaVersion: 1,
       platform: "booth",
-      origin: "https://booth.pm",
-      pathScope: "/ja/items/",
+      hostMatchMode: "wildcard_subdomain",
+      hostPattern: "*.booth.pm",
+      pathScope: "/ja/browse/",
+      queryMode: "pagination",
+      queryScope: "page",
       method: "GET",
-      purpose: "metadata",
+      purpose: "discovery",
+      autoPromote: true,
+      recrawlIntervalMs: 14_400_000,
       minDelayMs: 2000,
+      maxPaginationDepth: 10,
       expiresAt: "2027-01-01T00:00:00.000Z",
       reviewReference: "REV-2026-BOOTH",
       reason: "Permitted storefront ingestion",
       retainClasses: ["normalized_facts"],
       publishClasses: ["normalized_facts"]
     });
-    expect(createRes.profile.profileId).toBe(mockProfile.profileId);
+    expect(createRes.profile.profileId).toBe(profileId);
 
-    const disableRes = await client.operator.sourceProfiles.disable(mockProfile.profileId, "Policy update");
+    const updateRes = await client.operator.steeringProfiles.update(profileId, {
+      minDelayMs: 3000,
+      reason: "Increase politeness delay"
+    });
+    expect(updateRes.profile.minDelayMs).toBe(3000);
+
+    const disableRes = await client.operator.steeringProfiles.disable(profileId, "Kill-switch test");
     expect(disableRes.profile.disabledAt).not.toBeNull();
+
+    const enableRes = await client.operator.steeringProfiles.enable(profileId, "Re-enable after audit");
+    expect(enableRes.profile.disabledAt).toBeNull();
+
+    const deleteRes = await client.operator.steeringProfiles.delete(profileId, "Remove obsolete rule");
+    expect(deleteRes.status).toBe("deleted");
+    expect(calls.map((c) => c.method)).toEqual(["GET", "POST", "PATCH", "POST", "POST", "DELETE"]);
   });
 
-  it("exercises operator auto-queue rules: list, create, and disable", async () => {
-    const mockRule = {
-      ruleId: crypto.randomUUID(),
-      leadKind: "vpm_listing" as const,
-      origin: "https://vpm.example.com",
-      pathScope: "/index.json",
-      minDelayMs: 3000,
-      expiresAt: "2027-01-01T00:00:00.000Z",
-      reviewReference: "REV-VPM-RULE-01",
-      reason: "Trusted listing",
-      createdAt: "2026-10-01T10:00:00.000Z",
-      disabledAt: null
+  it("exercises operator suppressed targets CRUD: list, create, and delete", async () => {
+    const calls: Array<{ method: string; path: string; body: unknown }> = [];
+    const targetRecord = {
+      target: "bad.example",
+      scope: "domain" as const,
+      reason: "Blocked storefront domain",
+      suppressedAt: "2026-10-01T10:00:00.000Z"
     };
 
     const client = new VRCPackageClient({
       baseUrl: "https://api.vrc-packages.example",
       operatorToken: dummyOperatorToken,
       fetch: createMockFetch(async (input, init) => {
-        const url = input.toString();
-        if (url.includes("/disable")) {
-          return new Response(JSON.stringify({
-            schemaVersion: 1,
-            rule: { ...mockRule, disabledAt: "2026-10-01T12:00:00.000Z" }
-          }), { status: 200, headers: { "Content-Type": "application/json" } });
+        const req = new Request(input, init);
+        const path = new URL(req.url).pathname;
+        const body = req.body ? await req.json() : null;
+        calls.push({ method: req.method, path, body });
+
+        if (req.method === "GET") {
+          return Response.json({ schemaVersion: 1, targets: [targetRecord], nextCursor: null });
         }
-        if (init?.method === "POST") {
-          return new Response(JSON.stringify({
-            schemaVersion: 1,
-            rule: mockRule
-          }), { status: 201, headers: { "Content-Type": "application/json" } });
+        if (req.method === "POST") {
+          return Response.json({ schemaVersion: 1, suppressedTarget: targetRecord }, { status: 201 });
         }
-        return new Response(JSON.stringify({
-          schemaVersion: 1,
-          rules: [mockRule],
-          nextCursor: null
-        }), { status: 200, headers: { "Content-Type": "application/json" } });
+        if (req.method === "DELETE") {
+          return Response.json({ schemaVersion: 1, target: "bad.example", status: "deleted" });
+        }
+        return new Response("Not found", { status: 404 });
       })
     });
 
-    const listRes = await client.operator.autoQueueRules.list();
-    expect(listRes.rules.length).toBe(1);
+    const listRes = await client.operator.suppressedTargets.list();
+    expect(listRes.targets).toEqual([targetRecord]);
 
-    const createRes = await client.operator.autoQueueRules.create({
+    const createRes = await client.operator.suppressedTargets.create({
       schemaVersion: 1,
-      leadKind: "vpm_listing",
-      origin: "https://vpm.example.com",
-      pathScope: "/index.json",
-      minDelayMs: 3000,
-      expiresAt: "2027-01-01T00:00:00.000Z",
-      reviewReference: "REV-VPM-RULE-01",
-      reason: "Trusted listing"
+      target: "bad.example",
+      scope: "domain",
+      reason: "Blocked storefront domain"
     });
-    expect(createRes.rule.ruleId).toBe(mockRule.ruleId);
+    expect(createRes.suppressedTarget.target).toBe("bad.example");
 
-    const disableRes = await client.operator.autoQueueRules.disable(mockRule.ruleId, "Rule deprecated");
-    expect(disableRes.rule.disabledAt).not.toBeNull();
+    const deleteRes = await client.operator.suppressedTargets.delete({
+      schemaVersion: 1,
+      target: "bad.example",
+      reason: "Domain unblocked"
+    });
+    expect(deleteRes.status).toBe("deleted");
+    expect(calls).toEqual([
+      { method: "GET", path: "/v1/operator/suppressed-targets", body: null },
+      {
+        method: "POST",
+        path: "/v1/operator/suppressed-targets",
+        body: { schemaVersion: 1, target: "bad.example", scope: "domain", reason: "Blocked storefront domain" }
+      },
+      {
+        method: "DELETE",
+        path: "/v1/operator/suppressed-targets",
+        body: { schemaVersion: 1, target: "bad.example", reason: "Domain unblocked" }
+      }
+    ]);
   });
 
-  it("exercises operator nodes issuance and catalog oversight", async () => {
+  it("exercises operator nodes issuance without manual capabilities and catalog oversight", async () => {
     const client = new VRCPackageClient({
       baseUrl: "https://api.vrc-packages.example",
       operatorToken: dummyOperatorToken,
       fetch: createMockFetch(async (input) => {
         const url = input.toString();
         if (url.includes("/v1/operator/nodes")) {
-          return new Response(JSON.stringify({
+          return Response.json({
             schemaVersion: 1,
             nodeId: "dedicated-node-99",
             capabilities: ["vpm", "github"],
-            token: "vrcp_" + "d".repeat(64) + "0002"
-          }), { status: 201, headers: { "Content-Type": "application/json" } });
+            token: "vrcp_" + "d".repeat(64) + "0006"
+          }, { status: 201 });
         }
         if (url.includes("/v1/operator/catalog")) {
-          return new Response(JSON.stringify({
+          return Response.json({
             schemaVersion: 1,
             packages: [
               {
@@ -641,22 +858,26 @@ describe("VRCPackageClient SDK", () => {
                 displayName: "Operator Monitored Package",
                 vpmId: null,
                 createdAt: "2026-10-01T10:00:00.000Z",
-                updatedAt: "2026-10-01T10:00:00.000Z",
-                acceptedLinks: [],
-                fronts: []
+                updatedAt: "2026-10-01T10:00:00.000Z"
               }
             ],
             nextCursor: null
-          }), { status: 200, headers: { "Content-Type": "application/json" } });
+          });
         }
         return new Response("Not found", { status: 404 });
       })
     });
 
+    await expect(client.operator.nodes.issue({
+      schemaVersion: 1,
+      nodeId: "dedicated-node-99",
+      capabilities: ["vpm"],
+      reason: "Manual caps should reject"
+    } as never)).rejects.toThrow();
+
     const issueRes = await client.operator.nodes.issue({
       schemaVersion: 1,
       nodeId: "dedicated-node-99",
-      capabilities: ["vpm", "github"],
       reason: "Production dedicated ingestor"
     });
     expect(issueRes.nodeId).toBe("dedicated-node-99");
@@ -665,14 +886,17 @@ describe("VRCPackageClient SDK", () => {
     const catalogRes = await client.operator.catalog.list({ limit: 10 });
     expect(catalogRes.packages.length).toBe(1);
     expect(catalogRes.packages[0]?.displayName).toBe("Operator Monitored Package");
+    expect(catalogRes.packages[0]?.verificationStatus).toBe("unverified");
   });
 
-  it("exercises operator nodes prune with DELETE method, body validation, and response schema", async () => {
+  it("exercises operator nodes prune with nodeId validation, DELETE method, body validation, and response schema", async () => {
     let capturedRequest: { url: string; method: string; body: unknown; auth: string | null } | null = null;
+    let transportCalls = 0;
     const client = new VRCPackageClient({
       baseUrl: "https://api.vrc-packages.example",
       operatorToken: dummyOperatorToken,
       fetch: createMockFetch(async (input, init) => {
+        transportCalls++;
         const req = new Request(input, init);
         capturedRequest = {
           url: req.url,
@@ -680,11 +904,11 @@ describe("VRCPackageClient SDK", () => {
           body: await req.json(),
           auth: req.headers.get("Authorization")
         };
-        return new Response(JSON.stringify({
+        return Response.json({
           schemaVersion: 1,
           nodeId: "node-123",
           status: "pruned"
-        }), { status: 200, headers: { "Content-Type": "application/json" } });
+        });
       })
     });
 
@@ -703,9 +927,12 @@ describe("VRCPackageClient SDK", () => {
       reason: "Decommissioned node"
     });
 
-    // Verify empty reason throws validation error before transport
+    for (const badId of ["", ".", "..", "../etc", "node/1"]) {
+      await expect(client.operator.nodes.prune(badId, "Decommissioned node")).rejects.toThrow();
+    }
     await expect(client.operator.nodes.prune("node-123", "")).rejects.toThrow();
     await expect(client.operator.nodes.prune("node-123", "   ")).rejects.toThrow();
+    expect(transportCalls).toBe(1);
   });
 
   it("exercises operator nodes list with filtering, cursors, and strict schema validation", async () => {
@@ -793,85 +1020,95 @@ describe("VRCPackageClient SDK", () => {
     await expect(client.operator.nodes.list()).rejects.toThrow();
   });
 
-  it("exercises operator jobs list with state, platform, cursors, and strict schema validation", async () => {
-    const requests: Array<{ url: string; method: string; auth: string | null }> = [];
+  it("exercises operator jobs list, update (PATCH), requeue, and delete with strict schema validation", async () => {
+    const requests: Array<{ url: string; method: string; auth: string | null; body: unknown }> = [];
     const cursor = encodeOperatorJobCursor({ createdAt: "2026-10-01T10:00:00.000Z", jobId: "job-b1" });
     const nextCursor = encodeOperatorJobCursor({
       createdAt: "2026-10-01T10:05:00.000Z",
       jobId: "123e4567-e89b-12d3-a456-426614174000"
     });
-    const ruleId = "123e4567-e89b-12d3-a456-426614174010";
     const profileId = "123e4567-e89b-12d3-a456-426614174011";
     let returnLeaseId = false;
+
+    const jobOne = {
+      jobId: "job-b1",
+      platform: "booth" as const,
+      url: "https://booth.pm/ja/items/12345",
+      origin: "https://booth.pm",
+      state: "leased" as const,
+      purpose: "metadata" as const,
+      priorityLane: 3 as const,
+      recrawlIntervalMs: 86_400_000,
+      paginationDepth: 0,
+      nextFetchAt: "2026-10-01T10:00:00.000Z",
+      claimedBy: "node-alpha",
+      leaseExpiresAt: "2026-10-01T10:02:00.000Z",
+      createdAt: "2026-10-01T09:55:00.000Z",
+      robotsDeferredUntil: null,
+      steeringProfileId: profileId,
+      claimabilityBlockers: []
+    };
+    const jobTwo = {
+      jobId: "123e4567-e89b-12d3-a456-426614174000",
+      platform: "vpm" as const,
+      url: "https://vpm.example.com/index.json",
+      origin: "https://vpm.example.com",
+      state: "blocked" as const,
+      purpose: "discovery" as const,
+      priorityLane: 1 as const,
+      recrawlIntervalMs: 21_600_000,
+      paginationDepth: 1,
+      nextFetchAt: "2026-10-01T10:05:00.000Z",
+      claimedBy: null,
+      leaseExpiresAt: null,
+      createdAt: "2026-10-01T10:00:00.000Z",
+      robotsDeferredUntil: "2026-10-01T10:15:00.000Z",
+      steeringProfileId: null,
+      claimabilityBlockers: ["robots_deferred"]
+    };
 
     const client = new VRCPackageClient({
       baseUrl: "https://api.vrc-packages.example",
       operatorToken: dummyOperatorToken,
       fetch: createMockFetch(async (input, init) => {
         const req = new Request(input, init);
+        const path = new URL(req.url).pathname;
+        const body = req.body ? await req.json() : null;
         requests.push({
           url: req.url,
           method: req.method,
-          auth: req.headers.get("Authorization")
+          auth: req.headers.get("Authorization"),
+          body
         });
         if (returnLeaseId) {
           return Response.json({
             schemaVersion: 1,
-            jobs: [
-              {
-                jobId: "job-b1",
-                platform: "booth",
-                url: "https://booth.pm/ja/items/12345",
-                origin: "https://booth.pm",
-                state: "leased",
-                purpose: "metadata",
-                nextFetchAt: "2026-10-01T10:00:00.000Z",
-                claimedBy: "node-alpha",
-                leaseExpiresAt: "2026-10-01T10:02:00.000Z",
-                createdAt: "2026-10-01T09:55:00.000Z",
-                robotsDeferredUntil: null,
-                sourceRuleId: null,
-                leaseProfileId: profileId,
-                leaseId: "should-never-leak"
-              }
-            ],
+            jobs: [{ ...jobOne, leaseId: "should-never-leak" }],
             nextCursor: null
+          });
+        }
+        if (req.method === "PATCH") {
+          return Response.json({
+            schemaVersion: 1,
+            job: { ...jobTwo, priorityLane: 1 }
+          });
+        }
+        if (req.method === "POST" && path.endsWith("/requeue")) {
+          return Response.json({
+            schemaVersion: 1,
+            job: { ...jobTwo, state: "pending", priorityLane: 1 }
+          });
+        }
+        if (req.method === "DELETE") {
+          return Response.json({
+            schemaVersion: 1,
+            jobId: jobTwo.jobId,
+            status: "deleted"
           });
         }
         return Response.json({
           schemaVersion: 1,
-          jobs: [
-            {
-              jobId: "job-b1",
-              platform: "booth",
-              url: "https://booth.pm/ja/items/12345",
-              origin: "https://booth.pm",
-              state: "leased",
-              purpose: "metadata",
-              nextFetchAt: "2026-10-01T10:00:00.000Z",
-              claimedBy: "node-alpha",
-              leaseExpiresAt: "2026-10-01T10:02:00.000Z",
-              createdAt: "2026-10-01T09:55:00.000Z",
-              robotsDeferredUntil: null,
-              sourceRuleId: null,
-              leaseProfileId: profileId
-            },
-            {
-              jobId: "123e4567-e89b-12d3-a456-426614174000",
-              platform: "vpm",
-              url: "https://vpm.example.com/index.json",
-              origin: "https://vpm.example.com",
-              state: "pending",
-              purpose: "discovery",
-              nextFetchAt: "2026-10-01T10:05:00.000Z",
-              claimedBy: null,
-              leaseExpiresAt: null,
-              createdAt: "2026-10-01T10:00:00.000Z",
-              robotsDeferredUntil: "2026-10-01T10:15:00.000Z",
-              sourceRuleId: ruleId,
-              leaseProfileId: null
-            }
-          ],
+          jobs: [jobOne, jobTwo],
           nextCursor
         });
       })
@@ -880,6 +1117,7 @@ describe("VRCPackageClient SDK", () => {
     const filteredRes = await client.operator.jobs.list({
       state: "leased",
       platform: "booth",
+      priorityLane: 3,
       limit: 20,
       cursor
     });
@@ -889,11 +1127,12 @@ describe("VRCPackageClient SDK", () => {
     expect(firstUrl.pathname).toBe("/v1/operator/jobs");
     expect(firstUrl.searchParams.get("state")).toBe("leased");
     expect(firstUrl.searchParams.get("platform")).toBe("booth");
+    expect(firstUrl.searchParams.get("priorityLane")).toBe("3");
     expect(firstUrl.searchParams.get("limit")).toBe("20");
     expect(firstUrl.searchParams.get("cursor")).toBe(cursor);
     expect(filteredRes.jobs).toHaveLength(2);
-    expect(filteredRes.jobs[0]?.jobId).toBe("job-b1");
-    expect(filteredRes.jobs[1]?.sourceRuleId).toBe(ruleId);
+    expect(filteredRes.jobs[0]?.steeringProfileId).toBe(profileId);
+    expect(filteredRes.jobs[1]?.claimabilityBlockers).toEqual(["robots_deferred"]);
     expect(filteredRes.nextCursor).toBe(nextCursor);
 
     const defaultRes = await client.operator.jobs.list();
@@ -901,8 +1140,27 @@ describe("VRCPackageClient SDK", () => {
     expect(secondUrl.searchParams.get("limit")).toBe("100");
     expect(secondUrl.searchParams.has("state")).toBe(false);
     expect(secondUrl.searchParams.has("platform")).toBe(false);
+    expect(secondUrl.searchParams.has("priorityLane")).toBe(false);
     expect(secondUrl.searchParams.has("cursor")).toBe(false);
     expect(defaultRes.jobs).toHaveLength(2);
+
+    const updateRes = await client.operator.jobs.update(jobTwo.jobId, {
+      priorityLane: 1,
+      reason: "Raise priority"
+    });
+    expect(updateRes.job.priorityLane).toBe(1);
+    expect(requests[2]?.method).toBe("PATCH");
+
+    const requeueRes = await client.operator.jobs.requeue(jobTwo.jobId, {
+      priorityLane: 1,
+      reason: "Run immediately"
+    });
+    expect(requeueRes.job.state).toBe("pending");
+    expect(requests[3]?.method).toBe("POST");
+
+    const deleteRes = await client.operator.jobs.delete(jobTwo.jobId, "Remove dead job");
+    expect(deleteRes.status).toBe("deleted");
+    expect(requests[4]?.method).toBe("DELETE");
 
     returnLeaseId = true;
     await expect(client.operator.jobs.list()).rejects.toThrow();
@@ -930,18 +1188,18 @@ describe("VRCPackageClient SDK", () => {
       fetch: createMockFetch(async (input) => {
         const url = input.toString();
         if (url.includes("/verify")) {
-          return new Response(JSON.stringify({
+          return Response.json({
             schemaVersion: 1,
             takedownId,
             status: "accepted",
             updatedAt: "2026-10-01T12:00:00.000Z"
-          }), { status: 200, headers: { "Content-Type": "application/json" } });
+          });
         }
-        return new Response(JSON.stringify({
+        return Response.json({
           schemaVersion: 1,
           records: [mockTakedown],
           nextCursor: null
-        }), { status: 200, headers: { "Content-Type": "application/json" } });
+        });
       })
     });
 
@@ -973,26 +1231,26 @@ describe("VRCPackageClient SDK", () => {
         capturedHeaders = init?.headers;
 
         if (capturedUrl.includes("/v1/app/claims/intake")) {
-          return new Response(JSON.stringify({
+          return Response.json({
             schemaVersion: 1,
             status: "accepted",
             claimId,
             reviewStatus: "pending",
             recordedAt: new Date().toISOString()
-          }), { status: 202, headers: { "Content-Type": "application/json" } });
+          }, { status: 202 });
         }
 
         if (capturedUrl.includes(`/v1/operator/claims/${claimId}/verify`)) {
-          return new Response(JSON.stringify({
+          return Response.json({
             schemaVersion: 1,
             claimId,
             status: "accepted",
             updatedAt: new Date().toISOString()
-          }), { status: 200, headers: { "Content-Type": "application/json" } });
+          });
         }
 
         if (capturedUrl.includes("/v1/operator/claims")) {
-          return new Response(JSON.stringify({
+          return Response.json({
             schemaVersion: 1,
             records: [{
               claimId,
@@ -1011,7 +1269,7 @@ describe("VRCPackageClient SDK", () => {
               recordedAt: new Date().toISOString()
             }],
             nextCursor: null
-          }), { status: 200, headers: { "Content-Type": "application/json" } });
+          });
         }
 
         return new Response("Not found", { status: 404 });
@@ -1069,17 +1327,17 @@ describe("VRCPackageClient SDK", () => {
         capturedBody = typeof init?.body === "string" ? init.body : "";
 
         if (capturedUrl.includes(`/v1/operator/apps/${appId}/delegation`)) {
-          return new Response(JSON.stringify({
+          return Response.json({
             schemaVersion: 1,
             appId,
             delegationAllowed: true,
             permissions: ["catalog:read", "catalog:search", "demand:feedback", "claims:delegate"],
             updatedAt: new Date().toISOString()
-          }), { status: 200, headers: { "Content-Type": "application/json" } });
+          });
         }
 
         if (capturedUrl.includes(`/v1/operator/apps/${appId}/candidate-review`)) {
-          return new Response(JSON.stringify({
+          return Response.json({
             schemaVersion: 1,
             appId,
             candidateStatus: "trusted",
@@ -1087,11 +1345,11 @@ describe("VRCPackageClient SDK", () => {
             delegationAllowed: true,
             permissions: ["catalog:read", "catalog:search", "demand:feedback", "claims:delegate"],
             reviewedAt: new Date().toISOString()
-          }), { status: 200, headers: { "Content-Type": "application/json" } });
+          });
         }
 
         if (capturedUrl.includes("/v1/operator/apps")) {
-          return new Response(JSON.stringify({
+          return Response.json({
             schemaVersion: 1,
             apps: [{
               appId,
@@ -1103,7 +1361,7 @@ describe("VRCPackageClient SDK", () => {
               revokedAt: null
             }],
             nextCursor: null
-          }), { status: 200, headers: { "Content-Type": "application/json" } });
+          });
         }
 
         return new Response("Not found", { status: 404 });
@@ -1143,18 +1401,26 @@ describe("VRCPackageClient SDK", () => {
     const client = new VRCPackageClient({
       baseUrl: "https://api.vrc-packages.example"
     });
+    const uuid = "123e4567-e89b-12d3-a456-426614174000";
 
+    await expect(client.operator.status()).rejects.toThrow(VRCPApiError);
+    await expect(client.operator.systemPurge({ schemaVersion: 1, confirm: "PURGE_DEVELOPMENT_D1" })).rejects.toThrow(VRCPApiError);
     await expect(client.operator.leads.list()).rejects.toThrow(VRCPApiError);
+    await expect(client.operator.leads.bulkApprove({ schemaVersion: 1, leadKeys: ["a".repeat(64)], reason: "Approve" })).rejects.toThrow(VRCPApiError);
+    await expect(client.operator.leads.suppressDomain({ schemaVersion: 1, targetHost: "bad.example", reason: "Suppress" })).rejects.toThrow(VRCPApiError);
     await expect(client.operator.nodes.list()).rejects.toThrow(VRCPApiError);
     await expect(client.operator.jobs.list()).rejects.toThrow(VRCPApiError);
-    await expect(client.operator.sourceProfiles.list()).rejects.toThrow(VRCPApiError);
-    await expect(client.operator.autoQueueRules.list()).rejects.toThrow(VRCPApiError);
+    await expect(client.operator.jobs.update("job-1", { priorityLane: 1, reason: "Promote" })).rejects.toThrow(VRCPApiError);
+    await expect(client.operator.jobs.requeue("job-1", { reason: "Requeue" })).rejects.toThrow(VRCPApiError);
+    await expect(client.operator.jobs.delete("job-1", "Delete job")).rejects.toThrow(VRCPApiError);
+    await expect(client.operator.steeringProfiles.list()).rejects.toThrow(VRCPApiError);
+    await expect(client.operator.suppressedTargets.list()).rejects.toThrow(VRCPApiError);
     await expect(client.operator.catalog.list()).rejects.toThrow(VRCPApiError);
     await expect(client.operator.takedowns.list()).rejects.toThrow(VRCPApiError);
     await expect(client.operator.claims.list()).rejects.toThrow(VRCPApiError);
     await expect(client.operator.apps.list()).rejects.toThrow(VRCPApiError);
-    await expect(client.operator.apps.setDelegation("123e4567-e89b-12d3-a456-426614174000", { delegationAllowed: true })).rejects.toThrow(VRCPApiError);
-    await expect(client.operator.apps.reviewCandidate("123e4567-e89b-12d3-a456-426614174000", { candidateStatus: "trusted" })).rejects.toThrow(VRCPApiError);
+    await expect(client.operator.apps.setDelegation(uuid, { delegationAllowed: true })).rejects.toThrow(VRCPApiError);
+    await expect(client.operator.apps.reviewCandidate(uuid, { candidateStatus: "trusted" })).rejects.toThrow(VRCPApiError);
   });
 
   it("exercises moderator ratings: list and adjust", async () => {
