@@ -32,7 +32,7 @@ export const sdkPackageNames = { release: "vrc-packages-api", preview: "vrc-pack
 /** Dependency channels belong to products, not to their artifact release labels. */
 export function sdkChannelForProduct(product, channel) {
   if (!products.includes(product) || !["release", "preview"].includes(channel)) throw new Error("Unknown SDK consumer or build channel");
-  return { crawler: "preview", worker: "preview", "crawler-client": "preview", web: "preview" }[product] ?? channel;
+  return { crawler: "preview", worker: "preview", "crawler-client": "preview", web: "preview", network: "preview" }[product] ?? channel;
 }
 
 export function networkArchiveURL(version) {
@@ -151,13 +151,11 @@ export async function versionFiles(mode, channel, product = "all", workspace = r
     throw new Error("Usage: versioning.mjs <check|sync> <release|preview> [crawler|crawler-client|package|web|worker|network|all]");
   }
   const { config } = await readVersionConfig(channel, workspace);
-  const other = (await readVersionConfig(channel === "release" ? "preview" : "release", workspace)).config;
-  const release = channel === "release" ? config : other;
-  const preview = channel === "preview" ? config : other;
+  const preview = channel === "preview" ? config : (await readVersionConfig("preview", workspace)).config;
   // Prepare every selected edit before writing. Invalid input leaves files unchanged.
   const edits = [];
-  // SDK changes also update the internal archive's peer contract, not its version or consumer channels.
-  for (const name of product === "all" ? products : product === "package" ? ["package", "network"] : [product]) {
+  // Preview SDK changes also update the internal archive's preview-only peer contract.
+  for (const name of product === "all" ? products : product === "package" && channel === "preview" ? ["package", "network"] : [product]) {
     const version = name === "network" ? preview["preview-network"] : config[`${channel}-${name}`];
     const path = resolve(workspace, productDirectories[name], "package.json");
     const text = await readFile(path, "utf8");
@@ -165,7 +163,7 @@ export async function versionFiles(mode, channel, product = "all", workspace = r
     if (typeof manifest.version !== "string") throw new Error(`Missing package version: ${path}`);
     let changed = manifest.version !== version;
     if (name === "network") {
-      const peer = `${release["release-package"]} || ${preview["preview-package"]}`;
+      const peer = preview["preview-package"];
       const development = `npm:${sdkPackageNames.preview}@latest`;
       if (manifest.dependencies?.["vrc-packages-api"]) throw new Error("Network SDK must be a consumer-supplied peer, not a pinned runtime dependency");
       if (!manifest.peerDependencies?.["vrc-packages-api"]) throw new Error("Network requires an explicit SDK peer contract");

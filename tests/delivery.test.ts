@@ -35,7 +35,7 @@ async function fixture(run: (workspace: string) => Promise<void>) {
       await mkdir(resolve(workspace, path), { recursive: true });
       const dependencies = ["package", "network"].includes(name) ? {} : { "vrc-packages-api": "0.0.1" };
       if (["crawler", "worker"].includes(name)) dependencies["vrc-packages-network"] = networkArchiveURL("2026.10.1");
-      const peer = name === "network" ? { peerDependencies: { "vrc-packages-api": "0.0.1 || 2026.10.1-pre" },
+      const peer = name === "network" ? { peerDependencies: { "vrc-packages-api": "2026.10.1-pre" },
         devDependencies: { "vrc-packages-api": "0.0.1" } } : {};
       await writeFile(resolve(workspace, path, "package.json"), JSON.stringify({ name, version: "0.0.1", dependencies, ...peer }));
     }
@@ -119,7 +119,7 @@ test("all-product sync preserves Cargo comments and Tauri manifest ownership", a
     expect(sdk.version).toBe("2026.10.1-pre");
     const network = JSON.parse(await readFile(resolve(workspace, "src-worker/packages/network/package.json"), "utf8"));
     expect(network.dependencies["vrc-packages-api"]).toBeUndefined();
-    expect(network.peerDependencies["vrc-packages-api"]).toBe("0.0.1 || 2026.10.1-pre");
+    expect(network.peerDependencies["vrc-packages-api"]).toBe("2026.10.1-pre");
     expect(network.devDependencies["vrc-packages-api"]).toBe("npm:vrc-packages-api-preview@latest");
     expect(await readFile(resolve(workspace, "src-crawler-client/src-tauri/Cargo.toml"), "utf8"))
       .toContain('version = "26.10.1-pre" # retain owner note');
@@ -147,8 +147,8 @@ test("versioning CLI bumps use tagged delivery, never the metadata-only primitiv
 });
 
 test("owner SDK mapping does not change with artifact channels and product delivery forwards to root", () => {
-  for (const channel of ["release", "preview"]) {
-    for (const product of ["crawler", "worker", "crawler-client", "web"]) expect(sdkChannelForProduct(product, channel)).toBe("preview");
+  for (const channel of ["release", "preview"] as const) {
+    for (const product of ["crawler", "worker", "crawler-client", "web", "network"]) expect(sdkChannelForProduct(product, channel)).toBe("preview");
     expect(sdkChannelForProduct("package", channel)).toBe(channel);
   }
   expect(() => sdkChannelForProduct("unknown", "preview")).toThrow();
@@ -217,28 +217,36 @@ test("Bun product forwarding executes the root command instead of exiting succes
   });
 }, 30_000);
 
-test("SDK synchronization updates network peer bounds without bumping its stream or switching consumers", async () => {
+test("preview SDK synchronization updates network peer bounds without bumping its stream or mutating on release package sync", async () => {
   await fixture(async workspace => {
     const networkPath = resolve(workspace, productDirectories.network, "package.json");
     const networkVersion = (await readVersionConfig("preview", workspace)).config["preview-network"];
     const consumers = await Promise.all(["crawler", "worker"].map(name => readFile(resolve(workspace, productDirectories[name], "package.json"), "utf8")));
-    for (const channel of ["preview", "release"] as const) {
-      const { config, configPath } = await readVersionConfig(channel, workspace);
-      config[`${channel}-package`] = channel === "preview" ? "2026.10.2-pre" : "0.0.2";
-      await writeFile(configPath, JSON.stringify(config));
-      const result = await versionFiles("sync", channel, "package", workspace);
-      expect(result.changed).toContain(networkPath);
-      const network = JSON.parse(await readFile(networkPath, "utf8"));
-      expect(network.version).toBe(networkVersion);
-      expect(network.peerDependencies["vrc-packages-api"]).toBe(`${channel === "release" ? "0.0.2" : "0.0.1"} || 2026.10.2-pre`);
-      expect(network.dependencies["vrc-packages-api"]).toBeUndefined();
-      await versionFiles("check", channel, "package", workspace);
-    }
+    const { config: previewConfig, configPath: previewPath } = await readVersionConfig("preview", workspace);
+    previewConfig["preview-package"] = "2026.10.2-pre";
+    await writeFile(previewPath, JSON.stringify(previewConfig));
+    const previewResult = await versionFiles("sync", "preview", "package", workspace);
+    expect(previewResult.changed).toContain(networkPath);
+    const networkAfterPreview = JSON.parse(await readFile(networkPath, "utf8"));
+    expect(networkAfterPreview.version).toBe(networkVersion);
+    expect(networkAfterPreview.peerDependencies["vrc-packages-api"]).toBe("2026.10.2-pre");
+    expect(networkAfterPreview.dependencies["vrc-packages-api"]).toBeUndefined();
+    await versionFiles("check", "preview", "package", workspace);
+
+    const { config: releaseConfig, configPath: releasePath } = await readVersionConfig("release", workspace);
+    releaseConfig["release-package"] = "0.0.2";
+    await writeFile(releasePath, JSON.stringify(releaseConfig));
+    const releaseResult = await versionFiles("sync", "release", "package", workspace);
+    expect(releaseResult.changed).not.toContain(networkPath);
+    const networkAfterRelease = JSON.parse(await readFile(networkPath, "utf8"));
+    expect(networkAfterRelease.version).toBe(networkVersion);
+    expect(networkAfterRelease.peerDependencies["vrc-packages-api"]).toBe("2026.10.2-pre");
+    await versionFiles("check", "release", "package", workspace);
     expect(await Promise.all(["crawler", "worker"].map(name => readFile(resolve(workspace, productDirectories[name], "package.json"), "utf8")))).toEqual(consumers);
   });
 });
 
-test("network peer metadata follows both SDK configs without allowing a runtime channel override", async () => {
+test("network peer metadata enforces preview-only SDK bounds without allowing a runtime channel override", async () => {
   await fixture(async workspace => {
     const path = resolve(workspace, productDirectories.network, "package.json");
     const previewPath = resolve(workspace, "config.preview.versions.json");
@@ -247,8 +255,11 @@ test("network peer metadata follows both SDK configs without allowing a runtime 
     await writeFile(previewPath, JSON.stringify(config));
     await versionFiles("sync", "preview", "network", workspace);
     const network = JSON.parse(await readFile(path, "utf8"));
-    expect(network.peerDependencies["vrc-packages-api"]).toBe("0.0.1 || 2026.10.2-pre");
+    expect(network.peerDependencies["vrc-packages-api"]).toBe("2026.10.2-pre");
     expect(network.devDependencies["vrc-packages-api"]).toBe("npm:vrc-packages-api-preview@latest");
+    await versionFiles("sync", "release", "all", workspace);
+    await versionFiles("check", "release", "all", workspace);
+    expect(JSON.parse(await readFile(path, "utf8")).peerDependencies["vrc-packages-api"]).toBe("2026.10.2-pre");
     network.dependencies["vrc-packages-api"] = "0.0.1";
     const invalid = JSON.stringify(network);
     await writeFile(path, invalid);
@@ -361,6 +372,66 @@ test("preview verification fails closed when preview tests fail", async () => {
         return "";
       }
     })).rejects.toThrow("Simulated preview test failure");
+  });
+});
+
+test("network verification packs once and verifies strictly against the preview SDK channel", async () => {
+  await fixture(async workspace => {
+    await versionFiles("sync", "preview", "all", workspace);
+    const networkDir = resolve(workspace, productDirectories.network);
+    const installedSdkDir = resolve(networkDir, "node_modules/vrc-packages-api");
+    await mkdir(installedSdkDir, { recursive: true });
+    await writeFile(resolve(installedSdkDir, "package.json"), JSON.stringify({
+      name: sdkPackageNames.preview,
+      version: "2026.10.1-pre"
+    }));
+    const sdkBytes = Buffer.from("synthetic-preview-sdk-tarball");
+    const sdkIntegrity = `sha512-${createHash("sha512").update(sdkBytes).digest("base64")}`;
+    const networkBytes = Buffer.from("synthetic-network-tarball");
+    const calls: string[][] = [];
+    const runCommand = (args: string[], _cwd: string) => {
+      calls.push(args);
+      if (args[0] === "view") {
+        expect(args[1]).toBe(`${sdkPackageNames.preview}@latest`);
+        return JSON.stringify({
+          name: sdkPackageNames.preview,
+          version: "2026.10.1-pre",
+          dist: { integrity: sdkIntegrity }
+        });
+      }
+      if (args[0] === "pack") {
+        const dest = args[args.indexOf("--pack-destination") + 1];
+        if (args[1]?.startsWith(`${sdkPackageNames.preview}@`)) {
+          const filename = `${sdkPackageNames.preview}-2026.10.1-pre.tgz`;
+          writeFileSync(resolve(dest, filename), sdkBytes);
+          return JSON.stringify([{
+            name: sdkPackageNames.preview,
+            version: "2026.10.1-pre",
+            filename,
+            integrity: sdkIntegrity,
+            files: [{ path: "package.json" }, { path: "dist/index.js" }, { path: "dist/index.d.ts" }]
+          }]);
+        }
+        const filename = "vrc-packages-network-2026.10.1.tgz";
+        writeFileSync(resolve(dest, filename), networkBytes);
+        return JSON.stringify([{
+          name: "network",
+          version: "2026.10.1",
+          filename,
+          integrity: `sha512-${createHash("sha512").update(networkBytes).digest("base64")}`,
+          files: [{ path: "package.json" }, { path: "dist/token.js" }, { path: "dist/token.d.ts" }]
+        }]);
+      }
+      return "";
+    };
+    await deliver("verify", "preview", "network", false, false, { workspace, runCommand });
+    const views = calls.filter(args => args[0] === "view");
+    const distRuns = calls.filter(args => args[0] === "run" && args[1] === "test:distribution");
+    expect(views).toHaveLength(1);
+    expect(views[0][1]).toBe(`${sdkPackageNames.preview}@latest`);
+    expect(distRuns).toHaveLength(1);
+    expect(distRuns[0][3]).toContain("vrc-packages-api-preview-2026.10.1-pre.tgz");
+    expect(distRuns[0][5]).toContain("vrc-packages-network-2026.10.1.tgz");
   });
 });
 

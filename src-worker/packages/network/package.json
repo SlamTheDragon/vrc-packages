@@ -16,6 +16,10 @@
 			"types": "./dist/protocol/node_protocol.d.ts",
 			"import": "./dist/protocol/node_protocol.js"
 		},
+		"./token": {
+			"types": "./dist/token.d.ts",
+			"import": "./dist/token.js"
+		},
 		"./evidence": {
 			"types": "./dist/policy/evidence_class.d.ts",
 			"import": "./dist/policy/evidence_class.js"
@@ -66,7 +70,7 @@
 		"zod": "^4.6.5"
 	},
 	"peerDependencies": {
-		"vrc-packages-api": "0.0.8 || 2026.11.5-pre"
+		"vrc-packages-api": "2026.11.5-pre"
 	},
 	"devDependencies": {
 		"vrc-packages-api": "npm:vrc-packages-api-preview@latest",

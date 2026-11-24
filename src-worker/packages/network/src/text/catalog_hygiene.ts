@@ -1,17 +1,75 @@
+const NAMED_HTML_ENTITIES: Readonly<Record<string, string>> = {
+  amp: "&",
+  lt: "<",
+  gt: ">",
+  quot: '"',
+  apos: "'",
+  nbsp: " ",
+  ndash: "\u2013",
+  mdash: "\u2014",
+  hellip: "\u2026",
+  copy: "\u00a9",
+  reg: "\u00ae",
+  trade: "\u2122",
+  yen: "\u00a5",
+  euro: "\u20ac",
+  pound: "\u00a3",
+  times: "\u00d7",
+  middot: "\u00b7",
+  lsquo: "\u2018",
+  rsquo: "\u2019",
+  ldquo: "\u201c",
+  rdquo: "\u201d"
+};
+
+const HTML_ENTITY_REGEX = /&#(\d+);|&#[xX]([0-9a-fA-F]+);|&([a-zA-Z]+);/g;
+
+function decodeCodePoint(raw: string, radix: 10 | 16, fallback: string): string {
+  const cp = Number.parseInt(raw, radix);
+  if (Number.isInteger(cp) && cp >= 0 && cp <= 0x10ffff && (cp < 0xd800 || cp > 0xdfff)) {
+    return String.fromCodePoint(cp);
+  }
+  return fallback;
+}
+
 /**
- * Unescapes the supported HTML entity codes.
+ * Unescapes decimal numeric, hex numeric, and supported named HTML entities in a single pass.
+ * Single-pass replacement guarantees entities such as `&amp;lt;` decode once to `&lt;`.
  */
 export function unescapeHtml(text: string): string {
   if (!text) return "";
-  return text
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&#x27;/g, "'")
-    .replace(/&#x2F;/g, "/")
-    .replace(/&nbsp;/g, " ");
+  return text.replace(HTML_ENTITY_REGEX, (fullMatch, dec?: string, hex?: string, named?: string) => {
+    if (dec !== undefined) {
+      return decodeCodePoint(dec, 10, fullMatch);
+    }
+    if (hex !== undefined) {
+      return decodeCodePoint(hex, 16, fullMatch);
+    }
+    if (named !== undefined && Object.hasOwn(NAMED_HTML_ENTITIES, named)) {
+      return NAMED_HTML_ENTITIES[named];
+    }
+    return fullMatch;
+  });
+}
+
+/**
+ * Extracts non-empty trimmed inner tokens from `【...】`, `[...]`, and `（...）`/`(...)`
+ * after HTML unescaping and NFKC normalization, preserving first-seen order without duplicates.
+ */
+export function extractBracketTokens(rawTitle: string): string[] {
+  if (!rawTitle) return [];
+  const normalized = unescapeHtml(rawTitle).normalize("NFKC");
+  const tokens: string[] = [];
+  const seen = new Set<string>();
+  const bracketRegex = /【([^】]*)】|\[([^\]]*)\]|[（(]([^）)]*)[）)]/g;
+  for (const match of normalized.matchAll(bracketRegex)) {
+    const inner = (match[1] ?? match[2] ?? match[3] ?? "").trim();
+    if (inner && !seen.has(inner)) {
+      seen.add(inner);
+      tokens.push(inner);
+    }
+  }
+  return tokens;
 }
 
 /**
@@ -27,15 +85,18 @@ export const MARKETING_BRACKETS = [
 
 /**
  * Normalizes storefront listing title:
- * 1. NFKC normalization
- * 2. Unescape HTML entities
- * 3. Strips decorative / marketing bracket boilerplate
- * 4. Strips trailing version numbers (e.g. v1.0.0 beta)
- * 5. Collapses whitespace
+ * 1. Unescape HTML entities and apply NFKC normalization
+ * 2. When `options.preserveBrackets` is true, return whitespace-collapsed text preserving brackets
+ * 3. Otherwise strip decorative / marketing bracket boilerplate and trailing version numbers
+ * 4. Collapse whitespace
  */
-export function cleanTitle(rawTitle: string): string {
+export function cleanTitle(rawTitle: string, options?: { preserveBrackets?: boolean }): string {
   if (!rawTitle) return "";
-  let title = unescapeHtml(rawTitle).normalize("NFKC");
+  const normalized = unescapeHtml(rawTitle).normalize("NFKC");
+  if (options?.preserveBrackets === true) {
+    return normalized.replace(/\s+/g, " ").trim();
+  }
+  let title = normalized;
   for (let i = 0; i < 3; i++) {
     for (const pat of MARKETING_BRACKETS) {
       title = title.replace(pat, " ");

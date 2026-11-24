@@ -35,7 +35,6 @@ describe("Pre-production directory layout and configuration conformance", () => 
   });
 
   test("runtime consumers declare exact artifacts instead of sibling SDK links", () => {
-    const release = JSON.parse(readFileSync(join(rootDir, "config.versions.json"), "utf8"));
     const preview = JSON.parse(readFileSync(join(rootDir, "config.preview.versions.json"), "utf8"));
     const network = JSON.parse(readFileSync(join(rootDir, "src-worker/packages/network/package.json"), "utf8"));
     for (const project of ["src-worker", "src-crawler", "src-web", "src-crawler-client"]) {
@@ -48,9 +47,8 @@ describe("Pre-production directory layout and configuration conformance", () => 
       }
     }
     expect(network.dependencies["vrc-packages-api"]).toBeUndefined();
-    expect(network.peerDependencies["vrc-packages-api"]).toBe(`${release["release-package"]} || ${preview["preview-package"]}`);
-    expect(network.devDependencies["vrc-packages-api"]).toBe(network.devDependencies["vrc-packages-api"].startsWith("npm:")
-      ? "npm:vrc-packages-api-preview@latest" : release["release-package"]);
+    expect(network.peerDependencies["vrc-packages-api"]).toBe(preview["preview-package"]);
+    expect(network.devDependencies["vrc-packages-api"]).toBe("npm:vrc-packages-api-preview@latest");
     expect(network.private).toBe(true);
     for (const entry of Object.values(network.exports) as { types: string; import: string }[]) {
       expect(entry.types).toMatch(/^\.\/dist\/.*\.d\.ts$/);

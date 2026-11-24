@@ -13,7 +13,7 @@ Exports point to compiled JavaScript and TypeScript declarations in `dist`.
 They do not expose TypeScript source, sibling paths or a forwarding barrel.
 Each runtime supplies its own product version to `crawlerUserAgent`.
 HTTP identity uses `VRCPDiscoveryBot/{version}`. Robots checks also retain restrictions for the earlier bot token.
-Both checks must allow the target. Earlier refusals do not disappear through wildcard fallback after the rename.
+The two checks must allow the target. Earlier refusals do not disappear through wildcard fallback after the rename.
 
 ## Delivery status
 
@@ -22,9 +22,9 @@ Version `0.0.0` in a bootstrap manifest does not identify a published archive.
 Install checked GitHub Release tarballs into each consumer. Do not link sibling source folders.
 
 Root delivery scripts publish one rapid `YYYY.M.Patch` stream without `-pre` labels.
-Both consumer channels declare the same GitHub archive URL. Each consumer supplies its selected SDK as a peer dependency.
-The peer bounds match the release and preview SDK configurations. The development dependency uses the preview SDK alias.
-Distribution checks test one packed tarball against both SDK channels through Node, Bun, TypeScript, and native Worker runtimes.
+Network consumers declare the same GitHub archive URL. Each consumer supplies the preview SDK to satisfy the peer dependency.
+The peer bound matches the preview SDK configuration. The development dependency uses the preview SDK alias.
+Distribution checks examine one packed tarball against the preview SDK in Node, Bun, TypeScript, and native Worker runtimes.
 Root preparation downloads checked published dependencies instead of building sibling source.
 It checks the remote tag, CI source, receipt, release notes, and checksums before installation.
 The package stays `private: true` because GitHub tarball distribution does not need npm publication.

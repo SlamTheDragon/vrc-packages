@@ -8,7 +8,7 @@ import { isVpmVersion } from "../taxonomy/vpm_version.ts";
 export const PROTOCOL_VERSION = 1 as const;
 
 export const PlatformSchema = z.enum([
-  "booth", "github", "vpm", "gumroad", "jinxxy", "itch", "curated", "shopify", "sellfy", "custom_domain"
+  "booth", "github", "vpm", "gumroad", "jinxxy", "itch", "shopify", "sellfy", "custom_domain"
 ]);
 export type Platform = z.infer<typeof PlatformSchema>;
 export const STOREFRONT_PLATFORMS: ReadonlySet<Platform> = new Set([
@@ -16,6 +16,18 @@ export const STOREFRONT_PLATFORMS: ReadonlySet<Platform> = new Set([
 ]);
 export const JobPurposeSchema = z.enum(["discovery", "metadata"]);
 export type JobPurpose = z.infer<typeof JobPurposeSchema>;
+
+export const PriorityLaneSchema = z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(4)]);
+export type PriorityLane = z.infer<typeof PriorityLaneSchema>;
+
+export const VpmQualityFlagSchema = z.enum([
+  "skeleton",
+  "fork_suspected",
+  "missing_release",
+  "incomplete_metadata",
+  "missing_zip_sha256"
+]);
+export type VpmQualityFlag = z.infer<typeof VpmQualityFlagSchema>;
 
 export const NodeIdSchema = IssueNodeCredentialSchema.shape.nodeId;
 const JobIdSchema = z.string().min(1).max(120);
@@ -28,6 +40,40 @@ export const MAX_LAST_MODIFIED_LENGTH = 128;
 export const MAX_COORDINATOR_RESPONSE_BYTES = 2 * 1024 * 1024; // 2 MiB
 export const MAX_CLAIM_JOBS = 10;
 export const MAX_BATCH_RESULTS = 10;
+
+export const NodeAvatarCompatibilitySchema = z.strictObject({
+  targetAvatarBase: z.string().min(1).max(200),
+  scope: z.enum(["named_base", "universal", "uncertain"]),
+  confidence: z.enum(["creator_declared", "keyword_inferred", "unverified"]),
+  evidenceSource: z.string().min(1).max(200)
+});
+export type NodeAvatarCompatibility = z.infer<typeof NodeAvatarCompatibilitySchema>;
+
+export const NodeDesktopToolSubtypeSchema = z.enum([
+  "companion_client",
+  "osc_control",
+  "tracking_bridge",
+  "streaming_accessibility",
+  "utility"
+]);
+export type NodeDesktopToolSubtype = z.infer<typeof NodeDesktopToolSubtypeSchema>;
+
+export const NodeDesktopToolEvidenceSchema = z.strictObject({
+  toolSubtype: NodeDesktopToolSubtypeSchema,
+  supportedOS: z.array(z.enum(["windows", "linux", "macos"])).min(1).max(3),
+  particularVRChatTarget: z.boolean(),
+  evidenceUrl: HttpsUrlSchema.optional(),
+  publisherClaim: z.string().max(300)
+});
+export type NodeDesktopToolEvidence = z.infer<typeof NodeDesktopToolEvidenceSchema>;
+
+export const NodeVrchatRelevanceSchema = z.strictObject({
+  isRelevant: z.boolean(),
+  confidence: z.number().min(0).max(1),
+  matchedSignals: z.array(z.string().min(1).max(100)).max(20).optional(),
+  rejectionReason: z.string().min(1).max(200).optional()
+});
+export type NodeVrchatRelevance = z.infer<typeof NodeVrchatRelevanceSchema>;
 
 export const ClaimRequestSchema = z.strictObject({
   schemaVersion: z.literal(PROTOCOL_VERSION),
@@ -47,7 +93,10 @@ export const CrawlJobSchema = z.strictObject({
   leaseExpiresAt: z.iso.datetime(),
   retainClasses: z.array(EvidenceClassSchema).min(1).max(4),
   etag: z.string().max(MAX_ETAG_LENGTH).nullable(),
-  lastModified: z.string().max(MAX_LAST_MODIFIED_LENGTH).nullable()
+  lastModified: z.string().max(MAX_LAST_MODIFIED_LENGTH).nullable(),
+  priorityLane: PriorityLaneSchema.optional(),
+  paginationDepth: z.number().int().min(0).max(500).optional(),
+  maxPaginationDepth: z.number().int().min(0).max(500).optional()
 });
 export type CrawlJob = z.infer<typeof CrawlJobSchema>;
 
@@ -106,7 +155,13 @@ export const ObservationSchema = z.strictObject({
   currency: z.string().nullable().optional(),
   availability: z.enum(["available", "delisted", "unknown"]).optional(),
   storefrontUrl: HttpsUrlSchema.optional(),
-  platformTags: z.array(z.string().max(100)).max(50).optional()
+  platformTags: z.array(z.string().max(100)).max(50).optional(),
+  ownerKey: z.string().min(1).max(200).nullable().optional(),
+  ownerName: z.string().min(1).max(300).nullable().optional(),
+  qualityFlags: z.array(VpmQualityFlagSchema).max(10).optional(),
+  avatarCompatibilities: z.array(NodeAvatarCompatibilitySchema).max(50).optional(),
+  desktopToolEvidence: NodeDesktopToolEvidenceSchema.nullable().optional(),
+  vrchatRelevance: NodeVrchatRelevanceSchema.optional()
 });
 export type Observation = z.infer<typeof ObservationSchema>;
 
@@ -132,7 +187,14 @@ export const ResultOutcomeSchema = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("batch"), observations: z.array(ObservationSchema).min(1).max(100) }),
   z.strictObject({ kind: z.literal("partial_batch"), observations: z.array(ObservationSchema).max(100),
     issues: z.array(VpmListingIssueSchema).min(1).max(100) }),
-  z.strictObject({ kind: z.literal("discovery"), leads: z.array(DiscoveryLeadSchema).max(100) }),
+  z.strictObject({
+    kind: z.literal("discovery"),
+    leads: z.array(DiscoveryLeadSchema).max(100),
+    nextPageLead: HttpsUrlSchema.refine(
+      (value) => value.length <= MAX_JOB_URL_LENGTH,
+      `URL exceeds max length of ${MAX_JOB_URL_LENGTH}`
+    ).nullable().optional()
+  }),
   z.strictObject({ kind: z.literal("unchanged") }),
   z.strictObject({ kind: z.literal("gone") }),
   z.strictObject({ kind: z.literal("temporary_failure"), reason: z.string().min(1).max(300) }),

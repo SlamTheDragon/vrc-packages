@@ -15,7 +15,7 @@ assert.ok(args[0] === '--sdk-tarball' && args.length >= 2 && args.length <= 5 &&
 const sdkTarball = realpathSync(resolve(args[1]));
 assert.ok(sdkTarball.endsWith('.tgz') && lstatSync(sdkTarball).isFile(), 'SDK input must be a packed artifact');
 const sdkReceipt = JSON.parse(readFileSync(`${sdkTarball}.json`, 'utf8'));
-assert.ok(['vrc-packages-api', 'vrc-packages-api-preview'].includes(sdkReceipt.name) && semver.valid(sdkReceipt.version) &&
+assert.ok(sdkReceipt.name === 'vrc-packages-api-preview' && semver.valid(sdkReceipt.version) &&
   sdkReceipt.sha256 === createHash('sha256').update(readFileSync(sdkTarball)).digest('hex'), 'SDK input differs from its checked receipt');
 const networkTarball = args[2] === '--network-tarball' ? realpathSync(resolve(args[3])) : null;
 if (networkTarball) assert.ok(networkTarball.endsWith('.tgz') && lstatSync(networkTarball).isFile(), 'Network input must be a packed artifact');
@@ -93,7 +93,7 @@ try {
   const response = await runtime.dispatchFetch('https://artifact.invalid');
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), {
-    nodeContracts: true, strictIdentity: true, policy: true, robots: true, semver: true, hygiene: true
+    nodeContracts: true, strictIdentity: true, policy: true, token: true, robots: true, semver: true, hygiene: true
   });
   assert.equal(externalFetches, 0);
 } finally { await runtime.dispose(); }

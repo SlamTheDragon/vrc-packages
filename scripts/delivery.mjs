@@ -375,15 +375,12 @@ export async function deliver(action, channel, product, ci = false, skipTests = 
       if (runCommand === packageCommand) packageCommand(["run", "typecheck"], project);
       else runCommand(["run", "typecheck"], project);
       if (product === "network") {
-        // Pack once. Both SDK channels must consume these same network bytes.
+        // Version 0: pack once and verify strictly against the active preview SDK channel.
         runCommand(["run", "build"], project);
         const network = pack(project, false, runCommand, workspace);
         if (!skipTestsRequested) {
-          for (const sdkCh of ["release", "preview"]) {
-            const cfg = (await readVersionConfig(sdkCh, workspace)).config;
-            const sdk = packRegistrySDK(resolve(workspace, productDirectories.package), sdkCh, cfg[`${sdkCh}-package`], runCommand, workspace);
-            runTest(["run", "test:distribution", "--sdk-tarball", sdk, "--network-tarball", network], project);
-          }
+          const sdk = packRegistrySDK(resolve(workspace, productDirectories.package), sdkChannel, sdkVersion, runCommand, workspace);
+          runTest(["run", "test:distribution", "--sdk-tarball", sdk, "--network-tarball", network], project);
         }
       } else if (!skipTestsRequested) runTest(["run", "test:distribution"], project);
     } else if (action === "deploy") {

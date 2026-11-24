@@ -1,34 +1,88 @@
 import { ClaimRequestSchema, ClaimResponseSchema, CrawlJobSchema, ResultRequestSchema,
-  ResultResponseSchema, NodeRobotsClaimRequestSchema, NodeRobotsClaimResponseSchema,
-  NodeRobotsResultRequestSchema, NodeRobotsResultResponseSchema,
+  ResultResponseSchema, ResultOutcomeSchema, ObservationSchema, PriorityLaneSchema, VpmQualityFlagSchema,
+  NodeAvatarCompatibilitySchema, NodeDesktopToolSubtypeSchema, NodeDesktopToolEvidenceSchema,
+  NodeVrchatRelevanceSchema, PlatformSchema, STOREFRONT_PLATFORMS, NodeRobotsClaimRequestSchema,
+  NodeRobotsClaimResponseSchema, NodeRobotsResultRequestSchema, NodeRobotsResultResponseSchema,
   NODE_API_JSON_SCHEMAS, NodeIdSchema } from 'vrc-packages-network/node';
 import { IssueNodeCredentialSchema } from 'vrc-packages-api';
+import { IDENTITY_PREFIX, NODE_TOKEN_REGEX } from 'vrc-packages-api/auth';
+import { PLATFORM_BIT_MAP, ALL_CAPABILITIES_MASK, CAPABILITY_TOKEN_REGEX,
+  encodeCapabilityCode, decodeCapabilityCode, isCapabilityToken,
+  formatCapabilityToken, parseCapabilityToken } from 'vrc-packages-network/token';
 import { EvidenceClassSchema } from 'vrc-packages-network/evidence';
 import { isIp, isPrivateOrReservedIp } from 'vrc-packages-network/ip-policy';
 import { ARCHIVE_BINARY_EXTENSIONS, classifyOutboundLeadKind, githubApiRepositoryIdentity,
-  githubRepositoryIdentity, isArchiveOrBinaryUrl, isStorefrontProductTarget,
-  normalizeGitHubApiUrl, normalizeGitHubRepositoryUrl,
-  resolveDiscoveryLeadTarget } from 'vrc-packages-network/source-targets';
+  githubRepositoryIdentity, isArchiveOrBinaryUrl, isBoothBrowseTarget, isBoothProductTarget,
+  isGumroadBrowseTarget, isGumroadProductTarget, isItchTagTarget, isJinxxyBrowseTarget,
+  isStorefrontProductTarget, isValidPublicHttpsOrigin, normalizeGitHubApiUrl,
+  normalizeGitHubRepositoryUrl, resolveDiscoveryLeadTarget } from 'vrc-packages-network/source-targets';
 import { isItchSearchUrl } from 'vrc-packages-network/source-paths';
 import { isVpmVersion, compareVpmVersions } from 'vrc-packages-network/vpm-version';
 import { OriginRobotsSnapshotSchema } from 'vrc-packages-network/robots';
 import { crawlerUserAgent, ROBOTS_RESTRICTION_TOKENS } from 'vrc-packages-network/identity';
 import { retrieveRobotsSnapshot } from 'vrc-packages-network/robots-retrieval';
-import { cleanTitle, cleanTrackingParams } from 'vrc-packages-network/catalog-hygiene';
+import { cleanTitle, cleanTrackingParams, extractBracketTokens, unescapeHtml } from 'vrc-packages-network/catalog-hygiene';
 
 function check(value, message) { if (!value) throw new Error(message); }
+function checkThrows(fn, message) {
+  let threw = false;
+  try { fn(); } catch { threw = true; }
+  if (!threw) throw new Error(message);
+}
 
 export async function checkArtifact() {
   check(NodeIdSchema === IssueNodeCredentialSchema.shape.nodeId,
     'Network resolved a different SDK than the consumer selected');
+  check(PlatformSchema.options.length === 9 && !PlatformSchema.options.includes('curated') &&
+    STOREFRONT_PLATFORMS.size === 7, 'PlatformSchema must contain 9 platforms without curated');
+  check(PriorityLaneSchema.parse(1) === 1 && !PriorityLaneSchema.safeParse(5).success,
+    'PriorityLaneSchema bounds changed');
+  check(VpmQualityFlagSchema.parse('missing_zip_sha256') === 'missing_zip_sha256',
+    'VpmQualityFlagSchema changed');
+  check(NodeAvatarCompatibilitySchema.parse({
+    targetAvatarBase: 'kikyo', scope: 'named_base', confidence: 'creator_declared', evidenceSource: 'title'
+  }).targetAvatarBase === 'kikyo', 'NodeAvatarCompatibilitySchema changed');
+  check(NodeDesktopToolSubtypeSchema.parse('osc_control') === 'osc_control' &&
+    NodeDesktopToolEvidenceSchema.parse({
+      toolSubtype: 'osc_control', supportedOS: ['windows'], particularVRChatTarget: true, publisherClaim: 'OSC tool'
+    }).toolSubtype === 'osc_control', 'NodeDesktopToolEvidenceSchema changed');
+  check(NodeVrchatRelevanceSchema.parse({ isRelevant: true, confidence: 0.9 }).isRelevant,
+    'NodeVrchatRelevanceSchema changed');
+
+  check(ALL_CAPABILITIES_MASK === 0x01ff && PLATFORM_BIT_MAP.custom_domain === 0x0100 &&
+    !('curated' in PLATFORM_BIT_MAP), 'Capability bitmask layout drifted');
+  check(IDENTITY_PREFIX === 'vrcp_' && CAPABILITY_TOKEN_REGEX.source === NODE_TOKEN_REGEX.source,
+    'Capability token regex drifted from preview SDK NODE_TOKEN_REGEX');
+  check(encodeCapabilityCode(['vpm', 'github']) === '0006' &&
+    encodeCapabilityCode(PlatformSchema.options) === '01ff', 'Capability encoding changed');
+  check(decodeCapabilityCode('01ff')?.length === 9 &&
+    decodeCapabilityCode('0200') === null && decodeCapabilityCode('0000') === null,
+    'Capability decoding failed open on invalid bitmask');
+  checkThrows(() => encodeCapabilityCode([]), 'Empty capability set must throw');
+  checkThrows(() => formatCapabilityToken(['vpm'], 'invalid-entropy'), 'Invalid entropyHex must throw');
+  const issuedToken = formatCapabilityToken(['vpm', 'booth']);
+  check(isCapabilityToken(issuedToken) && parseCapabilityToken(issuedToken)?.code === '0005',
+    'Capability token format/parse round-trip changed');
+
   const claim = ClaimRequestSchema.parse({ schemaVersion: 1, nodeId: 'artifact-node', capabilities: ['vpm'] });
   check(claim.nodeId === 'artifact-node', 'Claim identity changed');
   check(!ClaimRequestSchema.safeParse({ ...claim, nodeId: '..' }).success, 'Dot node ID accepted');
   check(!ClaimRequestSchema.safeParse({ ...claim, extra: true }).success, 'Unknown claim field accepted');
   const job = CrawlJobSchema.parse({ jobId: 'artifact-job', leaseId: crypto.randomUUID(), platform: 'vpm',
     purpose: 'metadata', url: 'https://example.org/index.json', origin: 'https://example.org',
-    leaseExpiresAt: '2099-01-01T00:00:00.000Z', retainClasses: ['normalized_facts'], etag: null, lastModified: null });
+    leaseExpiresAt: '2099-01-01T00:00:00.000Z', retainClasses: ['normalized_facts'], etag: null, lastModified: null,
+    priorityLane: 1, paginationDepth: 0, maxPaginationDepth: 10 });
   check(ClaimResponseSchema.parse({ schemaVersion: 1, status: 'leased', job }).status === 'leased', 'Lease changed');
+  const obs = ObservationSchema.parse({
+    sourceItemKey: 'vpm:com.example.tool', title: 'Example Tool', author: 'Author', summary: 'Summary',
+    outboundLinks: ['https://example.org/index.json'], originUpdatedAt: null,
+    ownerKey: 'author', ownerName: 'Author', qualityFlags: [], avatarCompatibilities: [],
+    desktopToolEvidence: null, vrchatRelevance: { isRelevant: true, confidence: 1 }
+  });
+  check(obs.ownerKey === 'author', 'ObservationSchema node-offloaded fields changed');
+  check(ResultOutcomeSchema.parse({
+    kind: 'discovery', leads: [], nextPageLead: 'https://booth.pm/ja/browse/3D%E3%83%84%E3%83%BC%E3%83%AB?page=2'
+  }).kind === 'discovery', 'ResultOutcomeSchema discovery pagination failed');
   const result = ResultRequestSchema.parse({ schemaVersion: 1, nodeId: claim.nodeId, jobId: job.jobId,
     leaseId: job.leaseId, idempotencyKey: crypto.randomUUID(), outcome: { kind: 'unchanged' } });
   check(ResultResponseSchema.parse({ schemaVersion: 1, status: 'accepted', jobId: result.jobId,
@@ -54,6 +108,9 @@ export async function checkArtifact() {
   check(EvidenceClassSchema.parse('normalized_facts') === 'normalized_facts', 'Evidence class changed');
   check(isIp('127.0.0.1') && isIp('[::1]') && !isIp('example.org:443'), 'IP literal detection changed');
   check(isPrivateOrReservedIp('127.0.0.1') && !isPrivateOrReservedIp('8.8.8.8'), 'IP policy changed');
+  check(isValidPublicHttpsOrigin('https://booth.pm') && !isValidPublicHttpsOrigin('https://127.0.0.1') &&
+    !isValidPublicHttpsOrigin('https://localhost') && !isValidPublicHttpsOrigin('https://booth.pm:443'),
+    'Origin validator changed');
   check(githubApiRepositoryIdentity('https://api.github.com/repos/example/tools') === 'example/tools', 'Target policy changed');
   check(githubRepositoryIdentity('https://github.com/example/tools.git') === 'example/tools' &&
     normalizeGitHubRepositoryUrl('https://api.github.com/repos/example/tools') === 'https://github.com/example/tools' &&
@@ -61,9 +118,19 @@ export async function checkArtifact() {
     'GitHub normalization policy changed');
   check(ARCHIVE_BINARY_EXTENSIONS.includes('.vpmz') && isArchiveOrBinaryUrl('https://example.org/pkg.unitypackage?dl=1'),
     'Archive blocklist changed');
-  check(isStorefrontProductTarget('booth', 'https://booth.pm/ja/items/12345') &&
+  check(isBoothBrowseTarget('https://booth.pm/ja/browse/3D%E3%83%84%E3%83%BC%E3%83%AB') &&
+    isBoothBrowseTarget('https://booth.pm/ja/browse/3D%E3%83%84%E3%83%BC%E3%83%AB?page=1') &&
+    isBoothProductTarget('https://creator.booth.pm/items/12345') &&
+    isGumroadProductTarget('https://creator.gumroad.com/l/vrchat-tool') &&
+    isGumroadBrowseTarget('https://gumroad.com/discover/3d?query=vrchat') &&
+    isJinxxyBrowseTarget('https://jinxxy.com/sitemap.xml') &&
+    isItchTagTarget('https://itch.io/tools/tag-vrchat?page=1') &&
+    !isItchTagTarget('https://itch.io/search?q=vrchat') &&
+    isStorefrontProductTarget('booth', 'https://booth.pm/ja/items/12345') &&
     classifyOutboundLeadKind('https://creator.itch.io/tool') === 'storefront_product' &&
+    classifyOutboundLeadKind('https://creator.gumroad.com/l/vrchat-tool') === 'storefront_product' &&
     resolveDiscoveryLeadTarget('storefront_product', 'https://creator.itch.io/tool')?.platform === 'itch' &&
+    resolveDiscoveryLeadTarget('storefront_product', 'https://creator.booth.pm/items/123')?.platform === 'booth' &&
     resolveDiscoveryLeadTarget('storefront_product', 'https://payhip.com/b/item')?.platform === 'custom_domain',
     'Lead classification or platform mapping changed');
   check(isItchSearchUrl('https://itch.io/search?q=vrchat'), 'Excluded search path changed');
@@ -80,8 +147,11 @@ export async function checkArtifact() {
     return new Response(null, { status: 404 });
   });
   check(snapshot.statusCode === 404 && snapshot.body === '', 'Robots retrieval changed');
-  check(cleanTitle(' Example Tool ') === 'Example Tool', 'Title hygiene changed');
+  check(unescapeHtml('&amp;lt;&ndash;&mdash;') === '&lt;\u2013\u2014', 'HTML entity decoding changed');
+  check(extractBracketTokens('【Kikyo】［VRChat］').join(',') === 'Kikyo,VRChat', 'Bracket token extraction changed');
+  check(cleanTitle(' Example Tool ') === 'Example Tool' &&
+    cleanTitle('【Kikyo】 Dress', { preserveBrackets: true }) === '【Kikyo】 Dress', 'Title hygiene changed');
   check(cleanTrackingParams('https://example.org/item?utm_source=fixture') === 'https://example.org/item',
     'Link hygiene changed');
-  return { nodeContracts: true, strictIdentity: true, policy: true, robots: true, semver: true, hygiene: true };
+  return { nodeContracts: true, strictIdentity: true, policy: true, token: true, robots: true, semver: true, hygiene: true };
 }

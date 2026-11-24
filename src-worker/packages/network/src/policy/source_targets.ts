@@ -11,6 +11,17 @@ const GITHUB_RESERVED_TOP_LEVEL_ROUTES = new Set([
   "topics", "trending", "users"
 ]);
 
+const GUMROAD_SUBDOMAIN_REGEX = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.gumroad\.com$/;
+const BOOTH_SUBDOMAIN_REGEX = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.booth\.pm$/;
+const MAX_BROWSE_URL_LENGTH = 2048;
+
+const DISALLOWED_BROWSE_QUERY_KEYS = new Set([
+  "utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content",
+  "ref", "aff", "affiliate", "fbclid", "gclid", "token", "source",
+  "msclkid", "twclid", "igshid", "mc_eid", "_ga", "_gl", "spm", "si",
+  "session_id", "feature"
+]);
+
 /** Prohibited archive, compiled binary, and raw 3D asset extensions excluded by policy (LEGAL.md Section 3.1). */
 export const ARCHIVE_BINARY_EXTENSIONS = [
   ".zip",
@@ -55,6 +66,7 @@ function parseHttpsUrl(value: string, options: {
   allowSearch?: boolean;
   requireExactHref?: boolean;
 } = {}): URL | null {
+  if (typeof value !== "string" || !value) return null;
   try {
     const url = new URL(value);
     if (options.requireExactHref && url.href !== value) return null;
@@ -74,6 +86,66 @@ function isDisallowedLeadHost(hostname: string): boolean {
   }
   if (!host.includes(".")) return true;
   return isIp(host) && isPrivateOrReservedIp(host);
+}
+
+function hasDotSegment(pathname: string): boolean {
+  return pathname.split("/").some((segment) => segment === "." || segment === "..");
+}
+
+function isBoothHost(hostname: string): boolean {
+  const host = hostname.toLowerCase();
+  return host === "booth.pm" || BOOTH_SUBDOMAIN_REGEX.test(host);
+}
+
+function isGumroadHost(hostname: string): boolean {
+  const host = hostname.toLowerCase();
+  return host === "gumroad.com" || GUMROAD_SUBDOMAIN_REGEX.test(host);
+}
+
+function hasBoundedBrowseQuery(url: URL, rawValue: string): boolean {
+  if (rawValue.endsWith("?")) return false;
+  if (!url.search) return true;
+  if (url.search.length > 512) return false;
+  let count = 0;
+  for (const [key, val] of url.searchParams.entries()) {
+    count += 1;
+    if (count > 10) return false;
+    const lowerKey = key.toLowerCase();
+    if (
+      !key ||
+      key.length > 40 ||
+      !/^[A-Za-z0-9_[\]-]+$/.test(key) ||
+      val.length > 150 ||
+      DISALLOWED_BROWSE_QUERY_KEYS.has(lowerKey) ||
+      lowerKey.startsWith("utm_") ||
+      lowerKey.startsWith("aff_") ||
+      lowerKey.startsWith("ref_")
+    ) {
+      return false;
+    }
+    if (lowerKey === "page" && !/^[1-9]\d{0,2}$/.test(val)) {
+      return false;
+    }
+  }
+  return count > 0;
+}
+
+/** Validates a canonical public HTTPS origin without credentials, ports, paths, or private/reserved hosts. */
+export function isValidPublicHttpsOrigin(value: string): boolean {
+  if (typeof value !== "string" || !value) return false;
+  try {
+    const url = new URL(value);
+    return (
+      url.protocol === "https:" &&
+      url.origin === value &&
+      !url.username &&
+      !url.password &&
+      !url.port &&
+      !isDisallowedLeadHost(url.hostname)
+    );
+  } catch {
+    return false;
+  }
 }
 
 /** Validates an owner/repo pair for GitHub repository identity rules. */
@@ -118,40 +190,117 @@ export function normalizeGitHubApiUrl(value: string): string | null {
   return identity ? `https://api.github.com/repos/${identity}` : null;
 }
 
-/** Current leased BOOTH discovery endpoint class: a single category page. */
+/** Current leased BOOTH discovery endpoint class: a single category page with optional bounded query. */
 export function isBoothBrowseTarget(value: string): boolean {
   const url = parseHttpsUrl(value, { allowSearch: true, requireExactHref: true });
-  return Boolean(url && url.origin === "https://booth.pm" &&
-    /^\/(?:ja|en)\/browse\/[A-Za-z0-9._~%-]+$/.test(url.pathname) &&
-    /^\?page=[1-9]\d{0,2}$/.test(url.search));
+  if (!url || url.origin !== "https://booth.pm" || value.length > MAX_BROWSE_URL_LENGTH || value.endsWith("?")) {
+    return false;
+  }
+  const pathMatch = /^\/(?:ja|en)\/browse\/([A-Za-z0-9._~%-]+)$/.exec(url.pathname);
+  if (!pathMatch || pathMatch[1] === "." || pathMatch[1] === ".." || hasArchiveBinaryExtension(url.pathname)) {
+    return false;
+  }
+  if (!url.search) return true;
+  let seenPage = false;
+  let seenSort = false;
+  let tagCount = 0;
+  for (const [key, val] of url.searchParams.entries()) {
+    if (key === "page") {
+      if (seenPage || !/^[1-9]\d{0,2}$/.test(val)) return false;
+      seenPage = true;
+    } else if (key === "sort") {
+      if (seenSort || !/^[A-Za-z0-9_-]{1,40}$/.test(val)) return false;
+      seenSort = true;
+    } else if (key === "tags[]") {
+      if (!val || val.length > 100 || tagCount >= 10) return false;
+      tagCount += 1;
+    } else {
+      return false;
+    }
+  }
+  return seenPage || seenSort || tagCount > 0;
 }
 
-/** A canonical BOOTH item URL, with no tracking query or locale ambiguity. */
+/** A canonical BOOTH item URL on apex booth.pm or a single-label creator subdomain. */
 export function boothItemIdentity(value: string): string | null {
   const url = parseHttpsUrl(value, { requireExactHref: true });
-  if (!url || url.origin !== "https://booth.pm") return null;
+  if (!url || !isBoothHost(url.hostname) || hasArchiveBinaryExtension(url.pathname)) return null;
   return /^\/(?:ja\/|en\/)?items\/([1-9]\d{0,17})\/?$/.exec(url.pathname)?.[1] ?? null;
 }
 
-/** Validates a canonical BOOTH product page URL. */
+/** Validates a canonical BOOTH product page URL on apex booth.pm or a creator subdomain. */
 export function isBoothProductTarget(value: string): boolean {
   return boothItemIdentity(value) !== null;
 }
 
-/** Validates a canonical Gumroad product page URL. */
+/** Validates a canonical Gumroad discovery or VRChat browse target URL. */
+export function isGumroadBrowseTarget(value: string): boolean {
+  const url = parseHttpsUrl(value, { allowSearch: true, requireExactHref: true });
+  if (!url || url.origin !== "https://gumroad.com" || value.length > MAX_BROWSE_URL_LENGTH ||
+      hasArchiveBinaryExtension(url.pathname) || hasDotSegment(url.pathname)) {
+    return false;
+  }
+  if (!/^\/(?:discover(?:\/[A-Za-z0-9._~%-]+)*|vrchat)\/?$/.test(url.pathname)) {
+    return false;
+  }
+  return hasBoundedBrowseQuery(url, value);
+}
+
+/** Validates a canonical Gumroad product page URL on apex gumroad.com or a creator subdomain. */
 export function isGumroadProductTarget(value: string): boolean {
   const url = parseHttpsUrl(value);
-  if (!url || url.hostname !== "gumroad.com") return false;
+  if (!url || !isGumroadHost(url.hostname) || hasArchiveBinaryExtension(url.pathname)) return false;
   const match = /^\/l\/([^/]+)\/?$/.exec(url.pathname);
   return Boolean(match && match[1] !== "." && match[1] !== "..");
+}
+
+/** Validates a Jinxxy sitemap or market browse target URL. */
+export function isJinxxyBrowseTarget(value: string): boolean {
+  const url = parseHttpsUrl(value, { allowSearch: true, requireExactHref: true });
+  if (!url || url.origin !== "https://jinxxy.com" || value.length > MAX_BROWSE_URL_LENGTH ||
+      value.endsWith("?") || hasArchiveBinaryExtension(url.pathname) || hasDotSegment(url.pathname)) {
+    return false;
+  }
+  const isSitemap = url.pathname === "/sitemap.xml" ||
+    /^\/sitemap_[A-Za-z0-9._-]+\.xml$/.test(url.pathname) ||
+    /^\/sitemaps\/[A-Za-z0-9._-]+\.xml$/.test(url.pathname);
+  if (isSitemap) {
+    return !url.search;
+  }
+  if (!/^\/market(?:\/[A-Za-z0-9._~%-]+)*\/?$/.test(url.pathname)) {
+    return false;
+  }
+  return hasBoundedBrowseQuery(url, value);
 }
 
 /** Validates a canonical Jinxxy product page URL. */
 export function isJinxxyProductTarget(value: string): boolean {
   const url = parseHttpsUrl(value);
-  if (!url || url.hostname !== "jinxxy.com") return false;
+  if (!url || url.hostname !== "jinxxy.com" || hasArchiveBinaryExtension(url.pathname)) return false;
   const match = /^\/([^/]+)\/([^/]+)\/?$/.exec(url.pathname);
-  return Boolean(match && match[1] !== "." && match[1] !== ".." && match[2] !== "." && match[2] !== "..");
+  return Boolean(
+    match &&
+    match[1] !== "." &&
+    match[1] !== ".." &&
+    match[1] !== "market" &&
+    match[1] !== "sitemaps" &&
+    match[2] !== "." &&
+    match[2] !== ".."
+  );
+}
+
+/** Validates an itch.io tag browse target while permanently rejecting /search. */
+export function isItchTagTarget(value: string): boolean {
+  if (isItchSearchUrl(value)) return false;
+  const url = parseHttpsUrl(value, { allowSearch: true, requireExactHref: true });
+  if (!url || url.origin !== "https://itch.io" || value.length > MAX_BROWSE_URL_LENGTH ||
+      value.endsWith("?") || hasArchiveBinaryExtension(url.pathname)) {
+    return false;
+  }
+  if (!/^\/(?:tools|assets|games|game-assets)\/tag-[a-z0-9-]+(?:\/tag-[a-z0-9-]+)*\/?$/.test(url.pathname)) {
+    return false;
+  }
+  return !url.search || /^\?page=[1-9]\d{0,2}$/.test(url.search);
 }
 
 /** Validates a creator subdomain itch.io product page URL while excluding itch.io/search. */
@@ -234,8 +383,8 @@ function isItchSubdomainHost(hostname: string): boolean {
 }
 
 function storefrontJobMapping(hostname: string, baseMinDelayMs: number): { platform: Platform; minDelayMs: number } {
-  if (hostname === "booth.pm") return { platform: "booth", minDelayMs: Math.max(baseMinDelayMs, 1500) };
-  if (hostname === "gumroad.com") return { platform: "gumroad", minDelayMs: Math.max(baseMinDelayMs, 1500) };
+  if (isBoothHost(hostname)) return { platform: "booth", minDelayMs: Math.max(baseMinDelayMs, 1500) };
+  if (isGumroadHost(hostname)) return { platform: "gumroad", minDelayMs: Math.max(baseMinDelayMs, 1500) };
   if (hostname === "jinxxy.com") return { platform: "jinxxy", minDelayMs: Math.max(baseMinDelayMs, 1500) };
   if (isItchSubdomainHost(hostname)) return { platform: "itch", minDelayMs: Math.max(baseMinDelayMs, 1500) };
   if (hostname === "sellfy.com") return { platform: "sellfy", minDelayMs: Math.max(baseMinDelayMs, 1500) };
@@ -257,7 +406,7 @@ export function classifyOutboundLeadKind(targetUrl: string): DiscoveryLead["kind
   if (url.hostname === "itch.io") {
     return null;
   }
-  if (url.hostname === "booth.pm" || url.hostname === "gumroad.com" || url.hostname === "jinxxy.com" ||
+  if (isBoothHost(url.hostname) || isGumroadHost(url.hostname) || url.hostname === "jinxxy.com" ||
       isItchSubdomainHost(url.hostname) || url.hostname === "sellfy.com" ||
       url.hostname === "payhip.com" || url.hostname === "ko-fi.com") {
     return "storefront_product";

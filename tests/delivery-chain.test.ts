@@ -160,7 +160,7 @@ async function fixture(run: (workspace: string, git: (workspace: string, ...args
     }
     await mkdir(resolve(workspace, productDirectories.network), { recursive: true });
     await writeFile(resolve(workspace, productDirectories.network, "package.json"), JSON.stringify({ name: "vrc-packages-network", version: "2026.10.0",
-      peerDependencies: { "vrc-packages-api": "0.0.0 || 2026.10.0-pre" }, devDependencies: { "vrc-packages-api": "npm:vrc-packages-api-preview@latest" } }));
+      peerDependencies: { "vrc-packages-api": "2026.10.0-pre" }, devDependencies: { "vrc-packages-api": "npm:vrc-packages-api-preview@latest" } }));
     await mkdir(resolve(workspace, productDirectories.crawler), { recursive: true });
     await writeFile(resolve(workspace, productDirectories.crawler, "package.json"), JSON.stringify({ name: "vrcp-crawler-node", version: "0.0.0",
       dependencies: { "vrc-packages-api": "latest", "vrc-packages-network": networkArchiveURL("2026.10.0") } }));
