@@ -26,6 +26,7 @@ Record accepted legal covenants, owner dispositions, platform clearance verdicts
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | `HO-L1-001` | Tier 2, Tier 3B, Tier 5 | [`owner_dispositions.md`](../research/decisions/owner_dispositions.md), [`LEGAL.md`](../../LEGAL.md) | no | active | Enforce `publishClasses` projection filtering with `catalog_tombstones`, route `rating_dispute` to `/v1/moderator/` and `safety_quarantine` to operators only, and preserve mandatory outbound storefront deep-routing on web surfaces. |
 | `HO-L1-002` | Tier 2, Tier 4A | [`platform_clearance_matrix.md`](../research/markets/platform_clearance_matrix.md), [`expansion_action_matrix.md`](../research/legal/expansion_action_matrix.md) | no | blocked | Hold live source-access profile activation for BOOTH, Gumroad, Jinxxy, itch.io, Payhip, Sellfy, and Shopify merchants until `R13-C11` primary terms/robots/API retrieval completes and owner approves. |
+| `HO-L1-003` | Tier 2, Tier 3A, Tier 3B, Tier 4A, Tier 5, Oversight (`pipeline`) | [`owner_dispositions.md`](../research/decisions/owner_dispositions.md), [`platform_clearance_matrix.md`](../research/markets/platform_clearance_matrix.md), [`entity_resolution_and_standards.md`](../research/architecture/entity_resolution_and_standards.md), [`infrastructure_and_quotas.md`](../research/architecture/infrastructure_and_quotas.md) | yes | active | **Stage 1-4 Blueprint Dispositions (`2026-11-24`):** Adopt 17-table D1 consolidation (0 legacy views) within Free Tier budgets, keep atomic `canonical_packages` with `verification_status` defaulting to `'unverified'` and crowdsourced `relationship_feedback` in `downstream_signals`, auto-promote VPM `index.json` manifests under RFC 9309 while parking non-VPM `custom_domain` hosts in `pending_review`, prefer VRChat-filtered browse/tag routes on BOOTH/Gumroad/itch and sitemaps on Jinxxy/Shopify (`4h`/`6h`/`24h`), enforce 3-target Cloudflare Wrangler isolation (`VRCP_ENV=production` on `[env.production]`), and retain mandatory Sector 5 permission outreach for Jinxxy before production launch (`R13-C11`). |
 
 ---
 
@@ -34,7 +35,7 @@ Record accepted legal covenants, owner dispositions, platform clearance verdicts
 | source_sector | notice_id | status | summary | local_slice_id |
 | :--- | :--- | :--- | :--- | :--- |
 | `pipeline` | `PN-001` | acknowledged | Departmental Handoff Cascade active: Sector 5 owns Tier 1 outbound handoffs and defers all verified ledger row clearing to Sector 4 Pipeline without product version bumps. | `G-LEGAL-CLEARANCE` |
-| `pipeline` | `PN-009` | acknowledged | Updated [`VISION.md`](../research/decisions/VISION.md) (`[P18]`) and [`owner_dispositions.md`](../research/decisions/owner_dispositions.md) for Version 0 reorientation. Queued `REORIENT-LR-01` online research across 7 preview pools and custom-domain rules before `HO-L1-003`. | `REORIENT-LR-01` |
+| `pipeline` | `PN-009` | verified (Stage 1) | Completed Stage 1 research across 7 preview pools, VPM schema, Cloudflare quotas/environments, and relationship feedback. Published `2026-11-24` `REORIENT-BP-*` dispositions and `HO-L1-003`. | `REORIENT-LR-01` |
 
 ---
 
@@ -44,4 +45,4 @@ Sector 5 submits written ledger-clearance requests here when non-product slices 
 
 | req_id | request_type | source_slice_ids | verification_proof | status | pipeline_notes |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| *(none pending)* | | | | | |
+| `CLR-LR-001` | `non_product_audit_only` | `REORIENT-LR-01` | `check_doc_links.ts` (482 docs, exit 0), `ste-lint.py --strict` (`owner_dispositions.md` 2.87, `entity_resolution_and_standards.md` 3.93, `infrastructure_and_quotas.md` 3.33, `platform_clearance_matrix.md` 3.02). | `requested` | Stage 1 research and `2026-11-24` dispositions complete, awaiting Pipeline non-product audit without version bump. |

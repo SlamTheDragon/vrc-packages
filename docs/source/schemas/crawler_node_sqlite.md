@@ -1,5 +1,6 @@
 # Crawler Node Local SQLite Schema (`node.db`)
 
+> **Target Blueprint Status (`[P18]` / `PN-009`):** Owner-approved Version 0 target confirmation (2026-11-24). Local `node.db` keeps its 4-table structure while Coordinator `CrawlJobSchema` supplies stateless `etag`, `lastModified`, `priorityLane`, and `paginationDepth` values.  
 > **Executable Authority:** `src-crawler/src/storage/local_sqlite.ts`  
 > **Default Database File:** `node.db` (configurable via `NODE_DB_PATH` or `node.config.json` `databaseFile`)  
 > **Owning Sector:** Sector 1 (`crawler-network`)  

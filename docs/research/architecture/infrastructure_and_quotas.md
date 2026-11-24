@@ -6,19 +6,19 @@
 
 This document consolidates Cloudflare D1/KV/Workers/Queues capacity limits, four-clock fleet scheduling arithmetic, GitHub CI storage bounds, third-party dependency adoption rules, the Cloudflare panel setup checklist, and historical spike diagnostics.
 
-## 1. Cloudflare D1, KV, Workers, and Queues Limits (`Retrieved`)
+## 1. Cloudflare D1, KV, Workers, and Queues Limits (`Retrieved`, 2026-11-24)
 
-Owner planning scenario (unmeasured): 10 crawler nodes, 1,000 concurrent users, and potential separate registry/user databases in production and preview (4 D1 databases total). Live code currently binds one `VRCP_D1` database per environment without Firebase verification (`R50-C30`).
+Owner planning scenario (unmeasured): 10 crawler nodes, 1,000 concurrent users, and potential separate registry/user databases in production and preview (4 D1 databases total). Target D1 consolidation reduces Coordinator storage to 17 tables (`coordinator_d1.md`), cutting per-item observation writes by removing `source_versions`, `source_events`, and `source_issues`.
 
 | Service / Metric | Cloudflare Free Tier | Cloudflare Paid Tier | Critical Design Constraint |
 | :--- | :--- | :--- | :--- |
-| **D1 Reads** | 5,000,000 rows/day (account-wide) | 25B rows/month included (overage billed) | Multiple D1 DBs share one account quota; resets 00:00 UTC; exhaustion blocks queries. |
-| **D1 Writes** | 100,000 rows/day (account-wide) | 50M rows/month included (overage billed) | Indexes reduce reads but increase write amplification and storage. |
-| **D1 Queries per Invocation** | 50 queries / invocation | 1,000 queries / invocation | Live coordinator enforces `MAX_CLAIM_SCAN_PAGES = 3` and `executeBatchChunked(50)`. |
-| **D1 Storage / Count** | 10 DBs, 500 MB/DB, 5 GB account | 50,000 DBs, 10 GB/DB, 5 GB included (1 TB cap) | Paid plan includes 5 GB storage, not 1 TB free. |
-| **Workers Requests & CPU** | 100,000 req/day; 10 ms CPU/req | 10M req + 30M CPU ms/month (\$5/mo); 30s HTTP CPU default (up to 5m) | Network/DB I/O wait does not count as CPU; exceeding CPU triggers Error 1102. |
-| **Workers KV** | 100,000 reads/day; 1,000 writes/day | Metered | **Eventually consistent (60s+)**; never use KV as immediate credential revocation authority. |
-| **Cloudflare Queues** | 10,000 ops/day; 24h retention | Metered (write+read+delete = 3 ops/msg) | Pull leases do not enforce source profiles, robots, or origin pacing; never put CF tokens on nodes. |
+| **D1 Reads** | 5,000,000 rows/day (account-wide) | 25B rows/month included (overage billed) | Account quota resets 00:00 UTC. Exhaustion fails queries. Select explicit columns on `origin_state` to avoid scanning `robots_body`. |
+| **D1 Writes** | 100,000 rows/day (account-wide) | 50M rows/month included (overage billed) | Single `source_items` row updates and `304` recrawls (touching only `crawl_jobs` and `origin_state`) minimize daily write volume. |
+| **D1 Queries per Invocation** | 50 queries / invocation | 1,000 queries / invocation | One `db.batch()` counts as `1` SQL query against the invocation cap. Worker claims scan `MAX_CLAIM_SCAN_PAGES = 3` cleanly inside 50 queries. |
+| **D1 Storage / Count** | 10 DBs, 500 MB/DB, 5 GB account | 100,000 DBs, 10 GB/DB, 5 GB included (\$0.75/GB-mo) | Paid plan includes 5 GB account storage. Measure preview DB footprint before splitting registry and auth databases. |
+| **Workers Requests & CPU** | 100,000 req/day; 10 ms CPU/req | 10M req + 30M CPU ms/month (\$5/mo); 30s HTTP CPU default (up to 5m) | Network and D1 wait do not count as CPU. Offloading HTML/JSON parsing, sanitization, and regex classification to Crawler Nodes keeps CPU under `10 ms`. |
+| **Workers KV** | 100,000 reads/day; 1,000 writes/day | Metered | Eventually consistent (60s+). Never use KV as immediate credential revocation authority. |
+| **Cloudflare Queues** | 10,000 ops/day; 24h retention | Metered (write+read+delete = 3 ops/msg) | Pull leases do not enforce steering profiles, robots, or origin pacing. Never put CF tokens on nodes. |
 
 ### Four Separate Fleet Clocks (Not One Sync Interval)
 1. **Source revisit clock**: `+24h` normal, `+15m` temporary failure, `Retry-After` on rate-limit, `+3d` blocked. Fleet windows must never override `Retry-After`.
@@ -63,12 +63,12 @@ Owner planning scenario (unmeasured): 10 crawler nodes, 1,000 concurrent users, 
 - **Build variables**: Pin matching `BUN_VERSION` (`1.4.2`) and `NODE_VERSION` (`>= 22.12.0`).
 - **Registry authentication**: Supply a read-only npm token as a build secret only if private registry access is ever required; never expose publish tokens or `OPERATOR_TOKEN` in build logs or source.
 
-### Runtime and Environment Settings
-- Set `OPERATOR_TOKEN` in runtime **Variables & Secrets** (build secrets never become runtime secrets).
-- Keep D1 binding `VRCP_D1` consistent across default and preview configs while preserving distinct production and preview database IDs (`remote = false` is local development only).
-- Bind distributed rate-limiting KV (`RATE_LIMIT_KV`) per environment.
-- Keep staging/preview and production Workers, D1 databases, and secrets strictly separate (Wrangler bindings and secrets do not inherit across environments).
-- Run production schema migrations as a separate reviewed step (never auto-seed production D1 on `main` pushes).
+### Runtime and Environment Settings (`Retrieved`, 2026-11-24)
+- Follow official Cloudflare Workers and D1 multi-environment rules: Wrangler bindings (`d1_databases`, `kv_namespaces`) and `vars` do not inherit across `[env.*]` blocks.
+- Never place a production D1 `database_id` at the top level of `wrangler.toml`, because bare `wrangler dev` and branch previews fall back to top-level bindings (`preview_database_id` only applies to local dev).
+- Define three distinct Wrangler targets in `src-worker/wrangler.toml`: top-level local `development` (`VRCP_ENV = "development"` with local emulated D1/KV), `[env.preview]` (`vrc-package-crawler-preview`, `VRCP_ENV = "development"` during V0), and explicit `[env.production]` (`vrc-package-crawler`, `VRCP_ENV = "production"`).
+- Bind `RATE_LIMIT_KV` and `VRCP_D1` explicitly in every deployed environment (`[env.preview]` and `[env.production]`), set `OPERATOR_TOKEN` as a runtime secret per environment, and generate `Env` strictly with `wrangler types`.
+- Run production schema migrations as a separate reviewed step, and never auto-seed placeholder jobs on remote deploys.
 
 ## 5. Historical Spike Counterexamples (`Historical`, 2026-09-27 to 2026-10-03)
 

@@ -12,9 +12,9 @@ Identity means a supported relationship between source records, never a similar 
 
 | Layer | D1 Storage Owner | Meaning and Boundary |
 | :--- | :--- | :--- |
-| **1. Discovery Leads** | `source_leads` | Candidate URLs, outbound storefront links, or credited authors. Community directories never establish canonical product facts. |
-| **2. First-Party Observations** | `source_items`, `source_versions` | What a reviewed publisher or storefront actually stated, bound to contributor node, lease, profile, digest, and version number. |
-| **3. Accepted Identity Links** | `identity_links` (`review_state = 'accepted'`) | Verified cross-source relationships projecting into `canonical_packages` and `package_fronts`. Provisional candidates (`review_state = 'provisional'`) stay reversible and excluded from public fronts until reviewed or matched by approved high-confidence storefront leads (`R13-C9-IDENTITY`). |
+| **1. Discovery Leads** | `source_leads` | Candidate URLs, outbound storefront links, grouped `target_host` records, or credited authors. Community directories never establish canonical product facts. |
+| **2. First-Party Observations** | `source_items` | Latest reviewed publisher or storefront snapshot, payload digest, quality issues, contributor node, lease ID, and steering profile provenance. |
+| **3. Accepted Sources & Relations** | `listing_sources`, `listing_relations`, `canonical_packages` | Verified cross-source fronts and identity links project into atomic `canonical_packages` rows (`verification_status` defaults to `'unverified'`). Provisional candidates stay reversible and excluded from public fronts until reviewed or matched by approved high-confidence storefront leads (`R13-C9-IDENTITY`). |
 
 ### Core Non-Equivalence Rules
 - Two products inside one GitHub repository are not automatically one package.
@@ -58,3 +58,14 @@ Every entry added to `docs/research/` must carry one exact evidence label plus p
 5. Reproduce defects with the smallest falsifiable counterexample inside one bounded slice.
 6. Run owning-sector tests, typechecks, link audits, and diff reviews before claiming verification.
 7. Reconcile owning documentation and record unresolved owner/legal decisions in the sector ledger.
+
+## 4. Downstream Relationship-Reconsideration Telemetry (`Candidate`, 2026-11-24)
+
+Text heuristics and static string matching fail to connect related VRChat packages, add-ons, and forks reliably across platforms. Under [`REORIENT-BP-OWNER-FEEDBACK`](../decisions/owner_dispositions.md), about 90% of crawled catalog records stay `unverified` while downstream apps and users help surface and challenge relationships.
+
+| Pipeline Component | Research Design Principle (`Retrieved`, 2026-11-24) | VRCP Blueprint Boundary |
+| :--- | :--- | :--- |
+| **Blocking and Candidate Generation** | Avoid quadratic comparisons by indexing shared tokens (`owner_key`, VPM `vpmDependencies`, repository URLs, outbound domain links). | Runs deterministically inside Crawler Nodes or indexed Coordinator SQL queries, never as open Worker table scans. |
+| **Probabilistic Edge Scoring** | Score candidate pairs across signals (`confidence` in `[0.0, 1.0]`). Route mid-confidence uncertainty pairs (`0.3` to `0.8`) into reviewable candidates. | Deterministic `listing_relations` stores `relation_type` (`compatible_with_avatar`, `depends_on`, `fork_of`, `related_product`, `same_owner`) and score. |
+| **Crowdsourced Feedback Loop** | Collect targeted confirm/dispute signals from active users and weight assertions by source reliability instead of blindly overwriting facts. | Trusted or feedback-enabled apps submit `relationship_feedback` via `downstream_signals`, incrementing reviewable `feedback_up_count` and `feedback_down_count` on `listing_relations`. |
+| **Immutable Provenance and Rollback** | Record each machine or crowd assertion with attribution so poisoned consensus can rewind cleanly. | Track submitting `app_id` and timestamp per signal. Never let crowd feedback bypass `verification_status` or perform blanket canonical merges. |
