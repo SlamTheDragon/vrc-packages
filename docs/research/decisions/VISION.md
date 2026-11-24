@@ -1,6 +1,6 @@
 # VRCP Vision and Owner Truth
 
-Updated: 2026-11-22. This file owns **current owner intent, canonical terminology, responsibility sectors, and superseded directions** for VRC Packages (VRCP). Current executable source truth (system reliability and agreed schemas) lives in [`docs/source/`](../../source/README.md). Human-readable application wikis live in [`docs/applications/`](../../applications/README.md) and stay untouched until owner approval. Investigative research and legal expansion studies live in [`docs/research/`](../README.md). Direct instructions from the repository owner take precedence.
+Updated: 2026-11-25. This file owns **current owner intent, canonical terminology, responsibility sectors, and superseded directions** for VRC Packages (VRCP). Current executable source truth (system reliability and agreed schemas) lives in [`docs/source/`](../../source/README.md). Human-readable application wikis live in [`docs/applications/`](../../applications/README.md) and stay untouched until owner approval. Investigative research and legal expansion studies live in [`docs/research/`](../README.md). Direct instructions from the repository owner take precedence.
 
 Use the Table of Contents to read only the required section. Stable `Txx` section IDs support targeted searches. `Pxx` anchors identify retained owner decisions in [T10](#t10-owner-decision-provenance-and-coverage).
 
@@ -60,7 +60,7 @@ There must be no build or test artifacts in the repository root. [P01]
 
 ## T03: Component and Sector Responsibilities
 
-**Crawler Node (`src-crawler/`)** [P01, P18]:
+**Crawler Node (`src-crawler/`)** [P01, P18, P19]:
 1. Poll the coordinator continuously for leased jobs (`/v1/node/jobs/claim`) using tiered recrawl cadences.
 2. Accept leased jobs across `tools`, `avatars`, and `assets` under coordinator-assigned capabilities.
 3. Crawl only leased jobs under fixed monotonic deadlines and RFC 9309 `robots.txt` preflight rules.
@@ -71,6 +71,7 @@ There must be no build or test artifacts in the repository root. [P01]
 8. Run conditional `304` diffing locally before reporting results as success, rate-limited, or failure via durable SQLite outbox.
 9. Never shut down by itself. Survive interruption and coordinator loss (fetching stops whenever no valid lease exists).
 10. Log every activity (`[ACTIVITY]`) and discovery finding (`[FINDING]`).
+11. Contain all node outputs (`node.db`, `logs/`, `node.stop`, configs) strictly inside `process.cwd()`. [P19]
 
 **Coordinator (`src-worker/`)** [P01, P18]:
 1. Register nodes (`vrcp_<64-hex><4-hex>`) and auto-generate capabilities from claimable jobs and demand signals (zero manual capability picking at registration).
@@ -119,7 +120,8 @@ There must be no build or test artifacts in the repository root. [P01]
 
 - Slices mean local commit. Completed capability gates mean push (unless local-only mode applies). [P07, P08]
 - Product sectors submit written Publication Requests strictly inside their own `docs/scratch-<sector>/handoff.md`. **Product and legal sectors must not edit `docs/source/CHANGELOG.md` and do not have the right to clear `verified` rows from their ledgers.** [P17]
-- Only Sector 4 (`pipeline`) agents transfer verified product release notes into [`docs/source/CHANGELOG.md`](../../source/CHANGELOG.md), clear transferred `verified` rows across sector ledgers (without product version bumps for non-product sectors), and execute root publication scripts. Root `CHANGELOG.md` and `docs/changelogs/` are generated at publication preparation; never edit or clear them manually. [P08, P09, P17]
+- Only Sector 4 (`pipeline`) agents transfer verified product release notes into [`docs/source/CHANGELOG.md`](../../source/CHANGELOG.md), clear transferred `verified` rows across sector ledgers (without product version bumps for non-product sectors), and execute root publication scripts. Root `CHANGELOG.md` and `docs/changelogs/` are generated at publication preparation. Never edit or clear them manually. [P08, P09, P17]
+- Hold remote Worker and Crawler preview pushes until local live ingestion, bulk assessment, adversarial tests, and `/untangle-codebase` pass. [P19]
 - Preview publishing stays on its current ahead branch without a PR. Release preparation and finalization require clean `main`, an owner-reviewed metadata PR, and protected approvals. Never merge or approve for the owner. [P08, P10]
 - Human steps: [`docs/source/PUBLISHING.md`](../../source/PUBLISHING.md). Agent rules: [`AGENT_PUBLISHING_PROCEDURE.md`](AGENT_PUBLISHING_PROCEDURE.md). [P08]
 - Never run root-level tests (`bun test ./tests`) unless root tooling (`scripts/`, `tests/`, `package.json`, root configs) changed. [P07]
@@ -174,3 +176,4 @@ Select-String -Path docs/source/SYSTEM_MAP.md -Pattern '^## '
 | P16 | Owner Restructuring Directives (2026-11-20) | Five `docs/scratch-<sector>/` ledgers; orthogonal rewrite of `docs/research/` (purging raw transcripts and superseded status snapshots) and `docs/source/` (truth for reliability and agreed schemas); keep `docs/applications/` untouched (staging proposals in `docs/source/`) while migrating broken links; retire legacy `docs/scratch/` via Sector 4 pipeline gate (`PIPELINE-SCRATCH-RETIRE`). |
 | P17 | Owner Handoff Cascade Directives (2026-11-20) | Add `handoff.md` to every `docs/scratch-<sector>/` folder (strictly 3 files per folder) with labeled 5-tier cascade sections (`Tier 1 Legal/Vision` -> `Tier 2 Worker/Schemas` -> `Tier 3 API/Network` -> `Tier 4 Crawler/Desktop` -> `Tier 5 Web`); enforce strict sector write containment with read-upstream handoff propagation; require written Publication Requests strictly inside each sector's `handoff.md`; grant Sector 4 Pipeline exclusive authority to oversee all handoffs, maintain `docs/source/CHANGELOG.md`, clear verified ledger rows post-transfer, and run root publication scripts. |
 | P18 | Owner `/grill-me` Reorientation (2026-11-22) | Adopt VPM-first and VRChat storefront ingestion (`tools`, `avatars`, `assets`) and purge `"curated"` as a catalog platform. Run 7-lane preview discovery with Jinxxy preview robots and Sector 5 permission tracking. Enforce loose domain-pool steering, bulk custom-domain review, priority lanes, coordinator-only node capabilities, and node-offloaded sanitization. Restrict verification attestation to trusted apps, and execute the full 6-stage cascading blueprint workflow (`docs/source/` as next `/grill-me` gate). |
+| P19 | Owner Live Lifecycle, Debug, and R&D Directives (2026-11-24 to 2026-11-25) | Enforce strict per-node CWD containment for all outputs, triangulate first-principles OOP/semantic optimizations, run local Coordinator + multi-node live ingestion with bulk data assessment, anti-survivorship-bias funnel attrition audits, and adversarial break-testing (treating initial debugging packets, attrition buckets, and chaos scenarios as non-exhaustive starting suggestions unpacked dynamically during live R&D per [`.agents/rules/02-boundary-and-review.md`](../../../.agents/rules/02-boundary-and-review.md) Section 5), and mandate `/untangle-codebase` before remote preview pushes. |

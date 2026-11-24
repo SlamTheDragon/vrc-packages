@@ -4,10 +4,11 @@
 
 - **Sector Anchor**: `docs/scratch-desktop-client/` (branch `preview/desktop-client`)
 - **Current Milestone**: `G9-CLIENT` (open; all Sector 2 rows migrated from legacy `docs/scratch/IMPLEMENTATION_PLAN.md` and `UNMERGED_IMPLEMENTATION_PLAN.md`)
-- **Active Task Slice**: None actively executing (`REORIENT-DC-01` stays `open` behind owner ledger review and upstream Tier 2, Tier 3B, and Tier 4A blueprints).
+- **Active Task Slice**: None actively executing (`REORIENT-DC-01` and `UNTANGLE-PRE-PREVIEW-01` stay `open` behind owner ledger review and upstream Tier 2, Tier 3B, and Tier 4A completion).
 - **Working Theories and Hypotheses**:
   - Current verified state is documented in [`docs/source/specifications/desktop_client.md`](../source/specifications/desktop_client.md).
   - `src-crawler-client/package.json` declares `"vrc-packages-api": "npm:vrc-packages-api-preview@latest"` (`vrc-packages-api-preview`), `shadcn-svelte`, Svelte 5, Tailwind v4, and Tauri 2; `src-tauri/src/lib.rs` still contains only starter `greet` + `tauri_plugin_opener`.
+  - Under `[P19]` / `PN-010` (`NODE-CWD-CONTAINMENT`), Tauri child-process supervision must isolate `<cwd>/logs`, `<cwd>/node.db`, `<cwd>/node.stop`, `<cwd>/node.config.json`, and `<cwd>/.env` strictly inside each spawned node's working directory.
 
 ---
 
@@ -15,14 +16,15 @@
 
 | slice_id | status | file_target | action_summary | verification_evidence |
 | :--- | :--- | :--- | :--- | :--- |
-| R47-C27-CLIENT | open | `src-crawler-client/src-tauri/`, `src-crawler-client/src/` | Design and implement crawler node supervision, configuration UI, log console, and SDK integration. | Pending |
+| R47-C27-CLIENT | open | `src-crawler-client/src-tauri/`, `src-crawler-client/src/` | Design and implement crawler node supervision (`NODE-CWD-CONTAINMENT` per working directory), configuration UI, log console, and SDK integration. | Pending |
 | R55-C55D-CLIENT | blocked | `src-crawler-client/src-tauri/tauri.conf.json` | Finalize preview vs release Windows identifier and data-directory coexistence strategy. | Blocked on channel identity plan |
-| REORIENT-DC-01 | open | `src-crawler-client/`, [`desktop_client.md`](../source/specifications/desktop_client.md) | Execute 6-stage `[P18]` and `PN-009` reorientation after upstream Tier 2, Tier 3B (`REORIENT-AW-02`), and Tier 4A blueprints clear `/grill-me`. Align node supervision, preview SDK types, Coordinator-only registration, and UIUX rules. | Pending upstream blueprints |
+| REORIENT-DC-01 | open | `src-crawler-client/`, [`desktop_client.md`](../source/specifications/desktop_client.md) | Execute 6-stage `[P18]` / `[P19]` (`PN-009` / `PN-010`) reorientation after upstream Tier 2, Tier 3B (`HO-S3B-006`, `vrcp-api/v2026.11.5-pre`), and Tier 4A blueprints clear `/grill-me`. Align node supervision (`NODE-CWD-CONTAINMENT` `<cwd>/logs`, `<cwd>/node.db`, `<cwd>/node.stop`), preview SDK types, Coordinator-only registration, and UIUX rules. | Pending upstream blueprints |
+| UNTANGLE-PRE-PREVIEW-01 | open | `src-crawler-client/`, [`desktop_client.md`](../source/specifications/desktop_client.md) | Run mandatory `/untangle-codebase` across any touched Sector 2 code and docs before remote preview pushes (`REORIENT-LIVE-DEBUG`). | Pending `REORIENT-DC-01` |
 
 ---
 
 ## Next Steps
 
-1. Check `REORIENT-DC-01` alignment against upstream `[P18]` Tier 2, Tier 3B (`REORIENT-AW-02`), and Tier 4A blueprints before starting code edits.
+1. Check `REORIENT-DC-01` alignment against upstream `[P18]` / `[P19]` (`PN-009` / `PN-010`) Tier 2, Tier 3B (`HO-S3B-006`, `vrcp-api/v2026.11.5-pre`), and Tier 4A (`NODE-CWD-CONTAINMENT`) contracts before starting code edits.
 2. Await an explicit Sector 2 (`desktop-client`) user directive and [`desktop_client.md`](../source/specifications/desktop_client.md) `/grill-me` clearance before starting `REORIENT-DC-01` or `R47-C27-CLIENT`.
-3. Run domain checks (`bun run check`, `bun run build:web`, and `bun run build:dev` for Rust/Tauri changes) at capability gate completion.
+3. Run domain checks (`bun run check`, `bun run build:web`, and `bun run build:dev` for Rust/Tauri changes) plus `UNTANGLE-PRE-PREVIEW-01` at capability gate completion.

@@ -1,6 +1,6 @@
 # Headless Crawler Node Specification (`src-crawler/`)
 
-> **Target Blueprint Status (`[P18]` / `PN-009`):** Owner-approved Version 0 target contract (2026-11-24). Supersedes pre-rewrite live implementation until Stage 5-6 code slices verify 1:1 parity.  
+> **Target Blueprint Status (`[P18]` / `PN-009`, updated `[P19]` / `PN-010`):** Owner-approved Version 0 target contract (2026-11-24). Supersedes pre-rewrite live implementation until Stage 5-6 code slices verify 1:1 parity.  
 > **Executable Entry Point:** `src-crawler/src/main.ts` (Bun-compiled binary `vrcp-crawler-node`)  
 > **Owning Sector:** Sector 1 (`crawler-network`)  
 > **Related Schemas:** [`crawler_node_sqlite.md`](../schemas/crawler_node_sqlite.md), [`logging_and_telemetry.md`](../schemas/logging_and_telemetry.md), [`wire_and_protocol_contracts.md`](../schemas/wire_and_protocol_contracts.md)
@@ -53,10 +53,11 @@ sequenceDiagram
 
 ## 3. Configuration and Docker Fleet Deployment
 
-### Environment Variables (`runtime_config.ts`, `main.ts`, `logger.ts`)
+### Environment Variables and CWD Containment (`runtime_config.ts`, `main.ts`, `logger.ts`)
 
+- **Strict CWD containment (`NODE-CWD-CONTAINMENT`)**: All node outputs (`node.db`, `-wal`/`-shm`, `logs/latest.log`, `logs/archive/`, `node.stop`, `node.config.json`, `.env`) stay strictly inside the node working directory (`process.cwd()`) for source runs and compiled binaries.
 - **Required**: `NODE_TOKEN` (`vrcp_<64-hex><4-hex>`). Capabilities decode strictly from the Coordinator-issued token suffix (`9` atomic platforms, `0x01ff`) with zero manual registration picking.
-- **Optional**: `NODE_ID`, `COORDINATOR_URL` (default `http://127.0.0.1:8787`), `NODE_DB_PATH` (default `<cwd>/node.db`), `NODE_CONFIG_PATH` (default `<cwd>/node.config.json`, max 64 KiB), `CRAWLER_LOGS_DIR`, `DEBUG` or `LOG_LEVEL=debug`, `GITHUB_TOKEN` or `GH_TOKEN`.
+- **Optional**: `NODE_ID`, `COORDINATOR_URL` (default `http://127.0.0.1:8787`), `NODE_DB_PATH` (default `<cwd>/node.db`), `NODE_CONFIG_PATH` (default `<cwd>/node.config.json`, max 64 KiB), `CRAWLER_LOGS_DIR` (default `<cwd>/logs` via `path.resolve(process.cwd(), "logs")`), `DEBUG` or `LOG_LEVEL=debug`, `GITHUB_TOKEN` or `GH_TOKEN`.
 
 ### Docker Compose Fleet Invariants (`src-crawler/docker-compose.yml`)
 

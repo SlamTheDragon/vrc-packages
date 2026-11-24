@@ -35,6 +35,7 @@ Record accepted legal covenants, owner dispositions, platform clearance verdicts
 | source_sector | notice_id | status | summary | local_slice_id |
 | :--- | :--- | :--- | :--- | :--- |
 | `pipeline` | `PN-001` | acknowledged | Departmental Handoff Cascade active: Sector 5 owns Tier 1 outbound handoffs and defers all verified ledger row clearing to Sector 4 Pipeline without product version bumps. | `G-LEGAL-CLEARANCE` |
+| `pipeline` | [`PN-010`](../scratch-pipeline/handoff.md) | acknowledged | Owner Live Lifecycle & Debug Directives (`2026-11-24 to 2026-11-25`, `[P19]`): indexed [`live_ingestion_assessment_strategy.md`](../research/architecture/live_ingestion_assessment_strategy.md) in `docs/research/architecture/` and scheduled Sector 5 read-only provenance (`unverified` default, custom-domain quarantine, zero creative-prose/binary leaks), initial plus R&D-discovered non-survivor attrition review (`source_leads`, `origin_state`/`crawl_jobs`, excluded `canonical_packages`, per [`Rule 02.5`](../../.agents/rules/02-boundary-and-review.md)), and RFC 9309 boundary audits during `LIVE-LOCAL-ASSESS-01` and `LIVE-PREVIEW-ASSESS-01`, plus `UNTANGLE-PRE-PREVIEW-01` before preview pushes. | `R13-C11` |
 
 ---
 

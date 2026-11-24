@@ -20,3 +20,9 @@ description: "Protect sector and crawler/coordinator boundaries, enforce whole-e
    - Eliminate unnecessary wrappers, unwanted exports, duplicated constants, copied claims, conflicting summaries, and stale derived values across code, docs, and research corpus files.
    - Give every shared schema, constant, wire contract, or legal covenant **one owning record** (indexed in `docs/source/SYSTEM_MAP.md`) and make consumers reference it via distributed packages or repository-relative links. Migrate and link rather than copying or rephrasing.
    - Verify each structural defect against live files and evidence before changing it. Limit each iteration to one bounded subject; route cross-sector work through `.agents/skills/delegation/SKILL.md`.
+5. **Exploratory R&D unpacking, anti-survivorship-bias, and anti-tunnel-vision discipline**:
+   - Treat initial debugging packets, chaos scenarios, attrition buckets, and defect hypotheses as **starting suggestions, not exhaustive boundaries**.
+   - Unpack the true R&D lifecycle dynamically when live data, upstream responses, and real failure modes appear during the debugging phase.
+   - Never assume a pre-listed checklist captures every defect ("this must be the only problem"). Never limit learning expansions when real behavior exposes unexpected noise, bloat, edge limits, or design flaws.
+   - Uphold **anti-survivorship-bias** auditing: verify end-to-end funnel conservation (`survivors + accounted_attrition === total_attempted`). Sample dropped, blocked, rejected, silent-drop, and non-published records instead of judging readiness from surviving rows alone.
+   - Distill newly discovered failure classes into base first-principles abstractions and permanent regression fixtures instead of crooked patch-per-patch workarounds.

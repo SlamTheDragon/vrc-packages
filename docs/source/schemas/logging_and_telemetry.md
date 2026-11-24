@@ -1,5 +1,6 @@
 # Logging and Telemetry Schema Contract
 
+> **Target Blueprint Status (`[P19]` / `PN-010`):** Owner-approved Version 0 target contract (2026-11-24). Supersedes pre-rewrite `logger.ts` directory fallbacks until Stage 5-6 slice `NODE-CWD-CONTAINMENT` verifies 1:1 parity.  
 > **Executable Authorities:** `src-worker/src/worker_logger.ts` and `src-crawler/src/utils/logging/logger.ts`  
 > **Owning Sector:** Sector 1 (`crawler-network`)
 
@@ -44,12 +45,7 @@ Public catalog and delta error logs record the failing route without leaking und
 2. **Directory resolution order**:
    1. Explicit `LoggerOptions.logsDir`
    2. `CRAWLER_LOGS_DIR` environment variable (Docker sets `/app/data/logs`)
-   3. Runtime default:
-      - **Source run**: `src-crawler/logs` (resolved relative to module directory, independent of CWD)
-      - **Compiled binary (`Bun.isStandaloneExecutable`)**:
-        - Windows: `%LOCALAPPDATA%\vrcp-crawler\logs` (fallback `~/AppData/Local/vrcp-crawler/logs`)
-        - macOS: `~/Library/Logs/vrcp-crawler/logs`
-        - Linux: `$XDG_STATE_HOME/vrcp-crawler/logs` (fallback `~/.local/state/vrcp-crawler/logs`)
+   3. Runtime default (source and compiled executable): `<cwd>/logs` (`path.resolve(process.cwd(), "logs")`). The node drops legacy `src-crawler/logs`, `homedir()`, `%LOCALAPPDATA%`, `~/Library/Logs`, and `~/.local/state` fallbacks (`NODE-CWD-CONTAINMENT`).
 3. **File rotation and optional session files**:
    - `latest.log` (`enableLatestLog = true` default): rotates at midnight or clean shutdown into `archive/<date>[-index].log.gz` (gzip level 9).
    - Optional session logs (`enableSessionLogs = false` default) write `session_<sessionId>_<date>.log`, `session_<sessionId>_<date>_ratelimits.log`, and `session_<sessionId>_<date>_errors.log`. Session-only mode preserves any existing `latest.log`.
