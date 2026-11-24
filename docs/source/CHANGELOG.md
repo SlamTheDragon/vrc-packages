@@ -161,19 +161,10 @@ See full history at [docs/changelogs/vrcp-crawler-node/preview](https://github.c
 ## VRC Packages API - `vrcp-packages-api-preview`
 
 <!-- vrcp-packages-api-preview-DESCRIPTION_SUMMARY -->
-Align preview SDK to 9 platforms, atomic catalog sources and relations, relationship feedback, unified steering profiles, job CRUD, bulk lead triage, and development purge.
 <!-- vrcp-packages-api-preview-DESCRIPTION_SUMMARY -->
 ### Added
-- **Single-owner node token validator:** Export `NODE_TOKEN_REGEX` and `isNodeToken` from `./auth`.
-- **Relationship feedback reports:** Add `relationship_feedback` (`RelationshipFeedbackReportRequestSchema`) to `ReportSubmissionRequestSchema`.
-- **Operator status and development purge:** Add `PATCH` HTTP transport, `operator.status()`, and `operator.systemPurge()` (`PURGE_DEVELOPMENT_D1`).
-- **Unified steering, suppressions, jobs CRUD, and bulk lead triage:** Add `steeringProfiles`, `suppressedTargets`, `jobs.{update,requeue,delete}`, `leads.{bulkApprove,suppressDomain}`, and `LeadRowSchema.target_host`.
 ### Bugs Fixed
-- **Node prune validation:** Validate `nodeId` with `IssueNodeCredentialSchema.shape.nodeId` in `operator.nodes.prune()`.
 ### Changes
-- **Nine-platform taxonomy:** Remove `"curated"` from `PlatformSchema` (`9` platforms).
-- **Atomic catalog package schema:** Replace `acceptedLinks` and `fronts` on `CatalogPackageSchema` with `ownerKey`, `ownerName`, `verificationStatus`, `qualityFlags`, `summary`, `tags`, `vpmLatestVersion`, `sources`, and `relations`.
-- **Coordinator-only node issuance and init safety:** Remove manual `capabilities` from `IssueNodeCredentialSchema` and restrict `operator.init()` to `autoSeed: false`.
 See full history at [docs/changelogs/vrcp-packages-api/preview](https://github.com/SlamTheDragon/vrc-packages/tree/main/docs/changelogs/vrcp-packages-api/preview)
 
 ---
