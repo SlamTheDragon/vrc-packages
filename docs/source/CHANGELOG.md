@@ -207,15 +207,7 @@ See full history at [docs/changelogs/vrcp-worker/preview](https://github.com/Sla
 ## VRC Packages Networking `vrcp-packages-network`
 
 <!-- vrcp-packages-network-DESCRIPTION_SUMMARY -->
-Compact `vrc-packages-network` to 9 platforms and export `0x01ff` capability tokens, node-offloaded schemas, and browse guards. Align peer dependencies strictly to `vrc-packages-api-preview`.
 <!-- vrcp-packages-network-DESCRIPTION_SUMMARY -->
 ### Added
-- **Shared token export (`./token`):** Export `PLATFORM_BIT_MAP` (`0x01ff`), `ALL_CAPABILITIES_MASK`, `CAPABILITY_TOKEN_REGEX`, `ParsedCapabilityToken`, `encodeCapabilityCode`, `decodeCapabilityCode`, `isCapabilityToken`, `formatCapabilityToken`, and `parseCapabilityToken`.
-- **Node-offloaded wire schemas:** Add `PriorityLaneSchema`, `VpmQualityFlagSchema`, `NodeAvatarCompatibilitySchema`, `NodeDesktopToolSubtypeSchema`, `NodeDesktopToolEvidenceSchema`, `NodeVrchatRelevanceSchema`, `CrawlJobSchema` pagination fields, and `ResultOutcomeSchema` `nextPageLead`.
-- **Storefront browse and origin guards:** Export `isValidPublicHttpsOrigin`, `isGumroadBrowseTarget`, `isJinxxyBrowseTarget`, and `isItchTagTarget` while keeping `/search` blocked.
-- **Bracket token extraction:** Export `extractBracketTokens` and add `preserveBrackets` option support to `cleanTitle`.
 ### Changes
-- **Nine-platform alignment:** Remove `"curated"` from `PlatformSchema` while keeping the 7 `STOREFRONT_PLATFORMS` entries.
-- **Subdomain and browse matching:** Support single-label BOOTH and Gumroad creator subdomains, optional BOOTH browse queries, and single-pass `unescapeHtml` decoding.
-- **Preview-only SDK peer alignment:** Pin `vrc-packages-api` peer bounds to `vrc-packages-api-preview` and remove legacy `0.0.8` dual-channel checks.
 See full history at [docs/changelogs/vrcp-packages-network/](https://github.com/SlamTheDragon/vrc-packages/tree/main/docs/changelogs/vrcp-packages-network/)
