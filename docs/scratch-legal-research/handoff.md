@@ -35,7 +35,6 @@ Record accepted legal covenants, owner dispositions, platform clearance verdicts
 | source_sector | notice_id | status | summary | local_slice_id |
 | :--- | :--- | :--- | :--- | :--- |
 | `pipeline` | `PN-001` | acknowledged | Departmental Handoff Cascade active: Sector 5 owns Tier 1 outbound handoffs and defers all verified ledger row clearing to Sector 4 Pipeline without product version bumps. | `G-LEGAL-CLEARANCE` |
-| `pipeline` | `PN-009` | verified (Stage 1) | Completed Stage 1 research across 7 preview pools, VPM schema, Cloudflare quotas/environments, and relationship feedback. Published `2026-11-24` `REORIENT-BP-*` dispositions and `HO-L1-003`. | `REORIENT-LR-01` |
 
 ---
 
@@ -45,4 +44,4 @@ Sector 5 submits written ledger-clearance requests here when non-product slices 
 
 | req_id | request_type | source_slice_ids | verification_proof | status | pipeline_notes |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `CLR-LR-001` | `non_product_audit_only` | `REORIENT-LR-01` | `check_doc_links.ts` (482 docs, exit 0), `ste-lint.py --strict` (`owner_dispositions.md` 2.87, `entity_resolution_and_standards.md` 3.93, `infrastructure_and_quotas.md` 3.33, `platform_clearance_matrix.md` 3.02). | `requested` | Stage 1 research and `2026-11-24` dispositions complete, awaiting Pipeline non-product audit without version bump. |
+| *(none pending)* | | | | | |

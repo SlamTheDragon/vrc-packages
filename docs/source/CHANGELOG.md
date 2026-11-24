@@ -8,7 +8,7 @@ Here are the latest changelogs of each package and applications. For a full hist
 ## What Changed
 
 <!-- MASTER_SUMMARY -->
-Delegate robots.txt preflight fetching to crawler nodes under coordinator leases. Preserve evidence, settled outbox results and URL resource distinctions. Broadcast crawler activities and findings to the dedicated log file. Auto-link approved high-confidence storefront leads into accepted identity links while isolating heuristic outbound links for operator review. Support distributed Cloudflare KV rate limiting for coordinator endpoints. Calibrate fixed coordinator crawl job leases to 120 seconds. Scale crawler heartbeat pulse intervals dynamically between 5 and 30 seconds based on origin duration. Gate creator takedown submissions on trusted registered application status and route requests into moderator review queues. Emit delist tombstones on package withdrawal. Enforce source access profile publication rights in public catalog and delta feeds. Configure initial approved VPM community seeds and classify Ko-fi storefront leads into operator review. Verify multi-platform crawler fleet ingestion across VPM, GitHub, Booth, and Ko-fi drivers under lease isolation and crash recovery. Verify coordinator failure paths and multi-node fleet allocation in native workerd runtime. Bound claim candidate scans with explicit invocation budgets to protect Cloudflare quotas. Remove Watchtower from crawler Docker configuration and require isolated fleet data volumes. Automate preview D1 schema verification and non-production seed population in Cloudflare Worker preview delivery. Add atomic preparation rollback and enforce publication preconditions before tag deletion in delivery recovery tooling. Support catalog search rating filters and strict credential and path validation in the TypeScript SDK. Consolidate internal SDK protocol schemas and test fixture hygiene. Export shared node robots protocol schemas and unified IP validation in `vrc-packages-network`. Centralize source-target policies, binary URL guards, and storefront lead classification. Partition Worker D1 storage into five control planes, normalize error and rate-limit responses, enforce takedown proofs and app delegation audits, and verify live VPM crawling against preview deployments. Bind provisioned preview KV namespace `0a8237b498334dd7b1f58fb7807a68c6` for `RATE_LIMIT_KV` in `src-worker/wrangler.toml`. Add operator node and crawl job listing schemas, keyset cursors, and SDK client methods.
+Delegate robots.txt preflight fetching to crawler nodes under coordinator leases. Preserve evidence, settled outbox results and URL resource distinctions. Broadcast crawler activities and findings to the dedicated log file. Auto-link approved high-confidence storefront leads into accepted identity links while isolating heuristic outbound links for operator review. Support distributed Cloudflare KV rate limiting for coordinator endpoints. Calibrate fixed coordinator crawl job leases to 120 seconds. Scale crawler heartbeat pulse intervals dynamically between 5 and 30 seconds based on origin duration. Gate creator takedown submissions on trusted registered application status and route requests into moderator review queues. Emit delist tombstones on package withdrawal. Enforce source access profile publication rights in public catalog and delta feeds. Configure initial approved VPM community seeds and classify Ko-fi storefront leads into operator review. Verify multi-platform crawler fleet ingestion across VPM, GitHub, Booth, and Ko-fi drivers under lease isolation and crash recovery. Verify coordinator failure paths and multi-node fleet allocation in native workerd runtime. Bound claim candidate scans with explicit invocation budgets to protect Cloudflare quotas. Remove Watchtower from crawler Docker configuration and require isolated fleet data volumes. Automate preview D1 schema verification and non-production seed population in Cloudflare Worker preview delivery. Add atomic preparation rollback and enforce publication preconditions before tag deletion in delivery recovery tooling. Support catalog search rating filters and strict credential and path validation in the TypeScript SDK. Consolidate internal SDK protocol schemas and test fixture hygiene. Export shared node robots protocol schemas and unified IP validation in `vrc-packages-network`. Centralize source-target policies, binary URL guards, and storefront lead classification. Partition Worker D1 storage into five control planes, normalize error and rate-limit responses, enforce takedown proofs and app delegation audits, and verify live VPM crawling against preview deployments. Bind provisioned preview KV namespace `0a8237b498334dd7b1f58fb7807a68c6` for `RATE_LIMIT_KV` in `src-worker/wrangler.toml`. Add operator node and crawl job listing schemas, keyset cursors, and SDK client methods. Build the dark-mode Operator and Moderator workbench in `src-web` with OKLCH islands and preview SDK delegation. Add Operator fleet and job controls, single and bulk node pruning, bulk lead triage, and bulk moderator actions.
 <!-- MASTER_SUMMARY -->
 
 ## Table of Contents
@@ -174,11 +174,21 @@ See full history at [docs/changelogs/vrcp-packages-api/preview](https://github.c
 ## VRC Packages Web - `vrcp-web-preview-preview`
 
 <!-- vrcp-web-preview-preview-DESCRIPTION_SUMMARY -->
-none
+Build the dark-mode Operator and Moderator workbench across five routes in `src-web`. Integrate preview SDK delegation, Mist and Teal OKLCH islands, fleet controls, and bulk triage.
 <!-- vrcp-web-preview-preview-DESCRIPTION_SUMMARY -->
-
-- none currently
-
+### Added
+- **Admin workbench routes:** Add `/`, `/login`, `/operator`, `/moderator`, and `/design` in `src-web/` with `SidebarNav`, `adminSession` validation, and 41 UI primitives.
+- **Operator and Moderator panels:** Add Operator panels (D1, catalog, profiles, rules, leads, jobs, nodes, takedowns, claims, apps) and Moderator queues.
+- **NOC master-detail workbench:** Build `SplitPane` and `Sheet` three-zone workbenches with `AdminMasterDetail`, `AdminFilterBar` (`/` search, `Popover` facets), `Toast`, and `AlertDialog` gates.
+- **Operator fleet and job queues:** Wire `operator.nodes.list()` and `operator.jobs.list()` with filters, cursor pagination, `Rotate / Re-issue`, `Revoke`, node prune dialogs, and `Codeblock` tokens.
+- **Selectable bulk triage:** Add `DataTable` multi-selection and sequential bulk revoke, prune, lead triage, rating adjustment, and app review dialogs.
+- **Job enqueue guidance:** Display a contextual source access profile notice inside the `LeadsJobsPanel` job enqueue dialog.
+### Bugs Fixed
+- **Nested Astro island layout:** Move `<main>` into `AdminLayout.astro` and add `navOnly` mode to `AdminShell` so routes mount sibling `<astro-island>` elements.
+### Changes
+- **Preview SDK delegation:** Upgrade `src-web/` to `vrc-packages-api-preview`, remove `bridgeRequest` and duplicated Zod schemas, and delegate calls to `VRCPackageClient`.
+- **Mist and Teal design system:** Align `src-web/` OKLCH tokens, `Figtree Variable` and `IBM Plex Sans Variable` fonts, `components.json`, `cn`, `tailwind-variants`, and tactile `Button` states.
+- **Keyboard and route navigation:** Add `DataTable` `aria-activedescendant` traversal, row micro-actions, `?tab=` deep links, and `/` quick-entry links.
 See full history at [docs/changelogs/vrcp-web/preview](https://github.com/SlamTheDragon/vrc-packages/tree/main/docs/changelogs/vrcp-web/preview)
 
 ## VRC Packages Worker - `vrcp-worker-preview`
@@ -194,7 +204,7 @@ See full history at [docs/changelogs/vrcp-worker/preview](https://github.com/Sla
 
 # Internal - Packages
 
-## VRC Packages Network `vrcp-packages-network`
+## VRC Packages Networking `vrcp-packages-network`
 
 <!-- vrcp-packages-network-DESCRIPTION_SUMMARY -->
 <!-- vrcp-packages-network-DESCRIPTION_SUMMARY -->
