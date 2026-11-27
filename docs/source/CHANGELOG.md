@@ -200,16 +200,10 @@ See full history at [docs/changelogs/vrcp-web/preview](https://github.com/SlamTh
 ## VRC Packages Worker - `vrcp-worker-preview`
 
 <!-- vrcp-worker-preview-DESCRIPTION_SUMMARY -->
-Consolidate Coordinator D1 to 17 tables with 3-target Wrangler isolation, `0x01ff` capability tokens, 4-lane job claims, and `60` req/60s node heartbeats.
 <!-- vrcp-worker-preview-DESCRIPTION_SUMMARY -->
 ### Added
-- **Version 0 Coordinator control endpoints:** Add `/v1/operator/status`, `VRCP_ENV=development`-gated `/v1/operator/system/purge`, full steering profile and suppressed target CRUD, job lifecycle routes, trusted-app `claims:delegate`, and `relationship_feedback` signals.
-- **Opt-in real starter steering profiles:** Provide 16 starter profiles across 8 V0 platforms on explicit development purge with zero placeholder URLs.
 ### Bugs Fixed
-- **Heartbeat and claim fairness:** Raise `NODE_HEARTBEAT` rate limit to `60` req/60s, add 4-lane per-origin fair claim skipping, and fix robots refresh statement ordering.
 ### Changes
-- **D1 schema consolidation:** Consolidate Coordinator D1 into 17 tables, zero views, and 39 indexes across three isolated Cloudflare targets in `src-worker/wrangler.toml`.
-- **Node capability and CPU offload:** Derive `0x01ff` node capabilities from Coordinator state, default crawled listings to `'unverified'`, cache parsed `robots.txt` matchers per isolate, and consume pre-sanitized node observations.
 See full history at [docs/changelogs/vrcp-worker/preview](https://github.com/SlamTheDragon/vrc-packages/tree/main/docs/changelogs/vrcp-worker/preview)
 
 ---
