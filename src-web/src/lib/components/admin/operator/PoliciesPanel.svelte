@@ -88,8 +88,8 @@
 	let createProfileOpen = $state(false);
 	let profilePlatform = $state<Platform>('vpm');
 	let profileHostMatchMode = $state<HostMatchMode>('exact');
-	let profileHostPattern = $state('vrchat-community.github.io');
-	let profilePathScope = $state('/template-package/');
+	let profileHostPattern = $state('');
+	let profilePathScope = $state('/');
 	let profileQueryMode = $state<QueryMode>('none');
 	let profileQueryScope = $state('');
 	let profilePurpose = $state<'discovery' | 'metadata'>('discovery');
@@ -749,7 +749,7 @@
 			{/if}
 			<div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
 				<Field id="prof-path" label="Path Scope" required={true}>
-					<Input id="prof-path" bind:value={profilePathScope} />
+					<Input id="prof-path" bind:value={profilePathScope} placeholder="/" />
 				</Field>
 				<Field label="Purpose" required={true}>
 					<DropdownSelect

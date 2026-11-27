@@ -119,7 +119,7 @@
 	let bulkRejectError = $state<string | null>(null);
 	let isBulkTriaging = $state(false);
 
-	let jobUrl = $state('https://vrchat-community.github.io/template-package/index.json');
+	let jobUrl = $state('');
 	let jobPlatform = $state<Platform>('vpm');
 	let jobPurpose = $state<'discovery' | 'metadata'>('discovery');
 	let jobMinDelayMs = $state(2000);
@@ -978,7 +978,7 @@
 				</Notice>
 			{/if}
 			<Field id="job-url" label="Target HTTPS URL" required={true}>
-				<Input id="job-url" bind:value={jobUrl} />
+				<Input id="job-url" bind:value={jobUrl} placeholder="https://vpm.anatawa12.com/vpm.json" />
 			</Field>
 			<div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
 				<Field label="Platform" required={true}>

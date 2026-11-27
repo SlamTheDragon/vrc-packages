@@ -1,11 +1,11 @@
-# Consumer API SDK and Web Ecosystem Specification (Target Blueprint)
+# Consumer API SDK and Web Ecosystem Specification
 
-> **Target Blueprint Status (`[P18]` / `PN-009`):** Owner-approved Version 0 target contract (2026-11-24). Supersedes pre-rewrite live implementation until Stage 5-6 code slices verify 1:1 parity.  
+> **Live Contract Status (`[P18]` / `[P19]`):** Version 0 live specification verified locally against `src-package/` and `src-web/` (`REORIENT-AW-02..04`, remote preview web push held under `REORIENT-LIVE-DEBUG`).  
 > **Owned Directories:** `src-package/` (`vrc-packages-api` and `vrc-packages-api-preview`), `src-web/` (`vrcp-web`), `src-web-search/` (`vrc-packages-search` submodule)  
 > **Owning Sector:** Sector 3 (`api-web`)  
 > **Wire Reference:** [`wire_and_protocol_contracts.md`](../schemas/wire_and_protocol_contracts.md)
 
-This specification defines the Version 0 target contract and integration boundaries for Sector 3 consumer SDK and Astro + Svelte web frontends.
+This specification defines the live Version 0 contract and integration boundaries for Sector 3 consumer SDK and Astro + Svelte web frontends.
 
 ## 1. Consumer SDK (`src-package/`)
 
@@ -13,7 +13,7 @@ This specification defines the Version 0 target contract and integration boundar
 
 - **Canonical exports:** `VRCPackageClient` (supporting `GET`, `POST`, `PATCH`, `DELETE`), `VRCPackageClientOptions`, `VRCPApiError`, `MAX_SDK_ERROR_BYTES` (`64 KiB`), and `MAX_SDK_SUCCESS_BYTES` (`4 MiB`). Subpaths export `./auth` (with `NODE_TOKEN_REGEX` and `isNodeToken`), `./types` (`9`-platform `PlatformSchema`, extended `CatalogPackageSchema`), `./taxonomy`, and `./protocol`.
 
-- **Target `VRCPackageClient` namespaces:**
+- **Live `VRCPackageClient` namespaces:**
   - `index`: `query()`, `search()`, `syncDeltas()` returning atomic rows with `ownerKey`, `ownerName`, `verificationStatus`, `qualityFlags`, `summary`, `tags`, `vpmLatestVersion`, `relations`, and `sources`.
   - `app`: `register()`.
   - `reports`: `submit()` (`demand_signal`, `relationship_feedback`, `issue_report`, and trusted-app `removal_request`).
@@ -28,20 +28,20 @@ This specification defines the Version 0 target contract and integration boundar
 
 | Project | Package Name and Version Authority | Stack | Live / Target State | Declared SDK Dependency |
 | :--- | :--- | :--- | :--- | :--- |
-| **`src-web/`** | `vrcp-web` ([`config.versions.json`](../../../config.versions.json) and [`config.preview.versions.json`](../../../config.preview.versions.json)) | Astro 7 + Svelte 5 | Operator and Moderator UI (`/`, `/login`, `/operator`, `/moderator`, `/design`) in Mist and Teal OKLCH dark mode. See Section 2.1 for Stage 5-6 UIUX targets. | `"vrc-packages-api": "npm:vrc-packages-api-preview@latest"` |
+| **`src-web/`** | `vrcp-web` ([`config.versions.json`](../../../config.versions.json) and [`config.preview.versions.json`](../../../config.preview.versions.json)) | Astro 7 + Svelte 5 | Operator and Moderator UI (`/`, `/login`, `/operator`, `/moderator`, `/design`) in Mist and Teal OKLCH dark mode. See Section 2.1 for live workbench architecture. | `"vrc-packages-api": "npm:vrc-packages-api-preview@latest"` |
 | **`src-web-search/`** *(Git submodule)* | `vrc-packages-search` (`src-web-search/package.json`) | Astro 7 + Svelte 5 | Starter page (`src/pages/index.astro`: `<h1>Astro</h1>`). No search UI wired at this time. | `"vrc-packages-api": "^0.0.6"` |
 
-### 2.1 Target Operator Workbench Architecture (`docs/research/UIUX/` Cardinal Rules 1-9)
+### 2.1 Live Operator Workbench Architecture
 
-- **Zero shim drift and shared UI hygiene:** Delete `VRCPAdminClient` (`admin-client.ts`) and expose `VRCPackageClient` directly from `admin-session.svelte.ts`. Replace raw checkboxes in `DataTable.svelte` with `Checkbox.svelte`. Delete invalid `py-0.2` and magic pixel styles. Share one platform list from `PlatformSchema.options`. Remove duplicate `Inspect` row buttons, add an explicit `AdminShell` pin toggle, keep `forced-colors` and horizontal scroll cues, and add `GovernancePanel.svelte` null guards.
+- **Zero shim drift and shared UI primitives:** `admin-session.svelte.ts` uses `VRCPackageClient` directly with no local wrapper shim. `DataTable.svelte` uses `Checkbox.svelte` (`bits-ui`). `admin-constants.ts` defines `ATOMIC_PLATFORMS` and `PLATFORM_OPTIONS` across the 9 atomic platforms (`curated` excluded). `AdminShell` supports sidebar pin toggles, `AdminMasterDetail` provides `Inspect` actions alongside cursor pagination, and `GovernancePanel.svelte` guards nullable `targetUrl` and `proofKind` values.
 
-- **Environment and Dev-Only System Purge (`OperatorDashboard`, `CatalogInitPanel`):** Show active Coordinator environment badge (`DEVELOPMENT`, `PREVIEW`, or `PRODUCTION`) and compact Fleet Queue Readiness counts. Show the `System Purge` `AlertDialog` (`PURGE_DEVELOPMENT_D1` typed confirmation and `Preserve active nodes` toggle) in `CatalogInitPanel.svelte` only when `environment === "development"` and `purgeEnabled === true`.
+- **Environment and Dev-Only System Purge (`OperatorDashboard`, `CatalogInitPanel`):** `OperatorDashboard.svelte` shows the Coordinator environment badge (`DEVELOPMENT`, `PREVIEW`, or `PRODUCTION`), D1 schema state, and compact queue readiness counts. `CatalogInitPanel.svelte` locks schema bootstrap to `init({ autoSeed: false })` and renders the `System Purge` `AlertDialog` (`PURGE_DEVELOPMENT_D1` confirmation and `Preserve active nodes` toggle) only when `environment === "development"` and `purgeEnabled === true`.
 
-- **Coordinator-Only Fleet (`NodesPanel`):** Remove the manual 10-checkbox capability picker and `autoAllocateTop3` switch from node issuance so Coordinator auto-generates node capabilities without `NODE_CAPABILITIES=` overrides.
+- **Coordinator-Only Fleet (`NodesPanel`):** `NodesPanel.svelte` creates nodes without manual capability checkboxes so Coordinator derives capabilities automatically, and provides single or bulk `Revoke` and `Prune` controls over active and revoked nodes.
 
-- **Unified Steering Profiles (`SteeringProfilesPanel`):** Replace split profile/rule forms and verbose help notices with one unified loose steering editor (`hostMatchMode`, `*.domain-name.root`, bounded pagination queries, `autoPromote`, `Edit`, `Enable`/`Disable` kill-switch, and `Prune`).
+- **Unified Steering Profiles (`PoliciesPanel`):** `PoliciesPanel.svelte` manages unified `SteeringProfile` entries (`hostMatchMode`, wildcard domain rules, pagination query scopes, `autoPromote`, `Enable`/`Disable` kill-switch, and `Delete`) and `SuppressedTarget` rules (`domain`, `origin`, `url`).
 
-- **Triage & Lifecycle (`LeadsJobsPanel`, `GovernancePanel`):** Add per-job claimability blockers, priority-lane badges, multi-select bulk actions, `Edit`, `Run Now` (`requeue`), and `Prune` on jobs. Group pending custom-domain leads by `target_host` for bulk approval or domain-wide blocking. Limit `Verify` actions on `GovernancePanel` to pending items and surface trusted-app polling cues.
+- **Triage & Lifecycle (`LeadsJobsPanel`, `GovernancePanel`):** `LeadsJobsPanel.svelte` renders per-job claimability blockers, priority-lane badges, multi-select bulk actions, `Edit`, `Run Now` (`requeue`), and `Delete` on unleased jobs (`Delete Job`), and groups pending leads by `target_host` for bulk approval or domain suppression. `GovernancePanel.svelte` restricts `Verify` actions to `pending` rows and highlights trusted-app review states.
 
 ## 3. Integration and Security Boundaries
 
