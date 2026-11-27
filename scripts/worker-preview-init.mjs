@@ -30,15 +30,38 @@ export function requirePreviewInitialization(env) {
 export function previewFetch(request = fetch) {
   return async (input, init) => {
     const url = new URL(String(input));
+    const isStatusGet = init?.method === "GET" && url.pathname === "/v1/operator/status" && !url.search;
+    const isPurgePost = init?.method === "POST" && url.pathname === "/v1/operator/system/purge" && !url.search;
+    const isInitPost = init?.method === "POST" && url.pathname === "/v1/operator/init" && !url.search;
+    const isIndexGet = init?.method === "GET" && url.pathname === "/v1/app/index" && url.search === "?limit=1";
     if (url.origin !== previewOrigin || url.username || url.password || url.hash ||
-        !(init?.method === "POST" && url.pathname === "/v1/operator/init" && !url.search ||
-          init?.method === "GET" && url.pathname === "/v1/app/index" && url.search === "?limit=1")) {
+        !(isStatusGet || isPurgePost || isInitPost || isIndexGet)) {
       throw new Error("Unexpected preview initialization request");
     }
-    if (init.method === "POST") {
-      const body = JSON.parse(init.body);
-      if (body?.schemaVersion !== 1 || body.autoSeed !== false || Object.keys(body).length !== 2) {
+    if (isInitPost) {
+      let body;
+      try {
+        body = JSON.parse(init.body);
+      } catch {
         throw new Error("Preview initialization must explicitly disable seeding");
+      }
+      if (!body || typeof body !== "object" || Array.isArray(body) ||
+          body.schemaVersion !== 1 || body.autoSeed !== false || Object.keys(body).length !== 2) {
+        throw new Error("Preview initialization must explicitly disable seeding");
+      }
+    }
+    if (isPurgePost) {
+      let body;
+      try {
+        body = JSON.parse(init.body);
+      } catch {
+        throw new Error("Preview legacy reset must disable seeding and confirm development purge");
+      }
+      if (!body || typeof body !== "object" || Array.isArray(body) ||
+          body.schemaVersion !== 1 || body.confirm !== "PURGE_DEVELOPMENT_D1" ||
+          body.preserveNodes !== false || body.seedPreviewStarter !== false ||
+          Object.keys(body).length !== 4) {
+        throw new Error("Preview legacy reset must disable seeding and confirm development purge");
       }
     }
     const response = await request(url.href, { ...init, redirect: "error", signal: AbortSignal.timeout(30_000) });
@@ -67,10 +90,32 @@ export function previewFetch(request = fetch) {
 export async function initializePreview(Client, env = process.env, request = fetch) {
   requirePreviewInitialization(env);
   const client = new Client({ baseUrl: previewOrigin, operatorToken: env.OPERATOR_TOKEN, fetch: previewFetch(request) });
+  let legacyReset = false;
+  if (typeof client.operator?.status === "function") {
+    const status = await client.operator.status();
+    if (status?.d1SchemaState === "legacy" && status?.purgeEnabled === true) {
+      if (typeof client.operator?.systemPurge !== "function") {
+        throw new Error("Preview legacy reset requires operator.systemPurge");
+      }
+      await client.operator.systemPurge({
+        schemaVersion: 1,
+        confirm: "PURGE_DEVELOPMENT_D1",
+        preserveNodes: false,
+        seedPreviewStarter: false
+      });
+      legacyReset = true;
+    }
+  }
   const initialized = await client.operator.init({ autoSeed: false });
   if (initialized.autoSeed !== false) throw new Error("Preview initialization did not confirm expected seeding");
   const catalog = await client.index.query({ limit: 1 });
-  return { target: previewOrigin, autoSeed: false, schemaVersion: catalog.schemaVersion, catalogRead: "passed" };
+  return {
+    target: previewOrigin,
+    autoSeed: false,
+    schemaVersion: catalog.schemaVersion,
+    catalogRead: "passed",
+    ...(legacyReset ? { legacyReset: true } : {})
+  };
 }
 
 if (import.meta.main) {

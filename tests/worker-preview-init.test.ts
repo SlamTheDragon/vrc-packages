@@ -149,3 +149,108 @@ test("preview initialization authorizes automated delivery context with explicit
   expect(calls).toEqual([{ origin: previewOrigin, tokenPresent: true }, { autoSeed: false }, { limit: 1 }]);
 });
 
+test("initializePreview purges legacy D1 only when status reports legacy and purgeEnabled true", async () => {
+  const makeClientClass = (statusResult: any, calls: unknown[]) =>
+    class {
+      operator = {
+        status: async () => {
+          calls.push("status");
+          return statusResult;
+        },
+        systemPurge: async (params: unknown) => {
+          calls.push({ purge: params });
+          return { status: "purged" };
+        },
+        init: async (params: unknown) => {
+          calls.push({ init: params });
+          return { autoSeed: false };
+        }
+      };
+      index = {
+        query: async (params: unknown) => {
+          calls.push({ query: params });
+          return { schemaVersion: 1 };
+        }
+      };
+    };
+
+  const legacyCalls: unknown[] = [];
+  const legacyRes = await initializePreview(
+    makeClientClass({ d1SchemaState: "legacy", purgeEnabled: true }, legacyCalls),
+    env,
+    fetch
+  );
+  expect(legacyRes).toEqual({
+    target: previewOrigin,
+    autoSeed: false,
+    schemaVersion: 1,
+    catalogRead: "passed",
+    legacyReset: true
+  });
+  expect(legacyCalls).toEqual([
+    "status",
+    {
+      purge: {
+        schemaVersion: 1,
+        confirm: "PURGE_DEVELOPMENT_D1",
+        preserveNodes: false,
+        seedPreviewStarter: false
+      }
+    },
+    { init: { autoSeed: false } },
+    { query: { limit: 1 } }
+  ]);
+
+  const v0Calls: unknown[] = [];
+  const v0Res = await initializePreview(
+    makeClientClass({ d1SchemaState: "v0-17", purgeEnabled: true }, v0Calls),
+    env,
+    fetch
+  );
+  expect(v0Res).toEqual({ target: previewOrigin, autoSeed: false, schemaVersion: 1, catalogRead: "passed" });
+  expect(v0Calls).toEqual(["status", { init: { autoSeed: false } }, { query: { limit: 1 } }]);
+
+  const disabledPurgeCalls: unknown[] = [];
+  const disabledRes = await initializePreview(
+    makeClientClass({ d1SchemaState: "legacy", purgeEnabled: false }, disabledPurgeCalls),
+    env,
+    fetch
+  );
+  expect(disabledRes).toEqual({ target: previewOrigin, autoSeed: false, schemaVersion: 1, catalogRead: "passed" });
+  expect(disabledPurgeCalls).toEqual(["status", { init: { autoSeed: false } }, { query: { limit: 1 } }]);
+});
+
+test("previewFetch permits operator status GET and exact legacy system purge POST while rejecting unsafe payloads", async () => {
+  let requests = 0;
+  const fetcher = previewFetch(async () => {
+    requests++;
+    return Response.json({ ok: true });
+  });
+
+  const statusResp = await fetcher(`${previewOrigin}/v1/operator/status`, { method: "GET" });
+  expect(statusResp.status).toBe(200);
+  const purgeResp = await fetcher(`${previewOrigin}/v1/operator/system/purge`, {
+    method: "POST",
+    body: JSON.stringify({
+      schemaVersion: 1,
+      confirm: "PURGE_DEVELOPMENT_D1",
+      preserveNodes: false,
+      seedPreviewStarter: false
+    })
+  });
+  expect(purgeResp.status).toBe(200);
+  expect(requests).toBe(2);
+
+  for (const badBody of [
+    "{",
+    "null",
+    JSON.stringify({ schemaVersion: 1, confirm: "PURGE_DEVELOPMENT_D1", preserveNodes: false, seedPreviewStarter: true }),
+    JSON.stringify({ schemaVersion: 1, confirm: "PURGE_DEVELOPMENT_D1", preserveNodes: true, seedPreviewStarter: false }),
+    JSON.stringify({ schemaVersion: 1, confirm: "WRONG", preserveNodes: false, seedPreviewStarter: false }),
+    JSON.stringify({ schemaVersion: 1, confirm: "PURGE_DEVELOPMENT_D1", preserveNodes: false, seedPreviewStarter: false, extra: 1 })
+  ]) {
+    await expect(fetcher(`${previewOrigin}/v1/operator/system/purge`, { method: "POST", body: badBody })).rejects.toThrow();
+  }
+  expect(requests).toBe(2);
+});
+
