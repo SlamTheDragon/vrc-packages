@@ -1,11 +1,11 @@
 <script lang="ts">
-	import type { TakedownRecord } from 'vrc-packages-api';
 	import type {
+		AppCandidateRecord,
 		DelegatedClaimRecord,
-		AppCandidateRecord
-	} from '$lib/api/admin-client';
-	import { cn } from '$lib/utils';
-	import { CONTROL_HEIGHTS, COMPONENT_PRESETS } from '$lib/components/ui/tokens';
+		TakedownRecord
+	} from 'vrc-packages-api';
+	import { ROW_MENU_TRIGGER_CLASS, formatTimestamp } from '$lib/components/admin/admin-constants';
+	import Badge from '$lib/components/ui/feedback/Badge.svelte';
 	import Button from '$lib/components/ui/forms/Button.svelte';
 	import DropdownSelect from '$lib/components/ui/forms/DropdownSelect.svelte';
 	import Field from '$lib/components/ui/forms/Field.svelte';
@@ -135,8 +135,8 @@
 				t.takedownId.toLowerCase().includes(q) ||
 				t.requesterType.toLowerCase().includes(q) ||
 				(t.canonicalId ?? '').toLowerCase().includes(q) ||
-				t.targetUrl.toLowerCase().includes(q) ||
-				t.proofKind.toLowerCase().includes(q) ||
+				(t.targetUrl ?? '').toLowerCase().includes(q) ||
+				(t.proofKind ?? '').toLowerCase().includes(q) ||
 				t.reviewStatus.toLowerCase().includes(q)
 			);
 		});
@@ -186,7 +186,11 @@
 		{ key: 'targetUrl', label: 'Target URL' },
 		{ key: 'proofKind', label: 'Proof' },
 		{ key: 'reviewStatus', label: 'Status' },
-		{ key: 'recordedAt', label: 'Recorded' }
+		{
+			key: 'recordedAt',
+			label: 'Recorded',
+			format: (val: unknown) => formatTimestamp(val)
+		}
 	];
 
 	const claimColumns = [
@@ -194,7 +198,11 @@
 		{ key: 'frontUrl', label: 'Front URL' },
 		{ key: 'appId', label: 'App ID' },
 		{ key: 'reviewStatus', label: 'Status' },
-		{ key: 'recordedAt', label: 'Recorded' }
+		{
+			key: 'recordedAt',
+			label: 'Recorded',
+			format: (val: unknown) => formatTimestamp(val)
+		}
 	];
 
 	const appColumns = [
@@ -206,7 +214,11 @@
 			format: (val: unknown) => (val ? 'Allowed' : 'No')
 		},
 		{ key: 'requestCount', label: 'Requests', align: 'right' as const },
-		{ key: 'createdAt', label: 'Created' }
+		{
+			key: 'createdAt',
+			label: 'Created',
+			format: (val: unknown) => formatTimestamp(val)
+		}
 	];
 
 	function switchQueue(next: string) {
@@ -231,6 +243,8 @@
 
 	function openReviewApp(app: AppCandidateRecord) {
 		selectedAppId = app.appId;
+		appCandidateVerdict = app.candidateStatus === 'review_pending' ? 'reviewed' : app.candidateStatus;
+		appGrantDelegation = app.delegationAllowed;
 		appError = null;
 		appDialogOpen = true;
 	}
@@ -370,19 +384,14 @@
 					</Button>
 					<DropdownMenu>
 						{#snippet trigger()}
-							<span
-								aria-label={`Actions for takedown ${td.takedownId}`}
-								class={cn(
-									CONTROL_HEIGHTS.xs,
-									COMPONENT_PRESETS.button.ghost,
-									'inline-flex items-center justify-center px-1.5 rounded-lg'
-								)}
-							>
+							<span aria-label={`Actions for takedown ${td.takedownId}`} class={ROW_MENU_TRIGGER_CLASS}>
 								<MoreHorizontal size={14} />
 							</span>
 						{/snippet}
 						<DropdownItem label="Inspect Takedown" onclick={() => (selectedTakedownId = td.takedownId)} />
-						<DropdownItem label="Verify Takedown" onclick={() => openVerifyTakedown(td)} />
+						{#if td.reviewStatus === 'pending'}
+							<DropdownItem label="Verify Takedown" onclick={() => openVerifyTakedown(td)} />
+						{/if}
 					</DropdownMenu>
 				</div>
 			{/snippet}
@@ -396,8 +405,8 @@
 						properties={[
 							{ key: 'Requester Type', value: selectedTakedown.requesterType, category: 'Request' },
 							{ key: 'Canonical ID', value: selectedTakedown.canonicalId ?? 'none', category: 'Request' },
-							{ key: 'Target URL', value: selectedTakedown.targetUrl, category: 'Request' },
-							{ key: 'Proof Kind', value: selectedTakedown.proofKind, category: 'Verification' },
+							{ key: 'Target URL', value: selectedTakedown.targetUrl ?? 'none', category: 'Request' },
+							{ key: 'Proof Kind', value: selectedTakedown.proofKind ?? 'none', category: 'Verification' },
 							{ key: 'Review Status', value: selectedTakedown.reviewStatus, category: 'Verification' },
 							{ key: 'Recorded At', value: selectedTakedown.recordedAt, category: 'Timestamps' }
 						]}
@@ -416,12 +425,14 @@
 						{/snippet}
 
 						{#snippet footerActions()}
-							<div class="w-full flex justify-end">
-								<Button variant="primary" size="sm" onclick={() => openVerifyTakedown(selectedTakedown)}>
-									<CheckCircle2 size={14} />
-									<span>Verify Takedown</span>
-								</Button>
-							</div>
+							{#if selectedTakedown.reviewStatus === 'pending'}
+								<div class="w-full flex justify-end">
+									<Button variant="primary" size="sm" onclick={() => openVerifyTakedown(selectedTakedown)}>
+										<CheckCircle2 size={14} />
+										<span>Verify Takedown</span>
+									</Button>
+								</div>
+							{/if}
 						{/snippet}
 					</PropertyInspector>
 				{/if}
@@ -470,19 +481,14 @@
 					</Button>
 					<DropdownMenu>
 						{#snippet trigger()}
-							<span
-								aria-label={`Actions for claim ${claim.claimId}`}
-								class={cn(
-									CONTROL_HEIGHTS.xs,
-									COMPONENT_PRESETS.button.ghost,
-									'inline-flex items-center justify-center px-1.5 rounded-lg'
-								)}
-							>
+							<span aria-label={`Actions for claim ${claim.claimId}`} class={ROW_MENU_TRIGGER_CLASS}>
 								<MoreHorizontal size={14} />
 							</span>
 						{/snippet}
 						<DropdownItem label="Inspect Claim" onclick={() => (selectedClaimId = claim.claimId)} />
-						<DropdownItem label="Verify Claim" onclick={() => openVerifyClaim(claim)} />
+						{#if claim.reviewStatus === 'pending'}
+							<DropdownItem label="Verify Claim" onclick={() => openVerifyClaim(claim)} />
+						{/if}
 					</DropdownMenu>
 				</div>
 			{/snippet}
@@ -515,12 +521,14 @@
 						{/snippet}
 
 						{#snippet footerActions()}
-							<div class="w-full flex justify-end">
-								<Button variant="primary" size="sm" onclick={() => openVerifyClaim(selectedClaim)}>
-									<ShieldCheck size={14} />
-									<span>Verify Claim</span>
-								</Button>
-							</div>
+							{#if selectedClaim.reviewStatus === 'pending'}
+								<div class="w-full flex justify-end">
+									<Button variant="primary" size="sm" onclick={() => openVerifyClaim(selectedClaim)}>
+										<ShieldCheck size={14} />
+										<span>Verify Claim</span>
+									</Button>
+								</div>
+							{/if}
 						{/snippet}
 					</PropertyInspector>
 				{/if}
@@ -569,14 +577,7 @@
 					</Button>
 					<DropdownMenu>
 						{#snippet trigger()}
-							<span
-								aria-label={`Actions for app ${app.appName}`}
-								class={cn(
-									CONTROL_HEIGHTS.xs,
-									COMPONENT_PRESETS.button.ghost,
-									'inline-flex items-center justify-center px-1.5 rounded-lg'
-								)}
-							>
+							<span aria-label={`Actions for app ${app.appName}`} class={ROW_MENU_TRIGGER_CLASS}>
 								<MoreHorizontal size={14} />
 							</span>
 						{/snippet}
@@ -597,10 +598,16 @@
 							{ key: 'App Name', value: selectedApp.appName, category: 'Identity' },
 							{ key: 'Candidate Status', value: selectedApp.candidateStatus, category: 'Trust' },
 							{
+								key: 'Attestation Authority',
+								value: selectedApp.candidateStatus === 'trusted' ? 'Can attest packages verified' : 'Read-only consumer',
+								category: 'Trust'
+							},
+							{
 								key: 'Delegation Allowed',
 								value: selectedApp.delegationAllowed ? 'Yes' : 'No',
 								category: 'Trust'
 							},
+							{ key: 'Permissions', value: selectedApp.permissions.join(', ') || 'none', category: 'Trust' },
 							{ key: 'Request Count', value: selectedApp.requestCount, category: 'Telemetry' },
 							{ key: 'Created At', value: selectedApp.createdAt, category: 'Timestamps' }
 						]}
@@ -619,15 +626,25 @@
 						{/snippet}
 
 						{#snippet footerActions()}
-							<div class="w-full flex items-center justify-end gap-2 flex-wrap">
-								<Button variant="secondary" size="sm" onclick={() => openDelegationDialog(selectedApp)}>
-									<KeyRound size={14} />
-									<span>Delegation</span>
-								</Button>
-								<Button variant="primary" size="sm" onclick={() => openReviewApp(selectedApp)}>
-									<ShieldCheck size={14} />
-									<span>Review Candidate</span>
-								</Button>
+							<div class="w-full flex items-center justify-between gap-2 flex-wrap">
+								<div class="flex items-center gap-1.5">
+									<Badge variant={selectedApp.candidateStatus === 'trusted' ? 'emerald' : 'neutral'} size="xs">
+										{selectedApp.candidateStatus}
+									</Badge>
+									{#if selectedApp.delegationAllowed}
+										<Badge variant="sky" size="xs">delegation</Badge>
+									{/if}
+								</div>
+								<div class="flex items-center gap-2">
+									<Button variant="secondary" size="sm" onclick={() => openDelegationDialog(selectedApp)}>
+										<KeyRound size={14} />
+										<span>Delegation</span>
+									</Button>
+									<Button variant="primary" size="sm" onclick={() => openReviewApp(selectedApp)}>
+										<ShieldCheck size={14} />
+										<span>Review Candidate</span>
+									</Button>
+								</div>
 							</div>
 						{/snippet}
 					</PropertyInspector>

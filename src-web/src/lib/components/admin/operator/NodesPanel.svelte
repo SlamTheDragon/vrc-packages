@@ -1,18 +1,19 @@
 <script lang="ts">
 	import type {
-		Platform,
 		NodeCredentialResponse,
 		OperatorNodeRecord,
-		OperatorNodeStatus
-	} from '$lib/api/admin-client';
-	import { cn } from '$lib/utils';
-	import { CONTROL_HEIGHTS, COMPONENT_PRESETS } from '$lib/components/ui/tokens';
+		OperatorNodeStatus,
+		Platform
+	} from 'vrc-packages-api';
+	import {
+		ATOMIC_PLATFORMS,
+		ROW_MENU_TRIGGER_CLASS,
+		formatTimestamp
+	} from '$lib/components/admin/admin-constants';
 	import Codeblock from '$lib/components/ui/display/Codeblock.svelte';
 	import Button from '$lib/components/ui/forms/Button.svelte';
-	import Checkbox from '$lib/components/ui/forms/Checkbox.svelte';
 	import Field from '$lib/components/ui/forms/Field.svelte';
 	import Input from '$lib/components/ui/forms/Input.svelte';
-	import Switch from '$lib/components/ui/forms/Switch.svelte';
 	import Textarea from '$lib/components/ui/forms/Textarea.svelte';
 	import Notice from '$lib/components/ui/feedback/Notice.svelte';
 	import Dialog from '$lib/components/ui/overlays/Dialog.svelte';
@@ -23,20 +24,7 @@
 	import AdminMasterDetail from '$lib/components/admin/AdminMasterDetail.svelte';
 	import { adminSession, formatAdminError } from '$lib/stores/admin-session.svelte';
 	import { toastStore } from '$lib/stores/toast.svelte';
-	import { Plus, KeyRound, ShieldAlert, Trash2, X, ChevronRight, MoreHorizontal } from '@lucide/svelte';
-
-	const ALL_PLATFORMS: Platform[] = [
-		'vpm',
-		'github',
-		'booth',
-		'gumroad',
-		'jinxxy',
-		'itch',
-		'curated',
-		'shopify',
-		'sellfy',
-		'custom_domain'
-	];
+	import { Plus, KeyRound, ShieldAlert, Trash2, X, MoreHorizontal } from '@lucide/svelte';
 
 	const NODE_ID_PATTERN = /^(?!\.{1,2}$)[A-Za-z0-9._-]+$/;
 
@@ -68,8 +56,6 @@
 	let issueDialogOpen = $state(false);
 	let dialogMode = $state<'register' | 'rotate'>('register');
 	let nodeIdInput = $state('');
-	let autoAllocateTop3 = $state(true);
-	let selectedCapabilities = $state<Record<Platform, boolean>>(createCapabilityMap(['vpm', 'github']));
 	let issueReason = $state('');
 	let issueAttempted = $state(false);
 	let isIssuing = $state(false);
@@ -126,7 +112,7 @@
 			allValue: 'ALL',
 			options: [
 				{ value: 'ALL', label: 'All Platforms' },
-				...ALL_PLATFORMS.map((p) => ({ value: p, label: p }))
+				...ATOMIC_PLATFORMS.map((p) => ({ value: p, label: p }))
 			],
 			onChange: (val) => {
 				capabilityFilter = val as 'ALL' | Platform;
@@ -168,19 +154,13 @@
 		return undefined;
 	});
 
-	let checkedCapabilities = $derived(ALL_PLATFORMS.filter((p) => selectedCapabilities[p]));
-	let capabilitiesValid = $derived(autoAllocateTop3 || checkedCapabilities.length >= 1);
-	let capabilitiesError = $derived(
-		issueAttempted && !capabilitiesValid ? 'Select at least one platform capability.' : undefined
-	);
-
 	let trimmedIssueReason = $derived(issueReason.trim());
 	let reasonValid = $derived(trimmedIssueReason.length >= 3 && trimmedIssueReason.length <= 300);
 	let reasonError = $derived(
 		issueAttempted && !reasonValid ? 'Enter 3-300 characters for the audit reason.' : undefined
 	);
 
-	let canSubmitIssue = $derived(nodeIdValid && capabilitiesValid && reasonValid);
+	let canSubmitIssue = $derived(nodeIdValid && reasonValid);
 
 	let trimmedRevokeReason = $derived(revokeReason.trim());
 	let revokeReasonValid = $derived(trimmedRevokeReason.length >= 1 && trimmedRevokeReason.length <= 300);
@@ -238,13 +218,12 @@
 		const coordinator = adminSession.coordinatorUrl;
 		const caps = issuedCredential.capabilities.join(',');
 		return [
+			`# Coordinator-derived capabilities: ${caps}`,
 			`COORDINATOR_URL=${coordinator}`,
 			`NODE_ID=${issuedCredential.nodeId}`,
 			`NODE_TOKEN=${issuedCredential.token}`,
-			`NODE_CAPABILITIES=${caps}`,
 			'',
-			'# Start crawler node',
-			`COORDINATOR_URL=${coordinator} NODE_ID=${issuedCredential.nodeId} NODE_TOKEN=${issuedCredential.token} ./vrcp-crawler`
+			'# Place in <node-dir>/.env and run from that isolated node directory'
 		].join('\n');
 	});
 
@@ -279,28 +258,10 @@
 		}
 	];
 
-	function createCapabilityMap(enabled: Platform[]): Record<Platform, boolean> {
-		const enabledSet = new Set(enabled);
-		return ALL_PLATFORMS.reduce(
-			(acc, platform) => {
-				acc[platform] = enabledSet.has(platform);
-				return acc;
-			},
-			{} as Record<Platform, boolean>
-		);
-	}
-
-	function formatTimestamp(value: unknown, fallback = '—'): string {
-		if (typeof value !== 'string' || value.length === 0) return fallback;
-		return value.replace('T', ' ').replace(/\.\d+Z$/, 'Z');
-	}
-
 	function openRegisterDialog() {
 		dialogMode = 'register';
 		nodeIdInput = '';
-		autoAllocateTop3 = true;
-		selectedCapabilities = createCapabilityMap(['vpm', 'github']);
-		issueReason = 'Provision capability-scoped headless crawler node';
+		issueReason = 'Provision Coordinator-scoped headless crawler node';
 		issueAttempted = false;
 		issueError = null;
 		issuedCredential = null;
@@ -310,8 +271,6 @@
 	function openRotateDialog(node: OperatorNodeRecord) {
 		dialogMode = 'rotate';
 		nodeIdInput = node.nodeId;
-		autoAllocateTop3 = false;
-		selectedCapabilities = createCapabilityMap(node.capabilities);
 		issueReason = 'Rotate crawler node credential';
 		issueAttempted = false;
 		issueError = null;
@@ -343,7 +302,6 @@
 			const res = await adminSession.client.operator.nodes.issue({
 				schemaVersion: 1,
 				nodeId: trimmedNodeId,
-				...(autoAllocateTop3 ? {} : { capabilities: checkedCapabilities }),
 				reason: trimmedIssueReason
 			});
 			issuedCredential = res;
@@ -437,7 +395,7 @@
 			try {
 				await adminSession.client.operator.nodes.revoke(node.nodeId, trimmedBulkRevokeReason);
 				successCount++;
-			} catch (_) {
+			} catch {
 				failCount++;
 			}
 		}
@@ -477,7 +435,7 @@
 				await adminSession.client.operator.nodes.prune(node.nodeId, trimmedBulkPruneReason);
 				successCount++;
 				prunedIds.push(node.nodeId);
-			} catch (_) {
+			} catch {
 				failCount++;
 			}
 		}
@@ -510,6 +468,9 @@
 		selectable={true}
 		bind:selectedIds={selectedNodeIds}
 		bind:page
+		hasMore={Boolean(nextCursor)}
+		{isLoadingMore}
+		{onLoadMore}
 		loading={isLoading}
 		ariaLabel="Registered crawler nodes"
 		emptyTitle="No registered nodes"
@@ -576,14 +537,7 @@
 				</Button>
 				<DropdownMenu>
 					{#snippet trigger()}
-						<span
-							aria-label={`Actions for ${node.nodeId}`}
-							class={cn(
-								CONTROL_HEIGHTS.xs,
-								COMPONENT_PRESETS.button.ghost,
-								'inline-flex items-center justify-center px-1.5 rounded-lg'
-							)}
-						>
+						<span aria-label={`Actions for ${node.nodeId}`} class={ROW_MENU_TRIGGER_CLASS}>
 							<MoreHorizontal size={14} />
 						</span>
 					{/snippet}
@@ -653,55 +607,14 @@
 				</PropertyInspector>
 			{/if}
 		{/snippet}
-
-		{#snippet paginationFooter()}
-			{#if nextCursor || filteredNodes.length > 50}
-				<div class="flex items-center justify-between gap-3 flex-wrap">
-					<span class="text-xs text-muted-foreground tabular-nums">
-						{filteredNodes.length} matching node(s) loaded
-					</span>
-					<div class="flex items-center gap-2">
-						{#if filteredNodes.length > 50}
-							<Button
-								variant="outline"
-								size="xs"
-								disabled={page <= 0}
-								onclick={() => (page = Math.max(0, page - 1))}
-							>
-								Prev Page
-							</Button>
-							<Button
-								variant="outline"
-								size="xs"
-								disabled={(page + 1) * 50 >= filteredNodes.length}
-								onclick={() => (page = page + 1)}
-							>
-								Next Page
-							</Button>
-						{/if}
-						{#if nextCursor}
-							<Button
-								variant="secondary"
-								size="xs"
-								busy={isLoadingMore}
-								onclick={() => void onLoadMore?.()}
-							>
-								<span>{isLoadingMore ? 'Loading...' : 'Load Next Page'}</span>
-								<ChevronRight size={13} />
-							</Button>
-						{/if}
-					</div>
-				</div>
-			{/if}
-		{/snippet}
 	</AdminMasterDetail>
 
 	<Dialog
 		bind:open={issueDialogOpen}
 		title={dialogMode === 'rotate' ? 'Rotate / Re-issue Node Credential' : 'Register Crawler Node'}
 		description={dialogMode === 'rotate'
-			? `Re-issue token for ${nodeIdInput}.`
-			: 'Issue a SHA-256 capability token for a crawler node.'}
+			? `Re-issue Coordinator-derived capability token for ${nodeIdInput}.`
+			: 'Issue a Coordinator-derived SHA-256 capability token for a crawler node.'}
 	>
 		<div class="flex flex-col gap-4">
 			{#if issueError}
@@ -726,26 +639,6 @@
 						class={dialogMode === 'rotate' ? 'bg-muted/60 text-muted-foreground' : ''}
 					/>
 				</Field>
-
-				<Switch
-					id="auto-allocate-platforms"
-					bind:checked={autoAllocateTop3}
-					label="Auto-allocate top 3 platforms"
-				/>
-
-				{#if !autoAllocateTop3}
-					<Field label="Platform Capabilities" required={true} error={capabilitiesError}>
-						<div class="grid grid-cols-2 sm:grid-cols-3 gap-2.5 p-3 rounded-xl border border-border bg-background/70">
-							{#each ALL_PLATFORMS as platform (platform)}
-								<Checkbox
-									id={`cap-${platform}`}
-									bind:checked={selectedCapabilities[platform]}
-									label={platform}
-								/>
-							{/each}
-						</div>
-					</Field>
-				{/if}
 
 				<Field id="issue-node-reason" label="Audit Reason (3-300 chars)" required={true} error={reasonError}>
 					<Textarea
@@ -846,7 +739,6 @@
 		{/snippet}
 	</Dialog>
 
-	<!-- Single Prune Dialog -->
 	<Dialog
 		bind:open={pruneDialogOpen}
 		alert={true}
@@ -906,7 +798,6 @@
 		{/snippet}
 	</Dialog>
 
-	<!-- Bulk Revoke Dialog -->
 	<Dialog
 		bind:open={bulkRevokeDialogOpen}
 		alert={true}
@@ -919,11 +810,6 @@
 					{bulkRevokeError}
 				</Notice>
 			{/if}
-
-			<Notice variant="warning" title="Bulk Revocation">
-				This will revoke {selectedActiveNodes.length} active node(s) sequentially.
-				Active leases will expire immediately.
-			</Notice>
 
 			<Field
 				id="bulk-revoke-reason"
@@ -962,7 +848,6 @@
 		{/snippet}
 	</Dialog>
 
-	<!-- Bulk Prune Dialog -->
 	<Dialog
 		bind:open={bulkPruneDialogOpen}
 		alert={true}
@@ -975,11 +860,6 @@
 					{bulkPruneError}
 				</Notice>
 			{/if}
-
-			<Notice variant="warning" title="Permanent Deletion">
-				This will permanently delete {selectedRevokedNodes.length} revoked node(s) from the registry.
-				All associated lease and job records will be removed.
-			</Notice>
 
 			<Field
 				id="bulk-prune-reason"

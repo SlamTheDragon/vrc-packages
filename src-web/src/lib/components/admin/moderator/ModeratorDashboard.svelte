@@ -5,9 +5,9 @@
 		ModeratorRatingRecord,
 		AppCandidateRecord,
 		CandidateStatus
-	} from '$lib/api/admin-client';
+	} from 'vrc-packages-api';
+	import { ROW_MENU_TRIGGER_CLASS } from '$lib/components/admin/admin-constants';
 	import { cn } from '$lib/utils';
-	import { CONTROL_HEIGHTS, COMPONENT_PRESETS } from '$lib/components/ui/tokens';
 	import Button from '$lib/components/ui/forms/Button.svelte';
 	import DropdownSelect from '$lib/components/ui/forms/DropdownSelect.svelte';
 	import Field from '$lib/components/ui/forms/Field.svelte';
@@ -547,14 +547,7 @@
 						</Button>
 						<DropdownMenu>
 							{#snippet trigger()}
-								<span
-									aria-label={`Actions for ${row.canonicalId}`}
-									class={cn(
-										CONTROL_HEIGHTS.xs,
-										COMPONENT_PRESETS.button.ghost,
-										'inline-flex items-center justify-center px-1.5 rounded-lg'
-									)}
-								>
+								<span aria-label={`Actions for ${row.canonicalId}`} class={ROW_MENU_TRIGGER_CLASS}>
 									<MoreHorizontal size={14} />
 								</span>
 							{/snippet}
@@ -671,14 +664,7 @@
 						</Button>
 						<DropdownMenu>
 							{#snippet trigger()}
-								<span
-									aria-label={`Actions for app ${app.appName}`}
-									class={cn(
-										CONTROL_HEIGHTS.xs,
-										COMPONENT_PRESETS.button.ghost,
-										'inline-flex items-center justify-center px-1.5 rounded-lg'
-									)}
-								>
+								<span aria-label={`Actions for app ${app.appName}`} class={ROW_MENU_TRIGGER_CLASS}>
 									<MoreHorizontal size={14} />
 								</span>
 							{/snippet}

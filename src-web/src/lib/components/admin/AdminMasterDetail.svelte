@@ -31,6 +31,9 @@
 		paginateClient?: boolean;
 		page?: number;
 		pageSize?: number;
+		hasMore?: boolean;
+		isLoadingMore?: boolean;
+		onLoadMore?: () => void;
 		heightClass?: string;
 		class?: string;
 		toolbar?: Snippet;
@@ -64,6 +67,9 @@
 		paginateClient = true,
 		page = $bindable(0),
 		pageSize = 50,
+		hasMore = false,
+		isLoadingMore = false,
+		onLoadMore,
 		heightClass = 'md:h-[calc(100dvh-14.5rem)] md:min-h-[400px]',
 		class: className = '',
 		toolbar,
@@ -216,33 +222,50 @@
 						<div class="px-4 py-2 border-t border-border bg-muted/20 shrink-0">
 							{@render paginationFooter()}
 						</div>
-					{:else if paginateClient && data.length > pageSize}
+					{:else if (paginateClient && data.length > pageSize) || hasMore}
 						<div class="px-4 py-2 border-t border-border bg-muted/20 flex items-center justify-between gap-3 shrink-0">
 							<span class="text-xs text-muted-foreground tabular-nums">
-								Showing {page * pageSize + 1}–{Math.min((page + 1) * pageSize, data.length)} of {data.length}
+								{#if paginateClient && data.length > pageSize}
+									Showing {page * pageSize + 1}–{Math.min((page + 1) * pageSize, data.length)} of {data.length}
+								{:else}
+									{data.length} record(s) loaded
+								{/if}
 							</span>
 							<div class="flex items-center gap-1.5">
-								<Button
-									variant="outline"
-									size="xs"
-									disabled={page <= 0}
-									onclick={() => (page = Math.max(0, page - 1))}
-								>
-									<ChevronLeft size={13} />
-									<span>Prev</span>
-								</Button>
-								<span class="text-xs font-mono text-muted-foreground tabular-nums px-1.5">
-									{page + 1} / {totalPages}
-								</span>
-								<Button
-									variant="outline"
-									size="xs"
-									disabled={page >= totalPages - 1}
-									onclick={() => (page = Math.min(totalPages - 1, page + 1))}
-								>
-									<span>Next</span>
-									<ChevronRight size={13} />
-								</Button>
+								{#if paginateClient && data.length > pageSize}
+									<Button
+										variant="outline"
+										size="xs"
+										disabled={page <= 0}
+										onclick={() => (page = Math.max(0, page - 1))}
+									>
+										<ChevronLeft size={13} />
+										<span>Prev</span>
+									</Button>
+									<span class="text-xs font-mono text-muted-foreground tabular-nums px-1.5">
+										{page + 1} / {totalPages}
+									</span>
+									<Button
+										variant="outline"
+										size="xs"
+										disabled={page >= totalPages - 1}
+										onclick={() => (page = Math.min(totalPages - 1, page + 1))}
+									>
+										<span>Next</span>
+										<ChevronRight size={13} />
+									</Button>
+								{/if}
+								{#if hasMore && onLoadMore}
+									<Button
+										variant="secondary"
+										size="xs"
+										busy={isLoadingMore}
+										onclick={onLoadMore}
+									>
+										<span>{isLoadingMore ? 'Loading...' : 'Load More'}</span>
+										<ChevronRight size={13} />
+									</Button>
+								{/if}
 							</div>
 						</div>
 					{/if}

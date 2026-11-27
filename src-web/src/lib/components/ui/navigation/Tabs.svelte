@@ -36,7 +36,7 @@
 			>
 				<span>{item.label}</span>
 				{#if item.count !== undefined}
-					<span class="text-[10px] px-1.5 py-0.2 rounded-full bg-muted text-foreground border border-border font-mono tabular-nums">
+					<span class="text-[10px] px-1.5 py-0.5 rounded-full bg-muted text-foreground border border-border font-mono tabular-nums">
 						{item.count}
 					</span>
 				{/if}

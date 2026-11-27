@@ -1,10 +1,9 @@
 import {
-	VRCPAdminClient,
+	VRCPackageClient,
 	VRCPApiError,
-	isOperatorToken,
-	isUserToken,
-	type PipelineChannelInfo
-} from '$lib/api/admin-client';
+	type OperatorStatusResponse
+} from 'vrc-packages-api';
+import { isOperatorToken, isUserToken } from 'vrc-packages-api/auth';
 import type { EvidenceState } from '$lib/components/ui/types';
 
 export type AdminRole = 'operator' | 'moderator';
@@ -85,20 +84,19 @@ class AdminSessionStore {
 	lastProbeMessage = $state<string | null>(null);
 	lastProbeState = $state<EvidenceState>('unverified');
 	lastError = $state<string | null>(null);
+	operatorStatus = $state<OperatorStatusResponse | null>(null);
 
 	client = $derived.by(() => {
 		const baseUrl = isValidCoordinatorUrl(this.coordinatorUrl)
 			? this.coordinatorUrl.trim()
 			: COORDINATOR_PRESETS[0].value;
 		const trimmedToken = this.token.trim();
-		return new VRCPAdminClient({
+		return new VRCPackageClient({
 			baseUrl,
 			operatorToken: this.role === 'operator' && trimmedToken ? trimmedToken : undefined,
 			userToken: this.role === 'moderator' && trimmedToken ? trimmedToken : undefined
 		});
 	});
-
-	pipelineInfo = $derived.by<PipelineChannelInfo>(() => this.client.getPipelineChannelInfo());
 
 	coordinatorHostname = $derived.by(() => {
 		try {
@@ -166,6 +164,7 @@ class AdminSessionStore {
 		this.coordinatorUrl = url;
 		this.authenticated = false;
 		this.verifiedAt = null;
+		this.operatorStatus = null;
 		this.lastError = null;
 		this.persistToSessionStorage();
 	}
@@ -176,6 +175,7 @@ class AdminSessionStore {
 			this.token = '';
 			this.authenticated = false;
 			this.verifiedAt = null;
+			this.operatorStatus = null;
 			this.lastError = null;
 			this.persistToSessionStorage();
 		}
@@ -185,6 +185,7 @@ class AdminSessionStore {
 		this.token = rawToken;
 		this.authenticated = false;
 		this.verifiedAt = null;
+		this.operatorStatus = null;
 		this.lastError = null;
 	}
 
@@ -227,13 +228,15 @@ class AdminSessionStore {
 		this.isProbing = true;
 		try {
 			if (this.role === 'operator') {
-				const res = await this.client.operator.catalog.list({ limit: 1 });
+				const status = await this.client.operator.status();
+				this.operatorStatus = status;
 				this.authenticated = true;
 				this.verifiedAt = new Date().toISOString();
 				this.lastProbeState = 'measured';
-				this.lastProbeMessage = `Operator session verified via GET /v1/operator/catalog (${res.packages.length} row sample).`;
+				this.lastProbeMessage = `Operator session verified via GET /v1/operator/status (${status.environment}, schema ${status.d1SchemaState}).`;
 			} else {
 				const res = await this.client.moderator.ratings.list({ limit: 1 });
+				this.operatorStatus = null;
 				this.authenticated = true;
 				this.verifiedAt = new Date().toISOString();
 				this.lastProbeState = 'measured';
@@ -244,6 +247,7 @@ class AdminSessionStore {
 		} catch (err) {
 			this.authenticated = false;
 			this.verifiedAt = null;
+			this.operatorStatus = null;
 			this.lastProbeState = 'failed';
 			this.lastError = formatAdminError(err);
 			return false;
@@ -256,6 +260,7 @@ class AdminSessionStore {
 		this.token = '';
 		this.authenticated = false;
 		this.verifiedAt = null;
+		this.operatorStatus = null;
 		this.lastError = null;
 		this.lastProbeMessage = 'Session cleared from runtime memory and sessionStorage.';
 		this.lastProbeState = 'unverified';

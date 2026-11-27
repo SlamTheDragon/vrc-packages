@@ -47,7 +47,7 @@
 			{@const active = item.id === activeId}
 			{@const Icon = item.icon}
 			{@const cls = cn(
-				'group relative flex items-center justify-between gap-3 px-[13px] py-2 text-sm font-medium rounded-xl no-underline transition-colors duration-150 cursor-pointer overflow-hidden',
+				'group relative flex items-center justify-between gap-3 px-3 py-2 text-sm font-medium rounded-xl no-underline transition-colors duration-150 cursor-pointer overflow-hidden',
 				active
 					? 'bg-primary/20 text-sidebar-primary border border-sidebar-primary/40 font-semibold shadow-2xs'
 					: 'text-sidebar-foreground/80 hover:text-sidebar-foreground hover:bg-sidebar-accent border border-transparent'
@@ -92,7 +92,7 @@
 					<span
 						aria-hidden={collapsed || undefined}
 						class={cn(
-							'text-[11px] px-1.5 py-0.2 rounded font-mono tabular-nums bg-muted text-muted-foreground border border-border shrink-0 whitespace-nowrap transition-[opacity,transform] duration-150 ease-out',
+							'text-[11px] px-1.5 py-0.5 rounded font-mono tabular-nums bg-muted text-muted-foreground border border-border shrink-0 whitespace-nowrap transition-[opacity,transform] duration-150 ease-out',
 							collapsed ? 'opacity-0 -translate-x-2 pointer-events-none' : 'opacity-100 translate-x-0'
 						)}
 					>

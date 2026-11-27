@@ -2,6 +2,7 @@
 	import type { Snippet } from 'svelte';
 	import { cn } from '$lib/utils';
 	import type { DataTableColumn } from '$lib/components/ui/types';
+	import Checkbox from '$lib/components/ui/forms/Checkbox.svelte';
 
 	interface Props {
 		columns: DataTableColumn[];
@@ -59,23 +60,20 @@
 		}
 	}
 
-	function handleCheckboxClick(event: MouseEvent, index: number, key: string) {
-		const target = event.target as HTMLInputElement;
-		const checked = target.checked;
-
+	function handleCheckboxToggle(event: MouseEvent, index: number, key: string, nextChecked: boolean) {
 		if (event.shiftKey && lastCheckedIndex !== null && lastCheckedIndex !== index) {
 			const start = Math.min(lastCheckedIndex, index);
 			const end = Math.max(lastCheckedIndex, index);
 			const keysInRange = data.slice(start, end + 1).map((r) => String(r[keyField] ?? ''));
 
-			if (checked) {
+			if (nextChecked) {
 				selectedIds = Array.from(new Set([...selectedIds, ...keysInRange]));
 			} else {
 				const removeSet = new Set(keysInRange);
 				selectedIds = selectedIds.filter((id) => !removeSet.has(id));
 			}
 		} else {
-			if (checked) {
+			if (nextChecked) {
 				if (!selectedIds.includes(key)) {
 					selectedIds = [...selectedIds, key];
 				}
@@ -175,14 +173,14 @@
 			<tr class="border-b border-border text-muted-foreground font-semibold uppercase tracking-wider">
 				{#if selectable}
 					<th scope="col" class={cn(headerCellClass, 'w-10 text-center')}>
-						<input
-							type="checkbox"
-							checked={isAllSelected}
-							indeterminate={isIndeterminate}
-							aria-label="Select all visible rows"
-							onclick={(e) => { e.stopPropagation(); toggleSelectAll(); }}
-							class="size-4 rounded-sm border border-input bg-background accent-primary cursor-pointer"
-						/>
+						<div class="inline-flex items-center justify-center" onclick={(e) => e.stopPropagation()}>
+							<Checkbox
+								checked={isAllSelected}
+								indeterminate={isIndeterminate}
+								ariaLabel="Select all visible rows"
+								onclick={() => toggleSelectAll()}
+							/>
+						</div>
 					</th>
 				{/if}
 				{#each columns as col (col.key)}
@@ -237,13 +235,13 @@
 							{@const rowKey = String(row[keyField] ?? '')}
 							{@const isChecked = selectedIds.includes(rowKey)}
 							<td class={cn(bodyCellClass, 'w-10 text-center')} onclick={(e) => e.stopPropagation()}>
-								<input
-									type="checkbox"
-									checked={isChecked}
-									aria-label={`Select row ${rowKey}`}
-									onclick={(e) => handleCheckboxClick(e, idx, rowKey)}
-									class="size-4 rounded-sm border border-input bg-background accent-primary cursor-pointer"
-								/>
+								<div class="inline-flex items-center justify-center">
+									<Checkbox
+										checked={isChecked}
+										ariaLabel={`Select row ${rowKey}`}
+										onclick={(e) => handleCheckboxToggle(e, idx, rowKey, !isChecked)}
+									/>
+								</div>
 							</td>
 						{/if}
 						{#each columns as col (col.key)}

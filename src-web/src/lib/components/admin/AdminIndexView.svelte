@@ -75,13 +75,13 @@
 		{
 			id: 'operator-policies',
 			href: '/operator?tab=policies',
-			title: 'Source Profiles & Auto-Queue',
-			summary: 'Configure crawl authorization profiles and host auto-queue rules.',
+			title: 'Steering Profiles & Suppression',
+			summary: 'Configure crawl steering profiles, domain pools, and target suppression rules.',
 			category: 'operator',
-			badgeLabel: 'POLICIES',
+			badgeLabel: 'STEERING',
 			badgeVariant: 'neutral',
 			icon: SlidersHorizontal,
-			keywords: 'source access profiles auto queue rules rate limits'
+			keywords: 'steering profiles suppressed targets auto promote rate limits'
 		},
 		{
 			id: 'operator-governance',
@@ -246,14 +246,14 @@
 		<div class="px-4 py-3 flex flex-col gap-1">
 			<span class="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">SDK Channel</span>
 			<span class="text-sm font-mono font-medium text-foreground truncate">
-				{adminSession.pipelineInfo.sdkPackage}
+				vrc-packages-api-preview
 			</span>
 		</div>
 
 		<div class="px-4 py-3 flex flex-col gap-1">
-			<span class="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Protocol Bridge</span>
-			<span class="text-sm font-mono font-medium text-foreground">
-				{adminSession.pipelineInfo.previewBridgeActive ? 'HYBRID' : 'NATIVE'}
+			<span class="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Environment</span>
+			<span class="text-sm font-mono font-medium text-foreground uppercase">
+				{adminSession.operatorStatus?.environment ?? 'NATIVE'}
 			</span>
 		</div>
 	</section>
@@ -351,10 +351,8 @@
 						category: 'Pipeline Identity'
 					},
 					{
-						key: 'Native Moderator Namespace',
-						value: adminSession.pipelineInfo.nativeModeratorSupport
-							? 'native (vrc-packages-api-preview)'
-							: 'unavailable',
+						key: 'Protocol Client',
+						value: 'Direct VRCPackageClient (zero shim)',
 						category: 'Protocol Compatibility'
 					},
 					{

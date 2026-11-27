@@ -1,23 +1,24 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import type {
-		CatalogPackage,
-		SourceAccessProfile,
-		AutoQueueRule,
-		LeadRow,
-		LeadStatus,
-		TakedownRecord
-	} from 'vrc-packages-api';
 	import {
 		VRCPApiError,
-		type DelegatedClaimRecord,
 		type AppCandidateRecord,
-		type OperatorNodeRecord,
-		type OperatorNodeStatus,
+		type CatalogPackage,
+		type DelegatedClaimRecord,
+		type LeadRow,
+		type LeadStatus,
 		type OperatorJobRecord,
 		type OperatorJobState,
-		type Platform
-	} from '$lib/api/admin-client';
+		type OperatorNodeRecord,
+		type OperatorNodeStatus,
+		type OperatorStatusResponse,
+		type Platform,
+		type PriorityLane,
+		type SteeringProfile,
+		type SuppressedTarget,
+		type TakedownRecord
+	} from 'vrc-packages-api';
+	import Badge from '$lib/components/ui/feedback/Badge.svelte';
 	import Button from '$lib/components/ui/forms/Button.svelte';
 	import Notice from '$lib/components/ui/feedback/Notice.svelte';
 	import Tabs from '$lib/components/ui/navigation/Tabs.svelte';
@@ -43,16 +44,18 @@
 	let isLoadingMoreJobs = $state(false);
 	let loadError = $state<string | null>(null);
 
+	let operatorStatus = $state<OperatorStatusResponse | null>(null);
 	let packages = $state<CatalogPackage[]>([]);
 	let catalogCursor = $state<string | null>(null);
-	let profiles = $state<SourceAccessProfile[]>([]);
-	let rules = $state<AutoQueueRule[]>([]);
+	let profiles = $state<SteeringProfile[]>([]);
+	let suppressedTargets = $state<SuppressedTarget[]>([]);
 	let leads = $state<LeadRow[]>([]);
 	let leadStatusFilter = $state<LeadStatus>('pending_review');
 	let jobs = $state<OperatorJobRecord[]>([]);
 	let jobsNextCursor = $state<string | null>(null);
 	let jobsStateFilter = $state<'all' | OperatorJobState>('all');
 	let jobsPlatformFilter = $state<'all' | Platform>('all');
+	let jobsPriorityFilter = $state<'all' | PriorityLane>('all');
 	let nodes = $state<OperatorNodeRecord[]>([]);
 	let nodesNextCursor = $state<string | null>(null);
 	let nodesStatusFilter = $state<'all' | OperatorNodeStatus>('all');
@@ -64,9 +67,20 @@
 		adminSession.authenticated && adminSession.role === 'operator' && adminSession.tokenValidation.valid
 	);
 
+	let envBadgeVariant = $derived<'amber' | 'sky' | 'danger' | 'neutral'>(
+		operatorStatus?.environment === 'production'
+			? 'danger'
+			: operatorStatus?.environment === 'preview'
+				? 'sky'
+				: operatorStatus?.environment === 'development'
+					? 'amber'
+					: 'neutral'
+	);
+
 	let activeProfileCount = $derived(profiles.filter((p) => !p.disabledAt).length);
-	let activeRuleCount = $derived(rules.filter((r) => !r.disabledAt).length);
 	let activeNodeCount = $derived(nodes.filter((n) => n.status === 'active').length);
+	let claimableJobCount = $derived(operatorStatus?.queueReadiness.claimableJobs ?? jobs.filter((j) => j.claimabilityBlockers.length === 0).length);
+	let blockedJobCount = $derived(operatorStatus?.queueReadiness.blockedJobs ?? jobs.filter((j) => j.claimabilityBlockers.length > 0).length);
 	let pendingGovernanceCount = $derived(
 		takedowns.filter((t) => t.reviewStatus === 'pending').length +
 			claims.filter((c) => c.reviewStatus === 'pending').length
@@ -74,7 +88,7 @@
 
 	const operatorTabs = $derived([
 		{ id: 'catalog', label: 'Catalog', count: packages.length },
-		{ id: 'policies', label: 'Policies', count: activeProfileCount },
+		{ id: 'policies', label: 'Steering', count: activeProfileCount },
 		{ id: 'leads', label: 'Leads & Jobs', count: leads.length + jobs.length },
 		{ id: 'nodes', label: 'Nodes', count: nodes.length },
 		{ id: 'governance', label: 'Governance', count: pendingGovernanceCount }
@@ -82,6 +96,7 @@
 
 	onMount(() => {
 		adminSession.hydrateFromSessionStorage();
+		operatorStatus = adminSession.operatorStatus;
 		const tabParam = new URLSearchParams(window.location.search).get('tab');
 		if (tabParam && VALID_TABS.includes(tabParam as OperatorTabId)) {
 			activeTab = tabParam;
@@ -112,7 +127,7 @@
 	function formatPlaneFailure(label: string, err: unknown, previewListing: boolean): string {
 		const base = `${label}: ${formatAdminError(err)}`;
 		if (previewListing && isNotFoundError(err)) {
-			return `${base} (target Coordinator Worker may predate cloudflare-worker/v2026.11.2-pre)`;
+			return `${base} (target Coordinator Worker may predate Version 0 routes)`;
 		}
 		return base;
 	}
@@ -128,6 +143,14 @@
 				run: () => Promise<void>;
 			}[] = [
 				{
+					label: 'Status',
+					run: async () => {
+						const res = await adminSession.client.operator.status();
+						operatorStatus = res;
+						adminSession.operatorStatus = res;
+					}
+				},
+				{
 					label: 'Catalog',
 					run: async () => {
 						const res = await adminSession.client.operator.catalog.list({ limit: 50 });
@@ -136,17 +159,17 @@
 					}
 				},
 				{
-					label: 'Source Profiles',
+					label: 'Steering Profiles',
 					run: async () => {
-						const res = await adminSession.client.operator.sourceProfiles.list({ limit: 50 });
+						const res = await adminSession.client.operator.steeringProfiles.list({ limit: 50 });
 						profiles = res.profiles;
 					}
 				},
 				{
-					label: 'Auto-Queue Rules',
+					label: 'Suppressed Targets',
 					run: async () => {
-						const res = await adminSession.client.operator.autoQueueRules.list({ limit: 50 });
-						rules = res.rules;
+						const res = await adminSession.client.operator.suppressedTargets.list({ limit: 50 });
+						suppressedTargets = res.targets;
 					}
 				},
 				{
@@ -166,6 +189,7 @@
 						const res = await adminSession.client.operator.jobs.list({
 							state: jobsStateFilter === 'all' ? undefined : jobsStateFilter,
 							platform: jobsPlatformFilter === 'all' ? undefined : jobsPlatformFilter,
+							priorityLane: jobsPriorityFilter === 'all' ? undefined : jobsPriorityFilter,
 							limit: 50
 						});
 						jobs = res.jobs;
@@ -220,7 +244,7 @@
 			if (errors.length > 0) {
 				loadError = errors.join(' | ');
 			} else if (notifyOnSuccess) {
-				toastStore.success('Synchronized all 9 operator planes.', 'Sync Complete');
+				toastStore.success('Synchronized all operator planes.', 'Sync Complete');
 			}
 		} finally {
 			isLoading = false;
@@ -244,10 +268,12 @@
 
 	async function handleJobsFilterChange(
 		nextState: 'all' | OperatorJobState,
-		nextPlatform: 'all' | Platform
+		nextPlatform: 'all' | Platform,
+		nextPriority: 'all' | PriorityLane
 	) {
 		jobsStateFilter = nextState;
 		jobsPlatformFilter = nextPlatform;
+		jobsPriorityFilter = nextPriority;
 		if (!hasOperatorSession) return;
 		loadError = null;
 		isLoadingJobs = true;
@@ -255,6 +281,7 @@
 			const res = await adminSession.client.operator.jobs.list({
 				state: nextState === 'all' ? undefined : nextState,
 				platform: nextPlatform === 'all' ? undefined : nextPlatform,
+				priorityLane: nextPriority === 'all' ? undefined : nextPriority,
 				limit: 50
 			});
 			jobs = res.jobs;
@@ -274,6 +301,7 @@
 			const res = await adminSession.client.operator.jobs.list({
 				state: jobsStateFilter === 'all' ? undefined : jobsStateFilter,
 				platform: jobsPlatformFilter === 'all' ? undefined : jobsPlatformFilter,
+				priorityLane: jobsPriorityFilter === 'all' ? undefined : jobsPriorityFilter,
 				limit: 50,
 				cursor: jobsNextCursor
 			});
@@ -333,13 +361,21 @@
 	)}
 >
 	<header class="flex items-center justify-between gap-3 flex-wrap shrink-0">
-		<div class="flex items-center gap-2.5 min-w-0">
+		<div class="flex items-center gap-2.5 min-w-0 flex-wrap">
 			<h1 class="text-lg font-semibold tracking-tight text-foreground text-balance">
 				Operator Console
 			</h1>
 			<span class="hidden sm:inline-block text-xs font-mono text-muted-foreground truncate">
 				{adminSession.coordinatorHostname}
 			</span>
+			{#if operatorStatus}
+				<Badge variant={envBadgeVariant} size="xs">
+					{operatorStatus.environment.toUpperCase()}
+				</Badge>
+				<Badge variant={operatorStatus.d1SchemaState === 'v0-17' ? 'emerald' : 'amber'} size="xs">
+					{operatorStatus.d1SchemaState}
+				</Badge>
+			{/if}
 		</div>
 
 		{#if hasOperatorSession}
@@ -375,10 +411,12 @@
 				<span
 					class={cn(
 						'size-2 rounded-full shrink-0',
-						activeNodeCount > 0 ? 'bg-sidebar-primary' : 'bg-muted-foreground/50'
+						(operatorStatus?.queueReadiness.activeNodes ?? activeNodeCount) > 0 ? 'bg-sidebar-primary' : 'bg-muted-foreground/50'
 					)}
 				></span>
-				<span class="text-base font-semibold text-foreground tabular-nums">{activeNodeCount}</span>
+				<span class="text-base font-semibold text-foreground tabular-nums">
+					{operatorStatus?.queueReadiness.activeNodes ?? activeNodeCount}
+				</span>
 				<span class="text-xs text-muted-foreground tabular-nums">/ {nodes.length} fleet</span>
 			</div>
 		</Button>
@@ -389,16 +427,16 @@
 			onclick={() => (activeTab = 'leads')}
 			class="h-auto w-full rounded-none px-4 py-2.5 flex-col items-start justify-start text-left gap-0.5 hover:bg-muted/40"
 		>
-			<span class="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Leads &amp; Jobs</span>
+			<span class="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Claimable Jobs</span>
 			<div class="flex items-center gap-2">
 				<span
 					class={cn(
 						'size-2 rounded-full shrink-0',
-						leads.length > 0 ? 'bg-chart-2' : 'bg-muted-foreground/50'
+						blockedJobCount > 0 ? 'bg-warning' : claimableJobCount > 0 ? 'bg-chart-2' : 'bg-muted-foreground/50'
 					)}
 				></span>
-				<span class="text-base font-semibold text-foreground tabular-nums">{leads.length}</span>
-				<span class="text-xs text-muted-foreground tabular-nums">/ {jobs.length} jobs</span>
+				<span class="text-base font-semibold text-foreground tabular-nums">{claimableJobCount}</span>
+				<span class="text-xs text-muted-foreground tabular-nums">/ {blockedJobCount} blocked</span>
 			</div>
 		</Button>
 
@@ -408,16 +446,18 @@
 			onclick={() => (activeTab = 'policies')}
 			class="h-auto w-full rounded-none px-4 py-2.5 flex-col items-start justify-start text-left gap-0.5 hover:bg-muted/40"
 		>
-			<span class="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Source Policies</span>
+			<span class="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Steering Profiles</span>
 			<div class="flex items-center gap-2">
 				<span
 					class={cn(
 						'size-2 rounded-full shrink-0',
-						activeProfileCount > 0 ? 'bg-sidebar-primary' : 'bg-muted-foreground/50'
+						(operatorStatus?.queueReadiness.activeSteeringProfiles ?? activeProfileCount) > 0 ? 'bg-sidebar-primary' : 'bg-muted-foreground/50'
 					)}
 				></span>
-				<span class="text-base font-semibold text-foreground tabular-nums">{activeProfileCount}</span>
-				<span class="text-xs text-muted-foreground tabular-nums">/ {activeRuleCount} rules</span>
+				<span class="text-base font-semibold text-foreground tabular-nums">
+					{operatorStatus?.queueReadiness.activeSteeringProfiles ?? activeProfileCount}
+				</span>
+				<span class="text-xs text-muted-foreground tabular-nums">/ {suppressedTargets.length} blocked</span>
 			</div>
 		</Button>
 
@@ -427,16 +467,20 @@
 			onclick={() => (activeTab = 'governance')}
 			class="h-auto w-full rounded-none px-4 py-2.5 flex-col items-start justify-start text-left gap-0.5 hover:bg-muted/40"
 		>
-			<span class="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Pending Governance</span>
+			<span class="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Pending Triage</span>
 			<div class="flex items-center gap-2">
 				<span
 					class={cn(
 						'size-2 rounded-full shrink-0',
-						pendingGovernanceCount > 0 ? 'bg-warning' : 'bg-sidebar-primary'
+						(operatorStatus?.queueReadiness.pendingLeads ?? leads.length) + pendingGovernanceCount > 0
+							? 'bg-warning'
+							: 'bg-sidebar-primary'
 					)}
 				></span>
-				<span class="text-base font-semibold text-foreground tabular-nums">{pendingGovernanceCount}</span>
-				<span class="text-xs text-muted-foreground tabular-nums">/ {apps.length} apps</span>
+				<span class="text-base font-semibold text-foreground tabular-nums">
+					{operatorStatus?.queueReadiness.pendingLeads ?? leads.length}
+				</span>
+				<span class="text-xs text-muted-foreground tabular-nums">leads / {pendingGovernanceCount} gov</span>
 			</div>
 		</Button>
 	</section>
@@ -458,13 +502,14 @@
 			<CatalogInitPanel
 				bind:packages
 				bind:nextCursor={catalogCursor}
+				{operatorStatus}
 				isLoading={isLoading}
 				onRefresh={() => refreshAllPlanes()}
 			/>
 		{:else if activeTab === 'policies'}
 			<PoliciesPanel
 				bind:profiles
-				bind:rules
+				bind:suppressedTargets
 				isLoading={isLoading}
 				onRefresh={() => refreshAllPlanes()}
 			/>
@@ -476,6 +521,7 @@
 				bind:jobsNextCursor
 				bind:jobsStateFilter
 				bind:jobsPlatformFilter
+				bind:jobsPriorityFilter
 				isLoading={isLoading || isLoadingJobs}
 				isLoadingMoreJobs={isLoadingMoreJobs}
 				onFilterChange={handleLeadFilterChange}

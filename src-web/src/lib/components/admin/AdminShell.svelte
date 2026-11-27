@@ -17,8 +17,12 @@
 		KeyRound,
 		Palette,
 		LogOut,
-		LayoutGrid
+		LayoutGrid,
+		Pin,
+		PinOff
 	} from '@lucide/svelte';
+
+	const SIDEBAR_PIN_KEY = 'vrcp_admin_sidebar_pinned';
 
 	let {
 		currentPath = '/',
@@ -34,13 +38,28 @@
 
 	let isHovered = $state(false);
 	let isKeyboardFocused = $state(false);
+	let isPinned = $state(false);
 	let mobileMenuOpen = $state(false);
 
-	let sidebarExpanded = $derived(isHovered || isKeyboardFocused);
+	let sidebarExpanded = $derived(isPinned || isHovered || isKeyboardFocused);
 
 	onMount(() => {
 		adminSession.hydrateFromSessionStorage();
+		try {
+			isPinned = window.localStorage.getItem(SIDEBAR_PIN_KEY) === 'true';
+		} catch {
+			// ignore storage errors
+		}
 	});
+
+	function toggleSidebarPin() {
+		isPinned = !isPinned;
+		try {
+			window.localStorage.setItem(SIDEBAR_PIN_KEY, String(isPinned));
+		} catch {
+			// ignore storage errors
+		}
+	}
 
 	const workspaceLinks = [
 		{ id: '/operator', href: '/operator', label: 'Operator', icon: ShieldCheck },
@@ -109,11 +128,11 @@
 			sidebarExpanded ? 'w-64' : 'w-16'
 		)}
 	>
-		<div class="h-14 px-[19px] border-b border-sidebar-border flex items-center shrink-0">
+		<div class="h-14 px-4 border-b border-sidebar-border flex items-center justify-between gap-2 shrink-0">
 			<a
 				href="/"
 				aria-label="VRC Packages Admin Home"
-				class="flex items-center gap-3 min-w-0 text-sidebar-foreground no-underline"
+				class="flex items-center gap-3 min-w-0 text-sidebar-foreground no-underline px-1"
 			>
 				<VRCPEmblem size={24} color="var(--sidebar-primary)" />
 				<span
@@ -126,6 +145,22 @@
 					VRC Packages
 				</span>
 			</a>
+			{#if sidebarExpanded}
+				<Button
+					variant="ghost"
+					size="xs"
+					aria-label={isPinned ? 'Unpin sidebar' : 'Pin sidebar open'}
+					title={isPinned ? 'Unpin sidebar' : 'Pin sidebar open'}
+					onclick={toggleSidebarPin}
+					class="min-w-7 px-1.5 shrink-0 text-muted-foreground hover:text-sidebar-primary"
+				>
+					{#if isPinned}
+						<PinOff size={14} />
+					{:else}
+						<Pin size={14} />
+					{/if}
+				</Button>
+			{/if}
 		</div>
 
 		<SidebarNav
@@ -145,7 +180,7 @@
 					title={adminSession.authenticated ? `Signed in (${adminSession.role})` : 'Guest session'}
 					aria-label={sidebarExpanded ? undefined : adminSession.authenticated ? `Signed in (${adminSession.role})` : 'Guest session'}
 					class={cn(
-						'w-[38px] shrink-0 flex justify-center transition-opacity duration-150 ease-out',
+						'w-10 shrink-0 flex justify-center transition-opacity duration-150 ease-out',
 						sidebarExpanded ? 'opacity-0 pointer-events-none' : 'opacity-100'
 					)}
 				>
