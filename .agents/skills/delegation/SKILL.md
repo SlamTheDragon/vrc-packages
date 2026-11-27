@@ -60,13 +60,14 @@ Each packet must define:
    - **Task**: Bounded objective, forbidden paths (never cross sector boundaries or edit `README.md`/root `CHANGELOG.md`), and required deliverables under `outputs/<DELEGATE_ID>/`.
 
 ### Coordinator Tracking Ledgers (`delegates/<GOAL_NAME>/coordinator/`)
+(In non-Antigravity harnesses, `invoke_subagent`, `ask_question`, and line-bounded `read_file` map to equivalent subagent dispatch, user-clarification, and ranged file-read tools.)
 - **`dispatch.csv`**:
   ```csv
   role_id,assigned_agent,sector,slice,dispatch_state,packet_path,notes
   ```
 - **`integration.csv`**:
   ```csv
-  queue_id,status,role_source,target_files,patch_path,reviewer_decision,integration_order,notes
+  task_id,source_path,target_path,action,source_sha256,target_sha256,status,notes
   ```
 
 ### Delegate Sandbox Deliverables (`delegates/<GOAL_NAME>/outputs/<DELEGATE_ID>/`)

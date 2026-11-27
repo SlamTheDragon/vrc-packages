@@ -8,7 +8,7 @@ description: "Apply whenever creating, editing, styling, or reviewing UI compone
 This rule governs interactive UI surfaces in **Sector 2** (`src-crawler-client/`: Tauri 2 + Svelte 5 + `shadcn-svelte`) and **Sector 3** (`src-web/`, `src-web-search/`: Astro 7 + Svelte 5). It does not govern backend Worker, Crawler Node, SDK, or root pipeline code.
 
 1. **Authoritative UX research corpus (`docs/research/UIUX/`)**:
-   - Read [`docs/research/UIUX/README.md`](../../docs/research/UIUX/README.md) and its five chapters before designing, styling, or refactoring any interface:
+   - Read [`docs/research/UIUX/README.md`](../../docs/research/UIUX/README.md) plus only the chapter(s) relevant to the current UI change; read all five chapters below only when designing a new view or performing a major layout refactor:
      - [`01-first-principles/`](../../docs/research/UIUX/01-first-principles/01-cognitive-load-and-perception.md): cognitive load, Gestalt proximity, interaction laws, and visual salience (`03-visual-salience-and-eye-tracking.md`, F/Z/Gutenberg scan patterns, 90/10 grayscale rule).
      - [`02-view-architecture-and-density/`](../../docs/research/UIUX/02-view-architecture-and-density/01-preventing-view-bloat.md): view budgeting, progressive disclosure with peeking cues (`02-progressive-disclosure.md`), and Tufte Data-Ink Ratio (`03-information-density-and-data-ink-ratio.md`).
      - [`03-branching-and-contextual-actions/`](../../docs/research/UIUX/03-branching-and-contextual-actions/01-contextual-action-scoping.md): selection-scoped actions and dynamic field pruning (`02-branching-navigation-trees.md`).

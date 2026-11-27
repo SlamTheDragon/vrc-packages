@@ -7,7 +7,7 @@ description: "Enforce the 5-sector slice and gating iterative lifecycle, ledger 
 
 1. **Verify sector anchor and understand the codebase**:
    - Confirm the active responsibility sector (`crawler-network`, `desktop-client`, `api-web`, `pipeline`, or `legal-research`) before editing.
-   - Read targeted contexts along the truth cascade (`VISION.md` -> `SYSTEM_MAP.md` -> `LEGAL.md` -> sector spec -> live source) and record working hypotheses in the active `task_tracker.md`.
+   - Read only task-relevant entries along the truth cascade (`VISION.md` -> `SYSTEM_MAP.md`, plus `LEGAL.md` only when touching crawling, platforms, data, or APIs -> relevant rows of the active sector ledger and upstream `handoff.md` -> sector spec -> live source), stop expanding once the slice boundary is clear, and record working hypotheses in the active `task_tracker.md`.
 2. **Clarify ambiguity with question hooks**:
    - Clarify underspecified requirements, architectural trade-offs, legal expansion boundaries, or UI primitive additions via `ask_question` before drafting implementation plans.
 3. **Produce sequential gated iterations**:

@@ -1,6 +1,6 @@
 ---
-trigger: always_on
-description: "Maintain pending multi-product changelog notes in docs/source/CHANGELOG.md and preserve generated root publication snapshots."
+trigger: model_decision
+description: "Apply whenever authoring, reviewing, or transferring changelog entries in docs/source/CHANGELOG.md, submitting Publication Requests, or clearing verified ledger rows."
 ---
 
 # 05: Changelog Appendation and Channel Management

@@ -11,11 +11,12 @@ Execute this procedure whenever conversational context feels degraded, after a c
    - Discard unverified conversational memory about code, branches, or test results.
    - Run `git status --short`, `git diff --stat`, and `git branch --show-current` to verify physical ground state on disk.
    - Confirm the active sector anchor (`docs/scratch-<sector>/`, or read-only if unanchored).
-2. **Re-anchor from the Level 0 to Level 4 truth cascade**:
+2. **Re-anchor from the Level 0 to Level 4 truth cascade (with stopping rule)**:
+   - Follow context priority order: System/developer instructions -> Latest user request and prior prompt lineage -> Owning `AGENTS.md` -> Task-relevant owner decisions (`VISION.md`) -> Task-relevant ledgers and live source.
    - Read `T00` and the relevant `Txx` segment in [`docs/research/decisions/VISION.md`](../../../docs/research/decisions/VISION.md).
-   - Read [`docs/source/SYSTEM_MAP.md`](../../../docs/source/SYSTEM_MAP.md) to verify single-owner contracts and keep **research corpus** (`docs/research/`, `LEGAL.md`), **current source truth** (`docs/source/`), and **untouched human wiki** (`docs/applications/`) strictly separate.
-   - Read the active 3-file sector ledger (`docs/scratch-<sector>/IMPLEMENTATION_PLAN.md`, `task_tracker.md`, `handoff.md`) plus permitted upstream `handoff.md` ledgers and `docs/scratch-pipeline/handoff.md` notices.
-   - Refer back to the original user prompt lineage; never extrapolate beyond accepted owner intent.
+   - Read [`docs/source/SYSTEM_MAP.md`](../../../docs/source/SYSTEM_MAP.md) to verify single-owner contracts and keep **research corpus** (`docs/research/`, and `LEGAL.md` only when touching crawling, platforms, data, or APIs), **current source truth** (`docs/source/`), and **untouched human wiki** (`docs/applications/`) strictly separate.
+   - Read only the task-relevant rows of the active sector ledger (`docs/scratch-<sector>/`) and matching upstream `handoff.md` notices (`docs/scratch-pipeline/handoff.md`); stop expanding once the slice boundary and prompt lineage are clear.
+   - Never extrapolate beyond accepted owner intent.
 3. **Triangulate boundaries (live AST/contracts over decoupled RAG)**:
    - Do not rely on isolated text snippets or summaries.
    - Trace the full chain inside the owning sector:

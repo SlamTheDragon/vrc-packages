@@ -1,6 +1,6 @@
 ---
-trigger: always_on
-description: "Portable runtime toolchains, validation scripts, and strict Sector 4 root distribution pipeline isolation."
+trigger: model_decision
+description: "Apply whenever running builds, tests, lint scripts, or modifying Sector 4 root distribution pipeline files (package.json, scripts/, .github/workflows/, config*.versions.json, tests/)."
 ---
 
 # 08: Toolchains, Validation Scripts, and Root Pipeline Isolation

@@ -1,6 +1,6 @@
 ---
-trigger: always_on
-description: "Documentation domain separation (research corpus vs current source truth), Markdown table, Mermaid diagram, KaTeX, and link invariants."
+trigger: model_decision
+description: "Apply whenever creating, editing, or reviewing Markdown documentation, research corpus records, tables, Mermaid diagrams, KaTeX math, or repository links."
 ---
 
 # 07: Documentation, Research Partition, Diagram, and Table Invariants

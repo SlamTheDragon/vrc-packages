@@ -2,13 +2,16 @@
 
 Antigravity discovers flat `.agents/rules/*.md` files, each `.agents/skills/<name>/SKILL.md`, and directory-scoped `AGENTS.md` files across the monorepo.
 
-## Authoritative Truth Cascade
+## Context Priority Order and Authoritative Truth Cascade
 
-Follow the Level 0 to Level 4 cascade before editing any code or document:
+Follow this priority order on every task (newer user instructions can redirect active work):
+**System/developer instructions -> Latest user request and prior prompt lineage -> Applicable `AGENTS.md` -> Task-relevant owner decisions (`VISION.md`) -> Task-relevant ledgers and live source.**
+
+Start with the smallest relevant context along the Level 0 to Level 4 cascade and stop once the active dependency boundary is clear:
 
 1. **Level 0 (Owner Intent)**: [`AGENTS.md`](../AGENTS.md) and [`VISION.md`](../docs/research/decisions/VISION.md) (`T00` and task-relevant `Txx`).
-2. **Level 1 (System Routing and Legal Boundaries)**: [`SYSTEM_MAP.md`](../docs/source/SYSTEM_MAP.md) and [`LEGAL.md`](../LEGAL.md).
-3. **Level 2 (Active Sector Control Ledger and Handoff Cascade)**: Anchored 3-file sector ledger (`docs/scratch-<sector>/IMPLEMENTATION_PLAN.md`, `task_tracker.md`, `handoff.md`) plus permitted upstream `handoff.md` ledgers (`Tier 1 Legal/Vision` -> `Tier 2 Worker/Schemas` -> `Tier 3 API/Network` -> `Tier 4 Crawler/Desktop` -> `Tier 5 Web`, overseen by Sector 4 `pipeline`).
+2. **Level 1 (System Routing and Legal Boundaries)**: [`SYSTEM_MAP.md`](../docs/source/SYSTEM_MAP.md), and [`LEGAL.md`](../LEGAL.md) (only when touching crawling, platforms, data, or APIs).
+3. **Level 2 (Active Sector Control Ledger and Handoff Cascade)**: Only task-relevant rows from the anchored 3-file sector ledger (`docs/scratch-<sector>/IMPLEMENTATION_PLAN.md`, `task_tracker.md`, `handoff.md`) plus permitted upstream `handoff.md` notices (`Tier 1 Legal/Vision` -> `Tier 2 Worker/Schemas` -> `Tier 3 API/Network` -> `Tier 4 Crawler/Desktop` -> `Tier 5 Web`, overseen by Sector 4 `pipeline`).
 4. **Level 3 (Three-Domain Documentation Partition)**:
    - **Current Source Truth**: [`docs/source/`](../docs/source/README.md) (`schemas/`, `specifications/`, `reliability/`) and the owning sector `AGENTS.md` (truth for system reliability and agreed schemas).
    - **Human Application Wiki**: [`docs/applications/`](../docs/applications/README.md) (**keep untouched**; stage proposed changes in [`docs/source/reliability/proposed_wiki_changes.md`](../docs/source/reliability/proposed_wiki_changes.md) until owner approval).
@@ -34,7 +37,7 @@ Follow the Level 0 to Level 4 cascade before editing any code or document:
 
 ## Master Rules (`.agents/rules/`)
 
-Rules `00` through `08` use `trigger: always_on`. Rule `09` uses `trigger: model_decision` for frontend UI surfaces:
+Rules `00` through `04` and `06` use `trigger: always_on`. Rules `05`, `07`, `08`, and `09` use `trigger: model_decision` so specialized formatting, changelog, pipeline, and UI rules load only when needed:
 
 - [`rules/00-authority-and-truth.md`](rules/00-authority-and-truth.md): Truth-source cascade, read-only default, sector write containment, read-upstream `handoff.md` cascade, three-domain doc partition (`docs/source/` vs `docs/applications/` vs `docs/research/`), Version 0 restructuring, and contradiction deferral.
 - [`rules/01-small-vertical-slices.md`](rules/01-small-vertical-slices.md): Iterative slice and gating lifecycle, 5-sector 3-file `docs/scratch-<sector>/` ledgers (`IMPLEMENTATION_PLAN.md`, `task_tracker.md`, `handoff.md`), pull-only Publication Requests, local commits vs gate pushes, and Pipeline-exclusive changelog transfer and verified-row clearing.

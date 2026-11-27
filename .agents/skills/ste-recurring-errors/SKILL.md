@@ -25,6 +25,7 @@ This skill applies to documentation, READMEs, pull requests, release notes, comm
 ## Guards
 
 - Preserve all facts, quantities, route paths, schema names, code identifiers, and legal meaning.
+- Treat `may` (permission) and `should` (recommendation) vs `must` (obligation) carefully: semantic modality overrides mechanical substitution whenever replacing a modal verb would alter policy or legal meaning.
 - Do not use em-dashes in prose. Use colons, parentheses, or periods instead.
 - If input text already complies with ASD-STE100, leave it unchanged.
 
