@@ -89,7 +89,7 @@ function balancedPromoRegex(tokens: string, anchor: "start" | "end" | "any"): Re
 export const MARKETING_BRACKETS = [
   balancedPromoRegex(CATEGORY_PROMO_TOKENS, "start"),
   balancedPromoRegex(CATEGORY_PROMO_TOKENS, "end"),
-  new RegExp(`^(?:${CATEGORY_PROMO_TOKENS}|${STATUS_PROMO_TOKENS})\\s+`, "gi"),
+  new RegExp(`^(?:${STATUS_PROMO_TOKENS})\\s+`, "gi"),
   balancedPromoRegex(STATUS_PROMO_TOKENS, "start"),
   balancedPromoRegex(STATUS_PROMO_TOKENS, "end"),
   balancedPromoRegex(INLINE_PROMO_TOKENS, "any")

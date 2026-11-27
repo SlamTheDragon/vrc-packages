@@ -610,5 +610,7 @@ describe("vrc-packages-network unit contracts", () => {
     expect(cleanTitle("凪 -Nagi-【オリジナル3Dモデル】")).toBe("凪 -Nagi-");
     expect(cleanTitle("オリジナル3Dモデル「イチゴ」")).toBe("オリジナル3Dモデル「イチゴ」");
     expect(cleanTitle("FREE Sample [VRC想定] Tool (VRChat)")).toBe("Sample Tool");
+    expect(cleanTitle("VRChat Shader Pack")).toBe("VRChat Shader Pack");
+    expect(cleanTitle("VRChat Particle Shader Asset")).toBe("VRChat Particle Shader Asset");
   });
 });
