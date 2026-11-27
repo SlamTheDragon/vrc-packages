@@ -83,7 +83,7 @@ export function handleCorsPreflight(request: Request, rawAllowedOrigins?: string
         status: 204,
         headers: {
           "Access-Control-Allow-Origin": matchedOrigin,
-          "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
+          "Access-Control-Allow-Methods": "GET, POST, PATCH, DELETE, OPTIONS",
           "Access-Control-Allow-Headers": "Authorization, Content-Type",
           "Access-Control-Max-Age": "600",
           "Cache-Control": "no-store",

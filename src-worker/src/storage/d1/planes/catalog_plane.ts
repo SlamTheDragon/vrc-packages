@@ -1,38 +1,73 @@
 import {
-  encodeCatalogCursor,
-  decodeCatalogCursor,
-  encodeCatalogDeltaCursor,
   CatalogSearchRequestSchema,
+  encodeCatalogCursor,
+  encodeCatalogDeltaCursor,
+  decodeCatalogCursor,
   type CatalogCursor,
-  type CatalogPackage,
-  type CatalogIdentityLink,
-  type PackageFront,
   type CatalogDelta,
   type CatalogDeltaCursor,
-  type ContentRating,
+  type CatalogListingSource,
+  type CatalogPackage,
+  type CatalogRelation,
   type CatalogSearchRequest,
-  type CatalogSearchResponse
+  type CatalogSearchResponse,
+  type ContentRating,
+  type VerificationStatus
 } from "vrc-packages-api";
-import { STOREFRONT_PLATFORMS, type Platform } from "vrc-packages-network/node";
+import type { Platform } from "vrc-packages-network/node";
 import { cleanTrackingParams } from "vrc-packages-network/catalog-hygiene";
-import type { DesktopToolEvidence } from "../../../domain/classification/taxonomy.ts";
-import type { AvatarCompatibility } from "../../../domain/classification/avatar_compatibility.ts";
+import {
+  normalizeQualityFlags,
+  normalizeTags
+} from "../../../domain/classification/taxonomy.ts";
 import type {
-  CanonicalUmbrella,
   CanonicalLifecycle,
+  CanonicalUmbrella,
   EvidenceKind,
   LinkReviewState,
-  CanonicalPackage,
-  IdentityLink
+  ListingRelation,
+  ListingSource
 } from "../definitions.ts";
 import { D1PlaneContext } from "./shared_context.ts";
+
+interface CatalogPackageDbRow {
+  canonical_id: string;
+  umbrella: CanonicalUmbrella;
+  category: string;
+  lifecycle: CanonicalLifecycle;
+  tombstone_reason: string | null;
+  display_name: string;
+  owner_key: string | null;
+  owner_name: string | null;
+  verification_status: VerificationStatus;
+  verified_by_app_id: string | null;
+  vpm_id: string | null;
+  vpm_latest_version: string | null;
+  vpm_repo_url: string | null;
+  summary: string | null;
+  tags_json: string;
+  quality_flags_json: string;
+  created_at: string;
+  updated_at: string;
+  published_at: string | null;
+  timestamp_confidence: CatalogPackage["timestampConfidence"] | null;
+  content_rating: ContentRating | null;
+}
+
+const CATALOG_PACKAGE_SELECT_COLS = `
+  p.canonical_id, p.umbrella, p.category, p.lifecycle, p.tombstone_reason,
+  p.display_name, p.owner_key, p.owner_name, p.verification_status, p.verified_by_app_id,
+  p.vpm_id, p.vpm_latest_version, p.vpm_repo_url,
+  p.summary, p.tags_json, p.quality_flags_json,
+  p.created_at, p.updated_at, p.published_at, p.timestamp_confidence, p.content_rating
+`;
 
 export class CatalogPlane {
   constructor(private readonly ctx: D1PlaneContext) {}
 
   async getCatalogEpoch(): Promise<string> {
     const row = await this.ctx.db
-      .prepare("SELECT value FROM coordinator_meta WHERE key='catalog_epoch'")
+      .prepare("SELECT value FROM coordinator_meta WHERE key = 'catalog_epoch'")
       .first<{ value: string }>();
     if (row) return row.value;
     const initial = "epoch-d1-" + crypto.randomUUID();
@@ -41,7 +76,7 @@ export class CatalogPlane {
       .bind(initial)
       .run();
     const stored = await this.ctx.db
-      .prepare("SELECT value FROM coordinator_meta WHERE key='catalog_epoch'")
+      .prepare("SELECT value FROM coordinator_meta WHERE key = 'catalog_epoch'")
       .first<{ value: string }>();
     if (!stored) throw new Error("Catalog epoch initialization failed");
     return stored.value;
@@ -51,166 +86,176 @@ export class CatalogPlane {
     const next = "epoch-d1-" + crypto.randomUUID();
     await this.ctx.db
       .prepare(
-        "INSERT INTO coordinator_meta(key, value) VALUES ('catalog_epoch', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value"
+        "INSERT INTO coordinator_meta(key, value) VALUES ('catalog_epoch', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
       )
       .bind(next)
       .run();
     return next;
   }
 
-  async buildCatalogPackagesBatch(
-    pkgRows: Array<{
-      canonical_id: string;
-      umbrella: string;
-      category: string;
-      lifecycle: string;
-      display_name: string;
-      vpm_id: string | null;
-      created_at: string;
-      updated_at: string;
-      published_at?: string | null;
-      timestamp_confidence?: string | null;
-      content_rating?: string | null;
-    }>
-  ): Promise<CatalogPackage[]> {
+  private parseJsonArray(raw: string): string[] {
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === "string") : [];
+    } catch {
+      return [];
+    }
+  }
+
+  private parsePublishClasses(raw: string | null): { allowsFacts: boolean; allowsProse: boolean } {
+    if (raw === null || raw === undefined) {
+      return { allowsFacts: true, allowsProse: true };
+    }
+    const classes = this.parseJsonArray(raw);
+    return {
+      allowsFacts: classes.includes("normalized_facts"),
+      allowsProse: classes.includes("creator_prose")
+    };
+  }
+
+  async buildCatalogPackagesBatch(pkgRows: CatalogPackageDbRow[]): Promise<CatalogPackage[]> {
     if (pkgRows.length === 0) return [];
-    const canonicalIds = pkgRows.map((p) => p.canonical_id);
+    const canonicalIds = pkgRows.map((row) => row.canonical_id);
     const placeholders = canonicalIds.map(() => "?").join(",");
 
-    const linkRes = await this.ctx.db
-      .prepare(
-        `SELECT il.link_id, il.canonical_id, il.source_key, il.evidence_kind, il.confidence, il.created_at,
-        sap.publish_classes_json
-      FROM identity_links il
-      LEFT JOIN (
-        SELECT sv.source_key, sap_inner.publish_classes_json
-        FROM source_versions sv
-        JOIN source_access_profiles sap_inner ON sv.source_profile_id = sap_inner.profile_id
-        WHERE sv.version_no = (
-          SELECT MAX(sv2.version_no) FROM source_versions sv2 WHERE sv2.source_key = sv.source_key
+    const [sourcesRes, relationsRes] = await Promise.all([
+      this.ctx.db
+        .prepare(
+          `SELECT ls.source_link_id, ls.canonical_id, ls.source_key, ls.platform, ls.storefront_url,
+                  ls.evidence_kind, ls.confidence, ls.review_state, ls.price, ls.currency,
+                  ls.availability, ls.observed_at, ls.reviewed_at, sp.publish_classes_json
+           FROM listing_sources ls
+           LEFT JOIN source_items si ON si.source_key = ls.source_key
+           LEFT JOIN steering_profiles sp ON sp.profile_id = si.steering_profile_id
+           WHERE ls.canonical_id IN (${placeholders}) AND ls.review_state = 'accepted'
+           ORDER BY ls.observed_at ASC, ls.source_link_id ASC`
         )
-      ) sap ON il.source_key = sap.source_key
-      WHERE il.canonical_id IN (${placeholders}) AND il.review_state='accepted'
-      ORDER BY il.created_at ASC`
-      )
-      .bind(...canonicalIds)
-      .all<{
-        link_id: string;
-        canonical_id: string;
-        source_key: string;
-        evidence_kind: string;
-        confidence: number;
-        created_at: string;
-        publish_classes_json: string | null;
-      }>();
-    const linksByCanonical = new Map<string, CatalogIdentityLink[]>();
-    const canonicalHasLinks = new Set<string>();
-    const canonicalHasPublishableLink = new Set<string>();
-    for (const l of linkRes.results || []) {
-      canonicalHasLinks.add(l.canonical_id);
-      let canPublish = true;
-      if (l.publish_classes_json !== null && l.publish_classes_json !== undefined) {
-        try {
-          const parsed = JSON.parse(l.publish_classes_json);
-          canPublish = Array.isArray(parsed) && parsed.length > 0 && parsed.includes("normalized_facts");
-        } catch {
-          canPublish = false;
-        }
+        .bind(...canonicalIds)
+        .all<{
+          source_link_id: string;
+          canonical_id: string;
+          source_key: string;
+          platform: Platform;
+          storefront_url: string;
+          evidence_kind: EvidenceKind;
+          confidence: number;
+          review_state: LinkReviewState;
+          price: number | null;
+          currency: string | null;
+          availability: "available" | "delisted" | "unknown";
+          observed_at: string;
+          reviewed_at: string | null;
+          publish_classes_json: string | null;
+        }>(),
+      this.ctx.db
+        .prepare(
+          `SELECT relation_id, source_canonical_id, target_canonical_id, target_avatar_base,
+                  relation_type, scope, confidence, evidence_source, feedback_up_count, feedback_down_count
+           FROM listing_relations
+           WHERE source_canonical_id IN (${placeholders})
+           ORDER BY created_at ASC, relation_id ASC`
+        )
+        .bind(...canonicalIds)
+        .all<{
+          relation_id: string;
+          source_canonical_id: string;
+          target_canonical_id: string | null;
+          target_avatar_base: string | null;
+          relation_type: CatalogRelation["relationType"];
+          scope: CatalogRelation["scope"];
+          confidence: number;
+          evidence_source: string;
+          feedback_up_count: number;
+          feedback_down_count: number;
+        }>()
+    ]);
+
+    const sourcesByCanonical = new Map<string, CatalogListingSource[]>();
+    const canonicalHasAnyAcceptedSource = new Set<string>();
+    const canonicalHasPublishableSource = new Set<string>();
+    const canonicalAllowsProse = new Set<string>();
+
+    for (const row of sourcesRes.results || []) {
+      canonicalHasAnyAcceptedSource.add(row.canonical_id);
+      const { allowsFacts, allowsProse } = this.parsePublishClasses(row.publish_classes_json);
+      if (!allowsFacts) continue;
+
+      canonicalHasPublishableSource.add(row.canonical_id);
+      if (allowsProse) {
+        canonicalAllowsProse.add(row.canonical_id);
       }
-      if (canPublish) {
-        canonicalHasPublishableLink.add(l.canonical_id);
-        const list = linksByCanonical.get(l.canonical_id) || [];
-        list.push({
-          linkId: l.link_id,
-          sourceKey: l.source_key,
-          evidenceKind: l.evidence_kind as CatalogIdentityLink["evidenceKind"],
-          confidence: l.confidence,
-          createdAt: l.created_at
-        });
-        linksByCanonical.set(l.canonical_id, list);
-      }
+
+      const list = sourcesByCanonical.get(row.canonical_id) || [];
+      list.push({
+        sourceLinkId: row.source_link_id,
+        sourceKey: row.source_key,
+        platform: row.platform,
+        storefrontUrl: row.storefront_url,
+        evidenceKind: row.evidence_kind,
+        confidence: row.confidence,
+        reviewState: row.review_state,
+        price: row.price,
+        currency: row.currency,
+        availability: row.availability,
+        observedAt: row.observed_at,
+        reviewedAt: row.reviewed_at
+      });
+      sourcesByCanonical.set(row.canonical_id, list);
     }
 
-    const frontRes = await this.ctx.db
-      .prepare(
-        `SELECT pf.front_id, pf.canonical_id, pf.source_key, pf.platform, pf.storefront_url, pf.price, pf.currency, pf.availability, pf.observed_at,
-        sap.publish_classes_json
-      FROM package_fronts pf
-      LEFT JOIN (
-        SELECT sv.source_key, sap_inner.publish_classes_json
-        FROM source_versions sv
-        JOIN source_access_profiles sap_inner ON sv.source_profile_id = sap_inner.profile_id
-        WHERE sv.version_no = (
-          SELECT MAX(sv2.version_no) FROM source_versions sv2 WHERE sv2.source_key = sv.source_key
-        )
-      ) sap ON pf.source_key = sap.source_key
-      WHERE pf.canonical_id IN (${placeholders})
-        AND EXISTS (
-          SELECT 1 FROM identity_links il
-          WHERE il.canonical_id = pf.canonical_id
-            AND il.source_key = pf.source_key
-            AND il.review_state = 'accepted'
-        )
-      ORDER BY pf.observed_at ASC, pf.front_id ASC`
-      )
-      .bind(...canonicalIds)
-      .all<{
-        front_id: string;
-        canonical_id: string;
-        source_key: string;
-        platform: string;
-        storefront_url: string;
-        price: number | null;
-        currency: string | null;
-        availability: string;
-        observed_at: string;
-        publish_classes_json: string | null;
-      }>();
-    const frontsByCanonical = new Map<string, PackageFront[]>();
-    for (const f of frontRes.results || []) {
-      let canPublish = true;
-      if (f.publish_classes_json !== null && f.publish_classes_json !== undefined) {
-        try {
-          const parsed = JSON.parse(f.publish_classes_json);
-          canPublish = Array.isArray(parsed) && parsed.length > 0 && parsed.includes("normalized_facts");
-        } catch {
-          canPublish = false;
-        }
-      }
-      if (canPublish) {
-        const list = frontsByCanonical.get(f.canonical_id) || [];
-        list.push({
-          frontId: f.front_id,
-          canonicalId: f.canonical_id,
-          sourceKey: f.source_key,
-          platform: f.platform as PackageFront["platform"],
-          storefrontUrl: f.storefront_url,
-          price: f.price,
-          currency: f.currency,
-          availability: f.availability as PackageFront["availability"],
-          observedAt: f.observed_at
-        });
-        frontsByCanonical.set(f.canonical_id, list);
-      }
+    const relationsByCanonical = new Map<string, CatalogRelation[]>();
+    for (const rel of relationsRes.results || []) {
+      const list = relationsByCanonical.get(rel.source_canonical_id) || [];
+      list.push({
+        relationId: rel.relation_id,
+        sourceCanonicalId: rel.source_canonical_id,
+        targetCanonicalId: rel.target_canonical_id,
+        targetAvatarBase: rel.target_avatar_base,
+        relationType: rel.relation_type,
+        scope: rel.scope,
+        confidence: rel.confidence,
+        evidenceSource: rel.evidence_source,
+        feedbackUpCount: rel.feedback_up_count ?? 0,
+        feedbackDownCount: rel.feedback_down_count ?? 0
+      });
+      relationsByCanonical.set(rel.source_canonical_id, list);
     }
 
     return pkgRows
-      .filter((pkg) => !canonicalHasLinks.has(pkg.canonical_id) || canonicalHasPublishableLink.has(pkg.canonical_id))
-      .map((pkg) => ({
-        canonicalId: pkg.canonical_id,
-        umbrella: pkg.umbrella as CatalogPackage["umbrella"],
-        category: pkg.category,
-        lifecycle: pkg.lifecycle as CatalogPackage["lifecycle"],
-        displayName: pkg.display_name,
-        vpmId: pkg.vpm_id,
-        createdAt: pkg.created_at,
-        updatedAt: pkg.updated_at,
-        publishedAt: pkg.published_at ?? null,
-        timestampConfidence: (pkg.timestamp_confidence as CatalogPackage["timestampConfidence"]) ?? null,
-        contentRating: (pkg.content_rating as CatalogPackage["contentRating"]) || "general",
-        acceptedLinks: linksByCanonical.get(pkg.canonical_id) || [],
-        fronts: frontsByCanonical.get(pkg.canonical_id) || []
-      }));
+      .filter(
+        (pkg) =>
+          !canonicalHasAnyAcceptedSource.has(pkg.canonical_id) ||
+          canonicalHasPublishableSource.has(pkg.canonical_id)
+      )
+      .map((pkg) => {
+        const allowSummary =
+          !canonicalHasAnyAcceptedSource.has(pkg.canonical_id) ||
+          canonicalAllowsProse.has(pkg.canonical_id);
+        return {
+          canonicalId: pkg.canonical_id,
+          umbrella: pkg.umbrella,
+          category: pkg.category,
+          lifecycle: pkg.lifecycle,
+          displayName: pkg.display_name,
+          ownerKey: pkg.owner_key ?? null,
+          ownerName: pkg.owner_name ?? null,
+          verificationStatus: pkg.verification_status ?? "unverified",
+          verifiedByAppId: pkg.verified_by_app_id ?? null,
+          vpmId: pkg.vpm_id,
+          vpmLatestVersion: pkg.vpm_latest_version ?? null,
+          vpmRepoUrl: pkg.vpm_repo_url ?? null,
+          summary: allowSummary ? (pkg.summary ?? null) : null,
+          tags: normalizeTags(this.parseJsonArray(pkg.tags_json)),
+          qualityFlags: normalizeQualityFlags(this.parseJsonArray(pkg.quality_flags_json)),
+          createdAt: pkg.created_at,
+          updatedAt: pkg.updated_at,
+          publishedAt: pkg.published_at ?? null,
+          timestampConfidence: pkg.timestamp_confidence ?? null,
+          contentRating: pkg.content_rating || "general",
+          sources: sourcesByCanonical.get(pkg.canonical_id) || [],
+          relations: relationsByCanonical.get(pkg.canonical_id) || []
+        };
+      });
   }
 
   async listCanonicalPackagesPage(
@@ -219,10 +264,11 @@ export class CatalogPlane {
     options: { includeAllRatings?: boolean } = {}
   ): Promise<{ packages: CatalogPackage[]; nextCursor: string | null }> {
     if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error("Catalog limit must be 1..100");
-    const conditions: string[] = ["p.content_rating != 'prohibited'"];
+    const conditions: string[] = ["p.content_rating != 'prohibited'", "p.lifecycle != 'deleted'"];
     const params: (string | number)[] = [];
     if (!options.includeAllRatings) {
       conditions.push("p.content_rating = 'general'");
+      conditions.push("p.lifecycle != 'delisted'");
     }
     if (cursor) {
       conditions.push("(p.created_at, p.canonical_id) < (?, ?)");
@@ -230,29 +276,23 @@ export class CatalogPlane {
     }
     const where = `WHERE ${conditions.join(" AND ")}`;
     params.push(limit + 1);
+
     const pkgRes = await this.ctx.db
       .prepare(
-        `SELECT p.canonical_id, p.umbrella, p.category, p.lifecycle, p.display_name, p.vpm_id, p.created_at, p.updated_at, p.published_at, p.timestamp_confidence, p.content_rating FROM canonical_packages p ${where}
-      ORDER BY p.created_at DESC, p.canonical_id DESC LIMIT ?`
+        `SELECT ${CATALOG_PACKAGE_SELECT_COLS}
+         FROM canonical_packages p
+         ${where}
+         ORDER BY p.created_at DESC, p.canonical_id DESC
+         LIMIT ?`
       )
       .bind(...params)
-      .all<{
-        canonical_id: string;
-        umbrella: string;
-        category: string;
-        lifecycle: string;
-        display_name: string;
-        vpm_id: string | null;
-        created_at: string;
-        updated_at: string;
-        published_at?: string | null;
-        timestamp_confidence?: string | null;
-        content_rating?: string | null;
-      }>();
+      .all<CatalogPackageDbRow>();
+
     const pkgRows = pkgRes.results || [];
     const visible = pkgRows.slice(0, limit);
     const last = visible.at(-1);
     const packages = await this.buildCatalogPackagesBatch(visible);
+
     return {
       packages,
       nextCursor:
@@ -268,84 +308,80 @@ export class CatalogPlane {
   ): Promise<{ epoch: string; deltas: CatalogDelta[]; nextCursor: string | null }> {
     if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error("Catalog limit must be 1..100");
     const epoch = await this.getCatalogEpoch();
-    const conditions: string[] = [];
+    const conditions: string[] = [
+      "(p.content_rating = 'general' OR p.tombstone_reason = 'rating_withdrawn')"
+    ];
     const params: (string | number)[] = [];
     if (cursor) {
-      conditions.push("(d.updated_at, d.canonical_id) > (?, ?)");
+      conditions.push("(p.updated_at, p.canonical_id) > (?, ?)");
       params.push(cursor.updatedAt, cursor.canonicalId);
     }
-    const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+    const where = `WHERE ${conditions.join(" AND ")}`;
     params.push(limit + 1);
-    const query = `SELECT d.canonical_id, d.umbrella, d.category, d.lifecycle, d.display_name, d.vpm_id, d.created_at, d.updated_at, d.published_at, d.timestamp_confidence, d.content_rating, d.delta_action FROM (
-      SELECT p.canonical_id, p.umbrella, p.category, p.lifecycle, p.display_name, p.vpm_id, p.created_at, p.updated_at, p.published_at, p.timestamp_confidence, p.content_rating,
-        CASE WHEN p.lifecycle = 'delisted' THEN 'delist' ELSE 'upsert' END AS delta_action
-      FROM canonical_packages p WHERE p.content_rating = 'general'
-      UNION ALL
-      SELECT t.canonical_id, NULL AS umbrella, NULL AS category, 'delisted' AS lifecycle, '' AS display_name, NULL AS vpm_id, '' AS created_at, t.recorded_at AS updated_at, NULL AS published_at, NULL AS timestamp_confidence, 'general' AS content_rating, 'delist' AS delta_action
-      FROM catalog_tombstones t
-      WHERE NOT EXISTS (
-        SELECT 1 FROM canonical_packages p
-        WHERE p.canonical_id = t.canonical_id
-          AND p.updated_at = t.recorded_at
-          AND p.lifecycle = 'delisted'
-          AND p.content_rating = 'general'
+
+    const res = await this.ctx.db
+      .prepare(
+        `SELECT ${CATALOG_PACKAGE_SELECT_COLS}
+         FROM canonical_packages p
+         ${where}
+         ORDER BY p.updated_at ASC, p.canonical_id ASC
+         LIMIT ?`
       )
-    ) d ${where}
-    ORDER BY d.updated_at ASC, d.canonical_id ASC LIMIT ?`;
-    const pkgRes = await this.ctx.db
-      .prepare(query)
       .bind(...params)
-      .all<{
-        canonical_id: string;
-        umbrella: string | null;
-        category: string | null;
-        lifecycle: string;
-        display_name: string;
-        vpm_id: string | null;
-        created_at: string;
-        updated_at: string;
-        published_at?: string | null;
-        timestamp_confidence?: string | null;
-        content_rating?: string | null;
-        delta_action: "upsert" | "delist";
-      }>();
-    const pkgRows = pkgRes.results || [];
-    const visible = pkgRows.slice(0, limit);
+      .all<CatalogPackageDbRow>();
+
+    const rows = res.results || [];
+    const visible = rows.slice(0, limit);
     const last = visible.at(-1);
-    const nonDelisted = visible.filter((p) => p.delta_action !== "delist");
-    const builtPackages = await this.buildCatalogPackagesBatch(nonDelisted as any);
-    const packageMap = new Map(builtPackages.map((p) => [p.canonicalId, p]));
+
+    const upsertCandidates = visible.filter(
+      (row) =>
+        row.content_rating === "general" &&
+        row.lifecycle !== "delisted" &&
+        row.lifecycle !== "deleted" &&
+        row.tombstone_reason === null
+    );
+    const builtPackages = await this.buildCatalogPackagesBatch(upsertCandidates);
+    const packageMap = new Map(builtPackages.map((pkg) => [pkg.canonicalId, pkg]));
+
     const deltas: CatalogDelta[] = [];
-    for (const pkg of visible) {
-      if (pkg.delta_action === "delist") {
+    for (const row of visible) {
+      const isTombstone =
+        row.lifecycle === "delisted" ||
+        row.lifecycle === "deleted" ||
+        row.tombstone_reason !== null ||
+        row.content_rating !== "general";
+      if (isTombstone) {
         deltas.push({
           action: "delist",
-          canonicalId: pkg.canonical_id,
-          updatedAt: pkg.updated_at
+          canonicalId: row.canonical_id,
+          updatedAt: row.updated_at
+        });
+        continue;
+      }
+
+      const built = packageMap.get(row.canonical_id);
+      if (built) {
+        deltas.push({
+          action: "upsert",
+          canonicalId: row.canonical_id,
+          updatedAt: row.updated_at,
+          package: built
         });
       } else {
-        const item = packageMap.get(pkg.canonical_id);
-        if (item) {
-          deltas.push({
-            action: "upsert",
-            canonicalId: pkg.canonical_id,
-            updatedAt: pkg.updated_at,
-            package: item
-          });
-        } else {
-          deltas.push({
-            action: "delist",
-            canonicalId: pkg.canonical_id,
-            updatedAt: pkg.updated_at
-          });
-        }
+        deltas.push({
+          action: "delist",
+          canonicalId: row.canonical_id,
+          updatedAt: row.updated_at
+        });
       }
     }
+
     return {
       epoch,
       deltas,
       nextCursor:
-        pkgRows.length > limit && last
+        rows.length > limit && last
           ? encodeCatalogDeltaCursor({ updatedAt: last.updated_at, canonicalId: last.canonical_id })
           : null
     };
@@ -357,7 +393,7 @@ export class CatalogPlane {
   ): Promise<CatalogSearchResponse> {
     const parsed = CatalogSearchRequestSchema.parse(input);
     const limit = Math.min(Math.max(parsed.limit ?? 50, 1), 100);
-    const conditions = ["p.lifecycle != 'delisted'"];
+    const conditions = ["p.lifecycle NOT IN ('delisted', 'deleted')"];
     const params: (string | number)[] = [];
 
     if (!options.isAgeVerified) {
@@ -387,13 +423,15 @@ export class CatalogPlane {
       params.push(parsed.category);
     }
     if (parsed.platform) {
-      conditions.push("EXISTS (SELECT 1 FROM package_fronts pf WHERE pf.canonical_id = p.canonical_id AND pf.platform = ?)");
+      conditions.push(
+        "EXISTS (SELECT 1 FROM listing_sources ls WHERE ls.canonical_id = p.canonical_id AND ls.review_state = 'accepted' AND ls.platform = ?)"
+      );
       params.push(parsed.platform);
     }
     if (parsed.query && parsed.query.trim()) {
       const term = `%${parsed.query.trim()}%`;
-      conditions.push("(p.display_name LIKE ? OR p.category LIKE ? OR p.vpm_id LIKE ?)");
-      params.push(term, term, term);
+      conditions.push("(p.display_name LIKE ? OR p.category LIKE ? OR p.vpm_id LIKE ? OR p.owner_name LIKE ?)");
+      params.push(term, term, term, term);
     }
 
     if (parsed.tags && parsed.tags.length > 0) {
@@ -404,15 +442,15 @@ export class CatalogPlane {
         conditions.push(`(
           p.category LIKE ? OR
           p.umbrella = ? OR
+          LOWER(p.tags_json) LIKE ? OR
           EXISTS (
-            SELECT 1 FROM identity_links il
-            JOIN avatar_compatibilities ac ON ac.source_key = il.source_key
-            WHERE il.canonical_id = p.canonical_id AND il.review_state = 'accepted'
-              AND (ac.target_avatar_base LIKE ? OR ac.scope LIKE ?)
+            SELECT 1 FROM listing_relations lr
+            WHERE lr.source_canonical_id = p.canonical_id
+              AND (LOWER(lr.target_avatar_base) LIKE ? OR lr.scope LIKE ?)
           ) OR
           p.display_name LIKE ?
         )`);
-        params.push(tagPattern, cleanTag, tagPattern, tagPattern, tagPattern);
+        params.push(tagPattern, cleanTag, tagPattern, tagPattern, tagPattern, tagPattern);
       }
     }
 
@@ -435,7 +473,7 @@ export class CatalogPlane {
 
     const whereClause = conditions.join(" AND ");
     const countRes = await this.ctx.db
-      .prepare(`SELECT COUNT(*) as total FROM canonical_packages p WHERE ${whereClause}`)
+      .prepare(`SELECT COUNT(*) AS total FROM canonical_packages p WHERE ${whereClause}`)
       .bind(...params)
       .first<{ total: number }>();
 
@@ -446,33 +484,21 @@ export class CatalogPlane {
     const queryParams = [...params, limit + 1];
     const res = await this.ctx.db
       .prepare(
-        `SELECT p.canonical_id, p.umbrella, p.category, p.lifecycle, p.display_name, p.vpm_id, p.created_at, p.updated_at, p.published_at, p.timestamp_confidence, p.content_rating
-      FROM canonical_packages p
-      WHERE ${whereClause}
-      ${orderClause}
-      LIMIT ?`
+        `SELECT ${CATALOG_PACKAGE_SELECT_COLS}
+         FROM canonical_packages p
+         WHERE ${whereClause}
+         ${orderClause}
+         LIMIT ?`
       )
       .bind(...queryParams)
-      .all<{
-        canonical_id: string;
-        umbrella: string;
-        category: string;
-        lifecycle: string;
-        display_name: string;
-        vpm_id: string | null;
-        created_at: string;
-        updated_at: string;
-        published_at: string | null;
-        timestamp_confidence: string | null;
-        content_rating: string | null;
-      }>();
+      .all<CatalogPackageDbRow>();
 
     const rows = res.results || [];
     const hasMore = rows.length > limit;
     const visible = hasMore ? rows.slice(0, limit) : rows;
     const last = visible.at(-1);
 
-    const items: CatalogPackage[] = await this.buildCatalogPackagesBatch(visible);
+    const items = await this.buildCatalogPackagesBatch(visible);
 
     const nextCursor =
       hasMore && last
@@ -495,26 +521,41 @@ export class CatalogPlane {
     platform: Platform;
     sourceUrl: string;
     latestDigest: string;
-    latestVersionNo?: number;
+    payloadJson?: string;
+    observedAt?: string;
+    complete?: boolean;
+    issuesJson?: string;
+    steeringProfileId?: string | null;
     goneAt?: string | null;
   }): Promise<void> {
+    const observedAt = item.observedAt ?? new Date(this.ctx.now()).toISOString();
     await this.ctx.db
       .prepare(
-        `INSERT INTO source_items (source_key, platform, source_url, latest_digest, latest_version_no, gone_at)
-      VALUES (?, ?, ?, ?, ?, ?)
-      ON CONFLICT(source_key) DO UPDATE SET
-        platform = excluded.platform,
-        source_url = excluded.source_url,
-        latest_digest = excluded.latest_digest,
-        latest_version_no = excluded.latest_version_no,
-        gone_at = excluded.gone_at`
+        `INSERT INTO source_items (
+           source_key, platform, source_url, latest_digest, payload_json, observed_at,
+           complete, issues_json, steering_profile_id, gone_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(source_key) DO UPDATE SET
+           platform = excluded.platform,
+           source_url = excluded.source_url,
+           latest_digest = excluded.latest_digest,
+           payload_json = excluded.payload_json,
+           observed_at = excluded.observed_at,
+           complete = excluded.complete,
+           issues_json = excluded.issues_json,
+           steering_profile_id = COALESCE(excluded.steering_profile_id, source_items.steering_profile_id),
+           gone_at = excluded.gone_at`
       )
       .bind(
         item.sourceKey,
         item.platform,
         item.sourceUrl,
         item.latestDigest,
-        item.latestVersionNo ?? 1,
+        item.payloadJson ?? "{}",
+        observedAt,
+        item.complete === false ? 0 : 1,
+        item.issuesJson ?? "[]",
+        item.steeringProfileId ?? null,
         item.goneAt ?? null
       )
       .run();
@@ -526,52 +567,91 @@ export class CatalogPlane {
     category: string;
     lifecycle: CanonicalLifecycle;
     displayName: string;
+    ownerKey?: string | null;
+    ownerName?: string | null;
+    verificationStatus?: VerificationStatus;
+    verifiedByAppId?: string | null;
     vpmId?: string | null;
+    vpmLatestVersion?: string | null;
+    vpmRepoUrl?: string | null;
+    summary?: string | null;
+    tags?: string[];
+    qualityFlags?: string[];
     createdAt?: string;
     updatedAt?: string;
     publishedAt?: string | null;
     timestampConfidence?: "confirmed" | "inferred" | "observed" | null;
     contentRating?: ContentRating | null;
-  }): Promise<
-    CanonicalPackage & {
-      publishedAt?: string | null;
-      timestampConfidence?: string | null;
-      contentRating?: ContentRating;
-    }
-  > {
+  }): Promise<CatalogPackage> {
     const now = new Date(this.ctx.now()).toISOString();
     const createdAt = pkg.createdAt ?? now;
     const updatedAt = pkg.updatedAt ?? now;
-    const vpmId = pkg.vpmId ?? null;
     const publishedAt = pkg.publishedAt ?? null;
     const timestampConfidence = pkg.timestampConfidence ?? (publishedAt ? "confirmed" : null);
     const contentRating = pkg.contentRating ?? "general";
+
     const existing = await this.ctx.db
       .prepare("SELECT content_rating FROM canonical_packages WHERE canonical_id = ?")
       .bind(pkg.canonicalId)
       .first<{ content_rating: string }>();
+
+    const tombstoneReason =
+      existing && existing.content_rating === "general" && contentRating !== "general"
+        ? "rating_withdrawn"
+        : pkg.lifecycle === "deleted"
+          ? "deleted"
+          : pkg.lifecycle === "delisted"
+            ? "delisted"
+            : null;
+
     await this.ctx.db
       .prepare(
-        `INSERT INTO canonical_packages (canonical_id, umbrella, category, lifecycle, display_name, vpm_id, created_at, updated_at, published_at, timestamp_confidence, content_rating)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(canonical_id) DO UPDATE SET
-        umbrella = excluded.umbrella,
-        category = excluded.category,
-        lifecycle = excluded.lifecycle,
-        display_name = excluded.display_name,
-        vpm_id = COALESCE(excluded.vpm_id, canonical_packages.vpm_id),
-        updated_at = excluded.updated_at,
-        published_at = COALESCE(excluded.published_at, canonical_packages.published_at),
-        timestamp_confidence = COALESCE(excluded.timestamp_confidence, canonical_packages.timestamp_confidence),
-        content_rating = excluded.content_rating`
+        `INSERT INTO canonical_packages(
+           canonical_id, umbrella, category, lifecycle, tombstone_reason,
+           display_name, owner_key, owner_name,
+           verification_status, verified_by_app_id,
+           vpm_id, vpm_latest_version, vpm_repo_url,
+           summary, tags_json, quality_flags_json, attributes_json,
+           created_at, updated_at, published_at, timestamp_confidence, content_rating
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', ?, ?, ?, ?, ?)
+         ON CONFLICT(canonical_id) DO UPDATE SET
+           umbrella = excluded.umbrella,
+           category = excluded.category,
+           lifecycle = excluded.lifecycle,
+           tombstone_reason = excluded.tombstone_reason,
+           display_name = excluded.display_name,
+           owner_key = COALESCE(excluded.owner_key, canonical_packages.owner_key),
+           owner_name = COALESCE(excluded.owner_name, canonical_packages.owner_name),
+           verification_status = COALESCE(excluded.verification_status, canonical_packages.verification_status),
+           verified_by_app_id = COALESCE(excluded.verified_by_app_id, canonical_packages.verified_by_app_id),
+           vpm_id = COALESCE(excluded.vpm_id, canonical_packages.vpm_id),
+           vpm_latest_version = COALESCE(excluded.vpm_latest_version, canonical_packages.vpm_latest_version),
+           vpm_repo_url = COALESCE(excluded.vpm_repo_url, canonical_packages.vpm_repo_url),
+           summary = COALESCE(excluded.summary, canonical_packages.summary),
+           tags_json = CASE WHEN excluded.tags_json != '[]' THEN excluded.tags_json ELSE canonical_packages.tags_json END,
+           quality_flags_json = excluded.quality_flags_json,
+           updated_at = excluded.updated_at,
+           published_at = COALESCE(excluded.published_at, canonical_packages.published_at),
+           timestamp_confidence = COALESCE(excluded.timestamp_confidence, canonical_packages.timestamp_confidence),
+           content_rating = excluded.content_rating`
       )
       .bind(
         pkg.canonicalId,
         pkg.umbrella,
         pkg.category,
         pkg.lifecycle,
+        tombstoneReason,
         pkg.displayName,
-        vpmId,
+        pkg.ownerKey ?? null,
+        pkg.ownerName ?? null,
+        pkg.verificationStatus ?? "unverified",
+        pkg.verifiedByAppId ?? null,
+        pkg.vpmId ?? null,
+        pkg.vpmLatestVersion ?? null,
+        pkg.vpmRepoUrl ?? null,
+        pkg.summary ?? null,
+        JSON.stringify(normalizeTags(pkg.tags)),
+        JSON.stringify(normalizeQualityFlags(pkg.qualityFlags)),
         createdAt,
         updatedAt,
         publishedAt,
@@ -579,446 +659,235 @@ export class CatalogPlane {
         contentRating
       )
       .run();
-    if (existing && existing.content_rating === "general" && contentRating !== "general") {
-      await this.ctx.db
-        .prepare("INSERT OR IGNORE INTO catalog_tombstones (canonical_id, reason, recorded_at) VALUES (?, 'rating_withdrawn', ?)")
-        .bind(pkg.canonicalId, updatedAt)
-        .run();
-    }
+
     const result = await this.getCanonicalPackage(pkg.canonicalId);
     return result!;
   }
 
-  async getCanonicalPackage(
-    canonicalId: string
-  ): Promise<
-    | (CanonicalPackage & {
-        publishedAt?: string | null;
-        timestampConfidence?: string | null;
-        contentRating?: ContentRating;
-      })
-    | null
-  > {
+  async getCanonicalPackage(canonicalId: string): Promise<CatalogPackage | null> {
     const row = await this.ctx.db
-      .prepare(
-        "SELECT canonical_id, umbrella, category, lifecycle, display_name, vpm_id, created_at, updated_at, published_at, timestamp_confidence, content_rating FROM canonical_packages WHERE canonical_id = ?"
-      )
+      .prepare(`SELECT ${CATALOG_PACKAGE_SELECT_COLS} FROM canonical_packages p WHERE p.canonical_id = ?`)
       .bind(canonicalId)
-      .first<{
-        canonical_id: string;
-        umbrella: CanonicalUmbrella;
-        category: string;
-        lifecycle: CanonicalLifecycle;
-        display_name: string;
-        vpm_id: string | null;
-        created_at: string;
-        updated_at: string;
-        published_at: string | null;
-        timestamp_confidence: string | null;
-        content_rating: string | null;
-      }>();
+      .first<CatalogPackageDbRow>();
     if (!row) return null;
-    return {
-      canonicalId: row.canonical_id,
-      umbrella: row.umbrella,
-      category: row.category,
-      lifecycle: row.lifecycle,
-      displayName: row.display_name,
-      vpmId: row.vpm_id,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-      publishedAt: row.published_at,
-      timestampConfidence: row.timestamp_confidence as "confirmed" | "inferred" | "observed" | null,
-      contentRating: (row.content_rating as ContentRating) || "general"
-    };
+    const built = await this.buildCatalogPackagesBatch([row]);
+    return built[0] ?? null;
   }
 
-  async createIdentityLink(link: {
-    linkId?: string;
-    sourceKey: string;
-    canonicalId: string;
-    evidenceKind: EvidenceKind;
-    confidence: number;
-    reviewState?: LinkReviewState;
-    createdAt?: string;
-    reviewedAt?: string | null;
-  }): Promise<IdentityLink> {
-    if (link.confidence < 0.0 || link.confidence > 1.0) {
-      throw new RangeError("confidence must be between 0.0 and 1.0");
-    }
-    const linkId = link.linkId ?? crypto.randomUUID();
-    const now = new Date(this.ctx.now()).toISOString();
-    const createdAt = link.createdAt ?? now;
-    const reviewState = link.reviewState ?? "provisional";
-    const reviewedAt = link.reviewedAt ?? (reviewState !== "provisional" ? now : null);
-    await this.ctx.db
-      .prepare(
-        `INSERT INTO identity_links (link_id, source_key, canonical_id, evidence_kind, confidence, review_state, created_at, reviewed_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-      )
-      .bind(linkId, link.sourceKey, link.canonicalId, link.evidenceKind, link.confidence, reviewState, createdAt, reviewedAt)
-      .run();
-
-    if (reviewState === "accepted" || reviewState === "provisional") {
-      await this.syncPackageFrontFromSourceItem(link.canonicalId, link.sourceKey);
-    }
-
-    return {
-      linkId,
-      sourceKey: link.sourceKey,
-      canonicalId: link.canonicalId,
-      evidenceKind: link.evidenceKind,
-      confidence: link.confidence,
-      reviewState,
-      createdAt,
-      reviewedAt
-    };
-  }
-
-  async getIdentityLinksForCanonical(canonicalId: string): Promise<IdentityLink[]> {
-    const res = await this.ctx.db
-      .prepare(
-        `SELECT link_id, source_key, canonical_id, evidence_kind, confidence, review_state, created_at, reviewed_at
-      FROM identity_links WHERE canonical_id = ? ORDER BY created_at ASC, link_id ASC`
-      )
-      .bind(canonicalId)
-      .all<{
-        link_id: string;
-        source_key: string;
-        canonical_id: string;
-        evidence_kind: EvidenceKind;
-        confidence: number;
-        review_state: LinkReviewState;
-        created_at: string;
-        reviewed_at: string | null;
-      }>();
-    return (res.results || []).map((row) => ({
-      linkId: row.link_id,
-      sourceKey: row.source_key,
-      canonicalId: row.canonical_id,
-      evidenceKind: row.evidence_kind,
-      confidence: row.confidence,
-      reviewState: row.review_state,
-      createdAt: row.created_at,
-      reviewedAt: row.reviewed_at
-    }));
-  }
-
-  async getIdentityLinksForSourceItem(sourceKey: string): Promise<IdentityLink[]> {
-    const res = await this.ctx.db
-      .prepare(
-        `SELECT link_id, source_key, canonical_id, evidence_kind, confidence, review_state, created_at, reviewed_at
-      FROM identity_links WHERE source_key = ? ORDER BY created_at ASC, link_id ASC`
-      )
-      .bind(sourceKey)
-      .all<{
-        link_id: string;
-        source_key: string;
-        canonical_id: string;
-        evidence_kind: EvidenceKind;
-        confidence: number;
-        review_state: LinkReviewState;
-        created_at: string;
-        reviewed_at: string | null;
-      }>();
-    return (res.results || []).map((row) => ({
-      linkId: row.link_id,
-      sourceKey: row.source_key,
-      canonicalId: row.canonical_id,
-      evidenceKind: row.evidence_kind,
-      confidence: row.confidence,
-      reviewState: row.review_state,
-      createdAt: row.created_at,
-      reviewedAt: row.reviewed_at
-    }));
-  }
-
-  async updateIdentityLinkReview(linkId: string, reviewState: LinkReviewState): Promise<boolean> {
-    const now = new Date(this.ctx.now()).toISOString();
-    const res = await this.ctx.db
-      .prepare("UPDATE identity_links SET review_state = ?, reviewed_at = ? WHERE link_id = ?")
-      .bind(reviewState, now, linkId)
-      .run();
-    return ((res.meta as { changes?: number } | undefined)?.changes ?? 0) > 0;
-  }
-
-  async deleteIdentityLink(linkId: string): Promise<boolean> {
-    const res = await this.ctx.db.prepare("DELETE FROM identity_links WHERE link_id = ?").bind(linkId).run();
-    return ((res.meta as { changes?: number } | undefined)?.changes ?? 0) > 0;
-  }
-
-  async listAvatarCompatibilities(sourceKey: string): Promise<AvatarCompatibility[]> {
-    const res = await this.ctx.db
-      .prepare(
-        `SELECT compatibility_id, source_key, target_avatar_base, scope, confidence, evidence_source
-      FROM avatar_compatibilities
-      WHERE source_key = ?
-      ORDER BY target_avatar_base ASC`
-      )
-      .bind(sourceKey)
-      .all<{
-        compatibility_id: string;
-        source_key: string;
-        target_avatar_base: string;
-        scope: "named_base" | "universal" | "uncertain";
-        confidence: "creator_declared" | "keyword_inferred" | "unverified";
-        evidence_source: string;
-      }>();
-    const rows = res.results || [];
-    return rows.map((r) => ({
-      compatibilityId: r.compatibility_id,
-      itemKey: r.source_key,
-      targetAvatarBase: r.target_avatar_base,
-      scope: r.scope,
-      confidence: r.confidence,
-      evidenceSource: r.evidence_source
-    }));
-  }
-
-  async recordDesktopToolEvidence(evidence: DesktopToolEvidence & { confidence: number }): Promise<void> {
-    const now = new Date(this.ctx.now()).toISOString();
-    await this.ctx.db
-      .prepare(
-        `INSERT INTO desktop_tool_evidence
-        (canonical_id, tool_subtype, supported_os, particular_vrchat_target, evidence_url, publisher_claim, confidence, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(canonical_id) DO UPDATE SET
-        tool_subtype = excluded.tool_subtype,
-        supported_os = excluded.supported_os,
-        particular_vrchat_target = excluded.particular_vrchat_target,
-        evidence_url = excluded.evidence_url,
-        publisher_claim = excluded.publisher_claim,
-        confidence = excluded.confidence`
-      )
-      .bind(
-        evidence.canonicalId,
-        evidence.toolSubtype,
-        JSON.stringify(evidence.supportedOS),
-        evidence.particularVRChatTarget ? 1 : 0,
-        evidence.evidenceUrl,
-        evidence.publisherClaim,
-        evidence.confidence,
-        now
-      )
-      .run();
-  }
-
-  async getDesktopToolEvidence(canonicalId: string): Promise<(DesktopToolEvidence & { confidence: number }) | null> {
-    const row = await this.ctx.db
-      .prepare(
-        `SELECT canonical_id, tool_subtype, supported_os, particular_vrchat_target, evidence_url, publisher_claim, confidence, created_at
-      FROM desktop_tool_evidence
-      WHERE canonical_id = ?`
-      )
-      .bind(canonicalId)
-      .first<{
-        canonical_id: string;
-        tool_subtype: DesktopToolEvidence["toolSubtype"];
-        supported_os: string;
-        particular_vrchat_target: number;
-        evidence_url: string;
-        publisher_claim: string;
-        confidence: number;
-        created_at: string;
-      }>();
-
-    if (!row) return null;
-
-    let supportedOS: DesktopToolEvidence["supportedOS"] = ["windows"];
-    try {
-      supportedOS = JSON.parse(row.supported_os);
-    } catch {
-      supportedOS = ["windows"];
-    }
-
-    return {
-      canonicalId: row.canonical_id,
-      toolSubtype: row.tool_subtype,
-      supportedOS,
-      particularVRChatTarget: row.particular_vrchat_target === 1,
-      evidenceUrl: row.evidence_url,
-      publisherClaim: row.publisher_claim,
-      confidence: row.confidence
-    };
-  }
-
-  async deleteCanonicalPackage(canonicalId: string): Promise<boolean> {
+  async deleteCanonicalPackage(canonicalId: string, actor = "operator-api", reason = "Package deleted"): Promise<boolean> {
     const existing = await this.ctx.db
-      .prepare("SELECT canonical_id, content_rating FROM canonical_packages WHERE canonical_id = ?")
+      .prepare("SELECT canonical_id, content_rating, lifecycle FROM canonical_packages WHERE canonical_id = ?")
       .bind(canonicalId)
-      .first<{ canonical_id: string; content_rating: string }>();
+      .first<{ canonical_id: string; content_rating: string; lifecycle: string }>();
+    if (!existing) return false;
 
-    await this.ctx.db.prepare("DELETE FROM identity_links WHERE canonical_id = ?").bind(canonicalId).run();
-    const res = await this.ctx.db.prepare("DELETE FROM canonical_packages WHERE canonical_id = ?").bind(canonicalId).run();
-    const deleted = ((res.meta as any)?.changes ?? 0) > 0;
-    if (deleted && existing && existing.content_rating === "general") {
-      const now = new Date(this.ctx.now()).toISOString();
-      await this.ctx.db
-        .prepare("INSERT OR IGNORE INTO catalog_tombstones (canonical_id, reason, recorded_at) VALUES (?, 'deleted', ?)")
-        .bind(canonicalId, now)
-        .run();
+    const nowIso = new Date(this.ctx.now()).toISOString();
+    if (existing.content_rating === "general") {
+      await this.ctx.db.batch([
+        this.ctx.db.prepare("DELETE FROM listing_sources WHERE canonical_id = ?").bind(canonicalId),
+        this.ctx.db.prepare("DELETE FROM listing_relations WHERE source_canonical_id = ?").bind(canonicalId),
+        this.ctx.db
+          .prepare(
+            `UPDATE canonical_packages
+             SET lifecycle = 'deleted',
+                 tombstone_reason = 'deleted',
+                 owner_key = NULL,
+                 owner_name = NULL,
+                 summary = NULL,
+                 tags_json = '[]',
+                 attributes_json = '{}',
+                 updated_at = ?
+             WHERE canonical_id = ?`
+          )
+          .bind(nowIso, canonicalId),
+        this.ctx.db
+          .prepare(
+            `INSERT INTO operator_audit_log(entity_type, entity_id, actor, action, reason, occurred_at)
+             VALUES ('system', ?, ?, 'delete_package', ?, ?)`
+          )
+          .bind(canonicalId, actor, reason.trim().slice(0, 300), nowIso)
+      ]);
+      return true;
     }
-    return deleted;
+
+    const res = await this.ctx.db.prepare("DELETE FROM canonical_packages WHERE canonical_id = ?").bind(canonicalId).run();
+    return ((res.meta as { changes?: number } | undefined)?.changes ?? 0) > 0;
   }
 
-  async upsertPackageFront(front: {
-    frontId?: string;
+  async upsertListingSource(source: {
+    sourceLinkId?: string;
     canonicalId: string;
     sourceKey: string;
     platform: Platform;
     storefrontUrl: string;
+    evidenceKind: EvidenceKind;
+    confidence: number;
+    reviewState?: LinkReviewState;
     price?: number | null;
     currency?: string | null;
     availability?: "available" | "delisted" | "unknown";
     observedAt?: string;
-  }): Promise<PackageFront> {
-    const frontId = front.frontId ?? crypto.randomUUID();
-    const now = new Date(this.ctx.now()).toISOString();
-    const observedAt = front.observedAt ?? now;
-    const availability = front.availability ?? "available";
-    const price = front.price ?? null;
-    const currency = front.currency ?? null;
+    reviewedAt?: string | null;
+  }): Promise<ListingSource> {
+    if (source.confidence < 0.0 || source.confidence > 1.0) {
+      throw new RangeError("confidence must be between 0.0 and 1.0");
+    }
+    const sourceLinkId = source.sourceLinkId ?? crypto.randomUUID();
+    const nowIso = new Date(this.ctx.now()).toISOString();
+    const observedAt = source.observedAt ?? nowIso;
+    const reviewState = source.reviewState ?? "provisional";
+    const reviewedAt = source.reviewedAt ?? (reviewState !== "provisional" ? nowIso : null);
+    const storefrontUrl = cleanTrackingParams(source.storefrontUrl);
+    const availability = source.availability ?? "available";
 
     await this.ctx.db
       .prepare(
-        `INSERT INTO package_fronts
-        (front_id, canonical_id, source_key, platform, storefront_url, price, currency, availability, observed_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(canonical_id, source_key) DO UPDATE SET
-        platform = excluded.platform,
-        storefront_url = excluded.storefront_url,
-        price = excluded.price,
-        currency = excluded.currency,
-        availability = excluded.availability,
-        observed_at = excluded.observed_at`
+        `INSERT INTO listing_sources(
+           source_link_id, canonical_id, source_key, platform, storefront_url,
+           evidence_kind, confidence, review_state, price, currency, availability, observed_at, reviewed_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(canonical_id, source_key) DO UPDATE SET
+           platform = excluded.platform,
+           storefront_url = excluded.storefront_url,
+           evidence_kind = excluded.evidence_kind,
+           confidence = excluded.confidence,
+           review_state = excluded.review_state,
+           price = excluded.price,
+           currency = excluded.currency,
+           availability = excluded.availability,
+           observed_at = excluded.observed_at,
+           reviewed_at = excluded.reviewed_at`
       )
       .bind(
-        frontId,
-        front.canonicalId,
-        front.sourceKey,
-        front.platform,
-        front.storefrontUrl,
-        price,
-        currency,
+        sourceLinkId,
+        source.canonicalId,
+        source.sourceKey,
+        source.platform,
+        storefrontUrl,
+        source.evidenceKind,
+        source.confidence,
+        reviewState,
+        source.price ?? null,
+        source.currency ?? null,
         availability,
-        observedAt
+        observedAt,
+        reviewedAt
       )
       .run();
 
     const row = await this.ctx.db
-      .prepare(
-        `SELECT front_id, canonical_id, source_key, platform, storefront_url, price, currency, availability, observed_at
-      FROM package_fronts WHERE canonical_id = ? AND source_key = ?`
-      )
-      .bind(front.canonicalId, front.sourceKey)
+      .prepare("SELECT * FROM listing_sources WHERE canonical_id = ? AND source_key = ?")
+      .bind(source.canonicalId, source.sourceKey)
       .first<{
-        front_id: string;
+        source_link_id: string;
         canonical_id: string;
         source_key: string;
         platform: Platform;
         storefront_url: string;
+        evidence_kind: EvidenceKind;
+        confidence: number;
+        review_state: LinkReviewState;
         price: number | null;
         currency: string | null;
         availability: "available" | "delisted" | "unknown";
         observed_at: string;
+        reviewed_at: string | null;
       }>();
 
     return {
-      frontId: row!.front_id,
+      sourceLinkId: row!.source_link_id,
       canonicalId: row!.canonical_id,
       sourceKey: row!.source_key,
       platform: row!.platform,
       storefrontUrl: row!.storefront_url,
+      evidenceKind: row!.evidence_kind,
+      confidence: row!.confidence,
+      reviewState: row!.review_state,
       price: row!.price,
       currency: row!.currency,
       availability: row!.availability,
-      observedAt: row!.observed_at
+      observedAt: row!.observed_at,
+      reviewedAt: row!.reviewed_at
     };
   }
 
-  async getPackageFrontsForCanonical(canonicalId: string): Promise<PackageFront[]> {
+  async getListingSourcesForCanonical(canonicalId: string): Promise<ListingSource[]> {
     const res = await this.ctx.db
       .prepare(
-        `SELECT front_id, canonical_id, source_key, platform, storefront_url, price, currency, availability, observed_at
-      FROM package_fronts WHERE canonical_id = ?
-      ORDER BY observed_at ASC, front_id ASC`
+        `SELECT source_link_id, canonical_id, source_key, platform, storefront_url,
+                evidence_kind, confidence, review_state, price, currency, availability, observed_at, reviewed_at
+         FROM listing_sources WHERE canonical_id = ? ORDER BY observed_at ASC, source_link_id ASC`
       )
       .bind(canonicalId)
       .all<{
-        front_id: string;
+        source_link_id: string;
         canonical_id: string;
         source_key: string;
         platform: Platform;
         storefront_url: string;
+        evidence_kind: EvidenceKind;
+        confidence: number;
+        review_state: LinkReviewState;
         price: number | null;
         currency: string | null;
         availability: "available" | "delisted" | "unknown";
         observed_at: string;
+        reviewed_at: string | null;
       }>();
-    const rows = res.results || [];
-    return rows.map((r) => ({
-      frontId: r.front_id,
-      canonicalId: r.canonical_id,
-      sourceKey: r.source_key,
-      platform: r.platform,
-      storefrontUrl: r.storefront_url,
-      price: r.price,
-      currency: r.currency,
-      availability: r.availability,
-      observedAt: r.observed_at
+    return (res.results || []).map((row) => ({
+      sourceLinkId: row.source_link_id,
+      canonicalId: row.canonical_id,
+      sourceKey: row.source_key,
+      platform: row.platform,
+      storefrontUrl: row.storefront_url,
+      evidenceKind: row.evidence_kind,
+      confidence: row.confidence,
+      reviewState: row.review_state,
+      price: row.price,
+      currency: row.currency,
+      availability: row.availability,
+      observedAt: row.observed_at,
+      reviewedAt: row.reviewed_at
     }));
   }
 
-  async deletePackageFront(frontId: string): Promise<boolean> {
-    const res = await this.ctx.db.prepare("DELETE FROM package_fronts WHERE front_id = ?").bind(frontId).run();
-    return ((res.meta as any)?.changes ?? 0) > 0;
-  }
-
-  private async syncPackageFrontFromSourceItem(canonicalId: string, sourceKey: string): Promise<void> {
-    const item = await this.ctx.db
+  async listRelationsForCanonical(canonicalId: string): Promise<ListingRelation[]> {
+    const res = await this.ctx.db
       .prepare(
-        `SELECT si.platform, si.source_url, si.gone_at, sv.payload_json, sv.observed_at
-      FROM source_items si
-      LEFT JOIN source_versions sv ON sv.source_key = si.source_key AND sv.version_no = si.latest_version_no
-      WHERE si.source_key = ?`
+        `SELECT relation_id, source_key, source_canonical_id, target_canonical_id, target_avatar_base,
+                relation_type, scope, confidence, evidence_source, feedback_up_count, feedback_down_count, created_at, updated_at
+         FROM listing_relations WHERE source_canonical_id = ? ORDER BY created_at ASC, relation_id ASC`
       )
-      .bind(sourceKey)
-      .first<{
-        platform: Platform;
-        source_url: string;
-        gone_at: string | null;
-        payload_json: string | null;
-        observed_at: string | null;
+      .bind(canonicalId)
+      .all<{
+        relation_id: string;
+        source_key: string;
+        source_canonical_id: string;
+        target_canonical_id: string | null;
+        target_avatar_base: string | null;
+        relation_type: ListingRelation["relationType"];
+        scope: ListingRelation["scope"];
+        confidence: number;
+        evidence_source: string;
+        feedback_up_count: number;
+        feedback_down_count: number;
+        created_at: string;
+        updated_at: string;
       }>();
-
-    if (!item) return;
-    const isStorefront = STOREFRONT_PLATFORMS.has(item.platform);
-    let price: number | null = null;
-    let currency: string | null = null;
-    let availability: "available" | "delisted" | "unknown" = item.gone_at ? "delisted" : "available";
-    let storefrontUrl = item.source_url;
-
-    if (item.payload_json) {
-      try {
-        const parsed = JSON.parse(item.payload_json);
-        if (parsed.price !== undefined) price = parsed.price;
-        if (parsed.currency !== undefined) currency = parsed.currency;
-        if (parsed.availability !== undefined) availability = parsed.availability;
-        if (parsed.storefrontUrl) storefrontUrl = parsed.storefrontUrl;
-      } catch {}
-    }
-
-    if (isStorefront || price !== null) {
-      await this.upsertPackageFront({
-        canonicalId,
-        sourceKey,
-        platform: item.platform,
-        storefrontUrl: cleanTrackingParams(storefrontUrl),
-        price,
-        currency,
-        availability,
-        observedAt: item.observed_at ?? new Date(this.ctx.now()).toISOString()
-      });
-    }
+    return (res.results || []).map((row) => ({
+      relationId: row.relation_id,
+      sourceKey: row.source_key,
+      sourceCanonicalId: row.source_canonical_id,
+      targetCanonicalId: row.target_canonical_id,
+      targetAvatarBase: row.target_avatar_base,
+      relationType: row.relation_type,
+      scope: row.scope,
+      confidence: row.confidence,
+      evidenceSource: row.evidence_source,
+      feedbackUpCount: row.feedback_up_count ?? 0,
+      feedbackDownCount: row.feedback_down_count ?? 0,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at
+    }));
   }
 }

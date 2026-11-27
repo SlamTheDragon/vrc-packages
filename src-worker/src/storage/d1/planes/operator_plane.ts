@@ -1,64 +1,401 @@
 import {
+  BulkApproveLeadsRequestSchema,
+  CreateSteeringProfileSchema,
+  CreateSuppressedTargetSchema,
+  DOWNSTREAM_PROTOCOL_VERSION,
+  DeleteJobRequestSchema,
+  EnqueueJobRequestSchema,
+  IssueNodeCredentialSchema,
+  OperatorJobListQuerySchema,
+  OperatorJobStateSchema,
+  OperatorNodeStatusSchema,
+  PlatformSchema as ApiPlatformSchema,
+  RequeueJobRequestSchema,
   RevokeNodeRequestSchema,
   RevokeNodeResponseSchema,
-  IssueNodeCredentialSchema,
-  CreateAutoQueueRuleSchema,
-  encodeRuleCursor,
-  encodeLeadCursor,
-  encodeTakedownCursor,
+  SteeringProfileActionSchema,
+  SteeringProfileSchema,
+  SuppressLeadDomainRequestSchema,
+  SystemPurgeRequestSchema,
+  UpdateJobRequestSchema,
+  UpdateSteeringProfileSchema,
   encodeDelegatedClaimCursor,
+  encodeLeadCursor,
   encodeOperatorAppCursor,
+  encodeOperatorJobCursor,
   encodeOperatorNodeCursor,
-  encodeProfileCursor,
-  OperatorNodeStatusSchema,
-  CreateSourceAccessProfileSchema,
-  DOWNSTREAM_PROTOCOL_VERSION,
-  type RevokeNodeRequest,
-  type IssueNodeCredential,
-  type AutoQueueRule,
-  type CreateAutoQueueRule,
-  type RuleCursor,
-  type LeadCursor,
-  type LeadRow,
-  type TakedownCursor,
-  type TakedownRecord,
+  encodeSteeringProfileCursor,
+  encodeSuppressedTargetCursor,
+  encodeTakedownCursor,
+  type BulkApproveLeadsRequest,
+  type BulkApproveLeadsResponse,
+  type CreateSteeringProfile,
+  type CreateSuppressedTarget,
   type DelegatedClaimCursor,
   type DelegatedClaimRecord,
+  type EnqueueJobRequest,
+  type IssueNodeCredential,
+  type LeadCursor,
+  type LeadRow,
+  type LeadStatus,
   type OperatorAppCursor,
   type OperatorAppRecord,
-  type OperatorNodeStatus,
-  type OperatorNodeRecord,
+  type OperatorEnvironment,
+  type OperatorJobCursor,
+  type OperatorJobRecord,
+  type OperatorJobState,
   type OperatorNodeCursor,
-  type ProfileCursor,
-  type SourceAccessProfile,
-  type CreateSourceAccessProfile
+  type OperatorNodeRecord,
+  type OperatorNodeStatus,
+  type OperatorStatusResponse,
+  type PriorityLane,
+  type RequeueJobRequest,
+  type RevokeNodeRequest,
+  type SteeringProfile,
+  type SteeringProfileCursor,
+  type SuppressLeadDomainRequest,
+  type SuppressLeadDomainResponse,
+  type SuppressedTarget,
+  type SuppressedTargetCursor,
+  type SystemPurgeRequest,
+  type SystemPurgeResponse,
+  type TakedownCursor,
+  type TakedownRecord,
+  type UpdateJobRequest,
+  type UpdateSteeringProfile
 } from "vrc-packages-api";
 import {
   ClaimRequestSchema,
   PROTOCOL_VERSION,
   PlatformSchema,
-  type Platform,
-  type DiscoveryLead
+  type DiscoveryLead,
+  type Platform
 } from "vrc-packages-network/node";
+import { robotsResultAllowsMissingFile } from "vrc-packages-network/robots";
 import { resolveDiscoveryLeadTarget } from "vrc-packages-network/source-targets";
-import { sourcePathScopesOverlap, type SourcePurpose } from "../../../domain/access/source_access_profile.ts";
+import {
+  findMatchingHostSuppression,
+  findMatchingSuppressedTarget,
+  normalizeTargetHost,
+  steeringPathScopesOverlap,
+  steeringProfileMatches,
+  steeringQueryModesOverlap,
+  type SourcePurpose
+} from "../../../domain/access/steering_profile.ts";
+import { CoordinatorConflict, type NodeCredentialIssued } from "../../../domain/ports/stores.ts";
 import { formatCapabilityToken } from "../../../domain/security/capability_token.ts";
 import { sha256Hex } from "../../../domain/security/crypto_primitives.ts";
-import type { AutoQueueRuleRow, D1PreparedStatement, SourceAccessProfileRow } from "../definitions.ts";
+import { buildPreviewStarterSteeringProfiles } from "../../default_seeds.ts";
+import type {
+  D1PreparedStatement,
+  JobRow,
+  SteeringProfileRow,
+  SuppressedTargetRow
+} from "../definitions.ts";
+import { EXPECTED_V0_TABLE_NAMES } from "../schema/index.ts";
+import { D1_SCHEMA_SQL } from "../utils.ts";
 import { D1PlaneContext, type OperatorAuditLogRow } from "./shared_context.ts";
+
+export interface SeedJobOptions {
+  minDelayMs?: number;
+  purpose?: SourcePurpose;
+  priorityLane?: PriorityLane;
+  recrawlIntervalMs?: number;
+  paginationDepth?: number;
+  steeringProfileId?: string | null;
+  audit?: { actor: string; reason: string; leadKey?: string };
+}
+
+type OriginBlockerRow = {
+  origin: string;
+  active_job_id: string | null;
+  lease_expires_at: string | null;
+  next_allowed_at: string;
+  robots_snapshot_id: string | null;
+  robots_status_code: number | null;
+  robots_body: string | null;
+  robots_fetched_at: string | null;
+  robots_expires_at: string | null;
+};
+
+function quoteSqliteIdentifier(identifier: string): string {
+  return `"${identifier.replaceAll('"', '""')}"`;
+}
 
 export class OperatorPlane {
   constructor(
     private readonly ctx: D1PlaneContext,
-    private readonly seedJobFn: (
-      url: string,
-      platform: Platform,
-      minDelayMs?: number,
-      sourceRuleId?: string,
-      purpose?: SourcePurpose,
-      audit?: { actor: string; reason: string; leadKey?: string }
-    ) => Promise<string>
+    private readonly seedJobFn: (url: string, platform: Platform, options?: SeedJobOptions) => Promise<string>
   ) {}
+
+  async initSchema(_options?: { autoSeed?: false }): Promise<void> {
+    await this.ctx.db.exec(D1_SCHEMA_SQL);
+  }
+
+  private async detectSchemaState(): Promise<"v0-17" | "legacy" | "uninitialized"> {
+    const res = await this.ctx.db
+      .prepare(
+        `SELECT name, type FROM sqlite_master
+         WHERE type IN ('table', 'view')
+           AND name NOT LIKE 'sqlite_%'
+           AND name NOT LIKE '_cf_%'`
+      )
+      .all<{ name: string; type: string }>();
+    const entries = res.results || [];
+    if (entries.length === 0) return "uninitialized";
+    if (entries.some((entry) => entry.type === "view")) return "legacy";
+
+    const expectedSet = new Set<string>(EXPECTED_V0_TABLE_NAMES);
+    const actualTables = entries.filter((entry) => entry.type === "table").map((entry) => entry.name);
+    if (actualTables.length !== expectedSet.size) return "legacy";
+    for (const tableName of actualTables) {
+      if (!expectedSet.has(tableName)) return "legacy";
+    }
+    return "v0-17";
+  }
+
+  async getOperatorStatus(
+    environment: OperatorEnvironment,
+    purgeEnabled: boolean
+  ): Promise<OperatorStatusResponse> {
+    const d1SchemaState = await this.detectSchemaState();
+    if (d1SchemaState !== "v0-17") {
+      return {
+        schemaVersion: 1,
+        environment,
+        purgeEnabled,
+        d1SchemaState,
+        queueReadiness: {
+          claimableJobs: 0,
+          blockedJobs: 0,
+          pendingLeads: 0,
+          unresolvedDemandSignals: 0,
+          activeNodes: 0,
+          activeSteeringProfiles: 0
+        }
+      };
+    }
+
+    const nowMs = this.ctx.now();
+    const nowIso = new Date(nowMs).toISOString();
+
+    const [suppressedTargets, activeProfiles, jobsRes, countsRow] = await Promise.all([
+      this.ctx.loadSuppressedTargets(),
+      this.ctx.loadActiveSteeringProfiles(),
+      this.ctx.db
+        .prepare(
+          `SELECT platform, url, job_purpose, state, next_fetch_at, lease_expires_at, robots_deferred_until
+           FROM crawl_jobs`
+        )
+        .all<{
+          platform: Platform;
+          url: string;
+          job_purpose: SourcePurpose;
+          state: OperatorJobState;
+          next_fetch_at: string;
+          lease_expires_at: string | null;
+          robots_deferred_until: string | null;
+        }>(),
+      this.ctx.db
+        .prepare(
+          `SELECT
+             (SELECT COUNT(*) FROM source_leads WHERE status = 'pending_review') AS pending_leads,
+             (SELECT COUNT(*) FROM downstream_signals WHERE resolved_at IS NULL) AS unresolved_demand_signals,
+             (SELECT COUNT(*) FROM nodes WHERE revoked_at IS NULL) AS active_nodes,
+             (SELECT COUNT(*) FROM steering_profiles WHERE disabled_at IS NULL AND expires_at > ?) AS active_steering_profiles`
+        )
+        .bind(nowIso)
+        .first<{
+          pending_leads: number;
+          unresolved_demand_signals: number;
+          active_nodes: number;
+          active_steering_profiles: number;
+        }>()
+    ]);
+
+    let claimableJobs = 0;
+    let blockedJobs = 0;
+    for (const job of jobsRes.results || []) {
+      const isSuppressed = findMatchingSuppressedTarget(job.url, suppressedTargets) !== null;
+      const hasProfile = activeProfiles.some((profile) =>
+        steeringProfileMatches(profile, job.platform, job.url, job.job_purpose, nowMs)
+      );
+      const robotsDeferred = Boolean(job.robots_deferred_until && job.robots_deferred_until > nowIso);
+
+      if (job.state === "blocked" || isSuppressed || !hasProfile || robotsDeferred) {
+        blockedJobs += 1;
+        continue;
+      }
+
+      const unleasedOrExpired =
+        job.state === "pending" ||
+        job.state === "done" ||
+        job.state === "backoff" ||
+        (job.state === "leased" && (!job.lease_expires_at || job.lease_expires_at <= nowIso));
+      if (unleasedOrExpired && job.next_fetch_at <= nowIso) {
+        claimableJobs += 1;
+      }
+    }
+
+    return {
+      schemaVersion: 1,
+      environment,
+      purgeEnabled,
+      d1SchemaState,
+      queueReadiness: {
+        claimableJobs,
+        blockedJobs,
+        pendingLeads: countsRow?.pending_leads ?? 0,
+        unresolvedDemandSignals: countsRow?.unresolved_demand_signals ?? 0,
+        activeNodes: countsRow?.active_nodes ?? 0,
+        activeSteeringProfiles: countsRow?.active_steering_profiles ?? 0
+      }
+    };
+  }
+
+  async purgeDevelopmentDatabase(input: SystemPurgeRequest, actor: string): Promise<SystemPurgeResponse> {
+    const parsed = SystemPurgeRequestSchema.parse(input);
+    if (!actor.trim() || actor.length > 100) throw new Error("Operator actor required");
+
+    const preserveNodes = parsed.preserveNodes !== false;
+    const preservedRows: Array<{
+      node_id: string;
+      token_hash: string;
+      capabilities_json: string;
+      revoked_at: string | null;
+      last_seen_at: string | null;
+    }> = [];
+
+    const objectsRes = await this.ctx.db
+      .prepare(
+        `SELECT name, type FROM sqlite_master
+         WHERE type IN ('table', 'view')
+           AND name NOT LIKE 'sqlite_%'
+           AND name NOT LIKE '_cf_%'`
+      )
+      .all<{ name: string; type: "table" | "view" }>();
+    const dbObjects = objectsRes.results || [];
+    const tableNames = new Set(dbObjects.filter((obj) => obj.type === "table").map((obj) => obj.name));
+
+    if (preserveNodes) {
+      if (tableNames.has("nodes")) {
+        const nodesRes = await this.ctx.db
+          .prepare("SELECT node_id, token_hash, capabilities_json, revoked_at, last_seen_at FROM nodes")
+          .all<{
+            node_id: string;
+            token_hash: string;
+            capabilities_json: string;
+            revoked_at: string | null;
+            last_seen_at: string | null;
+          }>();
+        for (const row of nodesRes.results || []) {
+          preservedRows.push(row);
+        }
+      } else if (tableNames.has("node_credentials")) {
+        const credRes = await this.ctx.db
+          .prepare("SELECT node_id, token_hash, capabilities_json, revoked_at FROM node_credentials")
+          .all<{
+            node_id: string;
+            token_hash: string;
+            capabilities_json: string;
+            revoked_at: string | null;
+          }>();
+        for (const row of credRes.results || []) {
+          preservedRows.push({ ...row, last_seen_at: null });
+        }
+      }
+    }
+
+    this.ctx.robotsMatcherCache.clear();
+
+    const viewObjects = dbObjects.filter((obj) => obj.type === "view");
+    for (const view of viewObjects) {
+      await this.ctx.db.prepare(`DROP VIEW IF EXISTS ${quoteSqliteIdentifier(view.name)}`).run();
+    }
+
+    let pendingTables = dbObjects
+      .filter((obj) => obj.type === "table")
+      .map((obj) => obj.name)
+      .reverse();
+    while (pendingTables.length > 0) {
+      const remaining: string[] = [];
+      let droppedInPass = 0;
+      let lastError: unknown;
+      for (const tableName of pendingTables) {
+        try {
+          await this.ctx.db.prepare(`DROP TABLE IF EXISTS ${quoteSqliteIdentifier(tableName)}`).run();
+          droppedInPass += 1;
+        } catch (error) {
+          remaining.push(tableName);
+          lastError = error;
+        }
+      }
+      if (droppedInPass === 0) {
+        throw lastError instanceof Error
+          ? lastError
+          : new Error(`Failed to drop D1 tables during purge: ${remaining.join(", ")}`);
+      }
+      pendingTables = remaining;
+    }
+
+    await this.ctx.db.exec(D1_SCHEMA_SQL);
+
+    let restoredNodeCount = 0;
+    if (preservedRows.length > 0) {
+      const restoreStmts: D1PreparedStatement[] = [];
+      for (const node of preservedRows) {
+        const cleanCaps = this.parseNodeCapabilities(node.capabilities_json);
+        if (cleanCaps.length === 0) continue;
+        restoreStmts.push(
+          this.ctx.db
+            .prepare(
+              `INSERT INTO nodes(node_id, token_hash, capabilities_json, revoked_at, last_seen_at, state, active_job_id)
+               VALUES (?, ?, ?, ?, ?, 'idle', NULL)`
+            )
+            .bind(
+              node.node_id,
+              node.token_hash,
+              JSON.stringify(cleanCaps),
+              node.revoked_at,
+              node.last_seen_at
+            )
+        );
+        restoredNodeCount += 1;
+      }
+      if (restoreStmts.length > 0) {
+        await this.ctx.executeBatchChunked(restoreStmts);
+      }
+    }
+
+    let seededProfiles = 0;
+    if (parsed.seedPreviewStarter === true) {
+      const starters = buildPreviewStarterSteeringProfiles(this.ctx.now());
+      for (const starter of starters) {
+        await this.createSteeringProfile(starter, actor);
+        seededProfiles += 1;
+      }
+    }
+
+    await this.ctx.db
+      .prepare(
+        `INSERT INTO operator_audit_log(entity_type, entity_id, actor, action, reason, occurred_at)
+         VALUES ('system', 'd1', ?, 'purge_development_d1', ?, ?)`
+      )
+      .bind(
+        actor,
+        `Purged development D1 schema (preservedNodes=${restoredNodeCount}, seededProfiles=${seededProfiles})`,
+        new Date(this.ctx.now()).toISOString()
+      )
+      .run();
+
+    return {
+      schemaVersion: 1,
+      status: "purged",
+      d1SchemaState: "v0-17",
+      preservedNodes: restoredNodeCount,
+      seededProfiles
+    };
+  }
 
   async revokeNode(nodeId: string, input: RevokeNodeRequest, actor: string): Promise<void> {
     RevokeNodeResponseSchema.shape.nodeId.parse(nodeId);
@@ -68,12 +405,14 @@ export class OperatorPlane {
     const result = await this.ctx.db.batch([
       this.ctx.db
         .prepare(
-          `INSERT INTO operator_audit_log(entity_type,entity_id,actor,action,reason,occurred_at)
-        SELECT 'node',node_id,?,'revoke',?,? FROM node_credentials WHERE node_id=?`
+          `INSERT INTO operator_audit_log(entity_type, entity_id, actor, action, reason, occurred_at)
+           SELECT 'node', node_id, ?, 'revoke', ?, ? FROM nodes WHERE node_id = ?`
         )
         .bind(actor, parsed.reason, now, nodeId),
       this.ctx.db
-        .prepare("UPDATE node_credentials SET revoked_at=COALESCE(revoked_at,?) WHERE node_id=?")
+        .prepare(
+          "UPDATE nodes SET revoked_at = COALESCE(revoked_at, ?), state = 'idle', active_job_id = NULL WHERE node_id = ?"
+        )
         .bind(now, nodeId)
     ]);
     if ((result[0]?.meta as { changes?: number } | undefined)?.changes !== 1) throw new Error("Node not found");
@@ -87,19 +426,17 @@ export class OperatorPlane {
     const result = await this.ctx.db.batch([
       this.ctx.db
         .prepare(
-          `INSERT INTO operator_audit_log(entity_type,entity_id,actor,action,reason,occurred_at)
-       SELECT 'node',node_id,?,'prune',?,? FROM node_credentials
-       WHERE node_id=? AND revoked_at IS NOT NULL`
+          `INSERT INTO operator_audit_log(entity_type, entity_id, actor, action, reason, occurred_at)
+           SELECT 'node', node_id, ?, 'prune', ?, ? FROM nodes
+           WHERE node_id = ? AND revoked_at IS NOT NULL`
         )
         .bind(actor, reason.trim(), now, nodeId),
-      this.ctx.db
-        .prepare("DELETE FROM node_credentials WHERE node_id=? AND revoked_at IS NOT NULL")
-        .bind(nodeId)
+      this.ctx.db.prepare("DELETE FROM nodes WHERE node_id = ? AND revoked_at IS NOT NULL").bind(nodeId)
     ]);
     const auditChanges = (result[0]?.meta as { changes?: number } | undefined)?.changes;
     if (auditChanges !== 1) {
       const exists = await this.ctx.db
-        .prepare("SELECT revoked_at FROM node_credentials WHERE node_id=?")
+        .prepare("SELECT revoked_at FROM nodes WHERE node_id = ?")
         .bind(nodeId)
         .first<{ revoked_at: string | null }>();
       if (!exists) throw new Error("Node not found");
@@ -111,38 +448,43 @@ export class OperatorPlane {
     nodeId: string,
     capabilities: Platform[],
     audit?: { actor: string; reason: string }
-  ): Promise<string> {
-    ClaimRequestSchema.parse({ schemaVersion: PROTOCOL_VERSION, nodeId, capabilities });
+  ): Promise<NodeCredentialIssued> {
+    const dedupCaps = [...new Set(capabilities)];
+    ClaimRequestSchema.parse({ schemaVersion: PROTOCOL_VERSION, nodeId, capabilities: dedupCaps });
     if (
       audit &&
       (!audit.actor.trim() || audit.actor.length > 100 || !audit.reason.trim() || audit.reason.length > 300)
     ) {
       throw new Error("Credential audit actor and reason required");
     }
-    const token = formatCapabilityToken(capabilities);
+    const token = formatCapabilityToken(dedupCaps);
     const hash = await sha256Hex(token);
-    const writes = [
+    const writes: D1PreparedStatement[] = [
       this.ctx.db
         .prepare(
-          `INSERT INTO node_credentials(node_id,token_hash,capabilities_json,revoked_at)
-      VALUES (?,?,?,NULL)
-      ON CONFLICT(node_id) DO UPDATE SET token_hash=excluded.token_hash,
-        capabilities_json=excluded.capabilities_json, revoked_at=NULL`
+          `INSERT INTO nodes(node_id, token_hash, capabilities_json, revoked_at, last_seen_at, state, active_job_id)
+           VALUES (?, ?, ?, NULL, NULL, 'idle', NULL)
+           ON CONFLICT(node_id) DO UPDATE SET
+             token_hash = excluded.token_hash,
+             capabilities_json = excluded.capabilities_json,
+             revoked_at = NULL,
+             state = 'idle',
+             active_job_id = NULL`
         )
-        .bind(nodeId, hash, JSON.stringify([...new Set(capabilities)]))
+        .bind(nodeId, hash, JSON.stringify(dedupCaps))
     ];
     if (audit) {
       writes.push(
         this.ctx.db
           .prepare(
-            `INSERT INTO operator_audit_log(entity_type,entity_id,actor,action,reason,occurred_at)
-      VALUES ('node',?,?, 'issue', ?, ?)`
+            `INSERT INTO operator_audit_log(entity_type, entity_id, actor, action, reason, occurred_at)
+             VALUES ('node', ?, ?, 'issue', ?, ?)`
           )
           .bind(nodeId, audit.actor, audit.reason.trim(), new Date(this.ctx.now()).toISOString())
       );
     }
     await this.ctx.db.batch(writes);
-    return token;
+    return { token, capabilities: dedupCaps };
   }
 
   async evaluateWorkforceDistribution(candidateCapabilities?: Platform[]): Promise<Platform[]> {
@@ -150,78 +492,85 @@ export class OperatorPlane {
       candidateCapabilities && candidateCapabilities.length > 0
         ? [...new Set(candidateCapabilities)]
         : [...PlatformSchema.options];
-    const now = new Date(this.ctx.now()).toISOString();
-    const activeCutoff = new Date(this.ctx.now() - 5 * 60 * 1000).toISOString();
+    const nowMs = this.ctx.now();
+    const nowIso = new Date(nowMs).toISOString();
+    const activeCutoff = new Date(nowMs - 5 * 60 * 1000).toISOString();
 
-    const jobsByPlatform = new Map<string, number>();
-    const jobRes = await this.ctx.db
-      .prepare(
-        `SELECT platform, COUNT(*) as cnt FROM crawl_jobs
-      WHERE (state IN ('pending', 'backoff') OR (state = 'done' AND next_fetch_at <= ?))
-      GROUP BY platform`
-      )
-      .bind(now)
-      .all<{ platform: string; cnt: number }>();
-    for (const row of jobRes.results || []) {
-      jobsByPlatform.set(row.platform, row.cnt);
+    const [activeProfiles, suppressedTargets, jobRowsRes, demandRes, nodeRes] = await Promise.all([
+      this.ctx.loadActiveSteeringProfiles(),
+      this.ctx.loadSuppressedTargets(),
+      this.ctx.db
+        .prepare(
+          `SELECT platform, url, job_purpose FROM crawl_jobs
+           WHERE state IN ('pending', 'backoff')
+              OR (state = 'done' AND next_fetch_at <= ?)
+              OR (state = 'leased' AND lease_expires_at <= ?)`
+        )
+        .bind(nowIso, nowIso)
+        .all<{ platform: Platform; url: string; job_purpose: SourcePurpose }>(),
+      this.ctx.db
+        .prepare(
+          `SELECT requested_platform, COUNT(*) AS cnt FROM downstream_signals
+           WHERE resolved_at IS NULL AND requested_platform IS NOT NULL
+           GROUP BY requested_platform`
+        )
+        .all<{ requested_platform: string; cnt: number }>(),
+      this.ctx.db
+        .prepare(
+          `SELECT capabilities_json FROM nodes
+           WHERE revoked_at IS NULL
+             AND (last_seen_at IS NULL OR last_seen_at >= ?)`
+        )
+        .bind(activeCutoff)
+        .all<{ capabilities_json: string }>()
+    ]);
+
+    const claimableJobsByPlatform = new Map<string, number>();
+    for (const row of jobRowsRes.results || []) {
+      if (findMatchingSuppressedTarget(row.url, suppressedTargets)) continue;
+      if (!activeProfiles.some((profile) => steeringProfileMatches(profile, row.platform, row.url, row.job_purpose, nowMs))) {
+        continue;
+      }
+      claimableJobsByPlatform.set(row.platform, (claimableJobsByPlatform.get(row.platform) || 0) + 1);
     }
 
     const demandByPlatform = new Map<string, number>();
-    const demandRes = await this.ctx.db
-      .prepare(
-        `SELECT requested_platform, COUNT(*) as cnt FROM downstream_demand_signals
-      WHERE resolved_at IS NULL AND requested_platform IS NOT NULL
-      GROUP BY requested_platform`
-      )
-      .all<{ requested_platform: string; cnt: number }>();
     for (const row of demandRes.results || []) {
       demandByPlatform.set(row.requested_platform, row.cnt);
     }
 
-    const activeNodesByPlatform = new Map<string, number>();
-    const activeRes = await this.ctx.db
-      .prepare(
-        `SELECT c.capabilities_json FROM node_heartbeats h
-      JOIN node_credentials c ON c.node_id = h.node_id
-      WHERE h.last_seen_at >= ? AND c.revoked_at IS NULL`
-      )
-      .bind(activeCutoff)
-      .all<{ capabilities_json: string }>();
-    for (const row of activeRes.results || []) {
-      try {
-        const caps = JSON.parse(row.capabilities_json) as string[];
-        for (const cap of caps) {
-          activeNodesByPlatform.set(cap, (activeNodesByPlatform.get(cap) || 0) + 1);
-        }
-      } catch {
-        // ignore
+    const activeWorkersByPlatform = new Map<string, number>();
+    for (const row of nodeRes.results || []) {
+      for (const cap of this.parseNodeCapabilities(row.capabilities_json)) {
+        activeWorkersByPlatform.set(cap, (activeWorkersByPlatform.get(cap) || 0) + 1);
       }
     }
 
-    const scored = candidates.map((platform) => {
-      const pendingJobs = jobsByPlatform.get(platform) || 0;
+    const scored = candidates.map((platform, index) => {
+      const claimableJobs = claimableJobsByPlatform.get(platform) || 0;
       const demandSignals = demandByPlatform.get(platform) || 0;
-      const activeWorkers = activeNodesByPlatform.get(platform) || 0;
-      const score = (pendingJobs * 2 + demandSignals * 5 + 1) / (activeWorkers + 1);
-      return { platform, score };
+      const activeWorkers = activeWorkersByPlatform.get(platform) || 0;
+      const demandWeight = claimableJobs * 2 + demandSignals * 5;
+      const score = demandWeight > 0 ? demandWeight / (activeWorkers + 1) : 0;
+      return { platform, score, activeWorkers, index };
     });
 
-    scored.sort((a, b) => b.score - a.score);
+    scored.sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      if (a.activeWorkers !== b.activeWorkers) return a.activeWorkers - b.activeWorkers;
+      return a.index - b.index;
+    });
 
     if (candidateCapabilities && candidateCapabilities.length > 0) {
-      return scored.map((s) => s.platform);
+      return scored.map((entry) => entry.platform);
     }
-    const count = Math.min(3, scored.length);
-    return scored.slice(0, count).map((s) => s.platform);
+    return scored.slice(0, Math.min(3, scored.length)).map((entry) => entry.platform);
   }
 
-  async issueNodeCredential(input: IssueNodeCredential, actor: string): Promise<string> {
+  async issueNodeCredential(input: IssueNodeCredential, actor: string): Promise<NodeCredentialIssued> {
     const parsed = IssueNodeCredentialSchema.parse(input);
     if (!actor.trim() || actor.length > 100) throw new Error("Operator actor required");
-    const capabilities =
-      parsed.capabilities && parsed.capabilities.length > 0
-        ? await this.evaluateWorkforceDistribution(parsed.capabilities)
-        : await this.evaluateWorkforceDistribution();
+    const capabilities = await this.evaluateWorkforceDistribution();
     return this.createNodeCredential(parsed.nodeId, capabilities, { actor, reason: parsed.reason });
   }
 
@@ -250,12 +599,12 @@ export class OperatorPlane {
     const conditions: string[] = [];
     const params: (string | number)[] = [];
     if (status === "active") {
-      conditions.push("c.revoked_at IS NULL");
+      conditions.push("revoked_at IS NULL");
     } else if (status === "revoked") {
-      conditions.push("c.revoked_at IS NOT NULL");
+      conditions.push("revoked_at IS NOT NULL");
     }
     if (cursor) {
-      conditions.push("c.node_id > ?");
+      conditions.push("node_id > ?");
       params.push(cursor.nodeId);
     }
     const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
@@ -263,12 +612,11 @@ export class OperatorPlane {
 
     const res = await this.ctx.db
       .prepare(
-        `SELECT c.node_id, c.capabilities_json, c.revoked_at, h.last_seen_at, h.state AS heartbeat_state, h.active_job_id
-      FROM node_credentials c
-      LEFT JOIN node_heartbeats h ON h.node_id = c.node_id
-      ${where}
-      ORDER BY c.node_id ASC
-      LIMIT ?`
+        `SELECT node_id, capabilities_json, revoked_at, last_seen_at, state AS heartbeat_state, active_job_id
+         FROM nodes
+         ${where}
+         ORDER BY node_id ASC
+         LIMIT ?`
       )
       .bind(...params)
       .all<{
@@ -302,19 +650,365 @@ export class OperatorPlane {
     };
   }
 
+  async enqueueJob(input: EnqueueJobRequest, actor: string): Promise<string> {
+    const parsed = EnqueueJobRequestSchema.parse(input);
+    return this.seedJobFn(parsed.url, parsed.platform, {
+      minDelayMs: parsed.minDelayMs,
+      purpose: parsed.purpose,
+      priorityLane: parsed.priorityLane,
+      recrawlIntervalMs: parsed.recrawlIntervalMs,
+      audit: {
+        actor,
+        reason: parsed.reason
+      }
+    });
+  }
+
+  private computeJobClaimabilityBlockers(
+    job: JobRow,
+    nowMs: number,
+    nowIso: string,
+    activeProfiles: readonly SteeringProfile[],
+    suppressedTargets: readonly SuppressedTarget[],
+    originState: OriginBlockerRow | undefined
+  ): string[] {
+    const blockers: string[] = [];
+
+    if (job.state === "blocked") {
+      blockers.push("job_blocked");
+    }
+    if (job.state === "leased" && job.lease_expires_at && job.lease_expires_at > nowIso) {
+      blockers.push("already_leased");
+    }
+    if (job.next_fetch_at > nowIso) {
+      blockers.push("scheduled_later");
+    }
+    if (job.robots_deferred_until && job.robots_deferred_until > nowIso) {
+      blockers.push("robots_deferred");
+    }
+    if (findMatchingSuppressedTarget(job.url, suppressedTargets)) {
+      blockers.push("suppressed_target");
+    }
+    if (!activeProfiles.some((profile) => steeringProfileMatches(profile, job.platform, job.url, job.job_purpose, nowMs))) {
+      blockers.push("no_active_steering_profile");
+    }
+
+    if (!originState || !originState.robots_expires_at || originState.robots_expires_at <= nowIso) {
+      blockers.push("robots_refresh_due");
+    } else if (
+      originState.robots_status_code === null ||
+      (!robotsResultAllowsMissingFile(originState.robots_status_code) &&
+        (originState.robots_status_code < 200 || originState.robots_status_code >= 300))
+    ) {
+      blockers.push("robots_fetch_error");
+    } else if (
+      !this.ctx.robotsAllows({
+        origin: job.origin,
+        robots_snapshot_id: originState.robots_snapshot_id,
+        robots_status_code: originState.robots_status_code,
+        robots_body: originState.robots_body,
+        robots_fetched_at: originState.robots_fetched_at,
+        url: job.url
+      })
+    ) {
+      blockers.push("robots_disallowed");
+    }
+
+    if (originState) {
+      if (
+        originState.active_job_id &&
+        originState.active_job_id !== job.job_id &&
+        originState.lease_expires_at &&
+        originState.lease_expires_at > nowIso
+      ) {
+        blockers.push("origin_lease_busy");
+      }
+      if (originState.next_allowed_at > nowIso) {
+        blockers.push("origin_pacing_cooldown");
+      }
+    }
+
+    return blockers;
+  }
+
+  private toOperatorJobRecord(job: JobRow, blockers: string[]): OperatorJobRecord {
+    return {
+      jobId: job.job_id,
+      platform: job.platform,
+      url: job.url,
+      origin: job.origin,
+      state: job.state,
+      purpose: job.job_purpose,
+      priorityLane: job.priority_lane,
+      recrawlIntervalMs: job.recrawl_interval_ms,
+      paginationDepth: job.pagination_depth,
+      nextFetchAt: job.next_fetch_at,
+      claimedBy: job.claimed_by ?? null,
+      leaseExpiresAt: job.lease_expires_at ?? null,
+      createdAt: job.created_at,
+      robotsDeferredUntil: job.robots_deferred_until ?? null,
+      steeringProfileId: job.steering_profile_id ?? null,
+      claimabilityBlockers: blockers
+    };
+  }
+
+  async listJobsPage(
+    filters?: { state?: OperatorJobState; platform?: Platform; priorityLane?: PriorityLane },
+    limit = 100,
+    cursor: OperatorJobCursor | null = null
+  ): Promise<{ jobs: OperatorJobRecord[]; nextCursor: string | null }> {
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error("Job limit must be 1..100");
+    if (filters?.state !== undefined) OperatorJobStateSchema.parse(filters.state);
+    if (filters?.platform !== undefined) ApiPlatformSchema.parse(filters.platform);
+    if (filters?.priorityLane !== undefined) {
+      OperatorJobListQuerySchema.shape.priorityLane.parse(filters.priorityLane);
+    }
+
+    const conditions: string[] = [];
+    const params: (string | number)[] = [];
+    if (filters?.state !== undefined) {
+      conditions.push("state = ?");
+      params.push(filters.state);
+    }
+    if (filters?.platform !== undefined) {
+      conditions.push("platform = ?");
+      params.push(filters.platform);
+    }
+    if (filters?.priorityLane !== undefined) {
+      conditions.push("priority_lane = ?");
+      params.push(filters.priorityLane);
+    }
+    if (cursor) {
+      conditions.push("(created_at, job_id) < (?, ?)");
+      params.push(cursor.createdAt, cursor.jobId);
+    }
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+    params.push(limit + 1);
+
+    const res = await this.ctx.db
+      .prepare(
+        `SELECT * FROM crawl_jobs
+         ${where}
+         ORDER BY created_at DESC, job_id DESC
+         LIMIT ?`
+      )
+      .bind(...params)
+      .all<JobRow>();
+
+    const rows = res.results || [];
+    const visible = rows.slice(0, limit);
+    const nowMs = this.ctx.now();
+    const nowIso = new Date(nowMs).toISOString();
+
+    const distinctOrigins = [...new Set(visible.map((row) => row.origin))];
+    const originMap = new Map<string, OriginBlockerRow>();
+
+    const [activeProfiles, suppressedTargets] = await Promise.all([
+      this.ctx.loadActiveSteeringProfiles(),
+      this.ctx.loadSuppressedTargets()
+    ]);
+
+    if (distinctOrigins.length > 0) {
+      const originPlaceholders = distinctOrigins.map(() => "?").join(",");
+      const originsRes = await this.ctx.db
+        .prepare(
+          `SELECT origin, active_job_id, lease_expires_at, next_allowed_at,
+                  robots_snapshot_id, robots_status_code, robots_body, robots_fetched_at, robots_expires_at
+           FROM origin_state
+           WHERE origin IN (${originPlaceholders})`
+        )
+        .bind(...distinctOrigins)
+        .all<OriginBlockerRow>();
+      for (const originRow of originsRes.results || []) {
+        originMap.set(originRow.origin, originRow);
+      }
+    }
+
+    const jobs: OperatorJobRecord[] = visible.map((row) =>
+      this.toOperatorJobRecord(
+        row,
+        this.computeJobClaimabilityBlockers(row, nowMs, nowIso, activeProfiles, suppressedTargets, originMap.get(row.origin))
+      )
+    );
+    const last = jobs.at(-1);
+
+    return {
+      jobs,
+      nextCursor:
+        rows.length > limit && last
+          ? encodeOperatorJobCursor({ createdAt: last.createdAt, jobId: last.jobId })
+          : null
+    };
+  }
+
+  async updateJob(jobId: string, input: UpdateJobRequest, actor: string): Promise<OperatorJobRecord> {
+    const parsed = UpdateJobRequestSchema.parse(input);
+    if (!actor.trim() || actor.length > 100) throw new Error("Operator actor required");
+    const row = await this.ctx.db.prepare("SELECT * FROM crawl_jobs WHERE job_id = ?").bind(jobId).first<JobRow>();
+    if (!row) throw new Error("Job not found");
+
+    const nowMs = this.ctx.now();
+    const nowIso = new Date(nowMs).toISOString();
+    if (row.state === "leased" && row.lease_expires_at && row.lease_expires_at > nowIso) {
+      throw new CoordinatorConflict("Cannot update an actively leased job", 409);
+    }
+
+    const nextPriorityLane = parsed.priorityLane ?? row.priority_lane;
+    const nextRecrawlIntervalMs = parsed.recrawlIntervalMs ?? row.recrawl_interval_ms;
+    const nextFetchAt = parsed.nextFetchAt ?? row.next_fetch_at;
+
+    await this.ctx.db.batch([
+      this.ctx.db
+        .prepare(
+          `UPDATE crawl_jobs
+           SET priority_lane = ?, recrawl_interval_ms = ?, next_fetch_at = ?
+           WHERE job_id = ?`
+        )
+        .bind(nextPriorityLane, nextRecrawlIntervalMs, nextFetchAt, jobId),
+      this.ctx.db
+        .prepare(
+          `INSERT INTO operator_audit_log(entity_type, entity_id, actor, action, reason, occurred_at)
+           VALUES ('job', ?, ?, 'update', ?, ?)`
+        )
+        .bind(jobId, actor, parsed.reason.trim(), nowIso)
+    ]);
+
+    const updated = await this.ctx.db.prepare("SELECT * FROM crawl_jobs WHERE job_id = ?").bind(jobId).first<JobRow>();
+    const [activeProfiles, suppressedTargets, originState] = await Promise.all([
+      this.ctx.loadActiveSteeringProfiles(),
+      this.ctx.loadSuppressedTargets(),
+      this.ctx.db
+        .prepare(
+          `SELECT origin, active_job_id, lease_expires_at, next_allowed_at,
+                  robots_snapshot_id, robots_status_code, robots_body, robots_fetched_at, robots_expires_at
+           FROM origin_state WHERE origin = ?`
+        )
+        .bind(updated!.origin)
+        .first<OriginBlockerRow>()
+    ]);
+    return this.toOperatorJobRecord(
+      updated!,
+      this.computeJobClaimabilityBlockers(
+        updated!,
+        nowMs,
+        nowIso,
+        activeProfiles,
+        suppressedTargets,
+        originState ?? undefined
+      )
+    );
+  }
+
+  async requeueJob(jobId: string, input: RequeueJobRequest, actor: string): Promise<OperatorJobRecord> {
+    const parsed = RequeueJobRequestSchema.parse(input);
+    if (!actor.trim() || actor.length > 100) throw new Error("Operator actor required");
+    const row = await this.ctx.db.prepare("SELECT * FROM crawl_jobs WHERE job_id = ?").bind(jobId).first<JobRow>();
+    if (!row) throw new Error("Job not found");
+
+    const nowMs = this.ctx.now();
+    const nowIso = new Date(nowMs).toISOString();
+    if (row.state === "leased" && row.lease_expires_at && row.lease_expires_at > nowIso) {
+      throw new CoordinatorConflict("Cannot requeue an actively leased job", 409);
+    }
+
+    const suppressedTargets = await this.ctx.loadSuppressedTargets();
+    if (findMatchingSuppressedTarget(row.url, suppressedTargets)) {
+      throw new CoordinatorConflict("Cannot requeue a suppressed target", 409);
+    }
+
+    const nextPriorityLane = parsed.priorityLane ?? row.priority_lane;
+    await this.ctx.db.batch([
+      this.ctx.db
+        .prepare(
+          `UPDATE crawl_jobs
+           SET state = 'pending',
+               priority_lane = ?,
+               next_fetch_at = ?,
+               robots_deferred_until = NULL,
+               claimed_by = NULL,
+               lease_id = NULL,
+               lease_expires_at = NULL
+           WHERE job_id = ?`
+        )
+        .bind(nextPriorityLane, nowIso, jobId),
+      this.ctx.db
+        .prepare(
+          `INSERT INTO operator_audit_log(entity_type, entity_id, actor, action, reason, occurred_at)
+           VALUES ('job', ?, ?, 'requeue', ?, ?)`
+        )
+        .bind(jobId, actor, parsed.reason.trim(), nowIso)
+    ]);
+
+    const updated = await this.ctx.db.prepare("SELECT * FROM crawl_jobs WHERE job_id = ?").bind(jobId).first<JobRow>();
+    const [activeProfiles, originState] = await Promise.all([
+      this.ctx.loadActiveSteeringProfiles(),
+      this.ctx.db
+        .prepare(
+          `SELECT origin, active_job_id, lease_expires_at, next_allowed_at,
+                  robots_snapshot_id, robots_status_code, robots_body, robots_fetched_at, robots_expires_at
+           FROM origin_state WHERE origin = ?`
+        )
+        .bind(updated!.origin)
+        .first<OriginBlockerRow>()
+    ]);
+    return this.toOperatorJobRecord(
+      updated!,
+      this.computeJobClaimabilityBlockers(
+        updated!,
+        nowMs,
+        nowIso,
+        activeProfiles,
+        suppressedTargets,
+        originState ?? undefined
+      )
+    );
+  }
+
+  async deleteJob(jobId: string, actor: string, reason: string): Promise<{ jobId: string; status: "deleted" }> {
+    DeleteJobRequestSchema.shape.reason.parse(reason);
+    if (!actor.trim() || actor.length > 100) throw new Error("Operator actor required");
+    const row = await this.ctx.db.prepare("SELECT * FROM crawl_jobs WHERE job_id = ?").bind(jobId).first<JobRow>();
+    if (!row) throw new Error("Job not found");
+
+    const nowIso = new Date(this.ctx.now()).toISOString();
+    if (row.state === "leased" && row.lease_expires_at && row.lease_expires_at > nowIso) {
+      throw new CoordinatorConflict("Cannot delete an actively leased job", 409);
+    }
+
+    await this.ctx.db.batch([
+      this.ctx.db
+        .prepare("UPDATE origin_state SET active_job_id = NULL, lease_expires_at = NULL WHERE active_job_id = ?")
+        .bind(jobId),
+      this.ctx.db.prepare("UPDATE source_leads SET discovered_from_job_id = NULL WHERE discovered_from_job_id = ?").bind(jobId),
+      this.ctx.db.prepare("DELETE FROM job_results WHERE job_id = ?").bind(jobId),
+      this.ctx.db.prepare("DELETE FROM crawl_jobs WHERE job_id = ?").bind(jobId),
+      this.ctx.db
+        .prepare(
+          `INSERT INTO operator_audit_log(entity_type, entity_id, actor, action, reason, occurred_at)
+           VALUES ('job', ?, ?, 'delete', ?, ?)`
+        )
+        .bind(jobId, actor, reason.trim(), nowIso)
+    ]);
+
+    return { jobId, status: "deleted" };
+  }
+
   async listLeadsPage(
-    status: "pending_review" | "approved" | "rejected",
+    status: LeadStatus,
     limit: number,
     cursor: LeadCursor | null
   ): Promise<{ leads: LeadRow[]; nextCursor: string | null }> {
     if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error("Lead limit must be 1..100");
-    const after = cursor ? "AND (first_seen_at,lead_key)>(?,?)" : "";
+    const after = cursor ? "AND (first_seen_at, lead_key) > (?, ?)" : "";
     const params = cursor ? [status, cursor.firstSeenAt, cursor.leadKey, limit + 1] : [status, limit + 1];
     const res = await this.ctx.db
       .prepare(
-        `SELECT lead_key,kind,target_url,claimed_package_id,discovered_from_url,
-      discovered_from_item_key,status,first_seen_at,last_seen_at FROM source_leads
-      WHERE status=? ${after} ORDER BY first_seen_at,lead_key LIMIT ?`
+        `SELECT lead_key, kind, target_url, target_host, claimed_package_id, discovered_from_url,
+                discovered_from_item_key, status, first_seen_at, last_seen_at
+         FROM source_leads
+         WHERE status = ? ${after}
+         ORDER BY first_seen_at ASC, lead_key ASC
+         LIMIT ?`
       )
       .bind(...params)
       .all<LeadRow>();
@@ -334,16 +1028,16 @@ export class OperatorPlane {
     };
   }
 
-  async approveDiscoveryLead(
+  async approveLead(
     leadKey: string,
-    minDelayMs = 1000,
-    actor = "local-cli",
-    reason = "Operator reviewed listing",
-    sourceRuleId?: string
+    minDelayMs: number | undefined,
+    actor: string,
+    reason: string,
+    priorityLane?: PriorityLane
   ): Promise<string> {
     if (!reason.trim() || reason.length > 300) throw new Error("Approval reason required (at most 300 characters)");
     const lead = await this.ctx.db
-      .prepare("SELECT kind,status,target_url FROM source_leads WHERE lead_key=?")
+      .prepare("SELECT kind, status, target_url FROM source_leads WHERE lead_key = ?")
       .bind(leadKey)
       .first<{ kind: DiscoveryLead["kind"]; status: string; target_url: string }>();
     if (!lead) throw new Error("Lead not found");
@@ -351,179 +1045,163 @@ export class OperatorPlane {
 
     const resolved = resolveDiscoveryLeadTarget(lead.kind, lead.target_url, minDelayMs);
     if (!resolved) {
-      throw new Error("Only published VPM listing leads can become VPM crawl jobs");
+      throw new Error("Discovery lead target cannot become a crawl job");
     }
 
-    return this.seedJobFn(resolved.url, resolved.platform, resolved.minDelayMs, sourceRuleId, resolved.purpose, {
-      actor,
-      reason,
-      leadKey
+    const suppressedTargets = await this.ctx.loadSuppressedTargets();
+    if (findMatchingSuppressedTarget(resolved.url, suppressedTargets)) {
+      throw new Error("URL is suppressed and cannot be approved");
+    }
+
+    return this.seedJobFn(resolved.url, resolved.platform, {
+      minDelayMs: resolved.minDelayMs,
+      purpose: resolved.purpose,
+      priorityLane,
+      audit: {
+        actor,
+        reason,
+        leadKey
+      }
     });
+  }
+
+  async bulkApproveLeads(input: BulkApproveLeadsRequest, actor: string): Promise<BulkApproveLeadsResponse> {
+    const parsed = BulkApproveLeadsRequestSchema.parse(input);
+    if (!actor.trim() || actor.length > 100) throw new Error("Operator actor required");
+
+    const approved: Array<{ leadKey: string; jobId: string }> = [];
+    const skipped: Array<{ leadKey: string; reason: string }> = [];
+    const seen = new Set<string>();
+
+    for (const leadKey of parsed.leadKeys) {
+      if (seen.has(leadKey)) continue;
+      seen.add(leadKey);
+      try {
+        const jobId = await this.approveLead(
+          leadKey,
+          parsed.minDelayMs,
+          actor,
+          parsed.reason,
+          parsed.priorityLane
+        );
+        approved.push({ leadKey, jobId });
+      } catch (cause) {
+        skipped.push({
+          leadKey,
+          reason: cause instanceof Error ? cause.message.slice(0, 300) : "Lead approval failed"
+        });
+      }
+    }
+
+    return {
+      schemaVersion: 1,
+      approved,
+      skipped
+    };
   }
 
   async rejectLead(leadKey: string, actor: string, reason: string): Promise<void> {
     if (!reason.trim() || reason.length > 300) throw new Error("Rejection reason required (at most 300 characters)");
     const lead = await this.ctx.db
-      .prepare("SELECT status FROM source_leads WHERE lead_key=?")
+      .prepare("SELECT status FROM source_leads WHERE lead_key = ?")
       .bind(leadKey)
       .first<{ status: string }>();
     if (!lead) throw new Error("Lead not found");
     if (lead.status === "approved") throw new Error("Approved lead cannot be rejected without revoking its job");
     if (lead.status === "rejected") return;
     await this.ctx.db.batch([
-      this.ctx.db.prepare("UPDATE source_leads SET status='rejected' WHERE lead_key=?").bind(leadKey),
+      this.ctx.db.prepare("UPDATE source_leads SET status = 'rejected' WHERE lead_key = ?").bind(leadKey),
       this.ctx.db
         .prepare(
-          `INSERT INTO operator_audit_log(entity_type,entity_id,actor,action,reason,occurred_at)
-        VALUES ('lead',?,?,'reject_lead',?,?)`
+          `INSERT INTO operator_audit_log(entity_type, entity_id, actor, action, reason, occurred_at)
+           VALUES ('lead', ?, ?, 'reject_lead', ?, ?)`
         )
         .bind(leadKey, actor, reason.trim(), new Date(this.ctx.now()).toISOString())
     ]);
   }
 
-  async listAutoQueueRulesPage(
-    limit: number,
-    cursor: RuleCursor | null
-  ): Promise<{ rules: AutoQueueRule[]; nextCursor: string | null }> {
-    if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error("Rule limit must be 1..100");
-    const before = cursor ? "WHERE (created_at,rule_id)<(?,?)" : "";
-    const params = cursor ? [cursor.createdAt, cursor.ruleId, limit + 1] : [limit + 1];
-    const res = await this.ctx.db
-      .prepare(
-        `SELECT * FROM lead_autoqueue_rules ${before}
-      ORDER BY created_at DESC,rule_id DESC LIMIT ?`
-      )
-      .bind(...params)
-      .all<AutoQueueRuleRow>();
-    const rows = res.results || [];
-    const visible = rows.slice(0, limit);
-    const last = visible.at(-1);
+  async suppressLeadDomain(
+    input: SuppressLeadDomainRequest,
+    actor: string
+  ): Promise<SuppressLeadDomainResponse> {
+    const parsed = SuppressLeadDomainRequestSchema.parse(input);
+    if (!actor.trim() || actor.length > 100) throw new Error("Operator actor required");
+    const targetHost = parsed.targetHost.trim().toLowerCase();
+    const nowIso = new Date(this.ctx.now()).toISOString();
+
+    await this.createSuppressedTarget(
+      {
+        schemaVersion: 1,
+        target: targetHost,
+        scope: "domain",
+        reason: parsed.reason
+      },
+      actor
+    );
+
+    let rejectedLeadCount = 0;
+    if (parsed.rejectPendingLeads !== false) {
+      const candidatesRes = await this.ctx.db
+        .prepare(
+          `SELECT lead_key, target_host FROM source_leads
+           WHERE status = 'pending_review'
+             AND (target_host = ? OR target_host LIKE ?)`
+        )
+        .bind(targetHost, `%.${targetHost}`)
+        .all<{ lead_key: string; target_host: string }>();
+      const matching = (candidatesRes.results || []).filter(
+        (lead) => lead.target_host.toLowerCase() === targetHost || lead.target_host.toLowerCase().endsWith(`.${targetHost}`)
+      );
+      if (matching.length > 0) {
+        const stmts: D1PreparedStatement[] = [];
+        for (const lead of matching) {
+          stmts.push(
+            this.ctx.db
+              .prepare("UPDATE source_leads SET status = 'rejected' WHERE lead_key = ? AND status = 'pending_review'")
+              .bind(lead.lead_key),
+            this.ctx.db
+              .prepare(
+                `INSERT INTO operator_audit_log(entity_type, entity_id, actor, action, reason, occurred_at)
+                 VALUES ('lead', ?, ?, 'suppress_domain', ?, ?)`
+              )
+              .bind(lead.lead_key, actor, parsed.reason.trim(), nowIso)
+          );
+          rejectedLeadCount += 1;
+        }
+        await this.ctx.executeBatchChunked(stmts);
+      }
+    }
+
     return {
-      rules: visible.map((row) => this.ctx.autoQueueRuleFromRow(row)),
-      nextCursor:
-        rows.length > limit && last
-          ? encodeRuleCursor({
-              createdAt: last.created_at,
-              ruleId: last.rule_id
-            })
-          : null
+      schemaVersion: 1,
+      targetHost,
+      scope: "domain",
+      rejectedLeadCount
     };
   }
 
-  async createAutoQueueRule(input: CreateAutoQueueRule, actor: string): Promise<AutoQueueRule> {
-    const parsed = CreateAutoQueueRuleSchema.parse(input);
-    const now = new Date(this.ctx.now()).toISOString();
-    if (parsed.expiresAt <= now) throw new Error("Rule expiry must be in the future");
-    const existing = await this.ctx.db
-      .prepare(
-        `SELECT 1 FROM lead_autoqueue_rules
-      WHERE lead_kind=? AND origin=? AND path_scope=? AND disabled_at IS NULL AND expires_at>?`
-      )
-      .bind(parsed.leadKind, parsed.origin, parsed.pathScope, now)
-      .first();
-    if (existing) throw new Error("An active rule already covers this exact scope");
-    const ruleId = crypto.randomUUID();
-    await this.ctx.db.batch([
-      this.ctx.db
-        .prepare(
-          `INSERT INTO lead_autoqueue_rules
-        (rule_id,lead_kind,origin,path_scope,min_delay_ms,expires_at,review_reference,reason,created_at)
-        VALUES (?,?,?,?,?,?,?,?,?)`
-        )
-        .bind(
-          ruleId,
-          parsed.leadKind,
-          parsed.origin,
-          parsed.pathScope,
-          parsed.minDelayMs,
-          parsed.expiresAt,
-          parsed.reviewReference,
-          parsed.reason,
-          now
-        ),
-      this.ctx.db
-        .prepare(
-          `INSERT INTO operator_audit_log(entity_type,entity_id,actor,action,reason,occurred_at)
-        VALUES ('rule',?,?, 'create', ?, ?)`
-        )
-        .bind(ruleId, actor, parsed.reason, now)
-    ]);
-    const row = await this.ctx.db
-      .prepare("SELECT * FROM lead_autoqueue_rules WHERE rule_id=?")
-      .bind(ruleId)
-      .first<AutoQueueRuleRow>();
-    return this.ctx.autoQueueRuleFromRow(row!);
-  }
-
-  async disableAutoQueueRule(ruleId: string, actor: string, reason: string): Promise<AutoQueueRule> {
-    if (!reason.trim() || reason.length > 300) throw new Error("Disable reason required (at most 300 characters)");
-    const row = await this.ctx.db
-      .prepare("SELECT * FROM lead_autoqueue_rules WHERE rule_id=?")
-      .bind(ruleId)
-      .first<AutoQueueRuleRow>();
-    if (!row) throw new Error("Rule not found");
-    if (!row.disabled_at) {
-      const now = new Date(this.ctx.now()).toISOString();
-      const leasedRes = await this.ctx.db
-        .prepare("SELECT job_id,origin FROM crawl_jobs WHERE source_rule_id=? AND state='leased'")
-        .bind(ruleId)
-        .all<{ job_id: string; origin: string }>();
-      const leased = leasedRes.results || [];
-      const batchStmts = [
-        this.ctx.db.prepare("UPDATE lead_autoqueue_rules SET disabled_at=? WHERE rule_id=?").bind(now, ruleId)
-      ];
-      for (const job of leased) {
-        batchStmts.push(
-          this.ctx.db
-            .prepare(
-              `UPDATE crawl_jobs SET state='pending',claimed_by=NULL,lease_id=NULL,lease_expires_at=NULL
-            WHERE job_id=?`
-            )
-            .bind(job.job_id),
-          this.ctx.db
-            .prepare(
-              `UPDATE origin_leases SET active_job_id=NULL,lease_expires_at=NULL
-            WHERE origin=? AND active_job_id=?`
-            )
-            .bind(job.origin, job.job_id)
-        );
-      }
-      batchStmts.push(
-        this.ctx.db
-          .prepare(
-            `INSERT INTO operator_audit_log(entity_type,entity_id,actor,action,reason,occurred_at)
-          VALUES ('rule',?,?, 'disable', ?, ?)`
-          )
-          .bind(ruleId, actor, reason.trim(), now)
-      );
-      await this.ctx.executeBatchChunked(batchStmts);
-      row.disabled_at = now;
-    }
-    return this.ctx.autoQueueRuleFromRow(row);
-  }
-
-  async listSourceAccessProfilesPage(
+  async listSteeringProfilesPage(
     limit: number,
-    cursor: ProfileCursor | null
-  ): Promise<{ profiles: SourceAccessProfile[]; nextCursor: string | null }> {
+    cursor: SteeringProfileCursor | null
+  ): Promise<{ profiles: SteeringProfile[]; nextCursor: string | null }> {
     if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error("Profile limit must be 1..100");
-    const before = cursor ? "WHERE (created_at,profile_id)<(?,?)" : "";
+    const before = cursor ? "WHERE (created_at, profile_id) < (?, ?)" : "";
     const params = cursor ? [cursor.createdAt, cursor.profileId, limit + 1] : [limit + 1];
     const res = await this.ctx.db
       .prepare(
-        `SELECT * FROM source_access_profiles ${before}
-      ORDER BY created_at DESC,profile_id DESC LIMIT ?`
+        `SELECT * FROM steering_profiles ${before}
+         ORDER BY created_at DESC, profile_id DESC LIMIT ?`
       )
       .bind(...params)
-      .all<SourceAccessProfileRow>();
+      .all<SteeringProfileRow>();
     const rows = res.results || [];
     const visible = rows.slice(0, limit);
     const last = visible.at(-1);
     return {
-      profiles: visible.map((row) => this.ctx.sourceAccessProfileFromRow(row)),
+      profiles: visible.map((row) => this.ctx.steeringProfileFromRow(row)),
       nextCursor:
         rows.length > limit && last
-          ? encodeProfileCursor({
+          ? encodeSteeringProfileCursor({
               createdAt: last.created_at,
               profileId: last.profile_id
             })
@@ -531,130 +1209,543 @@ export class OperatorPlane {
     };
   }
 
-  async createSourceAccessProfile(input: CreateSourceAccessProfile, actor: string): Promise<SourceAccessProfile> {
-    const parsed = CreateSourceAccessProfileSchema.parse(input);
-    const now = new Date(this.ctx.now()).toISOString();
-    if (parsed.expiresAt <= now) throw new Error("Source profile expiry must be in the future");
-    const profileId = crypto.randomUUID();
+  private async assertNoOverlappingActiveProfile(
+    candidate: {
+      platform: Platform;
+      hostMatchMode: SteeringProfile["hostMatchMode"];
+      hostPattern: string;
+      pathScope: string;
+      queryMode: SteeringProfile["queryMode"];
+      queryScope?: string | null;
+      purpose: SourcePurpose;
+    },
+    nowIso: string,
+    excludeProfileId?: string
+  ): Promise<void> {
     const existingRes = await this.ctx.db
       .prepare(
-        `SELECT path_scope,query_scope FROM source_access_profiles
-      WHERE platform=? AND origin=? AND purpose=? AND disabled_at IS NULL AND expires_at>?`
+        `SELECT profile_id, path_scope, query_mode, query_scope FROM steering_profiles
+         WHERE platform = ? AND host_match_mode = ? AND host_pattern = ? AND purpose = ?
+           AND disabled_at IS NULL AND expires_at > ?`
       )
-      .bind(parsed.platform, parsed.origin, parsed.purpose, now)
-      .all<{ path_scope: string; query_scope: string | null }>();
-    const existing = existingRes.results || [];
+      .bind(candidate.platform, candidate.hostMatchMode, candidate.hostPattern, candidate.purpose, nowIso)
+      .all<{
+        profile_id: string;
+        path_scope: string;
+        query_mode: SteeringProfile["queryMode"];
+        query_scope: string | null;
+      }>();
+    const existing = (existingRes.results || []).filter((row) => row.profile_id !== excludeProfileId);
     if (
-      existing.some((row) =>
-        sourcePathScopesOverlap(row.path_scope, parsed.pathScope, row.query_scope ?? undefined, parsed.exactQuery)
+      existing.some(
+        (row) =>
+          steeringPathScopesOverlap(row.path_scope, candidate.pathScope) &&
+          steeringQueryModesOverlap(row.query_mode, row.query_scope, candidate.queryMode, candidate.queryScope)
       )
     ) {
-      throw new Error("Overlapping active source profile requires disabling the old grant first");
+      throw new Error("Overlapping active steering profile requires disabling the old grant first");
     }
+  }
+
+  async createSteeringProfile(input: CreateSteeringProfile, actor: string): Promise<SteeringProfile> {
+    const parsed = CreateSteeringProfileSchema.parse(input);
+    const nowIso = new Date(this.ctx.now()).toISOString();
+    if (parsed.expiresAt <= nowIso) throw new Error("Steering profile expiry must be in the future");
+
+    await this.assertNoOverlappingActiveProfile(parsed, nowIso);
+
+    const profileId = crypto.randomUUID();
     await this.ctx.db.batch([
       this.ctx.db
         .prepare(
-          `INSERT INTO source_access_profiles
-        (profile_id,platform,origin,path_scope,query_scope,method,purpose,min_delay_ms,expires_at,
-          review_reference,reason,retain_classes_json,publish_classes_json,created_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+          `INSERT INTO steering_profiles(
+             profile_id, platform, host_match_mode, host_pattern, path_scope, query_mode, query_scope,
+             method, purpose, auto_promote, recrawl_interval_ms, min_delay_ms, max_pagination_depth,
+             expires_at, review_reference, reason, retain_classes_json, publish_classes_json, created_at, disabled_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`
         )
         .bind(
           profileId,
           parsed.platform,
-          parsed.origin,
+          parsed.hostMatchMode,
+          parsed.hostPattern,
           parsed.pathScope,
-          parsed.exactQuery ?? null,
+          parsed.queryMode,
+          parsed.queryScope ?? null,
           parsed.method,
           parsed.purpose,
+          parsed.autoPromote ? 1 : 0,
+          parsed.recrawlIntervalMs,
           parsed.minDelayMs,
+          parsed.maxPaginationDepth,
           parsed.expiresAt,
           parsed.reviewReference,
           parsed.reason,
           JSON.stringify(parsed.retainClasses),
           JSON.stringify(parsed.publishClasses),
-          now
+          nowIso
         ),
       this.ctx.db
         .prepare(
-          `INSERT INTO operator_audit_log(entity_type,entity_id,actor,action,reason,occurred_at)
-        VALUES ('profile',?,?, 'create', ?, ?)`
+          `INSERT INTO operator_audit_log(entity_type, entity_id, actor, action, reason, occurred_at)
+           VALUES ('profile', ?, ?, 'create', ?, ?)`
         )
-        .bind(profileId, actor, parsed.reason, now)
+        .bind(profileId, actor, parsed.reason, nowIso)
     ]);
+
     const row = await this.ctx.db
-      .prepare("SELECT * FROM source_access_profiles WHERE profile_id=?")
+      .prepare("SELECT * FROM steering_profiles WHERE profile_id = ?")
       .bind(profileId)
-      .first<SourceAccessProfileRow>();
-    return this.ctx.sourceAccessProfileFromRow(row!);
+      .first<SteeringProfileRow>();
+    return this.ctx.steeringProfileFromRow(row!);
   }
 
-  async disableSourceAccessProfile(profileId: string, actor: string, reason: string): Promise<SourceAccessProfile> {
-    if (!reason.trim() || reason.length > 300) throw new Error("Disable reason required (at most 300 characters)");
+  async updateSteeringProfile(
+    profileId: string,
+    input: UpdateSteeringProfile,
+    actor: string
+  ): Promise<SteeringProfile> {
+    const parsed = UpdateSteeringProfileSchema.parse(input);
     const row = await this.ctx.db
-      .prepare("SELECT * FROM source_access_profiles WHERE profile_id=?")
+      .prepare("SELECT * FROM steering_profiles WHERE profile_id = ?")
       .bind(profileId)
-      .first<SourceAccessProfileRow>();
-    if (!row) throw new Error("Source profile not found");
-    if (row.disabled_at) return this.ctx.sourceAccessProfileFromRow(row);
-    const now = new Date(this.ctx.now()).toISOString();
+      .first<SteeringProfileRow>();
+    if (!row) throw new Error("Steering profile not found");
+
+    const current = this.ctx.steeringProfileFromRow(row);
+    const nowMs = this.ctx.now();
+    const nowIso = new Date(nowMs).toISOString();
+
+    const nextQueryMode = parsed.queryMode ?? current.queryMode;
+    const nextQueryScope =
+      parsed.queryScope !== undefined
+        ? parsed.queryScope
+        : nextQueryMode === "none"
+          ? null
+          : current.queryScope;
+
+    const merged = SteeringProfileSchema.parse({
+      profileId: current.profileId,
+      platform: parsed.platform ?? current.platform,
+      hostMatchMode: parsed.hostMatchMode ?? current.hostMatchMode,
+      hostPattern: parsed.hostPattern ?? current.hostPattern,
+      pathScope: parsed.pathScope ?? current.pathScope,
+      queryMode: nextQueryMode,
+      queryScope: nextQueryScope,
+      method: "GET",
+      purpose: parsed.purpose ?? current.purpose,
+      autoPromote: parsed.autoPromote ?? current.autoPromote,
+      recrawlIntervalMs: parsed.recrawlIntervalMs ?? current.recrawlIntervalMs,
+      minDelayMs: parsed.minDelayMs ?? current.minDelayMs,
+      maxPaginationDepth: parsed.maxPaginationDepth ?? current.maxPaginationDepth,
+      expiresAt: parsed.expiresAt ?? current.expiresAt,
+      reviewReference: parsed.reviewReference ?? current.reviewReference,
+      reason: parsed.reason,
+      retainClasses: parsed.retainClasses ?? current.retainClasses,
+      publishClasses: parsed.publishClasses ?? current.publishClasses,
+      createdAt: current.createdAt,
+      disabledAt: current.disabledAt
+    });
+
+    if (parsed.expiresAt !== undefined && merged.expiresAt <= nowIso) {
+      throw new Error("Steering profile expiry must be in the future");
+    }
+    if (!merged.disabledAt) {
+      await this.assertNoOverlappingActiveProfile(merged, nowIso, profileId);
+    }
 
     const leasedRes = await this.ctx.db
-      .prepare("SELECT job_id,origin FROM crawl_jobs WHERE lease_profile_id=? AND state='leased'")
+      .prepare("SELECT * FROM crawl_jobs WHERE steering_profile_id = ? AND state = 'leased'")
+      .bind(profileId)
+      .all<JobRow>();
+    const stmts: D1PreparedStatement[] = [
+      this.ctx.db
+        .prepare(
+          `UPDATE steering_profiles
+           SET platform = ?,
+               host_match_mode = ?,
+               host_pattern = ?,
+               path_scope = ?,
+               query_mode = ?,
+               query_scope = ?,
+               purpose = ?,
+               auto_promote = ?,
+               recrawl_interval_ms = ?,
+               min_delay_ms = ?,
+               max_pagination_depth = ?,
+               expires_at = ?,
+               review_reference = ?,
+               reason = ?,
+               retain_classes_json = ?,
+               publish_classes_json = ?
+           WHERE profile_id = ?`
+        )
+        .bind(
+          merged.platform,
+          merged.hostMatchMode,
+          merged.hostPattern,
+          merged.pathScope,
+          merged.queryMode,
+          merged.queryScope ?? null,
+          merged.purpose,
+          merged.autoPromote ? 1 : 0,
+          merged.recrawlIntervalMs,
+          merged.minDelayMs,
+          merged.maxPaginationDepth,
+          merged.expiresAt,
+          merged.reviewReference,
+          parsed.reason.trim(),
+          JSON.stringify(merged.retainClasses),
+          JSON.stringify(merged.publishClasses),
+          profileId
+        ),
+      this.ctx.db
+        .prepare(
+          `INSERT INTO operator_audit_log(entity_type, entity_id, actor, action, reason, occurred_at)
+           VALUES ('profile', ?, ?, 'update', ?, ?)`
+        )
+        .bind(profileId, actor, parsed.reason.trim(), nowIso)
+    ];
+
+    for (const job of leasedRes.results || []) {
+      if (!steeringProfileMatches(merged, job.platform, job.url, job.job_purpose, nowMs)) {
+        stmts.push(
+          this.ctx.db
+            .prepare(
+              `UPDATE crawl_jobs
+               SET state = 'pending', claimed_by = NULL, lease_id = NULL,
+                   lease_expires_at = NULL, steering_profile_id = NULL
+               WHERE job_id = ?`
+            )
+            .bind(job.job_id),
+          this.ctx.db
+            .prepare("UPDATE origin_state SET active_job_id = NULL, lease_expires_at = NULL WHERE origin = ? AND active_job_id = ?")
+            .bind(job.origin, job.job_id)
+        );
+      }
+    }
+
+    await this.ctx.executeBatchChunked(stmts);
+    return merged;
+  }
+
+  async enableSteeringProfile(profileId: string, actor: string, reason: string): Promise<SteeringProfile> {
+    SteeringProfileActionSchema.shape.reason.parse(reason);
+    const row = await this.ctx.db
+      .prepare("SELECT * FROM steering_profiles WHERE profile_id = ?")
+      .bind(profileId)
+      .first<SteeringProfileRow>();
+    if (!row) throw new Error("Steering profile not found");
+
+    const nowIso = new Date(this.ctx.now()).toISOString();
+    if (row.expires_at <= nowIso) {
+      throw new CoordinatorConflict("Expired steering profile cannot be re-enabled", 409);
+    }
+
+    if (row.disabled_at) {
+      const current = this.ctx.steeringProfileFromRow(row);
+      await this.assertNoOverlappingActiveProfile(current, nowIso, profileId);
+      await this.ctx.db.batch([
+        this.ctx.db.prepare("UPDATE steering_profiles SET disabled_at = NULL WHERE profile_id = ?").bind(profileId),
+        this.ctx.db
+          .prepare(
+            `INSERT INTO operator_audit_log(entity_type, entity_id, actor, action, reason, occurred_at)
+             VALUES ('profile', ?, ?, 'enable', ?, ?)`
+          )
+          .bind(profileId, actor, reason.trim(), nowIso)
+      ]);
+      row.disabled_at = null;
+    }
+
+    return this.ctx.steeringProfileFromRow(row);
+  }
+
+  /**
+   * Disables a steering profile cleanly: commits `disabled_at` and unleases matching jobs FIRST,
+   * then inspects remaining active profiles to clear `origin_state.refresh_lease_id` if no eligible due jobs remain.
+   */
+  async disableSteeringProfile(profileId: string, actor: string, reason: string): Promise<SteeringProfile> {
+    SteeringProfileActionSchema.shape.reason.parse(reason);
+    const row = await this.ctx.db
+      .prepare("SELECT * FROM steering_profiles WHERE profile_id = ?")
+      .bind(profileId)
+      .first<SteeringProfileRow>();
+    if (!row) throw new Error("Steering profile not found");
+    if (row.disabled_at) return this.ctx.steeringProfileFromRow(row);
+
+    const nowIso = new Date(this.ctx.now()).toISOString();
+    const leasedRes = await this.ctx.db
+      .prepare("SELECT job_id, origin FROM crawl_jobs WHERE steering_profile_id = ? AND state = 'leased'")
       .bind(profileId)
       .all<{ job_id: string; origin: string }>();
     const leased = leasedRes.results || [];
 
-    const batchStmts = [
-      this.ctx.db.prepare("UPDATE source_access_profiles SET disabled_at=? WHERE profile_id=?").bind(now, profileId)
+    const batchStmts: D1PreparedStatement[] = [
+      this.ctx.db.prepare("UPDATE steering_profiles SET disabled_at = ? WHERE profile_id = ?").bind(nowIso, profileId),
+      this.ctx.db
+        .prepare(
+          `INSERT INTO operator_audit_log(entity_type, entity_id, actor, action, reason, occurred_at)
+           VALUES ('profile', ?, ?, 'disable', ?, ?)`
+        )
+        .bind(profileId, actor, reason.trim(), nowIso)
     ];
+
+    const affectedOrigins = new Set<string>(leased.map((job) => job.origin));
+    if (row.host_match_mode === "exact") {
+      affectedOrigins.add(`https://${row.host_pattern.toLowerCase()}`);
+    }
+
     for (const job of leased) {
       batchStmts.push(
         this.ctx.db
           .prepare(
-            `UPDATE crawl_jobs SET state='pending',claimed_by=NULL,lease_id=NULL,
-          lease_expires_at=NULL,lease_profile_id=NULL WHERE job_id=?`
+            `UPDATE crawl_jobs
+             SET state = 'pending', claimed_by = NULL, lease_id = NULL,
+                 lease_expires_at = NULL, steering_profile_id = NULL
+             WHERE job_id = ?`
           )
           .bind(job.job_id),
         this.ctx.db
           .prepare(
-            `UPDATE origin_leases SET active_job_id=NULL,lease_expires_at=NULL
-          WHERE origin=? AND active_job_id=?`
+            `UPDATE origin_state
+             SET active_job_id = NULL, lease_expires_at = NULL
+             WHERE origin = ? AND active_job_id = ?`
           )
           .bind(job.origin, job.job_id)
       );
     }
-    const dueDelay = await this.ctx.approvedDueProfileDelayForOrigin(row.origin, now);
-    if (dueDelay === null) {
-      batchStmts.push(
+
+    // Statement order guarantee: commit `disabled_at` BEFORE checking remaining active profiles.
+    await this.ctx.executeBatchChunked(batchStmts);
+
+    const clearRefreshStmts: D1PreparedStatement[] = [];
+    for (const origin of affectedOrigins) {
+      const remainingDelay = await this.ctx.approvedDueProfileDelayForOrigin(origin, nowIso);
+      if (remainingDelay === null) {
+        clearRefreshStmts.push(
+          this.ctx.db
+            .prepare("UPDATE origin_state SET refresh_lease_id = NULL, refresh_lease_expires_at = NULL WHERE origin = ?")
+            .bind(origin)
+        );
+      }
+    }
+    if (clearRefreshStmts.length > 0) {
+      await this.ctx.executeBatchChunked(clearRefreshStmts);
+    }
+
+    const updatedRow = await this.ctx.db
+      .prepare("SELECT * FROM steering_profiles WHERE profile_id = ?")
+      .bind(profileId)
+      .first<SteeringProfileRow>();
+    return this.ctx.steeringProfileFromRow(updatedRow!);
+  }
+
+  async deleteSteeringProfile(
+    profileId: string,
+    actor: string,
+    reason: string
+  ): Promise<{ profileId: string; status: "deleted" }> {
+    SteeringProfileActionSchema.shape.reason.parse(reason);
+    const row = await this.ctx.db
+      .prepare("SELECT * FROM steering_profiles WHERE profile_id = ?")
+      .bind(profileId)
+      .first<SteeringProfileRow>();
+    if (!row) throw new Error("Steering profile not found");
+
+    const nowIso = new Date(this.ctx.now()).toISOString();
+    const leasedRes = await this.ctx.db
+      .prepare("SELECT job_id, origin FROM crawl_jobs WHERE steering_profile_id = ? AND state = 'leased'")
+      .bind(profileId)
+      .all<{ job_id: string; origin: string }>();
+    const stmts: D1PreparedStatement[] = [];
+    for (const job of leasedRes.results || []) {
+      stmts.push(
         this.ctx.db
-          .prepare("UPDATE origin_robots SET refresh_lease_id=NULL, refresh_lease_expires_at=NULL WHERE origin=?")
-          .bind(row.origin)
+          .prepare("UPDATE origin_state SET active_job_id = NULL, lease_expires_at = NULL WHERE origin = ? AND active_job_id = ?")
+          .bind(job.origin, job.job_id)
       );
     }
-    batchStmts.push(
+    stmts.push(
       this.ctx.db
         .prepare(
-          `INSERT INTO operator_audit_log(entity_type,entity_id,actor,action,reason,occurred_at)
-        VALUES ('profile',?,?, 'disable', ?, ?)`
+          `UPDATE crawl_jobs
+           SET state = CASE WHEN state = 'leased' THEN 'pending' ELSE state END,
+               claimed_by = CASE WHEN state = 'leased' THEN NULL ELSE claimed_by END,
+               lease_id = CASE WHEN state = 'leased' THEN NULL ELSE lease_id END,
+               lease_expires_at = CASE WHEN state = 'leased' THEN NULL ELSE lease_expires_at END,
+               steering_profile_id = NULL
+           WHERE steering_profile_id = ?`
         )
-        .bind(profileId, actor, reason.trim(), now)
+        .bind(profileId),
+      this.ctx.db.prepare("DELETE FROM steering_profiles WHERE profile_id = ?").bind(profileId),
+      this.ctx.db
+        .prepare(
+          `INSERT INTO operator_audit_log(entity_type, entity_id, actor, action, reason, occurred_at)
+           VALUES ('profile', ?, ?, 'delete', ?, ?)`
+        )
+        .bind(profileId, actor, reason.trim(), nowIso)
     );
-    await this.ctx.executeBatchChunked(batchStmts);
-    const updatedRow = await this.ctx.db
-      .prepare("SELECT * FROM source_access_profiles WHERE profile_id=?")
-      .bind(profileId)
-      .first<SourceAccessProfileRow>();
-    return this.ctx.sourceAccessProfileFromRow(updatedRow!);
+    await this.ctx.executeBatchChunked(stmts);
+
+    return { profileId, status: "deleted" };
+  }
+
+  async listSuppressedTargetsPage(
+    limit: number,
+    cursor: SuppressedTargetCursor | null
+  ): Promise<{ targets: SuppressedTarget[]; nextCursor: string | null }> {
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+      throw new Error("Suppressed target limit must be 1..100");
+    }
+    const before = cursor ? "WHERE (suppressed_at, target) < (?, ?)" : "";
+    const params = cursor ? [cursor.suppressedAt, cursor.target, limit + 1] : [limit + 1];
+    const res = await this.ctx.db
+      .prepare(
+        `SELECT target, scope, reason, suppressed_at FROM suppressed_targets
+         ${before}
+         ORDER BY suppressed_at DESC, target DESC
+         LIMIT ?`
+      )
+      .bind(...params)
+      .all<SuppressedTargetRow>();
+    const rows = res.results || [];
+    const visible = rows.slice(0, limit);
+    const last = visible.at(-1);
+    return {
+      targets: visible.map((row) => this.ctx.suppressedTargetFromRow(row)),
+      nextCursor:
+        rows.length > limit && last
+          ? encodeSuppressedTargetCursor({
+              suppressedAt: last.suppressed_at,
+              target: last.target
+            })
+          : null
+    };
+  }
+
+  private normalizeSuppressedTargetValue(input: CreateSuppressedTarget): string {
+    if (input.scope === "url") return new URL(input.target).href;
+    if (input.scope === "origin") return new URL(input.target).origin;
+    return input.target.trim().toLowerCase();
+  }
+
+  async createSuppressedTarget(input: CreateSuppressedTarget, actor: string): Promise<SuppressedTarget> {
+    const parsed = CreateSuppressedTargetSchema.parse(input);
+    if (!actor.trim() || actor.length > 100) throw new Error("Operator actor required");
+    const target = this.normalizeSuppressedTargetValue(parsed);
+    const nowIso = new Date(this.ctx.now()).toISOString();
+
+    const stmts: D1PreparedStatement[] = [
+      this.ctx.db
+        .prepare(
+          `INSERT INTO suppressed_targets(target, scope, reason, suppressed_at)
+           VALUES (?, ?, ?, ?)
+           ON CONFLICT(target) DO UPDATE SET
+             scope = excluded.scope,
+             reason = excluded.reason,
+             suppressed_at = excluded.suppressed_at`
+        )
+        .bind(target, parsed.scope, parsed.reason.trim(), nowIso),
+      this.ctx.db
+        .prepare(
+          `INSERT INTO operator_audit_log(entity_type, entity_id, actor, action, reason, occurred_at)
+           VALUES ('suppressed_target', ?, ?, 'create', ?, ?)`
+        )
+        .bind(target, actor, parsed.reason.trim(), nowIso)
+    ];
+
+    const entry: SuppressedTarget = {
+      target,
+      scope: parsed.scope,
+      reason: parsed.reason.trim(),
+      suppressedAt: nowIso
+    };
+
+    const candidateJobsRes =
+      parsed.scope === "url"
+        ? await this.ctx.db
+            .prepare("SELECT job_id, url, origin FROM crawl_jobs WHERE url = ? AND state != 'blocked'")
+            .bind(target)
+            .all<{ job_id: string; url: string; origin: string }>()
+        : parsed.scope === "origin"
+          ? await this.ctx.db
+              .prepare("SELECT job_id, url, origin FROM crawl_jobs WHERE origin = ? AND state != 'blocked'")
+              .bind(target)
+              .all<{ job_id: string; url: string; origin: string }>()
+          : await this.ctx.db
+              .prepare("SELECT job_id, url, origin FROM crawl_jobs WHERE state != 'blocked'")
+              .all<{ job_id: string; url: string; origin: string }>();
+
+    for (const job of candidateJobsRes.results || []) {
+      if (findMatchingSuppressedTarget(job.url, [entry])) {
+        stmts.push(
+          this.ctx.db
+            .prepare(
+              "UPDATE crawl_jobs SET state = 'blocked', claimed_by = NULL, lease_id = NULL, lease_expires_at = NULL WHERE job_id = ?"
+            )
+            .bind(job.job_id),
+          this.ctx.db
+            .prepare("UPDATE origin_state SET active_job_id = NULL, lease_expires_at = NULL WHERE origin = ? AND active_job_id = ?")
+            .bind(job.origin, job.job_id)
+        );
+      }
+    }
+
+    await this.ctx.executeBatchChunked(stmts);
+    return entry;
+  }
+
+  async deleteSuppressedTarget(
+    rawTarget: string,
+    actor: string,
+    reason: string
+  ): Promise<{ target: string; status: "deleted" }> {
+    if (!actor.trim() || actor.length > 100) throw new Error("Operator actor required");
+    if (!reason.trim() || reason.length > 300) throw new Error("Reason required (3..300 chars)");
+
+    const trimmed = rawTarget.trim();
+    const candidates = new Set<string>([trimmed, trimmed.toLowerCase()]);
+    try {
+      const parsed = new URL(trimmed);
+      candidates.add(parsed.href);
+      candidates.add(parsed.origin);
+    } catch {
+      // domain literal
+    }
+
+    let matchedTarget: string | null = null;
+    for (const candidate of candidates) {
+      const found = await this.ctx.db
+        .prepare("SELECT target FROM suppressed_targets WHERE target = ?")
+        .bind(candidate)
+        .first<{ target: string }>();
+      if (found) {
+        matchedTarget = found.target;
+        break;
+      }
+    }
+    if (!matchedTarget) throw new Error("Suppressed target not found");
+
+    const nowIso = new Date(this.ctx.now()).toISOString();
+    await this.ctx.db.batch([
+      this.ctx.db.prepare("DELETE FROM suppressed_targets WHERE target = ?").bind(matchedTarget),
+      this.ctx.db
+        .prepare(
+          `INSERT INTO operator_audit_log(entity_type, entity_id, actor, action, reason, occurred_at)
+           VALUES ('suppressed_target', ?, ?, 'delete', ?, ?)`
+        )
+        .bind(matchedTarget, actor, reason.trim(), nowIso)
+    ]);
+
+    return { target: matchedTarget, status: "deleted" };
   }
 
   async listAuditLogs(options?: {
-    entityType?: "node" | "lead" | "job" | "rule" | "profile" | "app";
+    entityType?: OperatorAuditLogRow["entity_type"];
     entityId?: string;
     limit?: number;
   }): Promise<OperatorAuditLogRow[]> {
     const limit = Math.min(Math.max(options?.limit ?? 50, 1), 100);
-    let sql = "SELECT * FROM operator_audit_log";
     const conditions: string[] = [];
     const params: unknown[] = [];
     if (options?.entityType) {
@@ -665,12 +1756,12 @@ export class OperatorPlane {
       conditions.push("entity_id = ?");
       params.push(options.entityId);
     }
-    if (conditions.length > 0) {
-      sql += ` WHERE ${conditions.join(" AND ")}`;
-    }
-    sql += " ORDER BY occurred_at DESC, action_id DESC LIMIT ?";
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
     params.push(limit);
-    const res = await this.ctx.db.prepare(sql).bind(...params).all<OperatorAuditLogRow>();
+    const res = await this.ctx.db
+      .prepare(`SELECT * FROM operator_audit_log ${where} ORDER BY occurred_at DESC, action_id DESC LIMIT ?`)
+      .bind(...params)
+      .all<OperatorAuditLogRow>();
     return res.results || [];
   }
 
@@ -713,16 +1804,16 @@ export class OperatorPlane {
       if (pkg) priorLifecycles[pkg.canonical_id] = pkg.lifecycle;
     }
     if (input.targetUrl) {
-      const fronts = await this.ctx.db
+      const sources = await this.ctx.db
         .prepare(
           `SELECT cp.canonical_id, cp.lifecycle
-        FROM canonical_packages cp
-        JOIN package_fronts pf ON pf.canonical_id = cp.canonical_id
-        WHERE pf.storefront_url = ?`
+           FROM canonical_packages cp
+           JOIN listing_sources ls ON ls.canonical_id = cp.canonical_id
+           WHERE ls.storefront_url = ?`
         )
         .bind(input.targetUrl)
         .all<{ canonical_id: string; lifecycle: string }>();
-      for (const row of fronts.results || []) {
+      for (const row of sources.results || []) {
         priorLifecycles[row.canonical_id] = row.lifecycle;
       }
     }
@@ -731,7 +1822,7 @@ export class OperatorPlane {
     let priorJobState: string | null = null;
     if (normalizedUrl) {
       const sup = await this.ctx.db
-        .prepare("SELECT reason FROM suppressed_urls WHERE url = ?")
+        .prepare("SELECT reason FROM suppressed_targets WHERE target = ? AND scope = 'url'")
         .bind(normalizedUrl)
         .first<{ reason: string }>();
       priorSuppressedReason = sup?.reason ?? null;
@@ -751,9 +1842,9 @@ export class OperatorPlane {
     await this.ctx.db
       .prepare(
         `INSERT INTO catalog_tickets (
-        ticket_id, ticket_type, target_url, canonical_id, requester_type, requester_id,
-        reason, proof_kind, proof_value, contact_email, payload_json, recorded_at, review_status, review_notes
-      ) VALUES (?, 'opt_out', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`
+           ticket_id, ticket_type, target_url, canonical_id, requester_type, requester_id,
+           reason, proof_kind, proof_value, contact_email, payload_json, recorded_at, review_status, review_notes
+         ) VALUES (?, 'opt_out', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`
       )
       .bind(
         takedownId,
@@ -771,27 +1862,33 @@ export class OperatorPlane {
       )
       .run();
 
+    const stmts: D1PreparedStatement[] = [];
     if (normalizedUrl) {
       try {
-        await this.ctx.db
-          .prepare("INSERT OR REPLACE INTO suppressed_urls(url,reason,suppressed_at) VALUES (?,?,?)")
-          .bind(normalizedUrl, `Delisting request ${takedownId}: ${input.reason}`, recordedAt)
-          .run();
+        stmts.push(
+          this.ctx.db
+            .prepare(
+              `INSERT INTO suppressed_targets(target, scope, reason, suppressed_at)
+               VALUES (?, 'url', ?, ?)
+               ON CONFLICT(target) DO UPDATE SET scope = 'url', reason = excluded.reason, suppressed_at = excluded.suppressed_at`
+            )
+            .bind(normalizedUrl, `Delisting request ${takedownId}: ${input.reason}`, recordedAt)
+        );
         const job = await this.ctx.db
-          .prepare("SELECT job_id,origin FROM crawl_jobs WHERE url=?")
+          .prepare("SELECT job_id, origin FROM crawl_jobs WHERE url = ?")
           .bind(normalizedUrl)
           .first<{ job_id: string; origin: string }>();
         if (job) {
-          await this.ctx.db
-            .prepare(
-              "UPDATE crawl_jobs SET state='blocked',claimed_by=NULL,lease_id=NULL,lease_expires_at=NULL WHERE job_id=?"
-            )
-            .bind(job.job_id)
-            .run();
-          await this.ctx.db
-            .prepare("UPDATE origin_leases SET active_job_id=NULL,lease_expires_at=NULL WHERE origin=? AND active_job_id=?")
-            .bind(job.origin, job.job_id)
-            .run();
+          stmts.push(
+            this.ctx.db
+              .prepare(
+                "UPDATE crawl_jobs SET state = 'blocked', claimed_by = NULL, lease_id = NULL, lease_expires_at = NULL WHERE job_id = ?"
+              )
+              .bind(job.job_id),
+            this.ctx.db
+              .prepare("UPDATE origin_state SET active_job_id = NULL, lease_expires_at = NULL WHERE origin = ? AND active_job_id = ?")
+              .bind(job.origin, job.job_id)
+          );
         }
       } catch {
         // best-effort URL suppression
@@ -799,38 +1896,32 @@ export class OperatorPlane {
     }
 
     if (input.canonicalId) {
-      await this.ctx.db
-        .prepare(
-          `UPDATE canonical_packages SET lifecycle = 'delisted', updated_at = ?
-        WHERE canonical_id = ? AND lifecycle != 'delisted'`
-        )
-        .bind(recordedAt, input.canonicalId)
-        .run();
-      await this.ctx.db
-        .prepare(
-          "INSERT OR IGNORE INTO catalog_tombstones (canonical_id, reason, recorded_at) VALUES (?, 'delisted', ?)"
-        )
-        .bind(input.canonicalId, recordedAt)
-        .run();
+      stmts.push(
+        this.ctx.db
+          .prepare(
+            `UPDATE canonical_packages
+             SET lifecycle = 'delisted', tombstone_reason = 'delisted', updated_at = ?
+             WHERE canonical_id = ? AND lifecycle != 'delisted'`
+          )
+          .bind(recordedAt, input.canonicalId)
+      );
     }
     if (input.targetUrl) {
-      await this.ctx.db
-        .prepare(
-          `UPDATE canonical_packages SET lifecycle = 'delisted', updated_at = ?
-        WHERE canonical_id IN (
-          SELECT DISTINCT pf.canonical_id FROM package_fronts pf WHERE pf.storefront_url = ?
-        ) AND lifecycle != 'delisted'`
-        )
-        .bind(recordedAt, input.targetUrl)
-        .run();
-      for (const canonicalId of Object.keys(priorLifecycles)) {
-        await this.ctx.db
+      stmts.push(
+        this.ctx.db
           .prepare(
-            "INSERT OR IGNORE INTO catalog_tombstones (canonical_id, reason, recorded_at) VALUES (?, 'delisted', ?)"
+            `UPDATE canonical_packages
+             SET lifecycle = 'delisted', tombstone_reason = 'delisted', updated_at = ?
+             WHERE canonical_id IN (
+               SELECT DISTINCT ls.canonical_id FROM listing_sources ls WHERE ls.storefront_url = ?
+             ) AND lifecycle != 'delisted'`
           )
-          .bind(canonicalId, recordedAt)
-          .run();
-      }
+          .bind(recordedAt, input.targetUrl)
+      );
+    }
+
+    if (stmts.length > 0) {
+      await this.ctx.executeBatchChunked(stmts);
     }
 
     return {
@@ -867,11 +1958,11 @@ export class OperatorPlane {
     const res = await this.ctx.db
       .prepare(
         `SELECT ticket_id AS takedown_id, target_url, canonical_id, requester_type, requester_id,
-             reason, proof_kind, proof_value, contact_email, review_status, review_notes, recorded_at
-      FROM catalog_tickets
-      WHERE ticket_type = 'opt_out' ${where}
-      ORDER BY recorded_at DESC, ticket_id DESC
-      LIMIT ?`
+                reason, proof_kind, proof_value, contact_email, review_status, review_notes, recorded_at
+         FROM catalog_tickets
+         WHERE ticket_type = 'opt_out' ${where}
+         ORDER BY recorded_at DESC, ticket_id DESC
+         LIMIT ?`
       )
       .bind(...params)
       .all<{
@@ -929,8 +2020,8 @@ export class OperatorPlane {
     const row = await this.ctx.db
       .prepare(
         `SELECT ticket_id AS takedown_id, target_url, canonical_id, requester_type, review_status, payload_json, recorded_at
-      FROM catalog_tickets
-      WHERE ticket_id = ? AND ticket_type = 'opt_out'`
+         FROM catalog_tickets
+         WHERE ticket_id = ? AND ticket_type = 'opt_out'`
       )
       .bind(takedownId)
       .first<{
@@ -954,8 +2045,10 @@ export class OperatorPlane {
     } = {};
     if (row.payload_json) {
       try {
-        snapshot = JSON.parse(row.payload_json);
-      } catch {}
+        snapshot = JSON.parse(row.payload_json) as typeof snapshot;
+      } catch {
+        snapshot = {};
+      }
     }
 
     const updatedAt = new Date(this.ctx.now()).toISOString();
@@ -964,8 +2057,10 @@ export class OperatorPlane {
       this.ctx.db
         .prepare(
           `UPDATE catalog_tickets
-        SET review_status = ?, review_notes = ?, payload_json = COALESCE(json_set(COALESCE(payload_json, '{}'), '$.verifiedBy', ?, '$.verifiedAt', ?), ?)
-        WHERE ticket_id = ? AND ticket_type = 'opt_out'`
+           SET review_status = ?,
+               review_notes = ?,
+               payload_json = COALESCE(json_set(COALESCE(payload_json, '{}'), '$.verifiedBy', ?, '$.verifiedAt', ?), ?)
+           WHERE ticket_id = ? AND ticket_type = 'opt_out'`
         )
         .bind(verdict, notes || null, actor, updatedAt, auditNotes, takedownId)
     ];
@@ -978,26 +2073,15 @@ export class OperatorPlane {
             this.ctx.db
               .prepare(
                 `UPDATE canonical_packages
-              SET lifecycle = ?, updated_at = ?
-              WHERE canonical_id = ? AND lifecycle = 'delisted'
-                AND NOT EXISTS (
-                  SELECT 1 FROM catalog_tickets ct
-                  WHERE ct.ticket_type = 'opt_out' AND ct.ticket_id != ?
-                    AND ct.canonical_id = ? AND ct.review_status = 'accepted'
-                )`
+                 SET lifecycle = ?, tombstone_reason = NULL, updated_at = ?
+                 WHERE canonical_id = ? AND lifecycle = 'delisted'
+                   AND NOT EXISTS (
+                     SELECT 1 FROM catalog_tickets ct
+                     WHERE ct.ticket_type = 'opt_out' AND ct.ticket_id != ?
+                       AND ct.canonical_id = ? AND ct.review_status = 'accepted'
+                   )`
               )
-              .bind(priorLifecycle, updatedAt, row.canonical_id, takedownId, row.canonical_id),
-            this.ctx.db
-              .prepare(
-                `DELETE FROM catalog_tombstones
-                WHERE canonical_id = ? AND reason = 'delisted' AND recorded_at = ?
-                  AND NOT EXISTS (
-                    SELECT 1 FROM catalog_tickets ct
-                    WHERE ct.ticket_type = 'opt_out' AND ct.ticket_id != ?
-                      AND ct.canonical_id = ? AND ct.review_status = 'accepted'
-                  )`
-              )
-              .bind(row.canonical_id, row.recorded_at, takedownId, row.canonical_id)
+              .bind(priorLifecycle, updatedAt, row.canonical_id, takedownId, row.canonical_id)
           );
         }
       }
@@ -1007,13 +2091,13 @@ export class OperatorPlane {
           if (!snapshot.priorSuppressedReason) {
             batchStatements.push(
               this.ctx.db
-                .prepare("DELETE FROM suppressed_urls WHERE url = ? AND reason LIKE ?")
+                .prepare("DELETE FROM suppressed_targets WHERE target = ? AND scope = 'url' AND reason LIKE ?")
                 .bind(normalized, `Delisting request ${takedownId}:%`)
             );
           } else {
             batchStatements.push(
               this.ctx.db
-                .prepare("UPDATE suppressed_urls SET reason = ? WHERE url = ? AND reason LIKE ?")
+                .prepare("UPDATE suppressed_targets SET reason = ? WHERE target = ? AND scope = 'url' AND reason LIKE ?")
                 .bind(snapshot.priorSuppressedReason, normalized, `Delisting request ${takedownId}:%`)
             );
           }
@@ -1027,40 +2111,29 @@ export class OperatorPlane {
             );
           }
         } catch {
-          // URL normalization best-effort
+          // best-effort URL normalization
         }
 
-        const fronts = await this.ctx.db
-          .prepare("SELECT DISTINCT pf.canonical_id FROM package_fronts pf WHERE pf.storefront_url = ?")
+        const sources = await this.ctx.db
+          .prepare("SELECT DISTINCT ls.canonical_id FROM listing_sources ls WHERE ls.storefront_url = ?")
           .bind(row.target_url)
           .all<{ canonical_id: string }>();
-        for (const front of fronts.results || []) {
-          const priorLifecycle = snapshot.priorLifecycles?.[front.canonical_id] ?? "active";
+        for (const source of sources.results || []) {
+          const priorLifecycle = snapshot.priorLifecycles?.[source.canonical_id] ?? "active";
           if (priorLifecycle !== "delisted") {
             batchStatements.push(
               this.ctx.db
                 .prepare(
                   `UPDATE canonical_packages
-                SET lifecycle = ?, updated_at = ?
-                WHERE canonical_id = ? AND lifecycle = 'delisted'
-                  AND NOT EXISTS (
-                    SELECT 1 FROM catalog_tickets ct
-                    WHERE ct.ticket_type = 'opt_out' AND ct.ticket_id != ?
-                      AND (ct.canonical_id = ? OR ct.target_url = ?) AND ct.review_status = 'accepted'
-                  )`
+                   SET lifecycle = ?, tombstone_reason = NULL, updated_at = ?
+                   WHERE canonical_id = ? AND lifecycle = 'delisted'
+                     AND NOT EXISTS (
+                       SELECT 1 FROM catalog_tickets ct
+                       WHERE ct.ticket_type = 'opt_out' AND ct.ticket_id != ?
+                         AND (ct.canonical_id = ? OR ct.target_url = ?) AND ct.review_status = 'accepted'
+                     )`
                 )
-                .bind(priorLifecycle, updatedAt, front.canonical_id, takedownId, front.canonical_id, row.target_url),
-              this.ctx.db
-                .prepare(
-                  `DELETE FROM catalog_tombstones
-                  WHERE canonical_id = ? AND reason = 'delisted' AND recorded_at = ?
-                    AND NOT EXISTS (
-                      SELECT 1 FROM catalog_tickets ct
-                      WHERE ct.ticket_type = 'opt_out' AND ct.ticket_id != ?
-                        AND (ct.canonical_id = ? OR ct.target_url = ?) AND ct.review_status = 'accepted'
-                    )`
-                )
-                .bind(front.canonical_id, row.recorded_at, takedownId, front.canonical_id, row.target_url)
+                .bind(priorLifecycle, updatedAt, source.canonical_id, takedownId, source.canonical_id, row.target_url)
             );
           }
         }
@@ -1099,11 +2172,11 @@ export class OperatorPlane {
     const res = await this.ctx.db
       .prepare(
         `SELECT ticket_id AS claim_id, app_id, 'creator_ownership_claim' AS action, target_url AS front_url, creator_id, challenge_token,
-             expires_at, nonce, signature, reason, contact_email, review_status, review_notes, recorded_at
-      FROM catalog_tickets
-      WHERE ticket_type = 'delegated_claim' ${where}
-      ORDER BY recorded_at DESC, ticket_id DESC
-      LIMIT ?`
+                expires_at, nonce, signature, reason, contact_email, review_status, review_notes, recorded_at
+         FROM catalog_tickets
+         WHERE ticket_type = 'delegated_claim' ${where}
+         ORDER BY recorded_at DESC, ticket_id DESC
+         LIMIT ?`
       )
       .bind(...params)
       .all<{
@@ -1159,18 +2232,21 @@ export class OperatorPlane {
   async verifyDelegatedClaim(
     claimId: string,
     verdict: "accepted" | "rejected",
-    _actor: string,
+    actor: string,
     notes?: string
   ): Promise<{ claimId: string; status: "accepted" | "rejected"; updatedAt: string }> {
     const row = await this.ctx.db
       .prepare(
-        `SELECT ticket_id AS claim_id, review_status
-      FROM catalog_tickets
-      WHERE ticket_id = ? AND ticket_type = 'delegated_claim'`
+        `SELECT ticket_id AS claim_id, app_id, target_url, canonical_id, review_status
+         FROM catalog_tickets
+         WHERE ticket_id = ? AND ticket_type = 'delegated_claim'`
       )
       .bind(claimId)
       .first<{
         claim_id: string;
+        app_id: string | null;
+        target_url: string | null;
+        canonical_id: string | null;
         review_status: string;
       }>();
 
@@ -1179,14 +2255,52 @@ export class OperatorPlane {
     }
 
     const updatedAt = new Date(this.ctx.now()).toISOString();
-    await this.ctx.db
-      .prepare(
-        `UPDATE catalog_tickets
-      SET review_status = ?, review_notes = ?
-      WHERE ticket_id = ? AND ticket_type = 'delegated_claim'`
-      )
-      .bind(verdict, notes || null, claimId)
-      .run();
+    const stmts: D1PreparedStatement[] = [
+      this.ctx.db
+        .prepare(
+          `UPDATE catalog_tickets
+           SET review_status = ?, review_notes = ?
+           WHERE ticket_id = ? AND ticket_type = 'delegated_claim'`
+        )
+        .bind(verdict, notes || null, claimId)
+    ];
+
+    if (verdict === "accepted" && row.app_id) {
+      if (row.canonical_id) {
+        stmts.push(
+          this.ctx.db
+            .prepare(
+              `UPDATE canonical_packages
+               SET verification_status = 'verified', verified_by_app_id = ?, updated_at = ?
+               WHERE canonical_id = ?`
+            )
+            .bind(row.app_id, updatedAt, row.canonical_id)
+        );
+      }
+      if (row.target_url) {
+        stmts.push(
+          this.ctx.db
+            .prepare(
+              `UPDATE canonical_packages
+               SET verification_status = 'verified', verified_by_app_id = ?, updated_at = ?
+               WHERE canonical_id IN (
+                 SELECT DISTINCT canonical_id FROM listing_sources WHERE storefront_url = ?
+               )`
+            )
+            .bind(row.app_id, updatedAt, row.target_url)
+        );
+      }
+      stmts.push(
+        this.ctx.db
+          .prepare(
+            `INSERT INTO operator_audit_log(entity_type, entity_id, actor, action, reason, occurred_at)
+             VALUES ('app', ?, ?, 'verify_claim', ?, ?)`
+          )
+          .bind(row.app_id, actor || "operator-api", (notes?.trim() || `Accepted delegated claim ${claimId}`).slice(0, 300), updatedAt)
+      );
+    }
+
+    await this.ctx.executeBatchChunked(stmts);
 
     return {
       claimId,
@@ -1219,11 +2333,11 @@ export class OperatorPlane {
     const res = await this.ctx.db
       .prepare(
         `SELECT app_id, app_name, contact_email, permissions_json, created_at, revoked_at,
-             request_count, last_active_at, candidate_status, candidate_flags_json
-      FROM registered_apps
-      ${where}
-      ORDER BY created_at DESC, app_id DESC
-      LIMIT ?`
+                request_count, last_active_at, candidate_status, candidate_flags_json
+         FROM registered_apps
+         ${where}
+         ORDER BY created_at DESC, app_id DESC
+         LIMIT ?`
       )
       .bind(...params)
       .all<{
@@ -1244,11 +2358,19 @@ export class OperatorPlane {
     const last = visible.at(-1);
 
     const apps: OperatorAppRecord[] = visible.map((row) => {
-      const perms: string[] = JSON.parse(row.permissions_json);
+      const perms = JSON.parse(row.permissions_json) as string[];
       let flags: string[] = [];
       try {
-        flags = JSON.parse(row.candidate_flags_json);
-      } catch {}
+        flags = JSON.parse(row.candidate_flags_json) as string[];
+      } catch {
+        flags = [];
+      }
+      const statusValue: OperatorAppRecord["candidateStatus"] =
+        row.candidate_status === "review_pending" ||
+        row.candidate_status === "reviewed" ||
+        row.candidate_status === "trusted"
+          ? row.candidate_status
+          : "none";
       return {
         appId: row.app_id,
         appName: row.app_name,
@@ -1257,7 +2379,7 @@ export class OperatorPlane {
         delegationAllowed: perms.includes("claims:delegate"),
         requestCount: row.request_count ?? 0,
         lastActiveAt: row.last_active_at ?? null,
-        candidateStatus: (row.candidate_status as any) || "none",
+        candidateStatus: statusValue,
         candidateFlags: flags,
         createdAt: row.created_at,
         revokedAt: row.revoked_at ?? null
@@ -1277,7 +2399,7 @@ export class OperatorPlane {
   }
 
   private mutateDelegationPermissions(currentPermissionsJson: string, grantDelegation: boolean | undefined): string[] {
-    const currentPerms = new Set<string>(JSON.parse(currentPermissionsJson));
+    const currentPerms = new Set<string>(JSON.parse(currentPermissionsJson) as string[]);
     if (grantDelegation === true) {
       currentPerms.add("claims:delegate");
       currentPerms.add("takedowns:submit");
@@ -1303,8 +2425,8 @@ export class OperatorPlane {
     const row = await this.ctx.db
       .prepare(
         `SELECT app_id, permissions_json, revoked_at, candidate_flags_json
-      FROM registered_apps
-      WHERE app_id = ?`
+         FROM registered_apps
+         WHERE app_id = ?`
       )
       .bind(appId)
       .first<{
@@ -1314,40 +2436,34 @@ export class OperatorPlane {
         candidate_flags_json: string;
       }>();
 
-    if (!row) {
-      throw new Error("App not found");
-    }
-    if (row.revoked_at) {
-      throw new Error("App is revoked");
-    }
+    if (!row) throw new Error("App not found");
+    if (row.revoked_at) throw new Error("App is revoked");
 
     const grantFlag =
       input.grantDelegation === true || input.candidateStatus === "trusted"
         ? true
         : input.grantDelegation === false
-        ? false
-        : undefined;
+          ? false
+          : undefined;
     const newPerms = this.mutateDelegationPermissions(row.permissions_json, grantFlag);
 
     let flags: string[] = [];
     try {
-      flags = JSON.parse(row.candidate_flags_json);
-    } catch {}
+      flags = JSON.parse(row.candidate_flags_json) as string[];
+    } catch {
+      flags = [];
+    }
     const reviewedAt = new Date(this.ctx.now()).toISOString();
     const auditReason = (input.notes?.trim() || `Candidate status set to ${input.candidateStatus}`).slice(0, 300);
 
     await this.ctx.db.batch([
       this.ctx.db
-        .prepare(
-          `UPDATE registered_apps
-        SET candidate_status = ?, permissions_json = ?
-        WHERE app_id = ?`
-        )
+        .prepare("UPDATE registered_apps SET candidate_status = ?, permissions_json = ? WHERE app_id = ?")
         .bind(input.candidateStatus, JSON.stringify(newPerms), appId),
       this.ctx.db
         .prepare(
-          `INSERT INTO operator_audit_log(entity_type,entity_id,actor,action,reason,occurred_at)
-        VALUES ('app',?,?, 'candidate_review', ?, ?)`
+          `INSERT INTO operator_audit_log(entity_type, entity_id, actor, action, reason, occurred_at)
+           VALUES ('app', ?, ?, 'candidate_review', ?, ?)`
         )
         .bind(appId, actor || "operator-api", auditReason, reviewedAt)
     ]);
@@ -1369,11 +2485,7 @@ export class OperatorPlane {
     reason?: string
   ): Promise<{ appId: string; delegationAllowed: boolean; permissions: string[]; updatedAt: string }> {
     const row = await this.ctx.db
-      .prepare(
-        `SELECT app_id, permissions_json, revoked_at
-      FROM registered_apps
-      WHERE app_id = ?`
-      )
+      .prepare("SELECT app_id, permissions_json, revoked_at FROM registered_apps WHERE app_id = ?")
       .bind(appId)
       .first<{
         app_id: string;
@@ -1381,12 +2493,8 @@ export class OperatorPlane {
         revoked_at: string | null;
       }>();
 
-    if (!row) {
-      throw new Error("App not found");
-    }
-    if (row.revoked_at) {
-      throw new Error("App is revoked");
-    }
+    if (!row) throw new Error("App not found");
+    if (row.revoked_at) throw new Error("App is revoked");
 
     const newPerms = this.mutateDelegationPermissions(row.permissions_json, allowed);
     const updatedAt = new Date(this.ctx.now()).toISOString();
@@ -1396,15 +2504,15 @@ export class OperatorPlane {
       this.ctx.db
         .prepare(
           `UPDATE registered_apps
-        SET permissions_json = ?,
-            candidate_status = CASE WHEN ? = 0 AND candidate_status = 'trusted' THEN 'reviewed' ELSE candidate_status END
-        WHERE app_id = ?`
+           SET permissions_json = ?,
+               candidate_status = CASE WHEN ? = 0 AND candidate_status = 'trusted' THEN 'reviewed' ELSE candidate_status END
+           WHERE app_id = ?`
         )
         .bind(JSON.stringify(newPerms), allowed ? 1 : 0, appId),
       this.ctx.db
         .prepare(
-          `INSERT INTO operator_audit_log(entity_type,entity_id,actor,action,reason,occurred_at)
-        VALUES ('app',?,?, ?, ?, ?)`
+          `INSERT INTO operator_audit_log(entity_type, entity_id, actor, action, reason, occurred_at)
+           VALUES ('app', ?, ?, ?, ?, ?)`
         )
         .bind(appId, actor || "operator-api", allowed ? "grant_delegation" : "revoke_delegation", auditReason, updatedAt)
     ]);

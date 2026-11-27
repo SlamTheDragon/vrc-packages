@@ -1,5 +1,5 @@
 "$schema" = "./node_modules/wrangler/config-schema.json"
-name = "vrc-package-crawler"
+name = "vrc-package-crawler-dev"
 compatibility_date = "2026-10-02"
 compatibility_flags = ["nodejs_compat"]
 main = "src/worker_entry.ts"
@@ -9,31 +9,19 @@ preview_urls = false
 [secrets]
 required = ["OPERATOR_TOKEN"]
 
-[[d1_databases]]
-binding = "VRCP_D1"
-database_id = "722bdd0d-92ca-445b-9319-da0b27adf7b2"
-remote = false
-
-# Persistent preview Worker with a separate owner-provisioned database.
-[env.preview]
-name = "vrc-package-crawler-preview"
-workers_dev = true
-preview_urls = false
-
-[env.preview.secrets]
-required = ["OPERATOR_TOKEN"]
-
-[env.preview.vars]
+[vars]
+VRCP_ENV = "development"
 CORS_ALLOWED_ORIGINS = "http://localhost:4321,http://127.0.0.1:4321,http://localhost:4173,http://127.0.0.1:4173"
 
-[[env.preview.d1_databases]]
+[[d1_databases]]
 binding = "VRCP_D1"
-database_id = "fbef6ce1-4145-45ae-ae91-5d617a1f2672"
+database_name = "vrc-package-crawler-dev"
+database_id = "00000000-0000-0000-0000-000000000000"
 remote = false
 
-[[env.preview.kv_namespaces]]
+[[kv_namespaces]]
 binding = "RATE_LIMIT_KV"
-id = "0a8237b498334dd7b1f58fb7807a68c6"
+id = "00000000000000000000000000000000"
 remote = false
 
 [observability]
@@ -50,6 +38,30 @@ enabled = true
 head_sampling_rate = 0.01
 persist = true
 
+# Persistent preview Worker with separate owner-provisioned D1 and KV bindings.
+[env.preview]
+name = "vrc-package-crawler-preview"
+workers_dev = true
+preview_urls = false
+
+[env.preview.secrets]
+required = ["OPERATOR_TOKEN"]
+
+[env.preview.vars]
+VRCP_ENV = "development"
+CORS_ALLOWED_ORIGINS = "http://localhost:4321,http://127.0.0.1:4321,http://localhost:4173,http://127.0.0.1:4173"
+
+[[env.preview.d1_databases]]
+binding = "VRCP_D1"
+database_name = "vrc-package-crawler-preview"
+database_id = "fbef6ce1-4145-45ae-ae91-5d617a1f2672"
+remote = false
+
+[[env.preview.kv_namespaces]]
+binding = "RATE_LIMIT_KV"
+id = "0a8237b498334dd7b1f58fb7807a68c6"
+remote = false
+
 [env.preview.observability]
 enabled = true
 
@@ -60,6 +72,44 @@ invocation_logs = true
 persist = true
 
 [env.preview.observability.traces]
+enabled = true
+head_sampling_rate = 0.01
+persist = true
+
+# Production Worker with dedicated database and fail-closed system purge.
+[env.production]
+name = "vrc-package-crawler"
+workers_dev = true
+preview_urls = false
+
+[env.production.secrets]
+required = ["OPERATOR_TOKEN"]
+
+[env.production.vars]
+VRCP_ENV = "production"
+
+[[env.production.d1_databases]]
+binding = "VRCP_D1"
+database_name = "vrc-package-crawler"
+database_id = "722bdd0d-92ca-445b-9319-da0b27adf7b2"
+remote = false
+
+# Dedicated production RATE_LIMIT_KV namespace binding pending Cloudflare dashboard provisioning.
+# [[env.production.kv_namespaces]]
+# binding = "RATE_LIMIT_KV"
+# id = "<PRODUCTION_KV_NAMESPACE_ID>"
+# remote = false
+
+[env.production.observability]
+enabled = true
+
+[env.production.observability.logs]
+enabled = true
+head_sampling_rate = 1
+invocation_logs = true
+persist = true
+
+[env.production.observability.traces]
 enabled = true
 head_sampling_rate = 0.01
 persist = true

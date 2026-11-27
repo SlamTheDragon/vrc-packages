@@ -1,26 +1,48 @@
-import type { Platform } from "vrc-packages-network/node";
-import type { SourcePurpose } from "../../src/domain/access/source_access_profile.ts";
-import type { Coordinator } from "../../src/storage/d1/coordinator.ts";
+import type { Platform, PriorityLane } from "vrc-packages-network/node";
+import type { HostMatchMode, QueryMode, SourcePurpose } from "../../src/domain/access/steering_profile.ts";
+import type { Coordinator, SeedJobOptions } from "../../src/storage/d1/coordinator.ts";
+
+export interface ApproveFixtureSourceOptions {
+  hostMatchMode?: HostMatchMode;
+  hostPattern?: string;
+  pathScope?: string;
+  queryMode?: QueryMode;
+  queryScope?: string | null;
+  autoPromote?: boolean;
+  recrawlIntervalMs?: number;
+  minDelayMs?: number;
+  maxPaginationDepth?: number;
+}
 
 /** Explicit offline-only approval; production seeding never calls this helper. */
 export async function approveFixtureSource(
   store: Coordinator,
   target: string,
   platform: Platform,
-  purpose: SourcePurpose = "metadata"
+  purpose: SourcePurpose = "metadata",
+  options: ApproveFixtureSourceOptions = {}
 ): Promise<void> {
-  if (await store.activeSourceAccessProfileForTarget(platform, target, purpose)) return;
+  if (await store.activeSteeringProfileForTarget(platform, target, purpose)) return;
   const url = new URL(target);
-  await store.createSourceAccessProfile(
+  const queryScope = options.queryScope !== undefined ? options.queryScope : url.search ? url.search.slice(1) : null;
+  const queryMode: QueryMode = options.queryMode ?? (queryScope ? "exact" : "none");
+  const hostMatchMode: HostMatchMode = options.hostMatchMode ?? "exact";
+  const hostPattern = options.hostPattern ?? (hostMatchMode === "any_vpm_https" ? "*" : url.hostname.toLowerCase());
+  await store.createSteeringProfile(
     {
       schemaVersion: 1,
       platform,
-      origin: url.origin,
-      pathScope: url.pathname,
-      exactQuery: url.search ? url.search.slice(1) : undefined,
+      hostMatchMode,
+      hostPattern,
+      pathScope: options.pathScope ?? url.pathname,
+      queryMode,
+      ...(queryScope !== null ? { queryScope } : {}),
       method: "GET",
       purpose,
-      minDelayMs: 1000,
+      autoPromote: options.autoPromote ?? false,
+      recrawlIntervalMs: options.recrawlIntervalMs ?? 86_400_000,
+      minDelayMs: Math.max(1000, options.minDelayMs ?? 1000),
+      maxPaginationDepth: options.maxPaginationDepth ?? 0,
       expiresAt: "2099-01-01T00:00:00.000Z",
       reviewReference: "offline-fixture-only",
       reason: "Synthetic local test target",
@@ -36,8 +58,16 @@ export async function seedApprovedFixtureJob(
   target: string,
   platform: Platform,
   minDelayMs = 1000,
-  purpose: SourcePurpose = "metadata"
+  purpose: SourcePurpose = "metadata",
+  seedOptions: Omit<SeedJobOptions, "minDelayMs" | "purpose"> & { priorityLane?: PriorityLane } = {}
 ): Promise<string> {
-  await approveFixtureSource(store, target, platform, purpose);
-  return store.seedJob(target, platform, minDelayMs, undefined, purpose);
+  await approveFixtureSource(store, target, platform, purpose, {
+    minDelayMs,
+    ...(seedOptions.recrawlIntervalMs !== undefined ? { recrawlIntervalMs: seedOptions.recrawlIntervalMs } : {})
+  });
+  return store.seedJob(target, platform, {
+    ...seedOptions,
+    minDelayMs,
+    purpose
+  });
 }

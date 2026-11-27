@@ -15,10 +15,10 @@ const sitemapUrl = "https://merchant.example/sitemap_products_1.xml?from=1&to=10
 const productUrl = "https://merchant.example/products/vrchat-tool";
 
 describe("Worker-owned Shopify discovery policy through wire payloads", () => {
-  test("rejects product facts and foreign leads, then commits only pending same-origin leads", async () => {
+  test("rejects product facts and foreign leads, then commits only pending same-origin leads with target_host", async () => {
     const store = await createInitializedD1Coordinator(":memory:");
     const nodeId = "shopify-node";
-    const token = await store.createNodeCredential(nodeId, ["shopify"]);
+    const { token } = await store.createNodeCredential(nodeId, ["shopify"]);
     const headers = { "content-type": "application/json", authorization: `Bearer ${token}` };
     const post = (path: string, payload: unknown) =>
       handleNodeRequest(
@@ -31,11 +31,13 @@ describe("Worker-owned Shopify discovery policy through wire payloads", () => {
       );
     const claimRequest = ClaimRequestSchema.parse({ schemaVersion: 1, nodeId, capabilities: ["shopify"] });
     try {
-      await expect(store.seedJob(sitemapUrl, "shopify", 1000, undefined, "metadata")).rejects.toThrow();
       await expect(
-        store.seedJob("https://merchant.example/sitemap.xml", "shopify", 1000, undefined, "discovery")
+        store.seedJob(sitemapUrl, "shopify", { minDelayMs: 1000, purpose: "metadata" })
       ).rejects.toThrow();
-      await store.seedJob(sitemapUrl, "shopify", 0, undefined, "discovery");
+      await expect(
+        store.seedJob("https://merchant.example/sitemap.xml", "shopify", { minDelayMs: 1000, purpose: "discovery" })
+      ).rejects.toThrow();
+      await store.seedJob(sitemapUrl, "shopify", { minDelayMs: 0, purpose: "discovery" });
       await store.recordRobotsSnapshot("https://merchant.example", 404);
       expect(ClaimResponseSchema.parse(await (await post("/v1/node/jobs/claim", claimRequest)).json()).status).toBe(
         "empty"
@@ -103,8 +105,8 @@ describe("Worker-owned Shopify discovery policy through wire payloads", () => {
       });
       expect(store.sqlite.query("SELECT count(*) AS n FROM source_items").get()).toEqual({ n: 0 });
       expect(store.sqlite.query("SELECT count(*) AS n FROM crawl_jobs").get()).toEqual({ n: 1 });
-      expect(store.sqlite.query("SELECT kind,target_url,status FROM source_leads").all()).toEqual([
-        { kind: "storefront_product", target_url: productUrl, status: "pending_review" }
+      expect(store.sqlite.query("SELECT kind,target_url,target_host,status FROM source_leads").all()).toEqual([
+        { kind: "storefront_product", target_url: productUrl, target_host: "merchant.example", status: "pending_review" }
       ]);
       expect(
         store.sqlite.query("SELECT first_seen_node_id,first_seen_lease_id,first_seen_profile_id FROM source_leads").get()
@@ -112,7 +114,7 @@ describe("Worker-owned Shopify discovery policy through wire payloads", () => {
         first_seen_node_id: nodeId,
         first_seen_lease_id: claim.job.leaseId,
         first_seen_profile_id: (
-          await store.activeSourceAccessProfileForTarget("shopify", sitemapUrl, "discovery")
+          await store.activeSteeringProfileForTarget("shopify", sitemapUrl, "discovery")
         )?.profileId
       });
     } finally {

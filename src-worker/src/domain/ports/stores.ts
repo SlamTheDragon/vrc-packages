@@ -1,53 +1,66 @@
 import type {
+  BatchResultRequest,
+  BatchResultResponse,
   ClaimRequest,
   ClaimResponse,
   HeartbeatRequest,
   HeartbeatResponse,
+  Platform,
   ResultRequest,
-  ResultResponse,
-  BatchResultRequest,
-  BatchResultResponse,
-  Platform
+  ResultResponse
 } from "vrc-packages-network/node";
 import type {
-  RevokeNodeRequest,
-  EnqueueJobRequest,
-  IssueNodeCredential,
-  AutoQueueRule,
-  CreateAutoQueueRule,
-  RuleCursor,
+  BulkApproveLeadsRequest,
+  BulkApproveLeadsResponse,
   CatalogCursor,
+  CatalogDelta,
+  CatalogDeltaCursor,
   CatalogPackage,
-  LeadCursor,
-  LeadRow,
-  TakedownCursor,
-  TakedownRecord,
+  CatalogSearchRequest,
+  CatalogSearchResponse,
+  ContentRating,
+  CreateSteeringProfile,
+  CreateSuppressedTarget,
+  CreatorClaimIntakeRequest,
+  CreatorClaimIntakeResponse,
   DelegatedClaimCursor,
   DelegatedClaimRecord,
-  OperatorAppRecord,
+  EnqueueJobRequest,
+  IssueNodeCredential,
+  LeadCursor,
+  LeadRow,
+  LeadStatus,
+  ModeratorRatingRecord,
   OperatorAppCursor,
-  OperatorNodeStatus,
-  OperatorNodeRecord,
-  OperatorNodeCursor,
-  OperatorJobState,
-  OperatorJobRecord,
+  OperatorAppRecord,
+  OperatorEnvironment,
   OperatorJobCursor,
-  CreateSourceAccessProfile,
-  SourceAccessProfile,
-  ProfileCursor,
-  CatalogDeltaCursor,
-  CatalogDelta,
+  OperatorJobRecord,
+  OperatorJobState,
+  OperatorNodeCursor,
+  OperatorNodeRecord,
+  OperatorNodeStatus,
+  OperatorStatusResponse,
+  PriorityLane,
   RegisterAppRequest,
   RegisterAppResponse,
   ReportSubmissionRequest,
   ReportSubmissionResponse,
-  CatalogSearchRequest,
-  CatalogSearchResponse,
-  CreatorClaimIntakeRequest,
-  CreatorClaimIntakeResponse,
-  UserAppListResponse,
-  ContentRating,
-  ModeratorRatingRecord
+  RequeueJobRequest,
+  RevokeNodeRequest,
+  SteeringProfile,
+  SteeringProfileCursor,
+  SuppressLeadDomainRequest,
+  SuppressLeadDomainResponse,
+  SuppressedTarget,
+  SuppressedTargetCursor,
+  SystemPurgeRequest,
+  SystemPurgeResponse,
+  TakedownCursor,
+  TakedownRecord,
+  UpdateJobRequest,
+  UpdateSteeringProfile,
+  UserAppListResponse
 } from "vrc-packages-api";
 
 export interface NodePrincipal {
@@ -76,50 +89,97 @@ export interface CoordinatorStore {
   heartbeat(request: HeartbeatRequest, principal: NodePrincipal): Promise<HeartbeatResponse> | HeartbeatResponse;
   submit(request: ResultRequest, principal: NodePrincipal): Promise<ResultResponse> | ResultResponse;
   submitBatch(request: BatchResultRequest, principal: NodePrincipal): Promise<BatchResultResponse> | BatchResultResponse;
-  claimDueRobotsRefresh?(): Promise<{ origin: string; leaseId: string } | null> | { origin: string; leaseId: string } | null;
+  claimDueRobotsRefresh?(
+    capabilities?: readonly Platform[]
+  ): Promise<{ origin: string; leaseId: string } | null> | { origin: string; leaseId: string } | null;
   completeRobotsRefresh?(origin: string, leaseId: string, statusCode: number, body?: string): Promise<boolean> | boolean;
 }
 
+export interface NodeCredentialIssued {
+  token: string;
+  capabilities: Platform[];
+}
+
 export interface OperatorStore {
+  initSchema?(options?: { autoSeed?: false }): Promise<void> | void;
+  getOperatorStatus(
+    environment: OperatorEnvironment,
+    purgeEnabled: boolean
+  ): Promise<OperatorStatusResponse> | OperatorStatusResponse;
+  purgeDevelopmentDatabase(
+    input: SystemPurgeRequest,
+    actor: string
+  ): Promise<SystemPurgeResponse> | SystemPurgeResponse;
   revokeNode(nodeId: string, input: RevokeNodeRequest, actor: string): Promise<void> | void;
   pruneNode(nodeId: string, actor: string, reason: string): Promise<void> | void;
-  enqueueJob(input: EnqueueJobRequest, actor: string): Promise<string> | string;
-  issueNodeCredential(input: IssueNodeCredential, actor: string): Promise<string> | string;
+  issueNodeCredential(input: IssueNodeCredential, actor: string): Promise<NodeCredentialIssued> | NodeCredentialIssued;
   listNodesPage(
     status?: OperatorNodeStatus,
     limit?: number,
     cursor?: OperatorNodeCursor | null
   ): Promise<{ nodes: OperatorNodeRecord[]; nextCursor: string | null }> | { nodes: OperatorNodeRecord[]; nextCursor: string | null };
+  enqueueJob(input: EnqueueJobRequest, actor: string): Promise<string> | string;
   listJobsPage(
-    filters?: { state?: OperatorJobState; platform?: Platform },
+    filters?: { state?: OperatorJobState; platform?: Platform; priorityLane?: PriorityLane },
     limit?: number,
     cursor?: OperatorJobCursor | null
   ): Promise<{ jobs: OperatorJobRecord[]; nextCursor: string | null }> | { jobs: OperatorJobRecord[]; nextCursor: string | null };
+  updateJob(jobId: string, input: UpdateJobRequest, actor: string): Promise<OperatorJobRecord> | OperatorJobRecord;
+  requeueJob(jobId: string, input: RequeueJobRequest, actor: string): Promise<OperatorJobRecord> | OperatorJobRecord;
+  deleteJob(jobId: string, actor: string, reason: string): Promise<{ jobId: string; status: "deleted" }> | { jobId: string; status: "deleted" };
   listLeadsPage(
-    status: "pending_review" | "approved" | "rejected",
+    status: LeadStatus,
     limit: number,
     cursor: LeadCursor | null
   ): Promise<{ leads: LeadRow[]; nextCursor: string | null }> | { leads: LeadRow[]; nextCursor: string | null };
-  approveDiscoveryLead?(leadKey: string, minDelayMs: number, actor: string, reason: string): Promise<string> | string;
-  approveVpmListingLead(leadKey: string, minDelayMs: number, actor: string, reason: string): Promise<string> | string;
+  approveLead(
+    leadKey: string,
+    minDelayMs: number | undefined,
+    actor: string,
+    reason: string
+  ): Promise<string> | string;
+  bulkApproveLeads(
+    input: BulkApproveLeadsRequest,
+    actor: string
+  ): Promise<BulkApproveLeadsResponse> | BulkApproveLeadsResponse;
   rejectLead(leadKey: string, actor: string, reason: string): Promise<void> | void;
-  listAutoQueueRulesPage(
+  suppressLeadDomain(
+    input: SuppressLeadDomainRequest,
+    actor: string
+  ): Promise<SuppressLeadDomainResponse> | SuppressLeadDomainResponse;
+  listSteeringProfilesPage(
     limit: number,
-    cursor: RuleCursor | null
-  ): Promise<{ rules: AutoQueueRule[]; nextCursor: string | null }> | { rules: AutoQueueRule[]; nextCursor: string | null };
-  createAutoQueueRule(input: CreateAutoQueueRule, actor: string): Promise<unknown> | unknown;
-  disableAutoQueueRule(ruleId: string, actor: string, reason: string): Promise<unknown> | unknown;
-  listSourceAccessProfilesPage(
+    cursor: SteeringProfileCursor | null
+  ): Promise<{ profiles: SteeringProfile[]; nextCursor: string | null }> | { profiles: SteeringProfile[]; nextCursor: string | null };
+  createSteeringProfile(input: CreateSteeringProfile, actor: string): Promise<SteeringProfile> | SteeringProfile;
+  updateSteeringProfile(
+    profileId: string,
+    input: UpdateSteeringProfile,
+    actor: string
+  ): Promise<SteeringProfile> | SteeringProfile;
+  enableSteeringProfile(profileId: string, actor: string, reason: string): Promise<SteeringProfile> | SteeringProfile;
+  disableSteeringProfile(profileId: string, actor: string, reason: string): Promise<SteeringProfile> | SteeringProfile;
+  deleteSteeringProfile(
+    profileId: string,
+    actor: string,
+    reason: string
+  ): Promise<{ profileId: string; status: "deleted" }> | { profileId: string; status: "deleted" };
+  listSuppressedTargetsPage(
     limit: number,
-    cursor: ProfileCursor | null
-  ): Promise<{ profiles: SourceAccessProfile[]; nextCursor: string | null }> | { profiles: SourceAccessProfile[]; nextCursor: string | null };
-  createSourceAccessProfile(input: CreateSourceAccessProfile, actor: string): Promise<SourceAccessProfile> | SourceAccessProfile;
-  disableSourceAccessProfile(profileId: string, actor: string, reason: string): Promise<SourceAccessProfile> | SourceAccessProfile;
+    cursor: SuppressedTargetCursor | null
+  ): Promise<{ targets: SuppressedTarget[]; nextCursor: string | null }> | { targets: SuppressedTarget[]; nextCursor: string | null };
+  createSuppressedTarget(input: CreateSuppressedTarget, actor: string): Promise<SuppressedTarget> | SuppressedTarget;
+  deleteSuppressedTarget(
+    target: string,
+    actor: string,
+    reason: string
+  ): Promise<{ target: string; status: "deleted" }> | { target: string; status: "deleted" };
   listCanonicalPackagesPage(
     limit: number,
     cursor: CatalogCursor | null,
     options?: { includeAllRatings?: boolean }
   ): Promise<{ packages: CatalogPackage[]; nextCursor: string | null }> | { packages: CatalogPackage[]; nextCursor: string | null };
+  deleteCanonicalPackage(canonicalId: string, actor: string, reason: string): Promise<boolean> | boolean;
   listTakedownsPage(
     requesterType?: string,
     limit?: number,
@@ -196,31 +256,12 @@ export interface DownstreamAppPrincipal {
   isAgeVerified?: boolean;
 }
 
-export interface DemandFeedbackInput {
-  signalType: "search_miss" | "refresh_demand" | "popularity_signal";
-  query?: string;
-  zeroHits?: boolean;
-  requestedPlatform?: string;
-  targetUrl?: string;
-  category?: string;
-  metadata?: Record<string, unknown>;
-}
-
-export interface DemandFeedbackReceipt {
-  schemaVersion: 1;
-  status: "accepted";
-  signalId: string;
-  recordedAt: string;
-}
-
 export interface DownstreamStore {
-  recordRemovalReport(appId: string, input: ReportSubmissionRequest): Promise<ReportSubmissionResponse> | ReportSubmissionResponse;
-  recordIssueReport(appId: string, input: ReportSubmissionRequest): Promise<ReportSubmissionResponse> | ReportSubmissionResponse;
+  recordReportSubmission(appId: string, input: ReportSubmissionRequest): Promise<ReportSubmissionResponse> | ReportSubmissionResponse;
   recordCreatorClaimIntake(appId: string, input: CreatorClaimIntakeRequest): Promise<CreatorClaimIntakeResponse> | CreatorClaimIntakeResponse;
   registerApp(input: RegisterAppRequest, ownerUserId?: string): Promise<RegisterAppResponse> | RegisterAppResponse;
   authenticateUser(token: string): Promise<{ userId: string; userName: string; ageVerified?: boolean } | null> | { userId: string; userName: string; ageVerified?: boolean } | null;
   authenticateApp(appToken: string): Promise<DownstreamAppPrincipal | null> | DownstreamAppPrincipal | null;
-  recordDownstreamFeedback(appId: string, input: DemandFeedbackInput): Promise<DemandFeedbackReceipt> | DemandFeedbackReceipt;
   searchCatalogPackages(input: CatalogSearchRequest, options?: { isAgeVerified?: boolean }): Promise<CatalogSearchResponse> | CatalogSearchResponse;
   recordAppActivity(appId: string): Promise<void> | void;
 }

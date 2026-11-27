@@ -1,6 +1,16 @@
+import type {
+  ContentRating,
+  HostMatchMode,
+  PriorityLane,
+  QueryMode,
+  SourcePurpose,
+  SuppressedTargetScope,
+  VerificationStatus,
+  CatalogRelationScope,
+  CatalogRelationType,
+  Umbrella
+} from "vrc-packages-api";
 import type { Platform } from "vrc-packages-network/node";
-import type { SourcePurpose } from "../../domain/access/source_access_profile.js";
-
 
 export interface D1Database {
   prepare(query: string): D1PreparedStatement;
@@ -26,27 +36,81 @@ export interface D1ExecResult {
   count: number;
   duration: number;
 }
+
 export type JobRow = {
-  job_id: string; platform: Platform; url: string; origin: string; state: string;
-  next_fetch_at: string; lease_id: string | null; lease_expires_at: string | null; claimed_by: string | null;
-  etag: string | null; last_modified: string | null; source_rule_id: string | null;
-  job_purpose: SourcePurpose; lease_profile_id: string | null;
-};
-export type AutoQueueRuleRow = {
-  rule_id: string; lead_kind: string; origin: string; path_scope: string; min_delay_ms: number;
-  expires_at: string; review_reference: string; reason: string; created_at: string; disabled_at: string | null;
-};
-export type SourceAccessProfileRow = {
-  profile_id: string; platform: Platform; origin: string; path_scope: string; query_scope: string | null;
-  method: "GET";
-  purpose: SourcePurpose; min_delay_ms: number; expires_at: string; review_reference: string;
-  reason: string; retain_classes_json: string; publish_classes_json: string;
-  created_at: string; disabled_at: string | null;
+  job_id: string;
+  platform: Platform;
+  url: string;
+  origin: string;
+  state: "pending" | "leased" | "done" | "backoff" | "blocked";
+  priority_lane: PriorityLane;
+  recrawl_interval_ms: number;
+  pagination_depth: number;
+  next_fetch_at: string;
+  claimed_by: string | null;
+  lease_id: string | null;
+  lease_expires_at: string | null;
+  etag: string | null;
+  last_modified: string | null;
+  created_at: string;
+  robots_deferred_until: string | null;
+  steering_profile_id: string | null;
+  job_purpose: SourcePurpose;
 };
 
-export type CanonicalUmbrella = "tools" | "assets" | "avatars";
-export type CanonicalLifecycle = "active" | "deprecated" | "quarantined" | "delisted";
-export type EvidenceKind = "vpm_id" | "repository_match" | "cross_storefront_link" | "curator_verified" | "simhash_match";
+export type OriginStateRow = {
+  origin: string;
+  active_job_id: string | null;
+  lease_expires_at: string | null;
+  next_allowed_at: string;
+  min_delay_ms: number;
+  robots_snapshot_id: string | null;
+  robots_status_code: number | null;
+  robots_fetched_at: string | null;
+  robots_expires_at: string | null;
+  refresh_lease_id: string | null;
+  refresh_lease_expires_at: string | null;
+};
+
+export type SteeringProfileRow = {
+  profile_id: string;
+  platform: Platform;
+  host_match_mode: HostMatchMode;
+  host_pattern: string;
+  path_scope: string;
+  query_mode: QueryMode;
+  query_scope: string | null;
+  method: "GET";
+  purpose: SourcePurpose;
+  auto_promote: number;
+  recrawl_interval_ms: number;
+  min_delay_ms: number;
+  max_pagination_depth: number;
+  expires_at: string;
+  review_reference: string;
+  reason: string;
+  retain_classes_json: string;
+  publish_classes_json: string;
+  created_at: string;
+  disabled_at: string | null;
+};
+
+export type SuppressedTargetRow = {
+  target: string;
+  scope: SuppressedTargetScope;
+  reason: string;
+  suppressed_at: string;
+};
+
+export type CanonicalUmbrella = Umbrella;
+export type CanonicalLifecycle = "active" | "deprecated" | "quarantined" | "delisted" | "deleted";
+export type TombstoneReason = "rating_withdrawn" | "deleted" | "delisted";
+export type EvidenceKind =
+  | "vpm_id"
+  | "repository_match"
+  | "cross_storefront_link"
+  | "curator_verified"
+  | "simhash_match";
 export type LinkReviewState = "provisional" | "accepted" | "rejected";
 
 export type CanonicalPackage = {
@@ -54,19 +118,53 @@ export type CanonicalPackage = {
   umbrella: CanonicalUmbrella;
   category: string;
   lifecycle: CanonicalLifecycle;
+  tombstoneReason?: TombstoneReason | null;
   displayName: string;
+  ownerKey: string | null;
+  ownerName: string | null;
+  verificationStatus: VerificationStatus;
+  verifiedByAppId: string | null;
   vpmId: string | null;
+  vpmLatestVersion: string | null;
+  vpmRepoUrl: string | null;
+  summary: string | null;
+  tags: string[];
+  qualityFlags: string[];
   createdAt: string;
   updatedAt: string;
+  publishedAt?: string | null;
+  timestampConfidence?: "confirmed" | "inferred" | "observed" | null;
+  contentRating?: ContentRating;
 };
 
-export type IdentityLink = {
-  linkId: string;
-  sourceKey: string;
+export type ListingSource = {
+  sourceLinkId: string;
   canonicalId: string;
+  sourceKey: string;
+  platform: Platform;
+  storefrontUrl: string;
   evidenceKind: EvidenceKind;
   confidence: number;
   reviewState: LinkReviewState;
-  createdAt: string;
+  price: number | null;
+  currency: string | null;
+  availability: "available" | "delisted" | "unknown";
+  observedAt: string;
   reviewedAt: string | null;
+};
+
+export type ListingRelation = {
+  relationId: string;
+  sourceKey: string;
+  sourceCanonicalId: string;
+  targetCanonicalId: string | null;
+  targetAvatarBase: string | null;
+  relationType: CatalogRelationType;
+  scope: CatalogRelationScope;
+  confidence: number;
+  evidenceSource: string;
+  feedbackUpCount: number;
+  feedbackDownCount: number;
+  createdAt: string;
+  updatedAt: string;
 };

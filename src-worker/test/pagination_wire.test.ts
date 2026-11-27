@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import * as sdk from "vrc-packages-api";
-import * as profiles from "../src/domain/access/source_access_profile.ts";
+import * as profiles from "../src/domain/access/steering_profile.ts";
 import { handlePublicCatalogRequest } from "../src/api/public_handler.ts";
 import { handleOperatorRequest } from "../src/api/operator_handler.ts";
 import { handleDownstreamRequest } from "../src/api/downstream_handler.ts";
@@ -25,17 +25,20 @@ async function body(result: Promise<Response>): Promise<unknown> {
 }
 
 describe("distributed pagination contracts through real Worker handlers", () => {
-  test("operator and profile cursors use the distributed SDK implementations", () => {
+  test("operator and steering profile cursors use the distributed SDK implementations", () => {
     for (const name of [
-      "ProfileCursorSchema",
-      "encodeProfileCursor",
-      "decodeProfileCursor"
+      "SteeringProfileCursorSchema",
+      "encodeSteeringProfileCursor",
+      "decodeSteeringProfileCursor",
+      "SuppressedTargetCursorSchema",
+      "encodeSuppressedTargetCursor",
+      "decodeSuppressedTargetCursor"
     ] as const) {
       expect(profiles[name]).toBe(sdk[name]);
     }
     const cursor = { createdAt: timestamp, profileId: "abcdefab-cdef-4abc-8def-abcdefabcdef" };
-    expect(profiles.decodeProfileCursor(profiles.encodeProfileCursor(cursor))).toEqual(cursor);
-    expect(profiles.decodeProfileCursor(profiles.encodeProfileCursor(cursor) + "=")).toBeNull();
+    expect(profiles.decodeSteeringProfileCursor(profiles.encodeSteeringProfileCursor(cursor))).toEqual(cursor);
+    expect(profiles.decodeSteeringProfileCursor(profiles.encodeSteeringProfileCursor(cursor) + "=")).toBeNull();
   });
 
   for (const character of ["界", "\u0000"]) {

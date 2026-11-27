@@ -8,9 +8,9 @@ import {
   PublicCatalogListResponseSchema,
   CatalogDeltaResponseSchema,
   decodeCatalogDeltaCursor,
-  encodeCatalogDeltaCursor,
   decodeCatalogCursor,
   encodeCatalogCursor,
+  encodeCatalogDeltaCursor,
   VRCPackageClient
 } from "vrc-packages-api";
 import { PROTOCOL_VERSION } from "vrc-packages-network/node";
@@ -34,29 +34,22 @@ function seedVpmAndCatalogItem(
 
   store.sqlite
     .prepare(
-      `INSERT INTO source_items (source_key, platform, source_url, latest_digest, latest_version_no, gone_at)
-    VALUES (?, 'vpm', ?, 'digest-1', 1, NULL)`
+      `INSERT INTO source_items (source_key, platform, source_url, latest_digest, payload_json, observed_at, complete, gone_at)
+    VALUES (?, 'vpm', ?, 'digest-1', '{}', ?, 1, NULL)`
     )
-    .run(sourceKey, `https://vpm.example.com/${pkgId}.json`);
+    .run(sourceKey, `https://vpm.example.com/${pkgId}.json`, now);
 
   store.sqlite
     .prepare(
-      `INSERT INTO canonical_packages (canonical_id, umbrella, category, lifecycle, display_name, vpm_id, created_at, updated_at)
-    VALUES (?, 'tools', 'tool', ?, ?, ?, ?, ?)`
+      `INSERT INTO canonical_packages (canonical_id, umbrella, category, lifecycle, verification_status, display_name, vpm_id, summary, created_at, updated_at)
+    VALUES (?, 'tools', 'tool', ?, 'unverified', ?, ?, ?, ?, ?)`
     )
-    .run(canonicalId, lifecycle, displayName, pkgId, now, now);
+    .run(canonicalId, lifecycle, displayName, pkgId, `Summary for ${displayName}`, now, now);
 
   store.sqlite
     .prepare(
-      `INSERT INTO identity_links (link_id, source_key, canonical_id, evidence_kind, confidence, review_state, created_at)
-    VALUES (?, ?, ?, 'vpm_id', 1.0, 'accepted', ?)`
-    )
-    .run(crypto.randomUUID(), sourceKey, canonicalId, now);
-
-  store.sqlite
-    .prepare(
-      `INSERT INTO package_fronts (front_id, canonical_id, source_key, platform, storefront_url, price, currency, availability, observed_at)
-    VALUES (?, ?, ?, 'vpm', ?, NULL, NULL, 'available', ?)`
+      `INSERT INTO listing_sources (source_link_id, canonical_id, source_key, platform, storefront_url, evidence_kind, confidence, review_state, price, currency, availability, observed_at)
+    VALUES (?, ?, ?, 'vpm', ?, 'vpm_id', 1.0, 'accepted', NULL, NULL, 'available', ?)`
     )
     .run(crypto.randomUUID(), canonicalId, sourceKey, `https://vpm.example.com/${pkgId}`, now);
 }
@@ -159,7 +152,7 @@ describe("Public Consumer Catalog Protocol (/v1/app/index & /v1/app/index/delta)
     }
   });
 
-  test("SDK public index preserves the wire receipt and continues to the next catalog page", async () => {
+  test("SDK public index preserves the wire receipt and defaults verificationStatus to unverified", async () => {
     const store = await createInitializedD1Coordinator();
     const requests: URL[] = [];
     const client = new VRCPackageClient({
@@ -182,6 +175,7 @@ describe("Public Consumer Catalog Protocol (/v1/app/index & /v1/app/index/delta)
       const first = PublicCatalogListResponseSchema.parse(await client.index.query({ limit: 2 }));
       expect(first.schemaVersion).toBe(1);
       expect(first.packages).toHaveLength(2);
+      expect(first.packages.every((pkg) => pkg.verificationStatus === "unverified")).toBe(true);
       expect(first.nextCursor).not.toBeNull();
       const params = { limit: 2, cursor: first.nextCursor! };
       const second = PublicCatalogListResponseSchema.parse(await client.index.query(params));
@@ -317,7 +311,8 @@ describe("Public Consumer Catalog Protocol (/v1/app/index & /v1/app/index/delta)
       expect(activeDelta?.action).toBe("upsert");
       expect(activeDelta?.package).toBeDefined();
       expect(activeDelta?.package?.displayName).toBe("Active Tool");
-      expect(activeDelta?.package?.fronts).toHaveLength(1);
+      expect(activeDelta?.package?.sources).toHaveLength(1);
+      expect(activeDelta?.package?.verificationStatus).toBe("unverified");
 
       const delistedDelta = body.deltas.find((d) => d.canonicalId === "com.example.delisted");
       expect(delistedDelta?.action).toBe("delist");
@@ -377,14 +372,14 @@ describe("Public Consumer Catalog Protocol (/v1/app/index & /v1/app/index/delta)
       expect(appIndexRes.status).toBe(200);
       const appIndexBody = PublicCatalogListResponseSchema.parse(await appIndexRes.json());
       expect(appIndexBody.packages).toHaveLength(1);
-      expect(appIndexBody.packages[0].canonicalId).toBe("com.example.http");
+      expect(appIndexBody.packages[0]?.canonicalId).toBe("com.example.http");
 
       const appDeltaRes = await handlePublicCatalogRequest(publicGet("/v1/app/index/delta"), store);
       expect(appDeltaRes.status).toBe(200);
       const appDeltaBody = CatalogDeltaResponseSchema.parse(await appDeltaRes.json());
       expect(appDeltaBody.deltas).toHaveLength(1);
-      expect(appDeltaBody.deltas[0].action).toBe("upsert");
-      expect(appDeltaBody.deltas[0].canonicalId).toBe("com.example.http");
+      expect(appDeltaBody.deltas[0]?.action).toBe("upsert");
+      expect(appDeltaBody.deltas[0]?.canonicalId).toBe("com.example.http");
 
       const retiredCatalog = await handlePublicCatalogRequest(publicGet("/v1/catalog"), store);
       expect(retiredCatalog.status).toBe(404);
@@ -420,15 +415,15 @@ describe("Public Consumer Catalog Protocol (/v1/app/index & /v1/app/index/delta)
       expect(catalogRes.status).toBe(200);
       const catalogBody = PublicCatalogListResponseSchema.parse(await catalogRes.json());
       expect(catalogBody.packages).toHaveLength(1);
-      expect(catalogBody.packages[0].canonicalId).toBe("pkg-gen");
-      expect(catalogBody.packages[0].contentRating).toBe("general");
+      expect(catalogBody.packages[0]?.canonicalId).toBe("pkg-gen");
+      expect(catalogBody.packages[0]?.contentRating).toBe("general");
 
       const deltaRes = await handlePublicCatalogRequest(publicGet("/v1/app/index/delta"), store);
       expect(deltaRes.status).toBe(200);
       const deltaBody = CatalogDeltaResponseSchema.parse(await deltaRes.json());
       expect(deltaBody.deltas).toHaveLength(1);
-      expect(deltaBody.deltas[0].canonicalId).toBe("pkg-gen");
-      if (deltaBody.deltas[0].action === "upsert") {
+      expect(deltaBody.deltas[0]?.canonicalId).toBe("pkg-gen");
+      if (deltaBody.deltas[0]?.action === "upsert") {
         expect(deltaBody.deltas[0].package?.contentRating).toBe("general");
       }
     } finally {
@@ -522,21 +517,23 @@ describe("Public Consumer Catalog Protocol (/v1/app/index & /v1/app/index/delta)
     }
   });
 
-  describe("Publication Classes Enforcement (R13-C3 / Q-PUBLICATION)", () => {
-    test("withholds packages whose source profile sets publishClasses: [] from public catalog listing", async () => {
+  describe("Publication Classes Enforcement (SteeringProfile publishClasses)", () => {
+    test("withholds packages whose steering profile sets publishClasses: [] from public catalog listing", async () => {
       const store = await createInitializedD1Coordinator();
       const limiter = new InMemoryRateLimiter();
       try {
         const nodeId = "pub-test-node";
-        const token = await store.createNodeCredential(nodeId, ["vpm"]);
+        const { token } = await store.createNodeCredential(nodeId, ["vpm"]);
         const principal = (await store.authenticate(nodeId, token))!;
 
-        await store.createSourceAccessProfile(
+        await store.createSteeringProfile(
           {
             schemaVersion: 1,
             platform: "vpm",
-            origin: "https://restricted.example.com",
+            hostMatchMode: "exact",
+            hostPattern: "restricted.example.com",
             pathScope: "/index.json",
+            queryMode: "none",
             method: "GET",
             purpose: "metadata",
             minDelayMs: 1000,
@@ -550,7 +547,10 @@ describe("Public Consumer Catalog Protocol (/v1/app/index & /v1/app/index/delta)
         );
 
         await store.recordRobotsSnapshot("https://restricted.example.com", 200, "User-agent: *\nAllow: /");
-        await store.seedJob("https://restricted.example.com/index.json", "vpm", 1000, undefined, "metadata");
+        await store.seedJob("https://restricted.example.com/index.json", "vpm", {
+          minDelayMs: 1000,
+          purpose: "metadata"
+        });
 
         const claim = await store.claim({ schemaVersion: PROTOCOL_VERSION, nodeId, capabilities: ["vpm"] }, principal);
         expect(claim.status).toBe("leased");
@@ -597,40 +597,45 @@ describe("Public Consumer Catalog Protocol (/v1/app/index & /v1/app/index/delta)
       }
     });
 
-    test("publishes authorized package normally when profile sets publishClasses: [normalized_facts]", async () => {
+    test("publishes facts without summary when creator_prose is omitted, and publishes summary when authorized", async () => {
       const store = await createInitializedD1Coordinator();
       const limiter = new InMemoryRateLimiter();
       try {
         const nodeId = "pub-test-node-2";
-        const token = await store.createNodeCredential(nodeId, ["vpm"]);
+        const { token } = await store.createNodeCredential(nodeId, ["vpm"]);
         const principal = (await store.authenticate(nodeId, token))!;
 
-        await store.createSourceAccessProfile(
+        await store.createSteeringProfile(
           {
             schemaVersion: 1,
             platform: "vpm",
-            origin: "https://authorized.example.com",
+            hostMatchMode: "exact",
+            hostPattern: "facts-only.example.com",
             pathScope: "/index.json",
+            queryMode: "none",
             method: "GET",
             purpose: "metadata",
             minDelayMs: 1000,
             expiresAt: "2099-01-01T00:00:00Z",
-            reviewReference: "REV-AUTHORIZED-01",
-            reason: "Approved metadata publication",
+            reviewReference: "REV-FACTS-ONLY-01",
+            reason: "Facts-only publication without creator prose",
             retainClasses: ["normalized_facts", "creator_prose"],
             publishClasses: ["normalized_facts"]
           },
           "operator-admin"
         );
 
-        await store.recordRobotsSnapshot("https://authorized.example.com", 200, "User-agent: *\nAllow: /");
-        await store.seedJob("https://authorized.example.com/index.json", "vpm", 1000, undefined, "metadata");
+        await store.recordRobotsSnapshot("https://facts-only.example.com", 200, "User-agent: *\nAllow: /");
+        await store.seedJob("https://facts-only.example.com/index.json", "vpm", {
+          minDelayMs: 1000,
+          purpose: "metadata"
+        });
 
         const claim = await store.claim({ schemaVersion: PROTOCOL_VERSION, nodeId, capabilities: ["vpm"] }, principal);
         expect(claim.status).toBe("leased");
         if (claim.status !== "leased") return;
 
-        const pkgId = "com.authorized.public-tool";
+        const pkgId = "com.authorized.facts-only";
         const submitRes = await store.submit(
           {
             schemaVersion: 1,
@@ -642,8 +647,8 @@ describe("Public Consumer Catalog Protocol (/v1/app/index & /v1/app/index/delta)
               kind: "changed",
               observation: {
                 sourceItemKey: pkgId,
-                title: "Authorized Public Tool",
-                summary: "A public tool with normalized_facts publication rights",
+                title: "Facts Only Tool",
+                summary: "Prose summary withheld from public index",
                 author: "Community Dev",
                 outboundLinks: [],
                 originUpdatedAt: null
@@ -659,35 +664,38 @@ describe("Public Consumer Catalog Protocol (/v1/app/index & /v1/app/index/delta)
         const catalog = PublicCatalogListResponseSchema.parse(await publicRes.json());
         const pkg = catalog.packages.find((p) => p.canonicalId === pkgId);
         expect(pkg).toBeDefined();
-        expect(pkg?.displayName).toBe("Authorized Public Tool");
-        expect(pkg?.acceptedLinks).toHaveLength(1);
+        expect(pkg?.displayName).toBe("Facts Only Tool");
+        expect(pkg?.summary).toBeNull();
+        expect(pkg?.sources).toHaveLength(1);
+        expect(pkg?.verificationStatus).toBe("unverified");
 
         const deltaRes = await handlePublicCatalogRequest(publicGet("/v1/app/index/delta"), store, limiter);
         expect(deltaRes.status).toBe(200);
         const deltas = CatalogDeltaResponseSchema.parse(await deltaRes.json());
         const deltaItem = deltas.deltas.find((d) => d.canonicalId === pkgId);
-        expect(deltaItem).toBeDefined();
         expect(deltaItem?.action).toBe("upsert");
-        expect(deltaItem?.package?.displayName).toBe("Authorized Public Tool");
+        expect(deltaItem?.package?.summary).toBeNull();
       } finally {
         store.close();
       }
     });
 
-    test("filters restricted fronts and links when package has mixed publication authority", async () => {
+    test("filters restricted listing_sources when package has mixed publication authority", async () => {
       const store = await createInitializedD1Coordinator();
       const limiter = new InMemoryRateLimiter();
       try {
         const nodeId = "pub-test-node-3";
-        const token = await store.createNodeCredential(nodeId, ["vpm", "booth"]);
+        const { token } = await store.createNodeCredential(nodeId, ["vpm", "booth"]);
         const principal = (await store.authenticate(nodeId, token))!;
 
-        await store.createSourceAccessProfile(
+        await store.createSteeringProfile(
           {
             schemaVersion: 1,
             platform: "vpm",
-            origin: "https://vpm.mixed.example.com",
+            hostMatchMode: "exact",
+            hostPattern: "vpm.mixed.example.com",
             pathScope: "/index.json",
+            queryMode: "none",
             method: "GET",
             purpose: "metadata",
             minDelayMs: 1000,
@@ -695,17 +703,19 @@ describe("Public Consumer Catalog Protocol (/v1/app/index & /v1/app/index/delta)
             reviewReference: "REV-VPM-AUTHORIZED",
             reason: "Approved VPM",
             retainClasses: ["normalized_facts", "creator_prose"],
-            publishClasses: ["normalized_facts"]
+            publishClasses: ["normalized_facts", "creator_prose"]
           },
           "operator-admin"
         );
 
-        await store.createSourceAccessProfile(
+        await store.createSteeringProfile(
           {
             schemaVersion: 1,
             platform: "booth",
-            origin: "https://booth.pm",
+            hostMatchMode: "exact",
+            hostPattern: "booth.pm",
             pathScope: "/ja/items/99999",
+            queryMode: "none",
             method: "GET",
             purpose: "metadata",
             minDelayMs: 1000,
@@ -721,7 +731,10 @@ describe("Public Consumer Catalog Protocol (/v1/app/index & /v1/app/index/delta)
         await store.recordRobotsSnapshot("https://vpm.mixed.example.com", 200, "User-agent: *\nAllow: /");
         await store.recordRobotsSnapshot("https://booth.pm", 200, "User-agent: *\nAllow: /");
 
-        await store.seedJob("https://vpm.mixed.example.com/index.json", "vpm", 1000, undefined, "metadata");
+        await store.seedJob("https://vpm.mixed.example.com/index.json", "vpm", {
+          minDelayMs: 1000,
+          purpose: "metadata"
+        });
         const claimVpm = await store.claim(
           { schemaVersion: PROTOCOL_VERSION, nodeId, capabilities: ["vpm"] },
           principal
@@ -742,7 +755,7 @@ describe("Public Consumer Catalog Protocol (/v1/app/index & /v1/app/index/delta)
               observation: {
                 sourceItemKey: canonicalId,
                 title: "Mixed Authority Package",
-                summary: "A package with mixed source profiles",
+                summary: "A package with mixed steering profiles",
                 author: "Dev",
                 outboundLinks: ["https://booth.pm/ja/items/99999"],
                 originUpdatedAt: null
@@ -752,7 +765,10 @@ describe("Public Consumer Catalog Protocol (/v1/app/index & /v1/app/index/delta)
           principal
         );
 
-        await store.seedJob("https://booth.pm/ja/items/99999", "booth", 1000, undefined, "metadata");
+        await store.seedJob("https://booth.pm/ja/items/99999", "booth", {
+          minDelayMs: 1000,
+          purpose: "metadata"
+        });
         const claimBooth = await store.claim(
           { schemaVersion: PROTOCOL_VERSION, nodeId, capabilities: ["booth"] },
           principal
@@ -783,9 +799,11 @@ describe("Public Consumer Catalog Protocol (/v1/app/index & /v1/app/index/delta)
         );
 
         const boothSourceKey = "booth:https://booth.pm/ja/items/99999:booth.pm/ja/items/99999";
-        await store.createIdentityLink({
-          sourceKey: boothSourceKey,
+        await store.upsertListingSource({
           canonicalId,
+          sourceKey: boothSourceKey,
+          platform: "booth",
+          storefrontUrl: "https://booth.pm/ja/items/99999",
           evidenceKind: "cross_storefront_link",
           confidence: 1.0,
           reviewState: "accepted"
@@ -797,9 +815,10 @@ describe("Public Consumer Catalog Protocol (/v1/app/index & /v1/app/index/delta)
         const pkg = catalog.packages.find((p) => p.canonicalId === canonicalId);
         expect(pkg).toBeDefined();
 
-        expect(pkg?.acceptedLinks).toHaveLength(1);
-        expect(pkg?.acceptedLinks[0].sourceKey).toContain("vpm");
-        expect(pkg?.fronts.find((f) => f.platform === "booth")).toBeUndefined();
+        expect(pkg?.sources).toHaveLength(1);
+        expect(pkg?.sources[0]?.sourceKey).toContain("vpm");
+        expect(pkg?.sources.find((s) => s.platform === "booth")).toBeUndefined();
+        expect(pkg?.summary).toBe("A package with mixed steering profiles");
       } finally {
         store.close();
       }

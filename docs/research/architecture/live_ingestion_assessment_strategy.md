@@ -1,6 +1,6 @@
 # Live Ingestion, First-Principles Abstraction, and Data Assessment Strategy
 
-> **Status:** Investigative Engineering Strategy (`[P19]` / `PN-010`)  
+> **Status:** Investigative Engineering Strategy (`[P19]` to `[P20]` / `PN-010`, `PN-011`)  
 > **Owning Sector:** Sector 4 (`pipeline`) / Sector 1 (`crawler-network`)  
 > **Related Current Source:** [`coordinator_worker.md`](../../source/specifications/coordinator_worker.md), [`crawler_node.md`](../../source/specifications/crawler_node.md), [`coordinator_d1.md`](../../source/schemas/coordinator_d1.md), [`logging_and_telemetry.md`](../../source/schemas/logging_and_telemetry.md)
 
@@ -15,7 +15,7 @@ This strategy governs Version 0 live debugging before remote preview pushes (`RE
 | **OOP & Semantic Framework** | `Candidate` | Proposed `SourceDriver`, `HtmlSanitizerPipeline`, `SemanticPatternEngine`, `VpmQualityAnalyzer`, and `PaginationController`. | `2026-11-24` | Refactor `src-crawler/` and verify in `LIVE-LOCAL-ASSESS-01`. |
 | **Funnel, Bulk & Chaos Audit** | `Candidate` | Local `wrangler dev` + multi-node funnel conservation, initial 9 buckets, and initial 9 break tests. | `2026-11-24` | `Measured` totals stay pending until `LIVE-LOCAL-ASSESS-01`. |
 
-## Consolidated Owner Prompt Lineage (`P1` to `P4`)
+## Consolidated Owner Prompt Lineage (`P1` to `P7`)
 
 Per [Rule 02 Section 5](../../../.agents/rules/02-boundary-and-review.md), initial debugging packets, attrition buckets, and chaos scenarios are starting suggestions. Unpack the true R&D lifecycle dynamically when live debugging starts.
 
@@ -25,6 +25,9 @@ Per [Rule 02 Section 5](../../../.agents/rules/02-boundary-and-review.md), initi
 | **`P2`** | `2026-11-24` | `/untangle-codebase` | Boot local `wrangler dev` + isolated CWD nodes, bulk-assess signal/noise/bloat, break edges, optimize via OOP/semantic frameworks, and run `/untangle-codebase` before preview pushes. |
 | **`P3`** | `2026-11-24` | Addendum | Uphold anti-survivorship-bias funnel conservation (`survivors + accounted_attrition === total_attempted`) and audit dropped, blocked, rejected, and excluded rows. |
 | **`P4`** | `2026-11-25` | Addendum | Treat initial packets, buckets, and scenarios as starting suggestions only. Expand live R&D without tunnel vision ([Rule 02.5](../../../.agents/rules/02-boundary-and-review.md)). |
+| **`P5`** | `2026-11-25` | Addendum | Standardize all Version 0 SDK consumers on `vrc-packages-api-preview` (`PN-008`) and remove legacy `0.0.8` dual-channel checks. |
+| **`P6`** | `2026-11-25` | `[P20]` / `PN-011` | Defer Ko-fi and Patreon post-v1 behind ToS, anti-bot, and API blockers (`0x01ff` unchanged). |
+| **`P7`** | `2026-11-25` | `[P20]` / `PN-011` | Seed 16 real starter profiles in `default_seeds.ts`. Enforce Zero-Placeholder R&D in `LIVE-LOCAL-ASSESS-01`. |
 
 ```mermaid
 flowchart TD
@@ -201,3 +204,11 @@ Real live ingestion runs take time across `4h`, `6h`, and `24h` recrawl windows.
 3. **Domain verification**: Run all domain commands from [`SYSTEM_MAP.md`](../../source/SYSTEM_MAP.md), `check_doc_links.ts`, and `ste-lint.py --strict`.
 
 4. **Remote preview lift (`LIVE-PREVIEW-ASSESS-01`)**: After `UNTANGLE-PRE-PREVIEW-01` passes, lift the `REORIENT-LIVE-DEBUG` hold. Publish Worker and Crawler preview releases via Sector 4 Pipeline and repeat bulk survivor plus attrition validation remotely.
+
+## 7. Zero-Placeholder R&D Rule (`[P20]`)
+
+1. **Zero placeholder seeds**: Do not seed `vrchat-community/template-*`, `/sample-*` URLs, or mock targets. Use `seedPreviewStarter: true` (`16` real starter profiles across `8` concrete V0 platforms) and approved public targets.
+
+2. **Deferred storefronts**: Exclude **Ko-fi** and **Patreon** until ToS, anti-bot, and API blockers clear post-v1 ([`platform_clearance_matrix.md`](../markets/platform_clearance_matrix.md)). Park Payhip and unknown hosts in `custom_domain` (`pending_review`).
+
+3. **Empirical measurements only**: Record exact counts from live `LIVE-LOCAL-ASSESS-01` logs and D1 tables. Never estimate `Measured` counts ahead of execution or add synthetic fallback data.

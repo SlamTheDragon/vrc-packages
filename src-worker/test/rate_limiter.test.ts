@@ -1,19 +1,19 @@
 import { describe, expect, test } from "bun:test";
+import { CATALOG_PROTOCOL_VERSION } from "vrc-packages-api";
+import { handleDownstreamRequest } from "../src/api/downstream_handler.ts";
+import { handleNodeRequest } from "../src/api/handler.ts";
+import { handlePublicCatalogRequest } from "../src/api/public_handler.ts";
 import {
+  type IKVNamespace,
   InMemoryRateLimiter,
   KvRateLimiter,
-  createRateLimiter,
-  type IKVNamespace,
-  extractClientIp,
-  rateLimitResponse,
+  RATE_LIMIT_POLICIES,
   applyRateLimitHeaders,
-  RATE_LIMIT_POLICIES
+  createRateLimiter,
+  extractClientIp,
+  rateLimitResponse
 } from "../src/api/rate_limiter.ts";
-import { handlePublicCatalogRequest } from "../src/api/public_handler.ts";
-import { handleNodeRequest } from "../src/api/handler.ts";
-import { handleDownstreamRequest } from "../src/api/downstream_handler.ts";
 import { createInitializedD1Coordinator } from "./support/d1_test_fixtures.ts";
-import { CATALOG_PROTOCOL_VERSION } from "vrc-packages-api";
 
 describe("Inbound 429 Rate Limiter & Abuse Protection", () => {
   describe("InMemoryRateLimiter Unit Tests", () => {
@@ -230,9 +230,6 @@ describe("Inbound 429 Rate Limiter & Abuse Protection", () => {
         },
         async put(key: string, value: string, options?: { expirationTtl?: number }) {
           store.set(key, { value, expirationTtl: options?.expirationTtl });
-        },
-        async delete(key: string) {
-          store.delete(key);
         }
       };
     }

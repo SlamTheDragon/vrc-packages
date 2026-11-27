@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { createInitializedD1Coordinator } from "./support/d1_test_fixtures.ts";
-import { handleUserRequest } from "../src/api/user_handler.ts";
+import { UserAppListResponseSchema, UserAppResponseSchema } from "vrc-packages-api";
 import { isUserToken, USER_TOKEN_PREFIX } from "vrc-packages-api/auth";
+import { handleUserRequest } from "../src/api/user_handler.ts";
+import { createInitializedD1Coordinator } from "./support/d1_test_fixtures.ts";
 
 function jsonRequest(path: string, method: string, body?: unknown, token?: string): Request {
   const headers: Record<string, string> = {
@@ -46,9 +47,15 @@ describe("User Protocol (/v1/user/*)", () => {
 
       await store.createNodeCredential("existing-node", ["vpm"]);
       store.sqlite
-        .prepare("UPDATE node_credentials SET revoked_at=? WHERE node_id=?")
+        .prepare("UPDATE nodes SET revoked_at=? WHERE node_id=?")
         .run(new Date().toISOString(), "existing-node");
-      const before = store.sqlite.prepare("SELECT * FROM node_credentials ORDER BY node_id").all();
+      const before = store.sqlite.prepare("SELECT * FROM nodes ORDER BY node_id").all();
+      const beforeAuditCount = (
+        store.sqlite
+          .prepare("SELECT COUNT(*) AS count FROM operator_audit_log WHERE entity_type='node'")
+          .get() as { count: number }
+      ).count;
+
       for (const token of [undefined, user.token]) {
         for (const nodeId of ["new-node", "existing-node"]) {
           const response = await handleUserRequest(
@@ -58,7 +65,6 @@ describe("User Protocol (/v1/user/*)", () => {
               {
                 schemaVersion: 1,
                 nodeId,
-                requestedCapabilities: ["vpm"],
                 reason: "Retired route fixture"
               },
               token
@@ -68,8 +74,13 @@ describe("User Protocol (/v1/user/*)", () => {
           expect(response.status).toBe(404);
         }
       }
-      expect(store.sqlite.prepare("SELECT * FROM node_credentials ORDER BY node_id").all()).toEqual(before);
-      expect((store.sqlite.prepare("SELECT COUNT(*) AS count FROM node_credential_actions").get() as any).count).toBe(0);
+      expect(store.sqlite.prepare("SELECT * FROM nodes ORDER BY node_id").all()).toEqual(before);
+      const afterAuditCount = (
+        store.sqlite
+          .prepare("SELECT COUNT(*) AS count FROM operator_audit_log WHERE entity_type='node'")
+          .get() as { count: number }
+      ).count;
+      expect(afterAuditCount).toBe(beforeAuditCount);
     } finally {
       store.close();
     }
@@ -86,32 +97,38 @@ describe("User Protocol (/v1/user/*)", () => {
       ];
       const foreign = await store.registerApp({ schemaVersion: 1, appName: "Other app" }, other.userId);
       const unowned = await store.registerApp({ schemaVersion: 1, appName: "Operator app" });
+
       const response = await handleUserRequest(
         jsonRequest("/v1/user/apps?limit=1", "GET", undefined, user.token),
         store
       );
       expect(response.status).toBe(200);
       expect(response.headers.get("X-RateLimit-Limit")).toBeDefined();
-      const page = (await response.json()) as any;
+      const page = UserAppListResponseSchema.parse(await response.json());
       expect(page.apps).toHaveLength(1);
-      expect(page.nextCursor).toBe(page.apps[0].appId);
+      expect(page.nextCursor).toBe(page.apps[0]!.appId);
+
       const next = await handleUserRequest(
-        jsonRequest(`/v1/user/apps?limit=1&cursor=${page.nextCursor.toUpperCase()}`, "GET", undefined, user.token),
+        jsonRequest(`/v1/user/apps?limit=1&cursor=${page.nextCursor!.toUpperCase()}`, "GET", undefined, user.token),
         store
       );
-      const second = (await next.json()) as any;
+      const second = UserAppListResponseSchema.parse(await next.json());
       expect(second.apps).toHaveLength(1);
       expect(second.nextCursor).toBeNull();
       expect(new Set([...page.apps, ...second.apps].map((app) => app.appId))).toEqual(
         new Set(owned.map((app) => app.appId))
       );
+
       const detail = await handleUserRequest(
-        jsonRequest(`/v1/user/apps/${owned[0].appId.toUpperCase()}`, "GET", undefined, user.token),
+        jsonRequest(`/v1/user/apps/${owned[0]!.appId.toUpperCase()}`, "GET", undefined, user.token),
         store
       );
       expect(detail.status).toBe(200);
-      const app = ((await detail.json()) as any).app;
-      expect(Object.keys(app).sort()).toEqual(["appId", "appName", "createdAt", "permissions", "revokedAt"].sort());
+      const detailParsed = UserAppResponseSchema.parse(await detail.json());
+      expect(Object.keys(detailParsed.app).sort()).toEqual(
+        ["appId", "appName", "createdAt", "permissions", "revokedAt"].sort()
+      );
+
       for (const id of [foreign.appId.toUpperCase(), unowned.appId.toUpperCase(), crypto.randomUUID()]) {
         expect(
           (await handleUserRequest(jsonRequest(`/v1/user/apps/${id}`, "GET", undefined, user.token), store)).status
@@ -125,13 +142,15 @@ describe("User Protocol (/v1/user/*)", () => {
       expect(
         (await handleUserRequest(jsonRequest("/v1/user/apps/not-an-id", "GET", undefined, user.token), store)).status
       ).toBe(404);
-      const unavailable = Object.create(store);
+
+      const unavailable = Object.create(store) as typeof store;
       unavailable.listUserApps = () => {
         throw new Error("private storage diagnostic");
       };
       const failure = await handleUserRequest(jsonRequest("/v1/user/apps", "GET", undefined, user.token), unavailable);
       expect(failure.status).toBe(500);
       expect(await failure.text()).not.toContain("private storage diagnostic");
+
       expect(
         (
           await handleUserRequest(
@@ -141,6 +160,7 @@ describe("User Protocol (/v1/user/*)", () => {
         ).status
       ).toBe(404);
       expect((await handleUserRequest(jsonRequest("/v1/user/apps", "GET"), store)).status).toBe(401);
+
       store.sqlite
         .prepare("UPDATE registered_users SET revoked_at=? WHERE user_id=?")
         .run(new Date().toISOString(), user.userId);
@@ -177,8 +197,9 @@ describe("User Protocol (/v1/user/*)", () => {
           expect(response.status).toBe(404);
         }
       }
-      for (const table of ["creator_opt_outs", "suppressed_urls", "catalog_reports"]) {
-        expect((store.sqlite.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as any).count).toBe(0);
+      for (const table of ["suppressed_targets", "catalog_tickets"] as const) {
+        const row = store.sqlite.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as { count: number };
+        expect(row.count).toBe(0);
       }
     } finally {
       store.close();

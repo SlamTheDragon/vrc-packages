@@ -1,30 +1,29 @@
 import {
+  CatalogSearchRequestSchema,
+  CatalogSearchResponseSchema,
+  CreatorClaimIntakeRequestSchema,
+  CreatorClaimIntakeResponseSchema,
   DOWNSTREAM_PROTOCOL_VERSION,
   RegisterAppRequestSchema,
   RegisterAppResponseSchema,
   ReportSubmissionRequestSchema,
-  ReportSubmissionResponseSchema,
-  CatalogSearchRequestSchema,
-  CatalogSearchResponseSchema,
-  CreatorClaimIntakeRequestSchema,
-  CreatorClaimIntakeResponseSchema
+  ReportSubmissionResponseSchema
 } from "vrc-packages-api";
-import { readJson } from "./handler.ts";
 import {
   CoordinatorConflict,
   UnsupportedMediaTypeError,
   type DownstreamAppPrincipal,
-  type DownstreamStore,
-  type DemandFeedbackInput
+  type DownstreamStore
 } from "../domain/ports/stores.ts";
 import { workerLogger } from "../worker_logger.ts";
 import { extractBearerToken, isOperatorBearerToken } from "./auth.ts";
+import { readJson } from "./handler.ts";
 import {
-  extractClientIp,
   RATE_LIMIT_POLICIES,
-  rateLimitResponse,
   applyRateLimitHeaders,
   defaultRateLimiter,
+  extractClientIp,
+  rateLimitResponse,
   type IRateLimiter
 } from "./rate_limiter.ts";
 
@@ -148,12 +147,12 @@ export async function handleDownstreamRequest(
       );
     }
 
-    if (reportParsed.data.reportType === "removal_request") {
+    const data = reportParsed.data;
+    if (data.reportType === "removal_request") {
       const isTrusted =
         app.candidateStatus === "trusted" ||
         app.isTrusted === true ||
-        app.permissions.includes("takedowns:submit") ||
-        app.permissions.includes("claims:delegate");
+        app.permissions.includes("takedowns:submit");
       if (!isTrusted) {
         workerLogger.warn("Untrusted application attempted creator takedown request", { path, appId: app.appId });
         return failure(
@@ -162,68 +161,37 @@ export async function handleDownstreamRequest(
           "Application is not authorized for creator takedown requests; trusted registered app status required"
         );
       }
-
-      try {
-        const response = await store.recordRemovalReport(app.appId, reportParsed.data);
-        return applyRateLimitHeaders(json(ReportSubmissionResponseSchema.parse(response), 202), reportRate);
-      } catch (error) {
-        workerLogger.error("Failed to record removal report", error, { path, appId: app.appId });
-        return failure(500, "internal_error", "Removal report could not be recorded");
+    } else if (data.reportType === "demand_signal" || data.reportType === "relationship_feedback") {
+      if (!app.permissions.includes("demand:feedback")) {
+        return failure(403, "forbidden", "Application is not authorized for demand or relationship feedback");
       }
     }
-
-    if (reportParsed.data.reportType === "issue_report") {
-      try {
-        const response = await store.recordIssueReport(app.appId, reportParsed.data);
-        return applyRateLimitHeaders(json(ReportSubmissionResponseSchema.parse(response), 200), reportRate);
-      } catch (error) {
-        workerLogger.error("Failed to record issue report", error, { path, appId: app.appId });
-        return failure(500, "internal_error", "Issue report could not be recorded");
-      }
-    }
-
-    if (!app.permissions.includes("demand:feedback")) {
-      return failure(403, "forbidden", "Application is not authorized for demand feedback");
-    }
-
-    const data = reportParsed.data;
-    const signalType = data.signalKind ?? "search_miss";
-    const feedbackInput: DemandFeedbackInput = {
-      signalType,
-      query: data.query,
-      zeroHits: data.zeroHits,
-      targetUrl: data.targetUrl,
-      metadata: {
-        ...data.metadata,
-        reportType: data.reportType,
-        canonicalId: data.canonicalId,
-        ...(data.reason !== undefined ? { reason: data.reason } : {})
-      }
-    };
 
     try {
-      const response = await store.recordDownstreamFeedback(app.appId, feedbackInput);
-      return applyRateLimitHeaders(
-        json(
-          ReportSubmissionResponseSchema.parse({
-            schemaVersion: DOWNSTREAM_PROTOCOL_VERSION,
-            status: "accepted",
-            reportId: response.signalId,
-            recordedAt: response.recordedAt
-          }),
-          200
-        ),
-        reportRate
-      );
+      const response = await store.recordReportSubmission(app.appId, data);
+      const status = data.reportType === "removal_request" ? 202 : 200;
+      return applyRateLimitHeaders(json(ReportSubmissionResponseSchema.parse(response), status), reportRate);
     } catch (error) {
-      workerLogger.error("Failed to record downstream feedback", error, { path, appId: app.appId });
-      return failure(500, "internal_error", "Feedback ingestion failed");
+      if (error instanceof CoordinatorConflict) {
+        return failure(error.status, "conflict", error.message);
+      }
+      workerLogger.error("Failed to record downstream report submission", error, {
+        path,
+        appId: app.appId,
+        reportType: data.reportType
+      });
+      return failure(500, "internal_error", "Report submission failed");
     }
   }
 
   if (isClaimIntake) {
-    if (!app.permissions.includes("claims:delegate")) {
-      return failure(403, "forbidden", "Application is not authorized for delegated creator claims");
+    const isTrustedApp = app.candidateStatus === "trusted" || app.isTrusted === true;
+    if (!isTrustedApp || !app.permissions.includes("claims:delegate")) {
+      return failure(
+        403,
+        "forbidden",
+        "Application requires trusted candidate status and claims:delegate permission"
+      );
     }
 
     const claimRate = await rateLimiter.check(`app:claim:${app.appId}`, RATE_LIMIT_POLICIES.APP_CLAIMS_INTAKE);

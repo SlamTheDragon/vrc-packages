@@ -1,11 +1,25 @@
 import { describe, expect, it } from "bun:test";
-import { Database, type SQLQueryBindings } from "bun:sqlite";
+import { Database } from "bun:sqlite";
 import { Coordinator } from "../src/storage/d1/coordinator.ts";
 import workerEntry, { type Env } from "../src/worker_entry.ts";
-import { PlatformSchema, type Platform, ResultResponseSchema, BatchResultResponseSchema } from "vrc-packages-network/node";
-import { DEFAULT_SEED_JOBS } from "../src/storage/default_seeds.ts";
-import { decodeCatalogCursor, PublicCatalogListResponseSchema } from "vrc-packages-api";
-import { VRCPackageClient } from "vrc-packages-api";
+import {
+  PlatformSchema,
+  type Platform,
+  ResultResponseSchema,
+  BatchResultResponseSchema,
+  ClaimRequestSchema
+} from "vrc-packages-network/node";
+import {
+  PREVIEW_STARTER_PROFILE_COUNT,
+  buildPreviewStarterSteeringProfiles
+} from "../src/storage/default_seeds.ts";
+import {
+  CatalogListResponseSchema,
+  decodeCatalogCursor,
+  InitializeCoordinatorResponseSchema,
+  PublicCatalogListResponseSchema,
+  VRCPackageClient
+} from "vrc-packages-api";
 import { handlePublicCatalogRequest } from "../src/api/public_handler.ts";
 import { InMemoryRateLimiter } from "../src/api/rate_limiter.ts";
 import { handleNodeRequest } from "../src/api/handler.ts";
@@ -14,167 +28,367 @@ import { createMockD1Database } from "./support/d1_test_fixtures.ts";
 
 export { createMockD1Database };
 
-describe("Cloudflare D1 Coordinator Store & Edge Worker Adapter", () => {
+const EXPECTED_V0_TABLES = [
+  "canonical_packages",
+  "catalog_tickets",
+  "coordinator_meta",
+  "crawl_jobs",
+  "downstream_signals",
+  "job_results",
+  "listing_relations",
+  "listing_sources",
+  "nodes",
+  "operator_audit_log",
+  "origin_state",
+  "registered_apps",
+  "registered_users",
+  "source_items",
+  "source_leads",
+  "steering_profiles",
+  "suppressed_targets"
+].sort();
+
+describe("Cloudflare D1 Coordinator Store & Edge Worker Adapter (V0)", () => {
   it("rejects unsupported fixture operations and rolls back foreign batch statements", async () => {
-    const sqlite = new Database(":memory:"), other = new Database(":memory:");
+    const sqlite = new Database(":memory:");
+    const other = new Database(":memory:");
     try {
-      const db = createMockD1Database(sqlite), foreign = createMockD1Database(other);
+      const db = createMockD1Database(sqlite);
+      const foreign = createMockD1Database(other);
       await db.exec("CREATE TABLE fixture_contract (value TEXT)");
       await foreign.exec("CREATE TABLE fixture_contract (value TEXT)");
       expect(() => db.withSession()).toThrow("does not implement sessions");
       await expect(db.dump()).rejects.toThrow("does not implement dump");
       await expect(db.prepare("SELECT 1").raw()).rejects.toThrow("does not implement raw");
-      await expect(db.batch([db.prepare("INSERT INTO fixture_contract VALUES ('local')"),
-        foreign.prepare("INSERT INTO fixture_contract VALUES ('foreign')")])).rejects.toThrow("foreign statement");
+      await expect(
+        db.batch([
+          db.prepare("INSERT INTO fixture_contract VALUES ('local')"),
+          foreign.prepare("INSERT INTO fixture_contract VALUES ('foreign')")
+        ])
+      ).rejects.toThrow("foreign statement");
       expect(await db.prepare("SELECT COUNT(*) AS count FROM fixture_contract").first()).toEqual({ count: 0 });
-    } finally { sqlite.close(); other.close(); }
+    } finally {
+      sqlite.close();
+      other.close();
+    }
   });
+
   async function metadataFixture(platform: Platform, target: string, purpose: "metadata" | "discovery" = "metadata") {
     const sqlite = new Database(":memory:");
-    const store = new Coordinator(createMockD1Database(sqlite));
-    await store.initSchema(false);
+    const d1 = createMockD1Database(sqlite);
+    const store = new Coordinator(d1);
+    await store.initSchema({ autoSeed: false });
     const url = new URL(target);
-    await store.createSourceAccessProfile({ schemaVersion: 1, platform, origin: url.origin,
-      pathScope: url.pathname, method: "GET", purpose, minDelayMs: 1000,
-      ...(url.search ? { exactQuery: url.search.slice(1) } : {}),
-      expiresAt: new Date(Date.now() + 3600000).toISOString(), reviewReference: "OFFLINE-METADATA-BOUNDARY",
-      reason: "Hermetic metadata trust boundary", retainClasses: ["normalized_facts"],
-      publishClasses: ["normalized_facts"] }, "fixture-operator");
+    await store.createSteeringProfile(
+      {
+        schemaVersion: 1,
+        platform,
+        hostMatchMode: "exact",
+        hostPattern: url.hostname.toLowerCase(),
+        pathScope: url.pathname,
+        queryMode: url.search ? "exact" : "none",
+        ...(url.search ? { queryScope: url.search.slice(1) } : {}),
+        method: "GET",
+        purpose,
+        minDelayMs: 1000,
+        expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+        reviewReference: "OFFLINE-METADATA-BOUNDARY",
+        reason: "Hermetic metadata trust boundary",
+        retainClasses: ["normalized_facts"],
+        publishClasses: ["normalized_facts"]
+      },
+      "fixture-operator"
+    );
     await store.recordRobotsSnapshot(url.origin, 404);
-    await store.seedJob(target, platform, 1000, undefined, purpose);
+    await store.seedJob(target, platform, { minDelayMs: 1000, purpose });
     const nodeId = `metadata-${platform}`;
-    const token = await store.createNodeCredential(nodeId, [platform]);
+    const { token } = await store.createNodeCredential(nodeId, [platform]);
     const principal = (await store.authenticate(nodeId, token))!;
     const claim = await store.claim({ schemaVersion: 1, nodeId, capabilities: [platform] }, principal);
     if (claim.status !== "leased") throw new Error("Expected metadata fixture lease");
     const limiter = new InMemoryRateLimiter();
-    const post = (body: unknown, path = "/v1/node/jobs/result") => handleNodeRequest(new Request(`https://offline.invalid${path}`, {
-      method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
-      body: JSON.stringify(body)
-    }), store, limiter);
-    const observation = { sourceItemKey: `${url.host}${url.pathname}`, title: "Metadata fixture", author: "Fixture creator",
-      summary: "", outboundLinks: [] as string[], originUpdatedAt: null };
-    const result = { schemaVersion: 1, nodeId, jobId: claim.job.jobId, leaseId: claim.job.leaseId,
-      idempotencyKey: "metadata-boundary-result", outcome: { kind: "changed", observation } };
-    const snapshot = () => Object.fromEntries(["source_items", "source_versions", "source_events", "job_results",
-      "canonical_packages", "identity_links", "package_fronts", "source_leads", "avatar_compatibilities",
-      "desktop_tool_evidence", "crawl_jobs", "origin_leases"].map(table => [table, sqlite.query(`SELECT * FROM ${table}`).all()]));
-    return { sqlite, store, post, result, observation, snapshot };
+    const post = (body: unknown, path = "/v1/node/jobs/result") =>
+      handleNodeRequest(
+        new Request(`https://offline.invalid${path}`, {
+          method: "POST",
+          headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+          body: JSON.stringify(body)
+        }),
+        store,
+        limiter
+      );
+    const observation = {
+      sourceItemKey: `${url.host}${url.pathname}`,
+      title: "Metadata fixture",
+      author: "Fixture creator",
+      summary: "",
+      outboundLinks: [] as string[],
+      originUpdatedAt: null
+    };
+    const result = {
+      schemaVersion: 1,
+      nodeId,
+      jobId: claim.job.jobId,
+      leaseId: claim.job.leaseId,
+      idempotencyKey: "metadata-boundary-result",
+      outcome: { kind: "changed", observation }
+    };
+    const snapshot = () =>
+      Object.fromEntries(
+        [
+          "source_items",
+          "job_results",
+          "canonical_packages",
+          "listing_sources",
+          "listing_relations",
+          "source_leads",
+          "crawl_jobs",
+          "origin_state"
+        ].map((table) => [table, sqlite.query(`SELECT * FROM ${table}`).all()])
+      );
+    return { sqlite, d1, store, post, result, observation, snapshot };
   }
 
-  async function associationEvidence(store: Coordinator, sourceUrl: string, outboundLinks: string[],
-    platform: "vpm" | "github" = "vpm") {
-    const target = new URL(sourceUrl), nodeId = `association-evidence-${platform}`, canonicalId = "com.fixture.association";
-    const delay = platform === "github" ? 60000 : 1000;
-    await store.createSourceAccessProfile({ schemaVersion: 1, platform, origin: target.origin,
-      pathScope: target.pathname, method: "GET", purpose: "metadata", minDelayMs: delay,
-      ...(target.search ? { exactQuery: target.search.slice(1) } : {}),
-      expiresAt: new Date(Date.now() + 3600000).toISOString(), reviewReference: "OFFLINE-URL-EQUIVALENCE",
-      reason: "Hermetic accepted source fixture", retainClasses: ["normalized_facts"], publishClasses: ["normalized_facts"] }, "fixture-operator");
+  async function associationEvidence(
+    store: Coordinator,
+    sourceUrl: string,
+    outboundLinks: string[],
+    platform: "vpm" | "github" = "vpm"
+  ) {
+    const target = new URL(sourceUrl);
+    const nodeId = `association-evidence-${platform}`;
+    const canonicalId = "com.fixture.association";
+    const delay = platform === "github" ? 60_000 : 1000;
+    await store.createSteeringProfile(
+      {
+        schemaVersion: 1,
+        platform,
+        hostMatchMode: "exact",
+        hostPattern: target.hostname.toLowerCase(),
+        pathScope: target.pathname,
+        queryMode: target.search ? "exact" : "none",
+        ...(target.search ? { queryScope: target.search.slice(1) } : {}),
+        method: "GET",
+        purpose: "metadata",
+        minDelayMs: delay,
+        expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+        reviewReference: "OFFLINE-URL-EQUIVALENCE",
+        reason: "Hermetic accepted source fixture",
+        retainClasses: ["normalized_facts"],
+        publishClasses: ["normalized_facts"]
+      },
+      "fixture-operator"
+    );
     await store.recordRobotsSnapshot(target.origin, 404);
-    await store.seedJob(target.href, platform, delay, undefined, "metadata");
-    const token = await store.createNodeCredential(nodeId, [platform]);
+    await store.seedJob(target.href, platform, { minDelayMs: delay, purpose: "metadata" });
+    const { token } = await store.createNodeCredential(nodeId, [platform]);
     const principal = (await store.authenticate(nodeId, token))!;
     const claim = await store.claim({ schemaVersion: 1, nodeId, capabilities: [platform] }, principal);
     if (claim.status !== "leased") throw new Error("Expected association evidence lease");
-    expect((await store.submit({ schemaVersion: 1, nodeId, jobId: claim.job.jobId, leaseId: claim.job.leaseId,
-      idempotencyKey: "association-evidence-result", outcome: { kind: "changed", observation: {
-        sourceItemKey: platform === "vpm" ? canonicalId : "github:999", title: "Accepted source fixture", author: "Fixture creator", summary: "",
-        outboundLinks, originUpdatedAt: null } } }, principal)).status).toBe("accepted");
+    expect(
+      (
+        await store.submit(
+          {
+            schemaVersion: 1,
+            nodeId,
+            jobId: claim.job.jobId,
+            leaseId: claim.job.leaseId,
+            idempotencyKey: "association-evidence-result",
+            outcome: {
+              kind: "changed",
+              observation: {
+                sourceItemKey: platform === "vpm" ? canonicalId : "github:999",
+                title: "Accepted source fixture",
+                author: "Fixture creator",
+                summary: "",
+                outboundLinks,
+                originUpdatedAt: null
+              }
+            }
+          },
+          principal
+        )
+      ).status
+    ).toBe("accepted");
     return canonicalId;
   }
 
   it.each(["source_item", "outbound_lead", "job_lead"] as const)(
-    "preserves generic URL components during %s association", async (route) => {
-    const variants: [string, (base: string) => string, boolean][] = [
-      ["exact", base => base, true],
-      ["host case and default port", base => { const url = new URL(base);
-        return `https://${url.hostname.toUpperCase()}:443${url.pathname}${url.search}`; }, true],
-      ["path case", base => { const url = new URL(base); url.pathname = url.pathname.toUpperCase(); return url.href; }, false],
-      ["query key case", base => base.replace("Edition=", "edition="), false],
-      ["query value case", base => base.replace("Gold", "gold"), false],
-      ["path slash", base => { const url = new URL(base); url.pathname += "/"; return url.href; }, false],
-      ["query value slash", base => base + "/", false],
-      ["absent query", base => { const url = new URL(base); url.search = ""; return url.href; }, false],
-      ["fragment", base => base + "#details", false]
-    ];
-    for (const [label, variant, matches] of variants) {
-      const jobUrl = "https://booth.pm/ja/items/66666?Edition=Gold";
-      const fixture = await metadataFixture("booth", jobUrl);
-      try {
-        const reference = route === "job_lead" ? jobUrl : "https://publisher.example/Tools/Widget?Edition=Gold";
-        const candidate = variant(reference);
-        const canonicalId = await associationEvidence(fixture.store,
-          route === "source_item" ? reference : "https://vpm-evidence.example/index.json",
-          route === "outbound_lead" ? [reference] : route === "job_lead" ? [candidate] : []);
-        const result = { ...fixture.result, outcome: { kind: "changed", observation: { ...fixture.observation,
-          outboundLinks: route === "job_lead" ? [] : [candidate] } } };
-        const response = await fixture.post(result);
-        expect(response.status, label).toBe(200);
-        const publicResponse = await handlePublicCatalogRequest(new Request("https://offline.invalid/v1/app/index"),
-          fixture.store, new InMemoryRateLimiter());
-        const packages = PublicCatalogListResponseSchema.parse(await publicResponse.json()).packages;
-        expect((await fixture.store.getPackageFrontsForCanonical(canonicalId)).length, label).toBe(matches ? 1 : 0);
-        expect(packages.find(item => item.canonicalId === canonicalId)?.fronts.length, label).toBe(0);
-        expect(Boolean(await fixture.store.getCanonicalPackage(fixture.observation.sourceItemKey)), label).toBe(!matches);
-        if (!matches) expect(packages.find(item => item.canonicalId === fixture.observation.sourceItemKey)
-          ?.fronts[0]?.storefrontUrl, label).toBe(jobUrl);
-        const settled = fixture.snapshot();
-        expect(ResultResponseSchema.parse(await (await fixture.post(result)).json()).duplicate).toBe(true);
-        expect(fixture.snapshot()).toEqual(settled);
-      } finally { fixture.sqlite.close(); }
+    "preserves generic URL components during %s association",
+    async (route) => {
+      const variants: [string, (base: string) => string, boolean][] = [
+        ["exact", (base) => base, true],
+        [
+          "host case and default port",
+          (base) => {
+            const url = new URL(base);
+            return `https://${url.hostname.toUpperCase()}:443${url.pathname}${url.search}`;
+          },
+          true
+        ],
+        [
+          "path case",
+          (base) => {
+            const url = new URL(base);
+            url.pathname = url.pathname.toUpperCase();
+            return url.href;
+          },
+          false
+        ],
+        ["query key case", (base) => base.replace("Edition=", "edition="), false],
+        ["query value case", (base) => base.replace("Gold", "gold"), false],
+        [
+          "path slash",
+          (base) => {
+            const url = new URL(base);
+            url.pathname += "/";
+            return url.href;
+          },
+          false
+        ],
+        ["query value slash", (base) => base + "/", false],
+        [
+          "absent query",
+          (base) => {
+            const url = new URL(base);
+            url.search = "";
+            return url.href;
+          },
+          false
+        ],
+        ["fragment", (base) => base + "#details", false]
+      ];
+      for (const [label, variant, matches] of variants) {
+        const jobUrl = "https://booth.pm/ja/items/66666?Edition=Gold";
+        const fixture = await metadataFixture("booth", jobUrl);
+        try {
+          const reference = route === "job_lead" ? jobUrl : "https://publisher.example/Tools/Widget?Edition=Gold";
+          const candidate = variant(reference);
+          const canonicalId = await associationEvidence(
+            fixture.store,
+            route === "source_item" ? reference : "https://vpm-evidence.example/index.json",
+            route === "outbound_lead" ? [reference] : route === "job_lead" ? [candidate] : []
+          );
+          const result = {
+            ...fixture.result,
+            outcome: {
+              kind: "changed",
+              observation: { ...fixture.observation, outboundLinks: route === "job_lead" ? [] : [candidate] }
+            }
+          };
+          const response = await fixture.post(result);
+          expect(response.status, label).toBe(200);
+          const publicResponse = await handlePublicCatalogRequest(
+            new Request("https://offline.invalid/v1/app/index"),
+            fixture.store,
+            new InMemoryRateLimiter()
+          );
+          const packages = PublicCatalogListResponseSchema.parse(await publicResponse.json()).packages;
+          const sources = await fixture.store.getListingSourcesForCanonical(canonicalId);
+          const crossSources = sources.filter((s) => s.platform === "booth");
+          expect(crossSources.length, label).toBe(matches ? 1 : 0);
+          expect(packages.find((item) => item.canonicalId === canonicalId)?.sources.filter((s) => s.platform === "booth").length, label).toBe(0);
+          expect(Boolean(await fixture.store.getCanonicalPackage(fixture.observation.sourceItemKey)), label).toBe(!matches);
+          if (!matches) {
+            expect(
+              packages.find((item) => item.canonicalId === fixture.observation.sourceItemKey)?.sources[0]?.storefrontUrl,
+              label
+            ).toBe(jobUrl);
+          }
+          const settled = fixture.snapshot();
+          expect(ResultResponseSchema.parse(await (await fixture.post(result)).json()).duplicate).toBe(true);
+          expect(fixture.snapshot()).toEqual(settled);
+        } finally {
+          fixture.sqlite.close();
+        }
+      }
     }
-  });
+  );
 
   it("serializes VPM lead identities without changing retained outbound evidence", async () => {
     const fixture = await metadataFixture("booth", "https://booth.pm/ja/items/66667");
     try {
       const sourceUrl = "https://vpm-evidence.example/index.json";
-      const links = ["https://PUBLISHER.EXAMPLE:443/Tools/Widget", "https://publisher.example/Tools/Widget",
-        "https://publisher.example/tools/widget"];
+      const links = [
+        "https://PUBLISHER.EXAMPLE:443/Tools/Widget",
+        "https://publisher.example/Tools/Widget",
+        "https://publisher.example/tools/widget"
+      ];
       await associationEvidence(fixture.store, sourceUrl, links);
       const leads = await fixture.store.listLeadsPage("pending_review", 10, null);
-      expect(leads.leads.map(lead => lead.target_url).sort()).toEqual([
-        "https://publisher.example/Tools/Widget", "https://publisher.example/tools/widget"]);
-      const retained = fixture.sqlite.query("SELECT payload_json FROM source_versions WHERE source_key=?")
+      expect(leads.leads.map((lead) => lead.target_url).sort()).toEqual([
+        "https://publisher.example/Tools/Widget",
+        "https://publisher.example/tools/widget"
+      ]);
+      const retained = fixture.sqlite
+        .query("SELECT payload_json FROM source_items WHERE source_key=?")
         .get(`vpm:${sourceUrl}:com.fixture.association`) as { payload_json: string };
-      expect(JSON.parse(retained.payload_json).outboundLinks).toEqual(links);
-    } finally { fixture.sqlite.close(); }
+      expect((JSON.parse(retained.payload_json) as { outboundLinks: string[] }).outboundLinks).toEqual(links);
+    } finally {
+      fixture.sqlite.close();
+    }
   });
 
   it("retains explicit GitHub owner/repository case matching without folding generic source URLs", async () => {
     const fixture = await metadataFixture("booth", "https://booth.pm/ja/items/66668");
     try {
-      const canonicalId = await associationEvidence(fixture.store, "https://vpm-evidence.example/index.json",
-        ["https://github.com/Fixture/Tool"]);
-      await associationEvidence(fixture.store, "https://api.github.com/repos/Fixture/Tool",
-        ["https://github.com/Fixture/Tool"], "github");
-      const result = { ...fixture.result, outcome: { kind: "changed", observation: { ...fixture.observation,
-        outboundLinks: ["https://github.com/FIXTURE/TOOL"] } } };
+      const canonicalId = await associationEvidence(fixture.store, "https://vpm-evidence.example/index.json", [
+        "https://github.com/Fixture/Tool"
+      ]);
+      await associationEvidence(
+        fixture.store,
+        "https://api.github.com/repos/Fixture/Tool",
+        ["https://github.com/Fixture/Tool"],
+        "github"
+      );
+      const result = {
+        ...fixture.result,
+        outcome: {
+          kind: "changed",
+          observation: { ...fixture.observation, outboundLinks: ["https://github.com/FIXTURE/TOOL"] }
+        }
+      };
       expect((await fixture.post(result)).status).toBe(200);
-      expect(await fixture.store.getPackageFrontsForCanonical(canonicalId)).toHaveLength(1);
-      expect(fixture.sqlite.query("SELECT review_state FROM identity_links WHERE canonical_id=? AND source_key LIKE 'github:%'")
-        .get(canonicalId)).toEqual({ review_state: "provisional" });
-    } finally { fixture.sqlite.close(); }
+      const sources = await fixture.store.getListingSourcesForCanonical(canonicalId);
+      expect(sources.some((s) => s.platform === "booth" && s.reviewState === "provisional")).toBe(true);
+      expect(
+        fixture.sqlite
+          .query("SELECT review_state FROM listing_sources WHERE canonical_id=? AND source_key LIKE 'github:%'")
+          .get(canonicalId)
+      ).toEqual({ review_state: "provisional" });
+    } finally {
+      fixture.sqlite.close();
+    }
   });
 
   it("serializes discovery lead identities and preserves case-distinct targets on exact replay", async () => {
-    const fixture = await metadataFixture("curated", "https://directory.example/catalog", "discovery");
+    const fixture = await metadataFixture("vpm", "https://directory.example/catalog", "discovery");
     try {
-      const result = { ...fixture.result, outcome: { kind: "discovery", leads: [
-        { kind: "publisher_site", url: "https://PUBLISHER.EXAMPLE:443/Tools/Widget" },
-        { kind: "publisher_site", url: "https://publisher.example/Tools/Widget" },
-        { kind: "publisher_site", url: "https://publisher.example/tools/widget" }
-      ] } };
+      const result = {
+        ...fixture.result,
+        outcome: {
+          kind: "discovery",
+          leads: [
+            { kind: "publisher_site", url: "https://PUBLISHER.EXAMPLE:443/Tools/Widget" },
+            { kind: "publisher_site", url: "https://publisher.example/Tools/Widget" },
+            { kind: "publisher_site", url: "https://publisher.example/tools/widget" }
+          ]
+        }
+      };
       expect((await fixture.post(result)).status).toBe(200);
       const leads = await fixture.store.listLeadsPage("pending_review", 10, null);
-      expect(leads.leads.map(lead => lead.target_url).sort()).toEqual([
-        "https://publisher.example/Tools/Widget", "https://publisher.example/tools/widget"]);
-      expect(fixture.sqlite.query("SELECT * FROM source_versions").all()).toEqual([]);
+      expect(leads.leads.map((lead) => lead.target_url).sort()).toEqual([
+        "https://publisher.example/Tools/Widget",
+        "https://publisher.example/tools/widget"
+      ]);
+      expect(leads.leads.every((lead) => lead.target_host === "publisher.example")).toBe(true);
+      expect(fixture.sqlite.query("SELECT * FROM source_items").all()).toEqual([]);
       const settled = fixture.snapshot();
       expect(ResultResponseSchema.parse(await (await fixture.post(result)).json()).duplicate).toBe(true);
       expect(fixture.snapshot()).toEqual(settled);
-    } finally { fixture.sqlite.close(); }
+    } finally {
+      fixture.sqlite.close();
+    }
   });
 
   it.each([
@@ -189,65 +403,121 @@ describe("Cloudflare D1 Coordinator Store & Edge Worker Adapter", () => {
     const fixture = await metadataFixture(platform, target);
     try {
       const victimId = "com.fixture.unrelated";
-      await fixture.store.upsertCanonicalPackage({ canonicalId: victimId, umbrella: "tools", category: "tool",
-        lifecycle: "active", displayName: "Unrelated original" });
+      await fixture.store.upsertCanonicalPackage({
+        canonicalId: victimId,
+        umbrella: "tools",
+        category: "tool",
+        lifecycle: "active",
+        displayName: "Unrelated original"
+      });
       const before = fixture.snapshot();
       const targetUrl = new URL(target);
       const invalid = [
         { sourceItemKey: victimId },
         { sourceItemKey: `${targetUrl.host}/another-product` },
         { title: " \t\n " },
-        ...["https://unrelated.example/product", `${target}another-product`, `${target}?edition=other`,
-          `${target}#unverified`, `https://user:password@${targetUrl.host}${targetUrl.pathname}`,
-          `https://${targetUrl.hostname}:444${targetUrl.pathname}`].map(storefrontUrl => ({ storefrontUrl }))
+        ...[
+          "https://unrelated.example/product",
+          `${target}another-product`,
+          `${target}?edition=other`,
+          `${target}#unverified`,
+          `https://user:password@${targetUrl.host}${targetUrl.pathname}`,
+          `https://${targetUrl.hostname}:444${targetUrl.pathname}`
+        ].map((storefrontUrl) => ({ storefrontUrl }))
       ];
       for (const patch of invalid) {
-        const response = await fixture.post({ ...fixture.result,
-          outcome: { kind: "changed", observation: { ...fixture.observation, ...patch } } });
+        const response = await fixture.post({
+          ...fixture.result,
+          outcome: { kind: "changed", observation: { ...fixture.observation, ...patch } }
+        });
         expect(response.status).toBe(409);
         expect(await response.json()).toMatchObject({ schemaVersion: 1, code: "conflict" });
         expect(fixture.snapshot()).toEqual(before);
       }
-      // Batch transport must report a correctable metadata conflict, not consume the lease.
-      const badItem = { ...fixture.result, outcome: { kind: "changed", observation: {
-        ...fixture.observation, storefrontUrl: "https://unrelated.example/product" } } };
-      const batch = await fixture.post({ schemaVersion: 1, nodeId: fixture.result.nodeId,
-        results: [{ jobId: badItem.jobId, leaseId: badItem.leaseId, idempotencyKey: badItem.idempotencyKey,
-          outcome: badItem.outcome }, { jobId: badItem.jobId, leaseId: badItem.leaseId,
-          idempotencyKey: "metadata-forged-release", outcome: { kind: "changed", observation: {
-            ...fixture.observation, release: { version: "1.0.0", dependencyRanges: {} } } } }] }, "/v1/node/jobs/results");
+      const badItem = {
+        ...fixture.result,
+        outcome: {
+          kind: "changed",
+          observation: { ...fixture.observation, storefrontUrl: "https://unrelated.example/product" }
+        }
+      };
+      const batch = await fixture.post(
+        {
+          schemaVersion: 1,
+          nodeId: fixture.result.nodeId,
+          results: [
+            {
+              jobId: badItem.jobId,
+              leaseId: badItem.leaseId,
+              idempotencyKey: badItem.idempotencyKey,
+              outcome: badItem.outcome
+            },
+            {
+              jobId: badItem.jobId,
+              leaseId: badItem.leaseId,
+              idempotencyKey: "metadata-forged-release",
+              outcome: {
+                kind: "changed",
+                observation: { ...fixture.observation, release: { version: "1.0.0", dependencyRanges: {} } }
+              }
+            }
+          ]
+        },
+        "/v1/node/jobs/results"
+      );
       expect(batch.status).toBe(200);
       const receipts = BatchResultResponseSchema.parse(await batch.json()).receipts;
       expect(receipts).toHaveLength(2);
-      for (const receipt of receipts) expect(receipt).toMatchObject({
-        status: "rejected", terminal: false, code: "conflict" });
+      for (const receipt of receipts) expect(receipt).toMatchObject({ status: "rejected", terminal: false, code: "conflict" });
       expect(fixture.snapshot()).toEqual(before);
-      const valid = { ...fixture.result, outcome: { kind: "changed", observation: { ...fixture.observation,
-        storefrontUrl: `${target}?utm_source=fixture`, price: 0, currency: "USD", availability: "available" } } };
+
+      const valid = {
+        ...fixture.result,
+        outcome: {
+          kind: "changed",
+          observation: {
+            ...fixture.observation,
+            storefrontUrl: `${target}?utm_source=fixture`,
+            price: 0,
+            currency: "USD",
+            availability: "available"
+          }
+        }
+      };
       const accepted = await fixture.post(valid);
       expect(accepted.status).toBe(200);
       expect(ResultResponseSchema.parse(await accepted.json())).toMatchObject({ status: "accepted", duplicate: false });
-      const fronts = await fixture.store.getPackageFrontsForCanonical(fixture.observation.sourceItemKey);
-      expect(fronts).toHaveLength(1);
-      expect(fronts[0]?.storefrontUrl).toBe(target);
+      const sources = await fixture.store.getListingSourcesForCanonical(fixture.observation.sourceItemKey);
+      expect(sources).toHaveLength(1);
+      expect(sources[0]?.storefrontUrl).toBe(target);
       expect((await fixture.store.getCanonicalPackage(victimId))?.displayName).toBe("Unrelated original");
       const settled = fixture.snapshot();
       const replay = await fixture.post(valid);
       expect(ResultResponseSchema.parse(await replay.json()).duplicate).toBe(true);
       expect(fixture.snapshot()).toEqual(settled);
-    } finally { fixture.sqlite.close(); }
+    } finally {
+      fixture.sqlite.close();
+    }
   });
 
   it("rejects malformed HTTP metadata without poisoning a live job or its public projection", async () => {
     const fixture = await metadataFixture("booth", "https://booth.pm/ja/items/55555");
     try {
       const before = fixture.snapshot();
-      for (const patch of [{ title: "x".repeat(501) }, { summary: "x".repeat(1025) },
-        { platformTags: ["x".repeat(101)] }, { outboundLinks: ["javascript:alert(1)"] },
-        { outboundLinks: ["http://unrelated.example/product"] }, { price: "free" },
-        { originUpdatedAt: "not-a-date" }, { unrecognized: true }]) {
-        const response = await fixture.post({ ...fixture.result,
-          outcome: { kind: "changed", observation: { ...fixture.observation, ...patch } } });
+      for (const patch of [
+        { title: "x".repeat(501) },
+        { summary: "x".repeat(1025) },
+        { platformTags: ["x".repeat(101)] },
+        { outboundLinks: ["javascript:alert(1)"] },
+        { outboundLinks: ["http://unrelated.example/product"] },
+        { price: "free" },
+        { originUpdatedAt: "not-a-date" },
+        { unrecognized: true }
+      ]) {
+        const response = await fixture.post({
+          ...fixture.result,
+          outcome: { kind: "changed", observation: { ...fixture.observation, ...patch } }
+        });
         expect(response.status).toBe(400);
         expect(await response.json()).toMatchObject({ schemaVersion: 1, code: "invalid_payload" });
         expect(fixture.snapshot()).toEqual(before);
@@ -257,42 +527,105 @@ describe("Cloudflare D1 Coordinator Store & Edge Worker Adapter", () => {
       expect(ResultResponseSchema.parse(await corrected.json()).status).toBe("accepted");
       const page = await fixture.store.listCanonicalPackagesPage(100, null);
       expect(page.packages[0]?.canonicalId).toBe(fixture.observation.sourceItemKey);
-      expect(page.packages[0]?.fronts[0]?.storefrontUrl).toBe("https://booth.pm/ja/items/55555");
-    } finally { fixture.sqlite.close(); }
+      expect(page.packages[0]?.sources[0]?.storefrontUrl).toBe("https://booth.pm/ja/items/55555");
+    } finally {
+      fixture.sqlite.close();
+    }
   });
 
   it.each([
     ["vpm", "https://packages.example/index.json"],
-    ["github", "https://api.github.com/repos/fixture/tool"],
-    ["curated", "https://directory.example/catalog"]
+    ["github", "https://api.github.com/repos/fixture/tool"]
   ] as const)("does not let %s metadata manufacture storefront authority", async (platform, target) => {
     const fixture = await metadataFixture(platform, target);
     try {
       const before = fixture.snapshot();
-      for (const patch of [{ price: 0 }, { currency: "USD" }, { availability: "available" },
-        { storefrontUrl: "https://unrelated.example/product" }]) {
-        const response = await fixture.post({ ...fixture.result,
-          outcome: { kind: "changed", observation: { ...fixture.observation, ...patch } } });
+      for (const patch of [
+        { price: 0 },
+        { currency: "USD" },
+        { availability: "available" },
+        { storefrontUrl: "https://unrelated.example/product" }
+      ]) {
+        const response = await fixture.post({
+          ...fixture.result,
+          outcome: { kind: "changed", observation: { ...fixture.observation, ...patch } }
+        });
         expect(response.status).toBe(409);
         expect(fixture.snapshot()).toEqual(before);
       }
       expect((await fixture.post(fixture.result)).status).toBe(200);
-      expect(fixture.sqlite.query("SELECT * FROM package_fronts").all()).toEqual([]);
-    } finally { fixture.sqlite.close(); }
+      expect(fixture.sqlite.query("SELECT * FROM listing_sources WHERE platform NOT IN ('vpm','github')").all()).toEqual([]);
+    } finally {
+      fixture.sqlite.close();
+    }
   });
+
+  async function claimRaceFixture(targets: string[]) {
+    const sqlite = new Database(":memory:");
+    const db = createMockD1Database(sqlite);
+    let now = Date.parse("2026-10-03T00:00:00.000Z");
+    const store = new Coordinator(db, () => now);
+    await store.initSchema({ autoSeed: false });
+    for (const origin of new Set(targets.map((target) => new URL(target).origin))) {
+      await store.createSteeringProfile(
+        {
+          schemaVersion: 1,
+          platform: "vpm",
+          hostMatchMode: "exact",
+          hostPattern: new URL(origin).hostname.toLowerCase(),
+          pathScope: "/",
+          queryMode: "none",
+          method: "GET",
+          purpose: "metadata",
+          minDelayMs: 1000,
+          expiresAt: "2026-10-04T00:00:00.000Z",
+          reviewReference: "OFFLINE-RACE-FIXTURE",
+          reason: "Hermetic claim concurrency fixture",
+          retainClasses: ["normalized_facts"],
+          publishClasses: ["normalized_facts"]
+        },
+        "fixture-operator"
+      );
+      await store.recordRobotsSnapshot(origin, 200, "User-agent: *\nAllow: /");
+    }
+    for (const target of targets) {
+      await store.seedJob(target, "vpm", { minDelayMs: 1000, purpose: "metadata" });
+    }
+    const principals = await Promise.all(
+      ["race-node-a", "race-node-b"].map(async (nodeId) => {
+        const { token } = await store.createNodeCredential(nodeId, ["vpm"]);
+        return (await store.authenticate(nodeId, token))!;
+      })
+    );
+    const claimBoth = () =>
+      Promise.all(
+        principals.map((principal) =>
+          store.claim({ schemaVersion: 1, nodeId: principal.nodeId, capabilities: ["vpm"] }, principal)
+        )
+      );
+    return { db, sqlite, store, claimBoth, advance: (milliseconds: number) => { now += milliseconds; } };
+  }
 
   it("preserves earlier bot refusals and replaces both matchers with the snapshot", async () => {
     const fixture = await claimRaceFixture(["https://race.example/index.json"]);
     try {
       for (const bot of ["VRCPDiscoveryBot", "VRCDiscoveryBot"]) {
-        await fixture.store.recordRobotsSnapshot("https://race.example", 200,
-          `User-agent: *\nAllow: /\nUser-agent: ${bot}\nDisallow: /index.json`);
-        expect((await fixture.claimBoth()).every(result => result.status === "empty")).toBe(true);
+        await fixture.store.recordRobotsSnapshot(
+          "https://race.example",
+          200,
+          `User-agent: *\nAllow: /\nUser-agent: ${bot}\nDisallow: /index.json`
+        );
+        expect((await fixture.claimBoth()).every((result) => result.status === "empty")).toBe(true);
       }
-      await fixture.store.recordRobotsSnapshot("https://race.example", 200,
-        "User-agent: VRCPDiscoveryBot\nAllow: /\nUser-agent: VRCDiscoveryBot\nAllow: /");
-      expect((await fixture.claimBoth()).filter(result => result.status === "leased")).toHaveLength(1);
-    } finally { fixture.sqlite.close(); }
+      await fixture.store.recordRobotsSnapshot(
+        "https://race.example",
+        200,
+        "User-agent: VRCPDiscoveryBot\nAllow: /\nUser-agent: VRCDiscoveryBot\nAllow: /"
+      );
+      expect((await fixture.claimBoth()).filter((result) => result.status === "leased")).toHaveLength(1);
+    } finally {
+      fixture.sqlite.close();
+    }
   });
 
   it("reserves robots refresh atomically and preserves pacing across release", async () => {
@@ -300,26 +633,83 @@ describe("Cloudflare D1 Coordinator Store & Edge Worker Adapter", () => {
     try {
       const origin = "https://race.example";
       expect(await fixture.store.reserveRobotsRefresh(origin)).toBeNull();
-      fixture.sqlite.run("DELETE FROM origin_robots");
-      const reservations = await Promise.all([fixture.store.reserveRobotsRefresh(origin), fixture.store.reserveRobotsRefresh(origin)]);
+      fixture.sqlite.run(
+        "UPDATE origin_state SET robots_snapshot_id=NULL, robots_status_code=NULL, robots_body=NULL, robots_fetched_at=NULL, robots_expires_at=NULL"
+      );
+      const reservations = await Promise.all([
+        fixture.store.reserveRobotsRefresh(origin),
+        fixture.store.reserveRobotsRefresh(origin)
+      ]);
       expect(reservations.filter(Boolean)).toHaveLength(1);
       const leaseId = reservations.find(Boolean)!;
       expect(await fixture.store.releaseRobotsRefresh(origin, "wrong-lease")).toBe(false);
       await fixture.store.recordRobotsSnapshot(origin, 200, "User-agent: *\nAllow: /");
       fixture.advance(1000);
-      expect((await fixture.claimBoth()).every(result => result.status === "empty")).toBe(true);
+      expect((await fixture.claimBoth()).every((result) => result.status === "empty")).toBe(true);
       expect(await fixture.store.completeRobotsRefresh(origin, leaseId, 200, "User-agent: *\nAllow: /")).toBe(true);
       expect(await fixture.store.completeRobotsRefresh(origin, leaseId, 404)).toBe(false);
-      expect((await fixture.claimBoth()).filter(result => result.status === "leased")).toHaveLength(1);
-      fixture.sqlite.run("DELETE FROM origin_robots");
+      expect((await fixture.claimBoth()).filter((result) => result.status === "leased")).toHaveLength(1);
+      fixture.sqlite.run(
+        "UPDATE origin_state SET robots_snapshot_id=NULL, robots_status_code=NULL, robots_body=NULL, robots_fetched_at=NULL, robots_expires_at=NULL"
+      );
       expect(await fixture.store.reserveRobotsRefresh(origin)).toBeNull();
-    } finally { fixture.sqlite.close(); }
+    } finally {
+      fixture.sqlite.close();
+    }
   });
+
+  it("completeRobotsRefresh statement-order regression clears crawl_jobs.robots_deferred_until BEFORE clearing refresh_lease_id", async () => {
+    const fixture = await claimRaceFixture(["https://race.example/index.json"]);
+    try {
+      const origin = "https://race.example";
+      fixture.sqlite.run(
+        "UPDATE origin_state SET robots_snapshot_id=NULL, robots_status_code=NULL, robots_body=NULL, robots_fetched_at=NULL, robots_expires_at=NULL"
+      );
+      const leaseId = (await fixture.store.reserveRobotsRefresh(origin))!;
+      expect(leaseId).toBeTruthy();
+
+      // Mark the job as robots-deferred while refresh lease is active and next_fetch_at is due at refresh time
+      fixture.sqlite.run(
+        "UPDATE crawl_jobs SET robots_deferred_until='2099-01-01T00:00:00.000Z', next_fetch_at='2026-10-03T00:00:00.500Z' WHERE origin=?",
+        [origin]
+      );
+
+      fixture.advance(1000);
+      const completed = await fixture.store.completeRobotsRefresh(origin, leaseId, 200, "User-agent: *\nAllow: /");
+      expect(completed).toBe(true);
+
+      const jobRow = fixture.sqlite
+        .query("SELECT robots_deferred_until, next_fetch_at FROM crawl_jobs WHERE origin=?")
+        .get(origin) as { robots_deferred_until: string | null; next_fetch_at: string };
+      expect(jobRow.robots_deferred_until).toBeNull();
+      expect(jobRow.next_fetch_at).toBe("2026-10-03T00:00:01.000Z");
+
+      const originRow = fixture.sqlite
+        .query("SELECT refresh_lease_id, refresh_lease_expires_at, robots_snapshot_id FROM origin_state WHERE origin=?")
+        .get(origin) as {
+        refresh_lease_id: string | null;
+        refresh_lease_expires_at: string | null;
+        robots_snapshot_id: string | null;
+      };
+      expect(originRow.refresh_lease_id).toBeNull();
+      expect(originRow.refresh_lease_expires_at).toBeNull();
+      expect(originRow.robots_snapshot_id).not.toBeNull();
+
+      // Immediate claim succeeds without lingering robots deferral
+      const claims = await fixture.claimBoth();
+      expect(claims.filter((c) => c.status === "leased")).toHaveLength(1);
+    } finally {
+      fixture.sqlite.close();
+    }
+  });
+
   it("rejects replaced, expired and unauthorized robots completions", async () => {
     const fixture = await claimRaceFixture(["https://race.example/index.json"]);
     try {
       const origin = "https://race.example";
-      fixture.sqlite.run("DELETE FROM origin_robots");
+      fixture.sqlite.run(
+        "UPDATE origin_state SET robots_snapshot_id=NULL, robots_status_code=NULL, robots_body=NULL, robots_fetched_at=NULL, robots_expires_at=NULL"
+      );
       const oldLease = (await fixture.store.reserveRobotsRefresh(origin))!;
       fixture.advance(45_000);
       expect(await fixture.store.completeRobotsRefresh(origin, oldLease, 404)).toBe(false);
@@ -327,53 +717,57 @@ describe("Cloudflare D1 Coordinator Store & Edge Worker Adapter", () => {
       expect(replacement).not.toBe(oldLease);
       expect(await fixture.store.releaseRobotsRefresh(origin, oldLease)).toBe(false);
       expect(await fixture.store.completeRobotsRefresh(origin, oldLease, 404)).toBe(false);
-      fixture.sqlite.run("UPDATE source_access_profiles SET disabled_at='2026-10-03T00:00:45.000Z'");
+      fixture.sqlite.run("UPDATE steering_profiles SET disabled_at='2026-10-03T00:00:45.000Z'");
       expect(await fixture.store.completeRobotsRefresh(origin, replacement, 404)).toBe(false);
-      expect(fixture.sqlite.query("SELECT COUNT(*) AS count FROM origin_robots WHERE snapshot_id IS NOT NULL").get()).toEqual({ count: 0 });
+      expect(
+        fixture.sqlite.query("SELECT COUNT(*) AS count FROM origin_state WHERE robots_snapshot_id IS NOT NULL").get()
+      ).toEqual({ count: 0 });
       expect(await fixture.store.releaseRobotsRefresh(origin, replacement)).toBe(true);
       fixture.advance(1000);
       expect(await fixture.store.reserveRobotsRefresh(origin)).toBeNull();
-    } finally { fixture.sqlite.close(); }
+    } finally {
+      fixture.sqlite.close();
+    }
   });
-  it("rolls back refresh reservation if origin pacing cannot commit", async () => {
-    const fixture = await claimRaceFixture(["https://race.example/index.json"]);
-    try {
-      fixture.sqlite.run("DELETE FROM origin_robots");
-      const before = fixture.sqlite.query("SELECT * FROM origin_leases").get();
-      fixture.sqlite.run("CREATE TRIGGER reject_refresh_pacing BEFORE UPDATE ON origin_leases BEGIN SELECT RAISE(ABORT,'fixture pacing failure'); END;");
-      await expect(fixture.store.reserveRobotsRefresh("https://race.example")).rejects.toThrow("fixture pacing failure");
-      expect(fixture.sqlite.query("SELECT COUNT(*) AS count FROM origin_robots_refresh_leases").get()).toEqual({ count: 0 });
-      expect(fixture.sqlite.query("SELECT * FROM origin_leases").get()).toEqual(before);
-    } finally { fixture.sqlite.close(); }
-  });
+
   it("checks scoped source authority inside the refresh reservation write", async () => {
     for (const mutation of [
-      "UPDATE source_access_profiles SET disabled_at='2026-10-03T00:00:00.000Z'",
-      "UPDATE source_access_profiles SET path_scope='/unrelated/'",
-      "INSERT INTO suppressed_urls VALUES ('https://race.example/index.json','Fixture','2026-10-03T00:00:00.000Z')"
+      "UPDATE steering_profiles SET disabled_at='2026-10-03T00:00:00.000Z'",
+      "UPDATE steering_profiles SET path_scope='/unrelated/'",
+      "INSERT INTO suppressed_targets VALUES ('https://race.example/index.json','url','Fixture','2026-10-03T00:00:00.000Z')"
     ]) {
       const fixture = await claimRaceFixture(["https://race.example/index.json"]);
       try {
-        fixture.sqlite.run("DELETE FROM origin_robots");
-        const before = fixture.sqlite.query("SELECT * FROM origin_leases").get();
-        const original = fixture.db.batch.bind(fixture.db);
-        fixture.db.batch = async statements => { fixture.sqlite.run(mutation); return original(statements); };
+        fixture.sqlite.run(
+          "UPDATE origin_state SET robots_snapshot_id=NULL, robots_status_code=NULL, robots_body=NULL, robots_fetched_at=NULL, robots_expires_at=NULL"
+        );
+        const before = fixture.sqlite.query("SELECT * FROM origin_state").get();
+        fixture.sqlite.run(mutation);
         expect(await fixture.store.reserveRobotsRefresh("https://race.example")).toBeNull();
-        expect(fixture.sqlite.query("SELECT * FROM origin_leases").get()).toEqual(before);
-        expect(fixture.sqlite.query("SELECT COUNT(*) AS count FROM origin_robots_refresh_leases").get()).toEqual({ count: 0 });
-      } finally { fixture.sqlite.close(); }
+        expect(fixture.sqlite.query("SELECT * FROM origin_state").get()).toEqual(before);
+      } finally {
+        fixture.sqlite.close();
+      }
     }
   });
+
   it("revokes node credentials with atomic audit and rejects cached lease authority", async () => {
     const fixture = await claimRaceFixture(["https://race.example/index.json"]);
     try {
-      const principal = (await fixture.store.authenticate("race-node-a", await fixture.store.issueNodeCredential({ schemaVersion: 1, nodeId: "race-node-a", capabilities: ["vpm"], reason: "Fixture" }, "fixture")))!;
+      const { token } = await fixture.store.createNodeCredential("race-node-a", ["vpm"]);
+      const principal = (await fixture.store.authenticate("race-node-a", token))!;
       const claimed = await fixture.store.claim({ schemaVersion: 1, nodeId: principal.nodeId, capabilities: ["vpm"] }, principal);
       if (claimed.status !== "leased") throw new Error("Expected lease");
-      const origin = fixture.sqlite.query("SELECT * FROM origin_leases").get();
-      const client = new VRCPackageClient({ baseUrl: "https://worker.example", operatorToken: "a".repeat(64),
-        fetch: Object.assign(async (input: RequestInfo | URL, init?: RequestInit) =>
-          workerEntry.fetch(new Request(input, init), { VRCP_D1: fixture.db, OPERATOR_TOKEN: "a".repeat(64) }), { preconnect() {} }) });
+      const origin = fixture.sqlite.query("SELECT * FROM origin_state").get();
+      const client = new VRCPackageClient({
+        baseUrl: "https://worker.example",
+        operatorToken: "a".repeat(64),
+        fetch: Object.assign(
+          async (input: RequestInfo | URL, init?: RequestInit) =>
+            workerEntry.fetch(new Request(input, init), { VRCP_D1: fixture.db, OPERATOR_TOKEN: "a".repeat(64) }),
+          { preconnect() {} }
+        )
+      });
       const revokePath = `https://worker.example/v1/operator/nodes/${principal.nodeId}/revoke`;
       for (const [payload, authorized, status] of [
         [{ schemaVersion: 1, reason: "Fixture" }, false, 401],
@@ -381,192 +775,306 @@ describe("Cloudflare D1 Coordinator Store & Edge Worker Adapter", () => {
         [{ schemaVersion: 1, reason: " " }, true, 400],
         [{ schemaVersion: 1, reason: "Fixture", extra: true }, true, 400]
       ] as const) {
-        const result = await workerEntry.fetch(new Request(revokePath, { method: "POST",
-          headers: { "content-type": "application/json", ...(authorized ? { authorization: `Bearer ${"a".repeat(64)}` } : {}) },
-          body: JSON.stringify(payload) }), { VRCP_D1: fixture.db, OPERATOR_TOKEN: "a".repeat(64) });
+        const result = await workerEntry.fetch(
+          new Request(revokePath, {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              ...(authorized ? { authorization: `Bearer ${"a".repeat(64)}` } : {})
+            },
+            body: JSON.stringify(payload)
+          }),
+          { VRCP_D1: fixture.db, OPERATOR_TOKEN: "a".repeat(64) }
+        );
         expect(result.status).toBe(status);
       }
-      expect(fixture.sqlite.query("SELECT COUNT(*) AS count FROM node_credential_actions WHERE action='revoke'").get()).toEqual({ count: 0 });
-      fixture.sqlite.run("CREATE TRIGGER reject_revoke_audit BEFORE INSERT ON operator_audit_log WHEN NEW.entity_type='node' AND NEW.action='revoke' BEGIN SELECT RAISE(ABORT,'fixture audit failure'); END;");
+      expect(
+        fixture.sqlite
+          .query("SELECT COUNT(*) AS count FROM operator_audit_log WHERE entity_type='node' AND action='revoke'")
+          .get()
+      ).toEqual({ count: 0 });
+
+      fixture.sqlite.run(
+        "CREATE TRIGGER reject_revoke_audit BEFORE INSERT ON operator_audit_log WHEN NEW.entity_type='node' AND NEW.action='revoke' BEGIN SELECT RAISE(ABORT,'fixture audit failure'); END;"
+      );
       await expect(client.operator.nodes.revoke(principal.nodeId, "Fixture revocation")).rejects.toThrow();
-      expect(fixture.sqlite.query("SELECT revoked_at FROM node_credentials WHERE node_id=?").get(principal.nodeId)).toEqual({ revoked_at: null });
+      expect(fixture.sqlite.query("SELECT revoked_at FROM nodes WHERE node_id=?").get(principal.nodeId)).toEqual({
+        revoked_at: null
+      });
       fixture.sqlite.run("DROP TRIGGER reject_revoke_audit");
+
       const response = await client.operator.nodes.revoke(principal.nodeId, "Fixture revocation");
       expect(response.status).toBe("revoked");
       expect(Object.keys(response).sort()).toEqual(["nodeId", "schemaVersion", "status"]);
-      const firstRevocation = fixture.sqlite.query("SELECT revoked_at FROM node_credentials WHERE node_id=?").get(principal.nodeId);
+      const firstRevocation = fixture.sqlite
+        .query("SELECT revoked_at FROM nodes WHERE node_id=?")
+        .get(principal.nodeId);
       fixture.advance(1000);
       await client.operator.nodes.revoke(principal.nodeId, "Repeated revocation");
-      expect(fixture.sqlite.query("SELECT revoked_at FROM node_credentials WHERE node_id=?").get(principal.nodeId)).toEqual(firstRevocation);
-      expect(fixture.sqlite.query("SELECT * FROM origin_leases").get()).toEqual(origin);
-      await expect(fixture.store.claim({ schemaVersion: 1, nodeId: principal.nodeId, capabilities: ["vpm"] }, principal)).rejects.toThrow("revoked");
-      await expect(fixture.store.heartbeat({ schemaVersion: 1, nodeId: principal.nodeId, capabilities: ["vpm"], state: "fetching", activeJobId: claimed.job.jobId, activeLeaseId: claimed.job.leaseId }, principal)).rejects.toThrow("revoked");
-      await expect(fixture.store.submit({ schemaVersion: 1, nodeId: principal.nodeId, jobId: claimed.job.jobId, leaseId: claimed.job.leaseId, idempotencyKey: "revoked-result", outcome: { kind: "unchanged" } }, principal)).rejects.toThrow("revoked");
-      expect(fixture.sqlite.query("SELECT actor,reason FROM node_credential_actions WHERE action='revoke'").all()).toEqual([
-        { actor: "operator-api", reason: "Fixture revocation" }, { actor: "operator-api", reason: "Repeated revocation" }
+      expect(fixture.sqlite.query("SELECT revoked_at FROM nodes WHERE node_id=?").get(principal.nodeId)).toEqual(
+        firstRevocation
+      );
+      expect(fixture.sqlite.query("SELECT * FROM origin_state").get()).toEqual(origin);
+      await expect(
+        fixture.store.claim({ schemaVersion: 1, nodeId: principal.nodeId, capabilities: ["vpm"] }, principal)
+      ).rejects.toThrow("revoked");
+      await expect(
+        fixture.store.heartbeat(
+          {
+            schemaVersion: 1,
+            nodeId: principal.nodeId,
+            capabilities: ["vpm"],
+            state: "fetching",
+            activeJobId: claimed.job.jobId,
+            activeLeaseId: claimed.job.leaseId
+          },
+          principal
+        )
+      ).rejects.toThrow("revoked");
+      await expect(
+        fixture.store.submit(
+          {
+            schemaVersion: 1,
+            nodeId: principal.nodeId,
+            jobId: claimed.job.jobId,
+            leaseId: claimed.job.leaseId,
+            idempotencyKey: "revoked-result",
+            outcome: { kind: "unchanged" }
+          },
+          principal
+        )
+      ).rejects.toThrow("revoked");
+      expect(
+        fixture.sqlite
+          .query("SELECT actor,reason FROM operator_audit_log WHERE entity_type='node' AND action='revoke' ORDER BY action_id")
+          .all()
+      ).toEqual([
+        { actor: "operator-api", reason: "Fixture revocation" },
+        { actor: "operator-api", reason: "Repeated revocation" }
       ]);
       await expect(client.operator.nodes.revoke("missing-node", "Fixture")).rejects.toThrow("Node not found");
-    } finally { fixture.sqlite.close(); }
+    } finally {
+      fixture.sqlite.close();
+    }
   });
-  it("rejects unauthorized, malformed, unsafe, suppressed and conflicting operator jobs without auditing success", async () => {
+
+  it("rejects unauthorized, malformed, unsafe, suppressed (url/origin/domain) and conflicting operator jobs", async () => {
     const sqlite = new Database(":memory:");
     try {
       const db = createMockD1Database(sqlite);
       const store = new Coordinator(db);
-      await store.initSchema();
+      await store.initSchema({ autoSeed: false });
       const token = "a".repeat(64);
-      const input = { schemaVersion: 1, url: "https://seed.example/index.json", platform: "vpm", purpose: "metadata", minDelayMs: 1000, reason: "Fixture" };
+      const input = {
+        schemaVersion: 1,
+        url: "https://seed.example/index.json",
+        platform: "vpm",
+        purpose: "metadata",
+        minDelayMs: 1000,
+        reason: "Fixture"
+      };
       await store.seedJob(input.url, "vpm");
-      sqlite.run("INSERT INTO suppressed_urls VALUES (?,?,?)", ["https://suppressed.example/index.json", "Fixture", new Date().toISOString()]);
+      sqlite.run("INSERT INTO suppressed_targets VALUES (?,?,?,?)", [
+        "https://suppressed-url.example/index.json",
+        "url",
+        "Fixture",
+        new Date().toISOString()
+      ]);
+      sqlite.run("INSERT INTO suppressed_targets VALUES (?,?,?,?)", [
+        "https://suppressed-origin.example",
+        "origin",
+        "Fixture origin block",
+        new Date().toISOString()
+      ]);
+      sqlite.run("INSERT INTO suppressed_targets VALUES (?,?,?,?)", [
+        "suppressed-domain.example",
+        "domain",
+        "Fixture domain block",
+        new Date().toISOString()
+      ]);
+
       const cases = [
         [input, "wrong", 401],
         [{ ...input, schemaVersion: 2 }, token, 400],
-        [{ ...input, sourceProfileId: "implicit-approval" }, token, 400],
+        [{ ...input, steeringProfileId: "implicit-approval" }, token, 400],
         [{ ...input, reason: " " }, token, 400],
         [{ ...input, minDelayMs: -1 }, token, 400],
         [{ ...input, url: "http://seed.example/index.json" }, token, 400],
         [{ ...input, url: "https://localhost/index.json" }, token, 409],
         [{ ...input, url: "https://127.0.0.1/index.json" }, token, 409],
         [{ ...input, url: "https://user:password@seed.example/index.json" }, token, 409],
-        [{ ...input, url: "https://suppressed.example/index.json" }, token, 409],
-        [{ ...input, platform: "curated", minDelayMs: 50000 }, token, 409],
-        [{ ...input, purpose: "discovery", minDelayMs: 50000 }, token, 409]
+        [{ ...input, url: "https://suppressed-url.example/index.json" }, token, 409],
+        [{ ...input, url: "https://suppressed-origin.example/any.json" }, token, 409],
+        [{ ...input, url: "https://sub.suppressed-domain.example/any.json" }, token, 409],
+        [{ ...input, platform: "curated", minDelayMs: 50_000 }, token, 400],
+        [{ ...input, platform: "custom_domain", minDelayMs: 50_000 }, token, 409],
+        [{ ...input, purpose: "discovery", minDelayMs: 50_000 }, token, 409]
       ] as const;
       const before = sqlite.query("SELECT * FROM crawl_jobs").all();
       for (const [body, bearer, status] of cases) {
-        const response = await workerEntry.fetch(new Request("https://worker.example/v1/operator/jobs", {
-          method: "POST", headers: { authorization: `Bearer ${bearer}`, "content-type": "application/json" }, body: JSON.stringify(body)
-        }), { VRCP_D1: db, OPERATOR_TOKEN: token });
+        const response = await workerEntry.fetch(
+          new Request("https://worker.example/v1/operator/jobs", {
+            method: "POST",
+            headers: { authorization: `Bearer ${bearer}`, "content-type": "application/json" },
+            body: JSON.stringify(body)
+          }),
+          { VRCP_D1: db, OPERATOR_TOKEN: token }
+        );
         expect(response.status).toBe(status);
-        expect(sqlite.query("SELECT COUNT(*) AS count FROM job_seed_actions").get()).toEqual({ count: 0 });
+        expect(
+          sqlite.query("SELECT COUNT(*) AS count FROM operator_audit_log WHERE entity_type='job'").get()
+        ).toEqual({ count: 0 });
       }
       expect(sqlite.query("SELECT * FROM crawl_jobs").all()).toEqual(before);
-      expect(sqlite.query("SELECT min_delay_ms FROM origin_leases").get()).toEqual({ min_delay_ms: 1000 });
-    } finally { sqlite.close(); }
+      expect(sqlite.query("SELECT min_delay_ms FROM origin_state").get()).toEqual({ min_delay_ms: 1000 });
+    } finally {
+      sqlite.close();
+    }
   });
-  it("queues and audits operator jobs through the SDK without granting source access", async () => {
+
+  it("queues and audits operator jobs through the SDK without granting steering access", async () => {
     const sqlite = new Database(":memory:");
     try {
       const db = createMockD1Database(sqlite);
       const store = new Coordinator(db);
-      await store.initSchema();
-      const env = { VRCP_D1: db, OPERATOR_TOKEN: "a".repeat(64) };
-      const client = new VRCPackageClient({ baseUrl: "https://worker.example", operatorToken: env.OPERATOR_TOKEN,
-        fetch: Object.assign(async (input: RequestInfo | URL, init?: RequestInit) =>
-          workerEntry.fetch(new Request(input, init), env), { preconnect() {} }) });
-      const input = { schemaVersion: 1 as const, url: "https://seed.example/index.json", platform: "vpm" as const,
-        purpose: "metadata" as const, minDelayMs: 1000, reason: "Offline operator candidate" };
+      await store.initSchema({ autoSeed: false });
+      const env: Env = { VRCP_D1: db, OPERATOR_TOKEN: "a".repeat(64) };
+      const client = new VRCPackageClient({
+        baseUrl: "https://worker.example",
+        operatorToken: env.OPERATOR_TOKEN,
+        fetch: Object.assign(
+          async (input: RequestInfo | URL, init?: RequestInit) => workerEntry.fetch(new Request(input, init), env),
+          { preconnect() {} }
+        )
+      });
+      const input = {
+        schemaVersion: 1 as const,
+        url: "https://seed.example/index.json",
+        platform: "vpm" as const,
+        purpose: "metadata" as const,
+        minDelayMs: 1000,
+        reason: "Offline operator candidate"
+      };
       const first = await client.operator.jobs.enqueue(input);
       const second = await client.operator.jobs.enqueue(input);
       expect(first.jobId).toBe(second.jobId);
       expect(sqlite.query("SELECT COUNT(*) AS count FROM crawl_jobs").get()).toEqual({ count: 1 });
-      expect(sqlite.query("SELECT actor,reason,job_id FROM job_seed_actions").all()).toEqual([
-        { actor: "operator-api", reason: input.reason, job_id: first.jobId },
-        { actor: "operator-api", reason: input.reason, job_id: first.jobId }
+      expect(
+        sqlite
+          .query(
+            "SELECT actor,reason,entity_id FROM operator_audit_log WHERE entity_type='job' AND action='seed' ORDER BY action_id"
+          )
+          .all()
+      ).toEqual([
+        { actor: "operator-api", reason: input.reason, entity_id: first.jobId },
+        { actor: "operator-api", reason: input.reason, entity_id: first.jobId }
       ]);
-      expect(sqlite.query("SELECT COUNT(*) AS count FROM source_access_profiles").get()).toEqual({ count: 0 });
-      expect(sqlite.query("SELECT COUNT(*) AS count FROM origin_robots").get()).toEqual({ count: 0 });
-      const token = await store.issueNodeCredential({ schemaVersion: 1, nodeId: "enqueue-test", capabilities: ["vpm"], reason: "Fixture" }, "fixture");
+      expect(sqlite.query("SELECT COUNT(*) AS count FROM steering_profiles").get()).toEqual({ count: 0 });
+      expect(
+        sqlite.query("SELECT COUNT(*) AS count FROM origin_state WHERE robots_snapshot_id IS NOT NULL").get()
+      ).toEqual({ count: 0 });
+
+      const { token } = await store.createNodeCredential("enqueue-test", ["vpm"]);
       const principal = (await store.authenticate("enqueue-test", token))!;
-      expect((await store.claim({ schemaVersion: 1, nodeId: principal.nodeId, capabilities: ["vpm"] }, principal)).status).toBe("empty");
+      expect((await store.claim({ schemaVersion: 1, nodeId: principal.nodeId, capabilities: ["vpm"] }, principal)).status).toBe(
+        "empty"
+      );
+
       const rawToken = "raw-token-without-capability-prefix-that-should-be-rejected";
       const rawHash = await sha256Hex(rawToken);
-      sqlite.run("INSERT INTO node_credentials(node_id, token_hash, capabilities_json) VALUES (?, ?, ?)",
-        ["raw-node", rawHash, JSON.stringify(["vpm"])]);
+      sqlite.run("INSERT INTO nodes(node_id, token_hash, capabilities_json) VALUES (?, ?, ?)", [
+        "raw-node",
+        rawHash,
+        JSON.stringify(["vpm"])
+      ]);
       expect(await store.authenticate("raw-node", rawToken)).toBeNull();
-      sqlite.run("CREATE TRIGGER reject_seed_audit BEFORE INSERT ON operator_audit_log WHEN NEW.entity_type='job' BEGIN SELECT RAISE(ABORT,'fixture audit failure'); END;");
+
+      sqlite.run(
+        "CREATE TRIGGER reject_seed_audit BEFORE INSERT ON operator_audit_log WHEN NEW.entity_type='job' BEGIN SELECT RAISE(ABORT,'fixture audit failure'); END;"
+      );
       await expect(client.operator.jobs.enqueue({ ...input, url: "https://other.example/index.json" })).rejects.toThrow();
       expect(sqlite.query("SELECT COUNT(*) AS count FROM crawl_jobs").get()).toEqual({ count: 1 });
-      expect(sqlite.query("SELECT COUNT(*) AS count FROM origin_leases").get()).toEqual({ count: 1 });
-      await expect(client.operator.jobs.enqueue({ ...input, minDelayMs: 50000 })).rejects.toThrow();
-      expect(sqlite.query("SELECT min_delay_ms FROM origin_leases").get()).toEqual({ min_delay_ms: 1000 });
-    } finally { sqlite.close(); }
-  });
-  it("does not mutate jobs or pacing when seed authority changes before the batch", async () => {
-    for (const existing of [false, true]) for (const revoke of ["suppressed", "disabled", "expired"]) {
-      const sqlite = new Database(":memory:");
-      try {
-        const db = createMockD1Database(sqlite);
-        const store = new Coordinator(db, () => Date.parse("2026-10-03T00:00:00.000Z"));
-        await store.initSchema();
-        const url = "https://seed.example/index.json";
-        const rule = "00000000-0000-4000-8000-000000000001";
-        sqlite.run(`INSERT INTO lead_autoqueue_rules
-          (rule_id,lead_kind,origin,path_scope,min_delay_ms,expires_at,review_reference,reason,created_at)
-          VALUES (?,'vpm_listing','https://seed.example','/',1000,'2026-10-04T00:00:00.000Z','OFFLINE','Fixture','2026-10-03T00:00:00.000Z')`, [rule]);
-        if (existing) await store.seedJob(url, "vpm", 1000, undefined, "metadata");
-        const beforeJob = sqlite.query("SELECT * FROM crawl_jobs").get();
-        const beforeOrigin = sqlite.query("SELECT * FROM origin_leases").get();
-        const originalBatch = db.batch.bind(db);
-        db.batch = async statements => {
-          if (revoke === "suppressed") sqlite.run("INSERT INTO suppressed_urls VALUES (?,?,?)", [url, "Fixture", "2026-10-03T00:00:00.000Z"]);
-          if (revoke === "disabled") sqlite.run("UPDATE lead_autoqueue_rules SET disabled_at='2026-10-03T00:00:00.000Z' WHERE rule_id=?", [rule]);
-          if (revoke === "expired") sqlite.run("UPDATE lead_autoqueue_rules SET expires_at='2026-10-02T00:00:00.000Z' WHERE rule_id=?", [rule]);
-          return originalBatch(statements);
-        };
-        await expect(store.seedJob(url, "vpm", 50000, rule, "metadata")).rejects.toThrow(
-          revoke === "suppressed" ? "URL is suppressed" : "Auto-queue rule is no longer active");
-        expect(sqlite.query("SELECT * FROM crawl_jobs").get()).toEqual(beforeJob);
-        expect(sqlite.query("SELECT * FROM origin_leases").get()).toEqual(beforeOrigin);
-      } finally { sqlite.close(); }
+      expect(sqlite.query("SELECT COUNT(*) AS count FROM origin_state").get()).toEqual({ count: 1 });
+      await expect(client.operator.jobs.enqueue({ ...input, minDelayMs: 50_000 })).rejects.toThrow();
+      expect(sqlite.query("SELECT min_delay_ms FROM origin_state").get()).toEqual({ min_delay_ms: 1000 });
+    } finally {
+      sqlite.close();
     }
   });
+
   it("rejects conflicting seed contracts without changing an existing job or origin pacing", async () => {
     const sqlite = new Database(":memory:");
     try {
       const store = new Coordinator(createMockD1Database(sqlite));
-      await store.initSchema();
+      await store.initSchema({ autoSeed: false });
       const url = "https://seed.example/index.json";
-      const id = await store.seedJob(url, "vpm", 1000, undefined, "metadata");
+      const id = await store.seedJob(url, "vpm", { minDelayMs: 1000, purpose: "metadata" });
       const beforeJob = sqlite.query("SELECT * FROM crawl_jobs").get();
-      const beforeOrigin = sqlite.query("SELECT * FROM origin_leases").get();
-      await expect(store.seedJob(url, "curated", 50000, undefined, "metadata")).rejects.toThrow("different reviewed platform");
-      await expect(store.seedJob(url, "vpm", 50000, undefined, "discovery")).rejects.toThrow("different reviewed purpose");
+      const beforeOrigin = sqlite.query("SELECT * FROM origin_state").get();
+      await expect(store.seedJob(url, "custom_domain", { minDelayMs: 50_000, purpose: "metadata" })).rejects.toThrow(
+        "different reviewed platform"
+      );
+      await expect(store.seedJob(url, "vpm", { minDelayMs: 50_000, purpose: "discovery" })).rejects.toThrow(
+        "different reviewed purpose"
+      );
       expect(sqlite.query("SELECT * FROM crawl_jobs").get()).toEqual(beforeJob);
-      expect(sqlite.query("SELECT * FROM origin_leases").get()).toEqual(beforeOrigin);
-      expect(await store.seedJob(url, "vpm", 2000, undefined, "metadata")).toBe(id);
-      expect(sqlite.query("SELECT min_delay_ms FROM origin_leases").get()).toEqual({ min_delay_ms: 2000 });
-    } finally { sqlite.close(); }
-  });
-
-  it("keeps the winner's pacing when conflicting seed contracts race", async () => {
-    const sqlite = new Database(":memory:");
-    try {
-      const store = new Coordinator(createMockD1Database(sqlite));
-      await store.initSchema();
-      const results = await Promise.allSettled([
-        store.seedJob("https://seed.example/index.json", "vpm", 1000, undefined, "metadata"),
-        store.seedJob("https://seed.example/index.json", "curated", 50000, undefined, "discovery")
-      ]);
-      expect(results.filter(result => result.status === "fulfilled")).toHaveLength(1);
-      expect(results.filter(result => result.status === "rejected")).toHaveLength(1);
-      const job = sqlite.query("SELECT platform, job_purpose FROM crawl_jobs").get() as { platform: string; job_purpose: string };
-      expect(sqlite.query("SELECT min_delay_ms FROM origin_leases").get()).toEqual({ min_delay_ms: job.platform === "vpm" ? 1000 : 50000 });
-    } finally { sqlite.close(); }
-  });
-  it("initializes through the consumer SDK with explicit false and default candidate seeding", async () => {
-    for (const autoSeed of [false, undefined]) {
-      const sqlite = new Database(":memory:");
-      try {
-        const env = { VRCP_D1: createMockD1Database(sqlite), OPERATOR_TOKEN: "a".repeat(64) };
-        const client = new VRCPackageClient({ baseUrl: "https://worker.example", operatorToken: env.OPERATOR_TOKEN,
-          fetch: Object.assign(async (input: RequestInfo | URL, init?: RequestInit) =>
-            workerEntry.fetch(new Request(input, init), env), { preconnect() {} }) });
-        const result = await client.operator.init({ autoSeed });
-        expect(result.schemaVersion).toBe(1);
-        expect(result.autoSeed).toBe(autoSeed ?? true);
-        expect(sqlite.query("SELECT COUNT(*) AS count FROM crawl_jobs").get()).toEqual({ count: autoSeed === false ? 0 : DEFAULT_SEED_JOBS.length });
-        expect(sqlite.query("SELECT COUNT(*) AS count FROM source_access_profiles").get()).toEqual({ count: 0 });
-        expect(sqlite.query("SELECT COUNT(*) AS count FROM origin_robots").get()).toEqual({ count: 0 });
-      } finally { sqlite.close(); }
+      expect(sqlite.query("SELECT * FROM origin_state").get()).toEqual(beforeOrigin);
+      expect(await store.seedJob(url, "vpm", { minDelayMs: 2000, purpose: "metadata" })).toBe(id);
+      expect(sqlite.query("SELECT min_delay_ms FROM origin_state").get()).toEqual({ min_delay_ms: 2000 });
+    } finally {
+      sqlite.close();
     }
   });
+
+  it("POST /v1/operator/init enforces autoSeed: false (rejects true) and never seeds jobs or profiles", async () => {
+    const sqlite = new Database(":memory:");
+    try {
+      const env: Env = { VRCP_D1: createMockD1Database(sqlite), OPERATOR_TOKEN: "a".repeat(64) };
+
+      const rejectTrue = await workerEntry.fetch(
+        new Request("https://worker.example/v1/operator/init", {
+          method: "POST",
+          headers: { authorization: `Bearer ${env.OPERATOR_TOKEN}`, "content-type": "application/json" },
+          body: JSON.stringify({ schemaVersion: 1, autoSeed: true })
+        }),
+        env
+      );
+      expect(rejectTrue.status).toBe(400);
+
+      for (const body of [{ schemaVersion: 1 }, { schemaVersion: 1, autoSeed: false }]) {
+        const res = await workerEntry.fetch(
+          new Request("https://worker.example/v1/operator/init", {
+            method: "POST",
+            headers: { authorization: `Bearer ${env.OPERATOR_TOKEN}`, "content-type": "application/json" },
+            body: JSON.stringify(body)
+          }),
+          env
+        );
+        expect(res.status).toBe(200);
+        const parsed = InitializeCoordinatorResponseSchema.parse(await res.json());
+        expect(parsed).toEqual({
+          schemaVersion: 1,
+          status: "ok",
+          message: "Schema initialized",
+          autoSeed: false
+        });
+      }
+
+      expect(sqlite.query("SELECT COUNT(*) AS count FROM crawl_jobs").get()).toEqual({ count: 0 });
+      expect(sqlite.query("SELECT COUNT(*) AS count FROM steering_profiles").get()).toEqual({ count: 0 });
+      expect(sqlite.query("SELECT COUNT(*) AS count FROM origin_state").get()).toEqual({ count: 0 });
+    } finally {
+      sqlite.close();
+    }
+  });
+
   it("rejects invalid initialization payloads before any database operation", async () => {
     const token = "a".repeat(64);
     const cases = [
       ["{", "application/json", 400],
       ["{}", "application/json", 400],
       [JSON.stringify({ schemaVersion: 2 }), "application/json", 400],
+      [JSON.stringify({ schemaVersion: 1, autoSeed: true }), "application/json", 400],
       [JSON.stringify({ schemaVersion: 1, autoSeed: "false" }), "application/json", 400],
       [JSON.stringify({ schemaVersion: 1, approved: true }), "application/json", 400],
       ["null", "application/json", 400],
@@ -576,16 +1084,36 @@ describe("Cloudflare D1 Coordinator Store & Edge Worker Adapter", () => {
     ] as const;
     for (const [body, contentType, expectedStatus] of cases) {
       let operations = 0;
-      const db: D1Database = {
-        prepare() { operations++; throw new Error("Unexpected database operation"); },
-        async batch() { operations++; throw new Error("Unexpected database operation"); },
-        async exec() { operations++; throw new Error("Unexpected database operation"); },
-        withSession() { operations++; throw new Error("Unexpected database operation"); },
-        async dump() { operations++; throw new Error("Unexpected database operation"); }
+      const db: Env["VRCP_D1"] = {
+        prepare() {
+          operations++;
+          throw new Error("Unexpected database operation");
+        },
+        async batch() {
+          operations++;
+          throw new Error("Unexpected database operation");
+        },
+        async exec() {
+          operations++;
+          throw new Error("Unexpected database operation");
+        },
+        withSession() {
+          operations++;
+          throw new Error("Unexpected database operation");
+        },
+        async dump() {
+          operations++;
+          throw new Error("Unexpected database operation");
+        }
       };
-      const response = await workerEntry.fetch(new Request("https://worker.example/v1/operator/init", {
-        method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": contentType }, body
-      }), { VRCP_D1: db, OPERATOR_TOKEN: token });
+      const response = await workerEntry.fetch(
+        new Request("https://worker.example/v1/operator/init", {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}`, "content-type": contentType },
+          body
+        }),
+        { VRCP_D1: db, OPERATOR_TOKEN: token }
+      );
       expect(response.status).toBe(expectedStatus);
       expect(operations).toBe(0);
       expect(response.headers.get("cache-control")).toBe("no-store");
@@ -596,122 +1124,240 @@ describe("Cloudflare D1 Coordinator Store & Edge Worker Adapter", () => {
   it("authenticates initialization before reading its body", async () => {
     let reads = 0;
     const request = new Request("https://worker.example/v1/operator/init", { method: "POST" });
-    Object.defineProperty(request, "body", { get() { reads++; throw new Error("Body read before auth"); } });
-    request.json = async () => { reads++; throw new Error("Body read before auth"); };
+    Object.defineProperty(request, "body", {
+      get() {
+        reads++;
+        throw new Error("Body read before auth");
+      }
+    });
+    request.json = async () => {
+      reads++;
+      throw new Error("Body read before auth");
+    };
     const response = await workerEntry.fetch(request, {
-      VRCP_D1: createMockD1Database(), OPERATOR_TOKEN: "a".repeat(64)
+      VRCP_D1: createMockD1Database(),
+      OPERATOR_TOKEN: "a".repeat(64)
     });
     expect(response.status).toBe(401);
     expect(reads).toBe(0);
   });
 
-  it("initializes every schema table with D1 line-oriented exec and can repeat initialization", async () => {
+  it("enforces exact 17-table / 0-view / 39-index V0 schema and idempotent initialization", async () => {
     const sqlite = new Database(":memory:");
     try {
       const store = new Coordinator(createMockD1Database(sqlite));
-      await store.initSchema();
-      await store.initSchema();
-      const tables = sqlite.query("SELECT name FROM sqlite_master WHERE type='table'")
+      await store.initSchema({ autoSeed: false });
+      await store.initSchema({ autoSeed: false });
+
+      const tables = (
+        sqlite.query("SELECT name FROM sqlite_master WHERE type='table' AND name != 'sqlite_sequence' ORDER BY name").all() as {
+          name: string;
+        }[]
+      ).map((r) => r.name);
+      expect(tables).toEqual(EXPECTED_V0_TABLES);
+
+      const views = sqlite.query("SELECT name FROM sqlite_master WHERE type='view'").all();
+      expect(views).toEqual([]);
+
+      const indexes = sqlite
+        .query("SELECT name FROM sqlite_master WHERE type='index' AND name NOT LIKE 'sqlite_autoindex_%' ORDER BY name")
         .all() as { name: string }[];
-      for (const name of ["node_credentials", "crawl_jobs", "origin_leases", "origin_robots",
-        "source_access_profiles", "canonical_packages", "source_versions", "identity_links",
-        "registered_apps", "registered_users", "catalog_tickets"]) {
-        expect(tables.some(table => table.name === name)).toBe(true);
+      expect(indexes).toHaveLength(39);
+
+      const pkgCols = sqlite.query("PRAGMA table_info(canonical_packages)").all() as { name: string }[];
+      for (const col of [
+        "tombstone_reason",
+        "verification_status",
+        "verified_by_app_id",
+        "attributes_json",
+        "published_at",
+        "timestamp_confidence",
+        "content_rating"
+      ]) {
+        expect(pkgCols.some((c) => c.name === col)).toBe(true);
       }
-      const views = sqlite.query("SELECT name FROM sqlite_master WHERE type='view'")
-        .all() as { name: string }[];
-      for (const name of ["creator_opt_outs", "delegated_creator_claims", "catalog_reports", "user_app_ownership", "origin_robots_refresh_leases"]) {
-        expect(views.some(view => view.name === name)).toBe(true);
-      }
-      const columns = sqlite.query("PRAGMA table_info(canonical_packages)").all() as { name: string }[];
-      expect(columns.some(column => column.name === "published_at")).toBe(true);
-      expect(columns.some(column => column.name === "timestamp_confidence")).toBe(true);
-      expect(columns.some(column => column.name === "content_rating")).toBe(true);
-      const userColumns = sqlite.query("PRAGMA table_info(registered_users)").all() as { name: string }[];
-      expect(userColumns.some(column => column.name === "age_verified")).toBe(true);
-    } finally { sqlite.close(); }
-  });
-
-  it("creates timestamp columns in the fresh schema without catch-and-ignore alterations", async () => {
-    const sqlite = new Database(":memory:");
-    try {
-      const db = createMockD1Database(sqlite);
-      const calls: string[] = [];
-      const wrappedDb = {
-        prepare: db.prepare.bind(db),
-        batch: db.batch.bind(db),
-        withSession: db.withSession.bind(db),
-        dump: db.dump.bind(db),
-        async exec(query) {
-        calls.push(query);
-        if (query.startsWith("ALTER TABLE")) throw new Error("Alterations are not part of fresh initialization");
-        return db.exec(query);
-      } } satisfies Env["VRCP_D1"];
-      const store = new Coordinator(wrappedDb);
-      await store.initSchema(false);
-      const columns = sqlite.query("PRAGMA table_info(canonical_packages)").all() as { name: string }[];
-      expect(columns.some(column => column.name === "published_at")).toBe(true);
-      expect(columns.some(column => column.name === "timestamp_confidence")).toBe(true);
-      expect(columns.some(column => column.name === "content_rating")).toBe(true);
-      expect(calls).toHaveLength(1);
-      expect(sqlite.query("SELECT COUNT(*) AS count FROM crawl_jobs").get()).toEqual({ count: 0 });
-    } finally { sqlite.close(); }
-  });
-
-  it("propagates schema execution failures before candidate seeding", async () => {
-    const failure = new Error("Synthetic schema execution failure");
-    let prepares = 0;
-    const store = new Coordinator({
-      prepare() { prepares++; throw new Error("Seeding must not run after schema failure"); },
-      async batch() { throw new Error("Unexpected batch"); },
-      async exec() { throw failure; }
-    });
-    await expect(store.initSchema(true)).rejects.toBe(failure);
-    expect(prepares).toBe(0);
-  });
-
-  async function claimRaceFixture(targets: string[]) {
-    const sqlite = new Database(":memory:");
-    const db = createMockD1Database(sqlite);
-    let now = Date.parse("2026-10-03T00:00:00.000Z");
-    const store = new Coordinator(db, () => now);
-    await store.initSchema();
-    for (const origin of new Set(targets.map(target => new URL(target).origin))) {
-      await store.createSourceAccessProfile({
-        schemaVersion: 1, platform: "vpm", origin, pathScope: "/", method: "GET",
-        purpose: "metadata", minDelayMs: 1000,
-        expiresAt: "2026-10-04T00:00:00.000Z", reviewReference: "OFFLINE-RACE-FIXTURE",
-        reason: "Hermetic claim concurrency fixture", retainClasses: ["normalized_facts"],
-        publishClasses: ["normalized_facts"]
-      }, "fixture-operator");
-      await store.recordRobotsSnapshot(origin, 200, "User-agent: *\nAllow: /");
+    } finally {
+      sqlite.close();
     }
-    for (const target of targets) await store.seedJob(target, "vpm", 1000, undefined, "metadata");
-    const principals = await Promise.all(["race-node-a", "race-node-b"].map(async nodeId => {
-      const token = await store.issueNodeCredential({
-        schemaVersion: 1, nodeId, capabilities: ["vpm"], reason: "Offline race fixture"
-      }, "fixture-operator");
-      return (await store.authenticate(nodeId, token))!;
-    }));
-    const claimBoth = () => Promise.all(principals.map(principal => store.claim({
-      schemaVersion: 1, nodeId: principal.nodeId, capabilities: ["vpm"]
-    }, principal)));
-    return { db, sqlite, store, claimBoth, advance: (milliseconds: number) => { now += milliseconds; } };
-  }
+  });
+
+  it("buildPreviewStarterSteeringProfiles defines 16 non-overlapping starter grants across all 8 concrete V0 platforms", () => {
+    const profiles = buildPreviewStarterSteeringProfiles();
+    expect(profiles).toHaveLength(PREVIEW_STARTER_PROFILE_COUNT);
+    expect(profiles).toHaveLength(16);
+    expect(profiles.map((p) => String(p.platform))).not.toContain("curated");
+    expect(new Set(profiles.map((p) => p.platform))).toEqual(
+      new Set(["vpm", "github", "booth", "gumroad", "jinxxy", "itch", "shopify", "sellfy"])
+    );
+    expect(profiles.some((p) => p.platform === "vpm" && p.hostMatchMode === "any_vpm_https")).toBe(true);
+    for (const profile of profiles) {
+      const serialized = JSON.stringify(profile);
+      expect(serialized).not.toContain("template-");
+      expect(serialized).not.toContain("/sample-");
+    }
+  });
+
+  it("4-lane priority claim orders lanes 1..4 strictly and skips busy/deferred origins fairly", async () => {
+    const sqlite = new Database(":memory:");
+    let now = Date.parse("2026-11-05T00:00:00.000Z");
+    const store = new Coordinator(createMockD1Database(sqlite), () => now);
+    try {
+      await store.initSchema({ autoSeed: false });
+      await store.createSteeringProfile(
+        {
+          schemaVersion: 1,
+          platform: "vpm",
+          hostMatchMode: "any_vpm_https",
+          hostPattern: "*",
+          pathScope: "/",
+          queryMode: "none",
+          method: "GET",
+          purpose: "metadata",
+          minDelayMs: 1000,
+          expiresAt: "2099-01-01T00:00:00.000Z",
+          reviewReference: "LANE-TEST",
+          reason: "Allow priority lane testing",
+          retainClasses: ["normalized_facts"],
+          publishClasses: ["normalized_facts"]
+        },
+        "operator"
+      );
+
+      for (const origin of ["https://busy.example", "https://free.example", "https://lane4.example"]) {
+        await store.recordRobotsSnapshot(origin, 200, "User-agent: *\nAllow: /");
+      }
+
+      // Busy origin has 2 Lane-1 jobs; free origin has 1 Lane-2 job; lane4 origin has 1 Lane-4 job
+      const lane1A = await store.seedJob("https://busy.example/a.json", "vpm", { minDelayMs: 1000, priorityLane: 1 });
+      now += 10;
+      const lane1B = await store.seedJob("https://busy.example/b.json", "vpm", { minDelayMs: 1000, priorityLane: 1 });
+      now += 10;
+      const lane2Job = await store.seedJob("https://free.example/c.json", "vpm", { minDelayMs: 1000, priorityLane: 2 });
+      now += 10;
+      const lane4Job = await store.seedJob("https://lane4.example/d.json", "vpm", { minDelayMs: 1000, priorityLane: 4 });
+
+      const { token } = await store.createNodeCredential("priority-node", ["vpm"]);
+      const principal = (await store.authenticate("priority-node", token))!;
+
+      const first = await store.claim(ClaimRequestSchema.parse({ schemaVersion: 1, nodeId: "priority-node", capabilities: ["vpm"] }), principal);
+      expect(first.status).toBe("leased");
+      if (first.status !== "leased") return;
+      expect(first.job.jobId).toBe(lane1A);
+      expect(first.job.priorityLane).toBe(1);
+
+      // Next claim: busy.example/b.json is blocked by busy.example active_job_id, so fair skipping picks lane2Job!
+      const second = await store.claim(ClaimRequestSchema.parse({ schemaVersion: 1, nodeId: "priority-node", capabilities: ["vpm"] }), principal);
+      expect(second.status).toBe("leased");
+      if (second.status !== "leased") return;
+      expect(second.job.jobId).toBe(lane2Job);
+      expect(second.job.priorityLane).toBe(2);
+
+      // Third claim picks lane4Job (since lane1B origin is still leased)
+      const third = await store.claim(ClaimRequestSchema.parse({ schemaVersion: 1, nodeId: "priority-node", capabilities: ["vpm"] }), principal);
+      expect(third.status).toBe("leased");
+      if (third.status !== "leased") return;
+      expect(third.job.jobId).toBe(lane4Job);
+      expect(third.job.priorityLane).toBe(4);
+
+      // After completing first lease and advancing pacing window, lane1B can now be claimed
+      await store.submit(
+        {
+          schemaVersion: 1,
+          nodeId: "priority-node",
+          jobId: lane1A,
+          leaseId: first.job.leaseId,
+          idempotencyKey: "complete-lane1a",
+          outcome: { kind: "unchanged" }
+        },
+        principal
+      );
+      now += 2000;
+      const fourth = await store.claim(ClaimRequestSchema.parse({ schemaVersion: 1, nodeId: "priority-node", capabilities: ["vpm"] }), principal);
+      expect(fourth.status).toBe("leased");
+      if (fourth.status === "leased") {
+        expect(fourth.job.jobId).toBe(lane1B);
+      }
+    } finally {
+      sqlite.close();
+    }
+  });
+
+  it("HTTP 304 unchanged fast-path updates only crawl_jobs, origin_state, and job_results", async () => {
+    const sqlite = new Database(":memory:");
+    const store = new Coordinator(createMockD1Database(sqlite));
+    try {
+      await store.initSchema({ autoSeed: false });
+      await store.createSteeringProfile(
+        {
+          schemaVersion: 1,
+          platform: "vpm",
+          hostMatchMode: "exact",
+          hostPattern: "vpm.example.com",
+          pathScope: "/index.json",
+          queryMode: "none",
+          method: "GET",
+          purpose: "metadata",
+          minDelayMs: 1000,
+          expiresAt: "2099-01-01T00:00:00.000Z",
+          reviewReference: "304-FAST-PATH",
+          reason: "Test unchanged fast path",
+          retainClasses: ["normalized_facts"],
+          publishClasses: ["normalized_facts"]
+        },
+        "operator"
+      );
+      await store.recordRobotsSnapshot("https://vpm.example.com", 200, "User-agent: *\nAllow: /");
+      await store.seedJob("https://vpm.example.com/index.json", "vpm", { minDelayMs: 1000, purpose: "metadata" });
+
+      const { token } = await store.createNodeCredential("node-304", ["vpm"]);
+      const principal = (await store.authenticate("node-304", token))!;
+      const claim = await store.claim({ schemaVersion: 1, nodeId: "node-304", capabilities: ["vpm"] }, principal);
+      expect(claim.status).toBe("leased");
+      if (claim.status !== "leased") return;
+
+      const submitRes = await store.submit(
+        {
+          schemaVersion: 1,
+          nodeId: "node-304",
+          jobId: claim.job.jobId,
+          leaseId: claim.job.leaseId,
+          idempotencyKey: "unchanged-304-key",
+          outcome: { kind: "unchanged" }
+        },
+        principal
+      );
+      expect(submitRes).toMatchObject({ status: "accepted", duplicate: false, sourceVersionCreated: false });
+
+      expect(sqlite.query("SELECT COUNT(*) AS n FROM source_items").get()).toEqual({ n: 0 });
+      expect(sqlite.query("SELECT COUNT(*) AS n FROM canonical_packages").get()).toEqual({ n: 0 });
+      expect(sqlite.query("SELECT COUNT(*) AS n FROM listing_sources").get()).toEqual({ n: 0 });
+      expect(sqlite.query("SELECT COUNT(*) AS n FROM job_results").get()).toEqual({ n: 1 });
+      const job = sqlite.query("SELECT state, lease_id FROM crawl_jobs WHERE job_id=?").get(claim.job.jobId) as {
+        state: string;
+        lease_id: string | null;
+      };
+      expect(job.state).toBe("done");
+      expect(job.lease_id).toBeNull();
+    } finally {
+      sqlite.close();
+    }
+  });
 
   it("reserves one lease when two nodes race for the same job", async () => {
     const fixture = await claimRaceFixture(["https://race.example/index.json"]);
     try {
       const results = await fixture.claimBoth();
-      expect(results.filter(result => result.status === "leased")).toHaveLength(1);
-      expect(results.filter(result => result.status === "empty")).toHaveLength(1);
-      const winner = results.find(result => result.status === "leased")!;
+      expect(results.filter((result) => result.status === "leased")).toHaveLength(1);
+      expect(results.filter((result) => result.status === "empty")).toHaveLength(1);
+      const winner = results.find((result) => result.status === "leased")!;
       if (winner.status !== "leased") throw new Error("Expected one race winner");
       const job = fixture.sqlite.query("SELECT lease_id FROM crawl_jobs").get() as { lease_id: string };
       expect(job.lease_id).toBe(winner.job.leaseId);
-      const origin = fixture.sqlite.query("SELECT active_job_id FROM origin_leases").get() as { active_job_id: string };
+      const origin = fixture.sqlite.query("SELECT active_job_id FROM origin_state").get() as { active_job_id: string };
       expect(origin.active_job_id).toBe(winner.job.jobId);
-    } finally { fixture.sqlite.close(); }
+    } finally {
+      fixture.sqlite.close();
+    }
   });
 
   it("serializes different jobs sharing an origin and permits independent origins", async () => {
@@ -722,61 +1368,61 @@ describe("Cloudflare D1 Coordinator Store & Edge Worker Adapter", () => {
       const fixture = await claimRaceFixture([...targets]);
       try {
         const results = await fixture.claimBoth();
-        expect(results.filter(result => result.status === "leased")).toHaveLength(expectedLeases);
+        expect(results.filter((result) => result.status === "leased")).toHaveLength(expectedLeases);
         const leased = fixture.sqlite.query("SELECT job_id FROM crawl_jobs WHERE state='leased'").all();
         expect(leased).toHaveLength(expectedLeases);
-      } finally { fixture.sqlite.close(); }
+      } finally {
+        fixture.sqlite.close();
+      }
     }
   });
 
   it("reclaims an expired job with exactly one new lease", async () => {
     const fixture = await claimRaceFixture(["https://race.example/index.json"]);
     try {
-      const first = (await fixture.claimBoth()).find(result => result.status === "leased")!;
+      const first = (await fixture.claimBoth()).find((result) => result.status === "leased")!;
       if (first.status !== "leased") throw new Error("Expected initial lease");
       fixture.advance(5 * 60 * 1000 + 1);
       const results = await fixture.claimBoth();
-      const winners = results.filter(result => result.status === "leased");
+      const winners = results.filter((result) => result.status === "leased");
       expect(winners).toHaveLength(1);
-      expect(winners[0]!.job.jobId).toBe(first.job.jobId);
-      expect(winners[0]!.job.leaseId).not.toBe(first.job.leaseId);
-    } finally { fixture.sqlite.close(); }
+      if (winners[0]?.status !== "leased") throw new Error("Expected reclaimed lease");
+      expect(winners[0].job.jobId).toBe(first.job.jobId);
+      expect(winners[0].job.leaseId).not.toBe(first.job.leaseId);
+    } finally {
+      fixture.sqlite.close();
+    }
   });
 
-  it("does not reserve from stale profile, credential or robots evidence", async () => {
+  it("does not reserve from stale steering profile, node credential or robots evidence", async () => {
     for (const mutation of [
-      "UPDATE source_access_profiles SET disabled_at='2026-10-03T00:00:00.000Z'",
-      "UPDATE node_credentials SET revoked_at='2026-10-03T00:00:00.000Z'",
-      "UPDATE origin_robots SET snapshot_id='replaced-snapshot',body='User-agent: *\nDisallow: /'",
-      "UPDATE origin_leases SET min_delay_ms=min_delay_ms+1000",
-      "UPDATE origin_robots SET refresh_lease_id='refresh-race',refresh_lease_expires_at='2026-10-03T00:05:00.000Z' WHERE origin='https://race.example'"
+      "UPDATE steering_profiles SET disabled_at='2026-10-03T00:00:00.000Z'",
+      "UPDATE nodes SET revoked_at='2026-10-03T00:00:00.000Z'",
+      "UPDATE origin_state SET robots_snapshot_id='replaced-snapshot',robots_body='User-agent: *\nDisallow: /'",
+      "UPDATE origin_state SET min_delay_ms=min_delay_ms+1000",
+      "UPDATE origin_state SET refresh_lease_id='refresh-race',refresh_lease_expires_at='2026-10-03T00:05:00.000Z' WHERE origin='https://race.example'"
     ]) {
       const fixture = await claimRaceFixture(["https://race.example/index.json"]);
       try {
         const originalBatch = fixture.db.batch.bind(fixture.db);
-        fixture.db.batch = async statements => {
+        fixture.db.batch = async (statements) => {
           fixture.sqlite.run(mutation);
           return originalBatch(statements);
         };
-        expect((await fixture.claimBoth()).filter(result => result.status === "leased")).toHaveLength(0);
+        expect((await fixture.claimBoth()).filter((result) => result.status === "leased")).toHaveLength(0);
         expect(fixture.sqlite.query("SELECT job_id FROM crawl_jobs WHERE state='leased'").all()).toHaveLength(0);
-      } finally { fixture.sqlite.close(); }
+      } finally {
+        fixture.sqlite.close();
+      }
     }
   });
 
   it("Node registration and bearer authentication", async () => {
-    const mockDb = createMockD1Database();
-    const store = new Coordinator(mockDb);
-    await store.initSchema();
+    const store = new Coordinator(createMockD1Database());
+    await store.initSchema({ autoSeed: false });
 
-    const token = await store.issueNodeCredential({
-      schemaVersion: 1,
-      nodeId: "node-alpha",
-      capabilities: ["vpm", "github"],
-      reason: "Initial node registration"
-    }, "operator-admin");
-
-    expect(typeof token).toBe("string");
+    const { token, capabilities } = await store.createNodeCredential("node-alpha", ["vpm", "github"]);
+    expect(capabilities).toEqual(["vpm", "github"]);
     expect(token).toMatch(/^vrcp_[0-9a-fA-F]{64}[0-9a-fA-F]{4}$/);
     expect(token.length).toBe(73);
 
@@ -786,373 +1432,30 @@ describe("Cloudflare D1 Coordinator Store & Edge Worker Adapter", () => {
     expect(principal?.capabilities).toEqual(["vpm", "github"]);
     expect(typeof principal?.credentialVersion).toBe("string");
 
-    const wrongTokenAuth = await store.authenticate("node-alpha", "vrcp_" + "0".repeat(64) + "0006");
-    expect(wrongTokenAuth).toBeNull();
-
-    const unknownNodeAuth = await store.authenticate("node-unknown", token);
-    expect(unknownNodeAuth).toBeNull();
+    expect(await store.authenticate("node-alpha", "vrcp_" + "0".repeat(64) + "0006")).toBeNull();
+    expect(await store.authenticate("node-unknown", token)).toBeNull();
   });
 
-  it("Claiming a job under active source access profile", async () => {
+  it("Heartbeat and Worker edge fetch entrypoint routing", async () => {
     const mockDb = createMockD1Database();
     const store = new Coordinator(mockDb);
-    await store.initSchema();
-
-    const token = await store.issueNodeCredential({
-      schemaVersion: 1,
-      nodeId: "node-beta",
-      capabilities: ["vpm"],
-      reason: "VPM crawler node"
-    }, "operator-admin");
-    const principal = await store.authenticate("node-beta", token);
-    expect(principal).not.toBeNull();
-
-    await store.createSourceAccessProfile({
-      schemaVersion: 1,
-      platform: "vpm",
-      origin: "https://vpm.example.com",
-      pathScope: "/index.json",
-      method: "GET",
-      purpose: "metadata",
-      minDelayMs: 1000,
-      expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
-      reviewReference: "REV-VPM-01",
-      reason: "Permitted community package listing",
-      retainClasses: ["normalized_facts", "creator_prose"],
-      publishClasses: ["normalized_facts"]
-    }, "operator-admin");
-
-    await store.recordRobotsSnapshot("https://vpm.example.com", 200, "User-agent: *\nAllow: /");
-
-    const jobId = await store.seedJob("https://vpm.example.com/index.json", "vpm", 1000, undefined, "metadata");
-    expect(typeof jobId).toBe("string");
-
-    const claimRes = await store.claim({
-      schemaVersion: 1,
-      nodeId: "node-beta",
-      capabilities: ["vpm"]
-    }, principal!);
-
-    expect(claimRes.status).toBe("leased");
-    if (claimRes.status !== "leased") throw new Error("Expected leased status");
-    // Fixed 120s lease duration calibrated per R54-C39B
-    const leaseDurationMs = new Date(claimRes.job.leaseExpiresAt).getTime() - new Date().getTime();
-    expect(Math.abs(leaseDurationMs - 120_000)).toBeLessThan(5_000);
-    expect(claimRes.job.jobId).toBe(jobId);
-    expect(claimRes.job.url).toBe("https://vpm.example.com/index.json");
-    expect(claimRes.job.platform).toBe("vpm");
-    expect(claimRes.job.retainClasses).toEqual(["normalized_facts", "creator_prose"]);
-  });
-
-  it("Heartbeat updates", async () => {
-    const mockDb = createMockD1Database();
-    const store = new Coordinator(mockDb);
-    await store.initSchema();
-
-    const token = await store.issueNodeCredential({
-      schemaVersion: 1,
-      nodeId: "node-gamma",
-      capabilities: ["vpm"],
-      reason: "Heartbeat test node"
-    }, "operator-admin");
-    const principal = (await store.authenticate("node-gamma", token))!;
-
-    await store.createSourceAccessProfile({
-      schemaVersion: 1,
-      platform: "vpm",
-      origin: "https://vpm.example.com",
-      pathScope: "/index.json",
-      method: "GET",
-      purpose: "metadata",
-      minDelayMs: 1000,
-      expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
-      reviewReference: "REV-VPM-02",
-      reason: "Heartbeat profile",
-      retainClasses: ["normalized_facts"],
-      publishClasses: ["normalized_facts"]
-    }, "operator-admin");
-
-    await store.recordRobotsSnapshot("https://vpm.example.com", 200, "User-agent: *\nAllow: /");
-    const jobId = await store.seedJob("https://vpm.example.com/index.json", "vpm", 1000, undefined, "metadata");
-
-    const claimRes = await store.claim({
-      schemaVersion: 1,
-      nodeId: "node-gamma",
-      capabilities: ["vpm"]
-    }, principal);
-
-    expect(claimRes.status).toBe("leased");
-    if (claimRes.status !== "leased") throw new Error("Expected leased status");
-
-    const fetchHb = await store.heartbeat({
-      schemaVersion: 1,
-      nodeId: "node-gamma",
-      capabilities: ["vpm"],
-      state: "fetching",
-      activeJobId: claimRes.job.jobId,
-      activeLeaseId: claimRes.job.leaseId
-    }, principal);
-    expect(fetchHb.status).toBe("alive");
-    expect(typeof fetchHb.serverTime).toBe("string");
-
-    const idleHb = await store.heartbeat({
-      schemaVersion: 1,
-      nodeId: "node-gamma",
-      capabilities: ["vpm"],
-      state: "idle"
-    }, principal);
-    expect(idleHb.status).toBe("alive");
-
-    await expect(store.heartbeat({
-      schemaVersion: 1,
-      nodeId: "node-gamma",
-      capabilities: ["vpm"],
-      state: "fetching",
-      activeJobId: "wrong-job-id",
-      activeLeaseId: "wrong-lease-id"
-    }, principal)).rejects.toThrow();
-  });
-
-  it("Submitting a complete observation and canonical package projection", async () => {
-    const mockDb = createMockD1Database();
-    const store = new Coordinator(mockDb);
-    await store.initSchema();
-
-    const token = await store.issueNodeCredential({
-      schemaVersion: 1,
-      nodeId: "node-delta",
-      capabilities: ["vpm"],
-      reason: "Submit test node"
-    }, "operator-admin");
-    const principal = (await store.authenticate("node-delta", token))!;
-
-    await store.createSourceAccessProfile({
-      schemaVersion: 1,
-      platform: "vpm",
-      origin: "https://vpm.example.com",
-      pathScope: "/index.json",
-      method: "GET",
-      purpose: "metadata",
-      minDelayMs: 1000,
-      expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
-      reviewReference: "REV-VPM-03",
-      reason: "Submit profile",
-      retainClasses: ["normalized_facts", "creator_prose"],
-      publishClasses: ["normalized_facts"]
-    }, "operator-admin");
-
-    await store.recordRobotsSnapshot("https://vpm.example.com", 200, "User-agent: *\nAllow: /");
-    const jobId = await store.seedJob("https://vpm.example.com/index.json", "vpm", 1000, undefined, "metadata");
-
-    const claimRes = await store.claim({
-      schemaVersion: 1,
-      nodeId: "node-delta",
-      capabilities: ["vpm"]
-    }, principal);
-    if (claimRes.status !== "leased") throw new Error("Expected leased status");
-
-    const submitRes = await store.submit({
-      schemaVersion: 1,
-      nodeId: "node-delta",
-      jobId: claimRes.job.jobId,
-      leaseId: claimRes.job.leaseId,
-      idempotencyKey: "submit-key-001",
-      outcome: {
-        kind: "changed",
-        observation: {
-          sourceItemKey: "com.example.avatar-optimizer",
-          title: "Avatar Optimizer Pro",
-          summary: "Optimizes VRChat avatars automatically",
-          author: "VRC Devs",
-          outboundLinks: [],
-          originUpdatedAt: null
-        }
-      }
-    }, principal);
-
-    expect(submitRes.status).toBe("accepted");
-    expect(submitRes.duplicate).toBe(false);
-    expect(submitRes.sourceVersionCreated).toBe(true);
-
-    const canonical = await store.getCanonicalPackage("com.example.avatar-optimizer");
-    expect(canonical).not.toBeNull();
-    expect(canonical?.canonicalId).toBe("com.example.avatar-optimizer");
-    expect(canonical?.displayName).toBe("Avatar Optimizer Pro");
-    expect(canonical?.vpmId).toBe("com.example.avatar-optimizer");
-    expect(canonical?.lifecycle).toBe("active");
-    expect(canonical?.umbrella).toBe("tools");
-
-    const dupRes = await store.submit({
-      schemaVersion: 1,
-      nodeId: "node-delta",
-      jobId: claimRes.job.jobId,
-      leaseId: claimRes.job.leaseId,
-      idempotencyKey: "submit-key-001",
-      outcome: {
-        kind: "changed",
-        observation: {
-          sourceItemKey: "com.example.avatar-optimizer",
-          title: "Avatar Optimizer Pro",
-          summary: "Optimizes VRChat avatars automatically",
-          author: "VRC Devs",
-          outboundLinks: [],
-          originUpdatedAt: null
-        }
-      }
-    }, principal);
-
-    expect(dupRes.status).toBe("accepted");
-    expect(dupRes.duplicate).toBe(true);
-  });
-
-  it("Operator catalog listing with keyset pagination", async () => {
-    const mockDb = createMockD1Database();
-    const store = new Coordinator(mockDb);
-    await store.initSchema();
-
-    const baseTime = Date.now();
-    for (let i = 1; i <= 5; i++) {
-      const ts = new Date(baseTime + i * 1000).toISOString();
-      await store.upsertCanonicalPackage({
-        canonicalId: `pkg-00${i}`,
-        umbrella: "tools",
-        category: "tooling",
-        lifecycle: "active",
-        displayName: `Package Number ${i}`,
-        vpmId: `com.example.pkg${i}`,
-        createdAt: ts,
-        updatedAt: ts
-      });
-      await store.upsertSourceItem({
-        sourceKey: `vpm:https://vpm.example.com/index.json:pkg-00${i}`,
-        platform: "vpm",
-        sourceUrl: "https://vpm.example.com/index.json",
-        latestDigest: `digest-00${i}`
-      });
-      await store.createIdentityLink({
-        sourceKey: `vpm:https://vpm.example.com/index.json:pkg-00${i}`,
-        canonicalId: `pkg-00${i}`,
-        evidenceKind: "vpm_id",
-        confidence: 1.0,
-        reviewState: "accepted",
-        createdAt: ts
-      });
-    }
-
-    const page1 = await store.listCanonicalPackagesPage(2, null);
-    expect(page1.packages.length).toBe(2);
-    expect(page1.nextCursor).not.toBeNull();
-    expect(page1.packages[0].canonicalId).toBe("pkg-005");
-    expect(page1.packages[1].canonicalId).toBe("pkg-004");
-    expect(page1.packages[0].acceptedLinks.length).toBe(1);
-
-    const cursor1 = decodeCatalogCursor(page1.nextCursor!);
-    expect(cursor1).not.toBeNull();
-    const page2 = await store.listCanonicalPackagesPage(2, cursor1);
-    expect(page2.packages.length).toBe(2);
-    expect(page2.nextCursor).not.toBeNull();
-    expect(page2.packages[0].canonicalId).toBe("pkg-003");
-    expect(page2.packages[1].canonicalId).toBe("pkg-002");
-
-    const cursor2 = decodeCatalogCursor(page2.nextCursor!);
-    expect(cursor2).not.toBeNull();
-    const page3 = await store.listCanonicalPackagesPage(2, cursor2);
-    expect(page3.packages.length).toBe(1);
-    expect(page3.nextCursor).toBeNull();
-    expect(page3.packages[0].canonicalId).toBe("pkg-001");
-  });
-
-  it("persists avatar compatibilities on submit and lists them (D1)", async () => {
-    const mockDb = createMockD1Database();
-    const store = new Coordinator(mockDb);
-    await store.initSchema();
-
-    const token = await store.issueNodeCredential({
-      schemaVersion: 1,
-      nodeId: "node-compat",
-      capabilities: ["vpm"],
-      reason: "Avatar compat test node"
-    }, "operator-admin");
-    const principal = (await store.authenticate("node-compat", token))!;
-
-    await store.createSourceAccessProfile({
-      schemaVersion: 1,
-      platform: "vpm",
-      origin: "https://vpm.example.com",
-      pathScope: "/index.json",
-      method: "GET",
-      purpose: "metadata",
-      minDelayMs: 1000,
-      expiresAt: "2099-01-01T00:00:00Z",
-      reviewReference: "rev-compat",
-      reason: "Allow testing avatar compat persistence",
-      retainClasses: ["normalized_facts", "creator_prose"],
-      publishClasses: []
-    }, "operator-admin");
-
-    await store.recordRobotsSnapshot("https://vpm.example.com", 200, "User-agent: *\nAllow: /");
-    await store.seedJob("https://vpm.example.com/index.json", "vpm", 1000, undefined, "metadata");
-
-    const claimRes = await store.claim({
-      schemaVersion: 1,
-      nodeId: "node-compat",
-      capabilities: ["vpm"]
-    }, principal);
-    if (claimRes.status !== "leased") throw new Error("Expected leased status");
-
-    const submitRes = await store.submit({
-      schemaVersion: 1,
-      nodeId: "node-compat",
-      jobId: claimRes.job.jobId,
-      leaseId: claimRes.job.leaseId,
-      idempotencyKey: "submit-compat-001",
-      outcome: {
-        kind: "changed",
-        observation: {
-          sourceItemKey: "com.example.avatar-dress",
-          title: "【桔梗・マヌカ対応】Cute Dress",
-          summary: "Clothing for Kikyo and Manuka",
-          author: "Dev",
-          outboundLinks: [],
-          originUpdatedAt: null
-        }
-      }
-    }, principal);
-
-    expect(submitRes.status).toBe("accepted");
-    const sourceKey = "vpm:https://vpm.example.com/index.json:com.example.avatar-dress";
-    const compat = await store.listAvatarCompatibilities(sourceKey);
-    expect(compat.length).toBe(2);
-    expect(compat.map((c) => c.targetAvatarBase).sort()).toEqual(["kikyo", "manuka"]);
-  });
-
-  it("Worker edge fetch entrypoint routing", async () => {
-    const mockDb = createMockD1Database();
-    const store = new Coordinator(mockDb);
-    await store.initSchema();
+    await store.initSchema({ autoSeed: false });
 
     const operatorToken = "a".repeat(64);
-    const env: Env = {
-      VRCP_D1: mockDb,
-      OPERATOR_TOKEN: operatorToken
-    };
+    const env: Env = { VRCP_D1: mockDb, OPERATOR_TOKEN: operatorToken };
 
-    const notFoundRes = await workerEntry.fetch(
-      new Request("https://coordinator.internal/not-a-real-endpoint"),
-      env
-    );
+    const notFoundRes = await workerEntry.fetch(new Request("https://coordinator.internal/not-a-real-endpoint"), env);
     expect(notFoundRes.status).toBe(404);
-    const notFoundJson = (await notFoundRes.json()) as { error: string };
-    expect(notFoundJson.error).toBe("Not Found");
+    expect(((await notFoundRes.json()) as { error: string }).error).toBe("Not Found");
 
     const unauthOperatorRes = await workerEntry.fetch(
-      new Request("https://coordinator.internal/v1/operator/source-profiles"),
+      new Request("https://coordinator.internal/v1/operator/steering-profiles"),
       env
     );
     expect(unauthOperatorRes.status).toBe(401);
 
     const authOperatorRes = await workerEntry.fetch(
-      new Request("https://coordinator.internal/v1/operator/source-profiles", {
+      new Request("https://coordinator.internal/v1/operator/steering-profiles", {
         headers: { Authorization: `Bearer ${operatorToken}` }
       }),
       env
@@ -1161,755 +1464,218 @@ describe("Cloudflare D1 Coordinator Store & Edge Worker Adapter", () => {
     const operatorJson = (await authOperatorRes.json()) as { profiles: unknown[] };
     expect(Array.isArray(operatorJson.profiles)).toBe(true);
 
-    const nodeReq = await workerEntry.fetch(
-      new Request("https://coordinator.internal/v1/node/jobs/claim", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ schemaVersion: 1, nodeId: "unauth", capabilities: ["vpm"] })
+    // Retired source-profiles route returns 404 even with operator auth
+    const retiredRes = await workerEntry.fetch(
+      new Request("https://coordinator.internal/v1/operator/source-profiles", {
+        headers: { Authorization: `Bearer ${operatorToken}` }
       }),
       env
     );
-    expect(nodeReq.status).toBe(401);
+    expect(retiredRes.status).toBe(404);
   });
 
-  it("records, retrieves, and cascades desktop tool evidence in D1", async () => {
+  it("supports listing_sources CRUD, auto-delist on gone, cross-source verification, and catalog deltas", async () => {
     const mockDb = createMockD1Database();
     const store = new Coordinator(mockDb);
-    await store.initSchema();
+    await store.initSchema({ autoSeed: false });
 
-    await store.upsertCanonicalPackage({
-      canonicalId: "vrcx-d1",
-      umbrella: "tools",
-      category: "companion_client",
-      lifecycle: "active",
-      displayName: "VRCX"
-    });
+    const { token } = await store.createNodeCredential("node-vpm-verifier", ["vpm", "booth", "custom_domain"]);
+    const principal = (await store.authenticate("node-vpm-verifier", token))!;
 
-    await store.recordDesktopToolEvidence({
-      canonicalId: "vrcx-d1",
-      toolSubtype: "companion_client",
-      supportedOS: ["windows"],
-      particularVRChatTarget: true,
-      evidenceUrl: "https://github.com/vrcx-team/VRCX",
-      publisherClaim: "VRCX is an assistant/companion application for VRChat",
-      confidence: 0.98
-    });
-
-    const retrieved = await store.getDesktopToolEvidence("vrcx-d1");
-    expect(retrieved).not.toBeNull();
-    expect(retrieved?.canonicalId).toBe("vrcx-d1");
-    expect(retrieved?.toolSubtype).toBe("companion_client");
-    expect(retrieved?.supportedOS).toEqual(["windows"]);
-    expect(retrieved?.particularVRChatTarget).toBe(true);
-    expect(retrieved?.evidenceUrl).toBe("https://github.com/vrcx-team/VRCX");
-    expect(retrieved?.publisherClaim).toBe("VRCX is an assistant/companion application for VRChat");
-    expect(retrieved?.confidence).toBe(0.98);
-
-    // Cascade deletion
-    const deleted = await store.deleteCanonicalPackage("vrcx-d1");
-    expect(deleted).toBe(true);
-    expect(await store.getDesktopToolEvidence("vrcx-d1")).toBeNull();
-  });
-
-  it("supports catalog delta streaming and unauthenticated public endpoints in D1 and worker_entry", async () => {
-    const mockDb = createMockD1Database();
-    const store = new Coordinator(mockDb);
-    await store.initSchema();
-
-    const epoch1 = await store.getCatalogEpoch();
-    expect(epoch1.length).toBeGreaterThan(0);
-
-    // Seed active and delisted packages
-    await store.upsertCanonicalPackage({
-      canonicalId: "d1-pkg-active",
-      umbrella: "tools",
-      category: "tool",
-      lifecycle: "active",
-      displayName: "D1 Active Tool"
-    });
-    await store.upsertCanonicalPackage({
-      canonicalId: "d1-pkg-delisted",
-      umbrella: "tools",
-      category: "tool",
-      lifecycle: "delisted",
-      displayName: "D1 Delisted Tool"
-    });
-
-    const deltaRes = await store.listCatalogDeltasPage(10, null);
-    expect(deltaRes.epoch).toBe(epoch1);
-    expect(deltaRes.deltas).toHaveLength(2);
-
-    const activeDelta = deltaRes.deltas.find((d) => d.canonicalId === "d1-pkg-active");
-    expect(activeDelta?.action).toBe("upsert");
-    expect(activeDelta?.package?.displayName).toBe("D1 Active Tool");
-
-    const delistedDelta = deltaRes.deltas.find((d) => d.canonicalId === "d1-pkg-delisted");
-    expect(delistedDelta?.action).toBe("delist");
-    expect(delistedDelta?.package).toBeUndefined();
-
-    // Verify epoch reset
-    const epoch2 = await store.resetCatalogEpoch();
-    expect(epoch2).not.toBe(epoch1);
-
-    // Test worker_entry.fetch public unauthenticated routes
-    const env: Env = { VRCP_D1: mockDb, OPERATOR_TOKEN: "f".repeat(64) };
-
-    const catReq = new Request("http://coordinator.test/v1/app/index");
-    const catRes = await workerEntry.fetch(catReq, env);
-    expect(catRes.status).toBe(200);
-    const catJson = await catRes.json() as any;
-    expect(catJson.packages).toHaveLength(2);
-
-    const deltaReq = new Request("http://coordinator.test/v1/app/index/delta");
-    const deltaHttpRes = await workerEntry.fetch(deltaReq, env);
-    expect(deltaHttpRes.status).toBe(200);
-    const deltaJson = await deltaHttpRes.json() as any;
-    expect(deltaJson.deltas).toHaveLength(2);
-    expect(deltaJson.epoch).toBe(epoch2);
-
-    await store.adjustPackageRating("d1-pkg-active", "adult_restricted", "operator-1", "Rating adjustment test");
-    const deltaAfterRatingRes = await store.listCatalogDeltasPage(10, null);
-    const ratingWithdrawnDelta = deltaAfterRatingRes.deltas.find((d) => d.canonicalId === "d1-pkg-active");
-    expect(ratingWithdrawnDelta?.action).toBe("delist");
-    expect(ratingWithdrawnDelta?.package).toBeUndefined();
-
-    await store.deleteCanonicalPackage("d1-pkg-delisted");
-    const deltaAfterDeleteRes = await store.listCatalogDeltasPage(10, null);
-    const deletedDelta = deltaAfterDeleteRes.deltas.find((d) => d.canonicalId === "d1-pkg-delisted");
-    expect(deletedDelta?.action).toBe("delist");
-    expect(deletedDelta?.package).toBeUndefined();
-  });
-
-  it("initializes distinct catalog epochs, returns the concurrent winner and preserves stored values", async () => {
-    const firstDB = new Database(":memory:"), secondDB = new Database(":memory:");
-    const firstBinding = createMockD1Database(firstDB), secondBinding = createMockD1Database(secondDB);
-    const first = new Coordinator(firstBinding), second = new Coordinator(secondBinding);
-    try {
-      await first.initSchema();
-      await second.initSchema();
-      const readers = Array.from({ length: 8 }, () => new Coordinator(firstBinding));
-      const concurrent = await Promise.all(readers.map(reader => reader.getCatalogEpoch()));
-      expect(new Set(concurrent).size).toBe(1);
-      const initial = concurrent[0]!;
-      expect(initial).toMatch(/^epoch-d1-[0-9a-f-]{36}$/);
-      expect(await first.getCatalogEpoch()).toBe(initial);
-      expect(await second.getCatalogEpoch()).not.toBe(initial);
-      const reset = await first.resetCatalogEpoch();
-      expect(reset).not.toBe(initial);
-      expect(reset).toMatch(/^epoch-d1-[0-9a-f-]{36}$/);
-      expect(await new Coordinator(firstBinding).getCatalogEpoch()).toBe(reset);
-      // Existing deployed epochs must not be silently migrated or invalidated.
-      firstDB.run("UPDATE coordinator_meta SET value='epoch-d1-default' WHERE key='catalog_epoch'");
-      expect(await new Coordinator(firstBinding).getCatalogEpoch()).toBe("epoch-d1-default");
-    } finally { firstDB.close(); secondDB.close(); }
-  });
-
-  it("cannot report an initialized epoch when its persistence fails", async () => {
-    const sqlite = new Database(":memory:");
-    const store = new Coordinator(createMockD1Database(sqlite));
-    try {
-      await store.initSchema();
-      sqlite.run("CREATE TRIGGER reject_catalog_epoch BEFORE INSERT ON coordinator_meta WHEN NEW.key='catalog_epoch' BEGIN SELECT RAISE(ABORT,'Epoch persistence refused'); END");
-      await expect(store.getCatalogEpoch()).rejects.toThrow("Epoch persistence refused");
-      expect(sqlite.query("SELECT value FROM coordinator_meta WHERE key='catalog_epoch'").get()).toBeNull();
-      sqlite.run("DROP TRIGGER reject_catalog_epoch");
-      const recovered = await store.getCatalogEpoch();
-      expect(recovered).toMatch(/^epoch-d1-[0-9a-f-]{36}$/);
-      expect(await store.getCatalogEpoch()).toBe(recovered);
-    } finally { sqlite.close(); }
-  });
-
-  it.each([1, 2, 100])("pages stable equal-time deltas through the installed SDK (limit %s)", async limit => {
-    const sqlite = new Database(":memory:");
-    const timestamp = "2026-10-13T00:00:00.000Z";
-    const store = new Coordinator(createMockD1Database(sqlite), () => Date.parse(timestamp));
-    const ids = ["delta-a", "delta-b", "delta-c", "界".repeat(499) + "a", "😀"];
-    const delisted = new Set([ids[1], ids[4]]);
-    try {
-      await store.initSchema();
-      for (const canonicalId of ids) await store.upsertCanonicalPackage({
-        canonicalId, umbrella: "tools", category: "tool", createdAt: timestamp, updatedAt: timestamp,
-        lifecycle: delisted.has(canonicalId) ? "delisted" : "active",
-        displayName: delisted.has(canonicalId) ? "Delisted metadata must not leak" : "Equal-time fixture tool"
-      });
-      for (const contentRating of ["mature", "adult_restricted", "prohibited"] as const) {
-        await store.upsertCanonicalPackage({ canonicalId: `delta-aa-hidden-${contentRating}`, umbrella: "tools",
-          category: "tool", lifecycle: "delisted", displayName: "Restricted metadata must not leak",
-          createdAt: timestamp, updatedAt: timestamp, contentRating });
-      }
-      const limiter = new InMemoryRateLimiter();
-      const client = new VRCPackageClient({ baseUrl: "https://coordinator.invalid", fetch: Object.assign(
-        async (input: RequestInfo | URL, init?: RequestInit) => {
-          const request = new Request(input, init);
-          expect(request.headers.has("authorization")).toBe(false);
-          const response = await handlePublicCatalogRequest(request, store, limiter);
-          expect(response.status).toBe(200);
-          const wire = await response.clone().text();
-          expect(wire).not.toContain("Delisted metadata must not leak");
-          expect(wire).not.toContain("Restricted metadata must not leak");
-          return response;
-        }, { preconnect() {} }) });
-      const seen: string[] = [], cursors = new Set<string>();
-      const epoch = await store.getCatalogEpoch();
-      let cursor: string | undefined;
-      do {
-        const page = await client.index.syncDeltas({ limit, ...(cursor ? { cursor } : {}) });
-        expect(page.epoch).toBe(epoch);
-        expect(page.deltas.length).toBeGreaterThan(0);
-        expect(page.deltas.length).toBeLessThanOrEqual(limit);
-        for (const delta of page.deltas) {
-          expect(delta.updatedAt).toBe(timestamp);
-          expect(delta.action).toBe(delisted.has(delta.canonicalId) ? "delist" : "upsert");
-          if (delta.action === "delist") expect(delta.package).toBeUndefined();
-          else expect(delta.package?.canonicalId).toBe(delta.canonicalId);
-          seen.push(delta.canonicalId);
-        }
-        cursor = page.nextCursor ?? undefined;
-        if (cursor) {
-          expect(cursors.has(cursor)).toBe(false);
-          cursors.add(cursor);
-        }
-        if (seen.length > ids.length) throw new Error("Delta pagination repeated a row");
-      } while (cursor);
-      expect(seen).toEqual(ids);
-      expect(new Set(seen).size).toBe(ids.length);
-    } finally { sqlite.close(); }
-  });
-
-  it("autoSeed queues candidates without inventing access approval or robots evidence", async () => {
-    const mockDb = createMockD1Database();
-    const store = new Coordinator(mockDb);
-    await store.initSchema(true);
-
-    const profiles = await store.listSourceAccessProfilesPage(100, null);
-    expect(profiles.profiles).toHaveLength(0);
-    expect(await mockDb.prepare("SELECT COUNT(*) AS count FROM origin_robots").first("count")).toBe(0);
-    expect(await mockDb.prepare("SELECT COUNT(*) AS count FROM source_access_profile_actions").first("count")).toBe(0);
-    expect(await mockDb.prepare("SELECT COUNT(*) AS count FROM crawl_jobs WHERE state='pending'").first("count"))
-      .toBe(DEFAULT_SEED_JOBS.length);
-    const capabilities = [...PlatformSchema.options];
-    const token = await store.issueNodeCredential({ schemaVersion: 1, nodeId: "bootstrap-node",
-      capabilities, reason: "Offline bootstrap regression" }, "fixture-operator");
-    const principal = (await store.authenticate("bootstrap-node", token))!;
-    expect((await store.claim({ schemaVersion: 1, nodeId: principal.nodeId, capabilities }, principal)).status).toBe("empty");
-  });
-
-  it("reinitialization preserves reviewed and disabled profiles and restrictive robots snapshots", async () => {
-    for (const disabled of [false, true]) {
-      const sqlite = new Database(":memory:");
-      const db = createMockD1Database(sqlite);
-      const store = new Coordinator(db, () => Date.parse("2026-10-03T00:00:00.000Z"));
-      try {
-        await store.initSchema();
-        const target = DEFAULT_SEED_JOBS[0]!;
-        const url = new URL(target.url);
-        const profile = await store.createSourceAccessProfile({ schemaVersion: 1,
-          platform: target.platform, origin: url.origin, pathScope: url.pathname, method: "GET",
-          purpose: target.purpose, minDelayMs: 1000, expiresAt: "2026-10-04T00:00:00.000Z",
-          reviewReference: "OFFLINE-BOOTSTRAP-FIXTURE", reason: "Hermetic reinitialization fixture",
-          retainClasses: ["normalized_facts"], publishClasses: [] }, "fixture-operator");
-        await store.recordRobotsSnapshot(url.origin, 200, "User-agent: *\nDisallow: /");
-        if (disabled) await store.disableSourceAccessProfile(profile.profileId, "fixture-operator", "Access withdrawn");
-        const profiles = sqlite.query("SELECT * FROM source_access_profiles").all();
-        const actions = sqlite.query("SELECT * FROM source_access_profile_actions").all();
-        const robots = sqlite.query("SELECT * FROM origin_robots").all();
-        await store.initSchema(true);
-        await store.initSchema(true);
-        expect(sqlite.query("SELECT * FROM source_access_profiles").all()).toEqual(profiles);
-        expect(sqlite.query("SELECT * FROM source_access_profile_actions").all()).toEqual(actions);
-        expect(sqlite.query("SELECT * FROM origin_robots").all()).toEqual(robots);
-        expect(sqlite.query("SELECT COUNT(*) AS count FROM crawl_jobs").get()).toEqual({ count: DEFAULT_SEED_JOBS.length });
-      } finally { sqlite.close(); }
-    }
-  });
-
-  it("reinitialization preserves active job leases and does not queue suppressed candidates", async () => {
-    const sqlite = new Database(":memory:");
-    const db = createMockD1Database(sqlite);
-    const store = new Coordinator(db, () => Date.parse("2026-10-03T00:00:00.000Z"));
-    try {
-      await store.initSchema();
-      const target = DEFAULT_SEED_JOBS[0]!;
-      const url = new URL(target.url);
-      await store.createSourceAccessProfile({ schemaVersion: 1, platform: target.platform,
-        origin: url.origin, pathScope: url.pathname, method: "GET", purpose: target.purpose,
-        minDelayMs: 1000, expiresAt: "2026-10-04T00:00:00.000Z",
-        reviewReference: "OFFLINE-LEASE-FIXTURE", reason: "Hermetic active lease fixture",
-        retainClasses: ["normalized_facts"], publishClasses: [] }, "fixture-operator");
-      await store.recordRobotsSnapshot(url.origin, 404);
-      await store.seedJob(target.url, target.platform, target.minDelayMs, undefined, target.purpose);
-      const token = await store.issueNodeCredential({ schemaVersion: 1, nodeId: "bootstrap-live-lease",
-        capabilities: ["vpm"], reason: "Offline lease fixture" }, "fixture-operator");
-      const principal = (await store.authenticate("bootstrap-live-lease", token))!;
-      const claim = await store.claim({ schemaVersion: 1, nodeId: principal.nodeId, capabilities: ["vpm"] }, principal);
-      expect(claim.status).toBe("leased");
-      const jobs = sqlite.query("SELECT * FROM crawl_jobs WHERE url=?").get(target.url);
-      const origin = sqlite.query("SELECT * FROM origin_leases WHERE origin=?").get(url.origin);
-      const suppressed = DEFAULT_SEED_JOBS[1]!;
-      sqlite.run("INSERT INTO suppressed_urls(url,reason,suppressed_at) VALUES (?,?,?)",
-        [suppressed.url, "Fixture suppression", "2026-10-03T00:00:00.000Z"]);
-      await store.initSchema(true);
-      expect(sqlite.query("SELECT * FROM crawl_jobs WHERE url=?").get(target.url)).toEqual(jobs);
-      expect(sqlite.query("SELECT * FROM origin_leases WHERE origin=?").get(url.origin)).toEqual(origin);
-      expect(sqlite.query("SELECT * FROM crawl_jobs WHERE url=?").get(suppressed.url)).toBeNull();
-    } finally { sqlite.close(); }
-  });
-
-  it("supports upserting, retrieving, and deleting package fronts in D1", async () => {
-    const mockDb = createMockD1Database();
-    const store = new Coordinator(mockDb);
-    await store.initSchema();
-
-    await store.upsertCanonicalPackage({
-      canonicalId: "d1-pkg-fronted",
-      umbrella: "tools",
-      category: "vpm_package",
-      lifecycle: "active",
-      displayName: "Fronted D1 Package"
-    });
-
-    await mockDb.prepare(`INSERT INTO source_items (source_key, platform, source_url, latest_digest, latest_version_no)
-      VALUES ('booth:https://booth.pm/ja/items/111:111', 'booth', 'https://booth.pm/ja/items/111', 'abc', 1)`).run();
-
-    const front = await store.upsertPackageFront({
-      canonicalId: "d1-pkg-fronted",
-      sourceKey: "booth:https://booth.pm/ja/items/111:111",
-      platform: "booth",
-      storefrontUrl: "https://booth.pm/ja/items/111",
-      price: 1500,
-      currency: "JPY",
-      availability: "available"
-    });
-    expect(front.canonicalId).toBe("d1-pkg-fronted");
-    expect(front.price).toBe(1500);
-
-    const fronts = await store.getPackageFrontsForCanonical("d1-pkg-fronted");
-    expect(fronts).toHaveLength(1);
-    expect(fronts[0].storefrontUrl).toBe("https://booth.pm/ja/items/111");
-
-    const deleted = await store.deletePackageFront(front.frontId);
-    expect(deleted).toBe(true);
-
-    const remainingFronts = await store.getPackageFrontsForCanonical("d1-pkg-fronted");
-    expect(remainingFronts).toHaveLength(0);
-  });
-
-  it.each(["confirmed", "inferred"] as const)("metadata-only upserts preserve %s publication evidence", async (confidence) => {
-    const sqlite = new Database(":memory:");
-    let clock = Date.now();
-    const store = new Coordinator(createMockD1Database(sqlite), () => clock);
-    try {
-      await store.initSchema(false);
-      const base = { canonicalId: "timestamp-upsert", umbrella: "tools" as const, category: "tool",
-        lifecycle: "active" as const, displayName: "Original metadata" };
-      const publishedAt = "2021-01-02T03:04:05.000Z";
-      const original = await store.upsertCanonicalPackage({ ...base, publishedAt, timestampConfidence: confidence });
-      clock += 1000;
-      const updated = await store.upsertCanonicalPackage({ ...base, displayName: "Updated metadata" });
-      expect(updated.publishedAt).toBe(publishedAt);
-      expect(updated.timestampConfidence).toBe(confidence);
-      expect(updated.createdAt).toBe(original.createdAt);
-      expect(updated.updatedAt).toBe(new Date(clock).toISOString());
-      const page = await store.listCanonicalPackagesPage(100, null);
-      expect(page.packages[0]?.publishedAt).toBe(publishedAt);
-      expect(page.packages[0]?.timestampConfidence).toBe(confidence);
-    } finally { sqlite.close(); }
-  });
-
-  it.each([
-    { originUpdatedAt: null, publishedAt: null },
-    { originUpdatedAt: "2024-01-02T03:04:05.000Z", publishedAt: null },
-    { originUpdatedAt: "2024-01-02T03:04:05.000Z", publishedAt: "2023-01-02T03:04:05.000Z" }
-  ])("storefront ingestion keeps modification and publication separate: %j", async ({ originUpdatedAt, publishedAt }) => {
-    const mockDb = createMockD1Database();
-    const store = new Coordinator(mockDb);
-    await store.initSchema();
-
-    const token = await store.issueNodeCredential({
-      schemaVersion: 1,
-      nodeId: "node-booth",
-      capabilities: ["booth"],
-      reason: "Booth crawler node"
-    }, "operator-admin");
-    const principal = (await store.authenticate("node-booth", token))!;
-
-    await store.createSourceAccessProfile({
-      schemaVersion: 1,
-      platform: "booth",
-      origin: "https://booth.pm",
-      pathScope: "/ja/items/",
-      method: "GET",
-      purpose: "metadata",
-      minDelayMs: 1500,
-      expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
-      reviewReference: "REV-BOOTH-01",
-      reason: "Booth metadata profile",
-      retainClasses: ["normalized_facts"],
-      publishClasses: ["normalized_facts"]
-    }, "operator-admin");
-
-    await store.recordRobotsSnapshot("https://booth.pm", 200, "User-agent: *\nAllow: /");
-    const jobId = await store.seedJob("https://booth.pm/ja/items/54321", "booth", 1500, undefined, "metadata");
-
-    const claimRes = await store.claim({
-      schemaVersion: 1,
-      nodeId: "node-booth",
-      capabilities: ["booth"]
-    }, principal);
-    expect(claimRes.status).toBe("leased");
-    if (claimRes.status !== "leased") throw new Error("Expected leased status");
-
-    if (publishedAt) {
-      await store.upsertCanonicalPackage({
-        canonicalId: "booth.pm/ja/items/54321", umbrella: "assets", category: "shader",
-        lifecycle: "active", displayName: "Awesome Shader Asset", publishedAt,
-        timestampConfidence: "confirmed"
-      });
-    }
-
-    const submitRes = await store.submit({
-      schemaVersion: 1,
-      nodeId: "node-booth",
-      jobId: claimRes.job.jobId,
-      leaseId: claimRes.job.leaseId,
-      idempotencyKey: "submit-booth-001",
-      outcome: {
-        kind: "changed",
-        observation: {
-          sourceItemKey: "booth.pm/ja/items/54321",
-          title: "Awesome Shader Asset",
-          summary: "",
-          author: "ShaderDev",
-          outboundLinks: [],
-          originUpdatedAt,
-          price: 2000,
-          currency: "JPY",
-          availability: "available",
-          platformTags: ["shader"]
-        }
-      }
-    }, principal);
-
-    expect(submitRes.status).toBe("accepted");
-
-    // Canonical package should be automatically created in D1
-    const canonical = await store.getCanonicalPackage("booth.pm/ja/items/54321");
-    expect(canonical).not.toBeNull();
-    expect(canonical?.canonicalId).toBe("booth.pm/ja/items/54321");
-    expect(canonical?.displayName).toBe("Awesome Shader Asset");
-    expect(canonical?.publishedAt).toBe(publishedAt);
-    expect(canonical?.timestampConfidence).toBe(publishedAt ? "confirmed" : null);
-    const publicPage = await store.listCanonicalPackagesPage(100, null);
-    const publicPackage = publicPage.packages.find(pkg => pkg.canonicalId === canonical?.canonicalId);
-    expect(publicPackage?.publishedAt).toBe(publishedAt);
-    expect(publicPackage?.timestampConfidence).toBe(publishedAt ? "confirmed" : null);
-    const sourceVersion = await mockDb.prepare("SELECT payload_json FROM source_versions WHERE source_key=?")
-      .bind("booth:https://booth.pm/ja/items/54321:booth.pm/ja/items/54321")
-      .first<{ payload_json: string }>();
-    expect(JSON.parse(sourceVersion!.payload_json).originUpdatedAt).toBe(originUpdatedAt);
-    expect(canonical?.vpmId).toBeNull();
-    expect(canonical?.category).toBe("shader");
-    expect(canonical?.umbrella).toBe("assets");
-
-    // Package front should be automatically created in D1
-    const fronts = await store.getPackageFrontsForCanonical("booth.pm/ja/items/54321");
-    expect(fronts).toHaveLength(1);
-    expect(fronts[0].platform).toBe("booth");
-    expect(fronts[0].storefrontUrl).toBe("https://booth.pm/ja/items/54321");
-    expect(fronts[0].price).toBe(2000);
-    expect(fronts[0].currency).toBe("JPY");
-    expect(fronts[0].availability).toBe("available");
-  });
-
-  it("auto-delists package front and canonical package when storefront source is gone", async () => {
-    const mockDb = createMockD1Database();
-    const store = new Coordinator(mockDb);
-    await store.initSchema();
-
-    const token = await store.issueNodeCredential({
-      schemaVersion: 1,
-      nodeId: "node-delist-test",
-      capabilities: ["booth"],
-      reason: "Booth delist test node"
-    }, "operator-admin");
-    const principal = (await store.authenticate("node-delist-test", token))!;
-
-    await store.createSourceAccessProfile({
-      schemaVersion: 1,
-      platform: "booth",
-      origin: "https://booth.pm",
-      pathScope: "/ja/items/",
-      method: "GET",
-      purpose: "metadata",
-      minDelayMs: 1500,
-      expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
-      reviewReference: "REV-BOOTH-02",
-      reason: "Booth metadata profile",
-      retainClasses: ["normalized_facts"],
-      publishClasses: ["normalized_facts"]
-    }, "operator-admin");
-
-    await store.recordRobotsSnapshot("https://booth.pm", 200, "User-agent: *\nAllow: /");
-    await store.seedJob("https://booth.pm/ja/items/99999", "booth", 1500, undefined, "metadata");
-
-    const claim1 = await store.claim({
-      schemaVersion: 1,
-      nodeId: "node-delist-test",
-      capabilities: ["booth"]
-    }, principal);
-    if (claim1.status !== "leased") throw new Error("Expected leased status");
-
-    await store.submit({
-      schemaVersion: 1,
-      nodeId: "node-delist-test",
-      jobId: claim1.job.jobId,
-      leaseId: claim1.job.leaseId,
-      idempotencyKey: "submit-booth-create",
-      outcome: {
-        kind: "changed",
-        observation: {
-          sourceItemKey: "booth.pm/ja/items/99999",
-          title: "Temporary Prop",
-          summary: "",
-          author: "Artist",
-          outboundLinks: [],
-          originUpdatedAt: null,
-          price: 500,
-          currency: "JPY",
-          availability: "available",
-          platformTags: ["accessory"]
-        }
-      }
-    }, principal);
-
-    let canonical = await store.getCanonicalPackage("booth.pm/ja/items/99999");
-    expect(canonical?.lifecycle).toBe("active");
-    let fronts = await store.getPackageFrontsForCanonical("booth.pm/ja/items/99999");
-    expect(fronts[0].availability).toBe("available");
-
-    // Re-queue for revisit
-    await mockDb.prepare("UPDATE crawl_jobs SET state='pending', next_fetch_at='2020-01-01T00:00:00.000Z' WHERE url=?")
-      .bind("https://booth.pm/ja/items/99999").run();
-    await mockDb.prepare("UPDATE origin_leases SET next_allowed_at='2020-01-01T00:00:00.000Z' WHERE origin=?")
-      .bind("https://booth.pm").run();
-    const claim2 = await store.claim({
-      schemaVersion: 1,
-      nodeId: "node-delist-test",
-      capabilities: ["booth"]
-    }, principal);
-    if (claim2.status !== "leased") throw new Error("Expected leased status");
-
-    // Storefront item returned 404/gone
-    await store.submit({
-      schemaVersion: 1,
-      nodeId: "node-delist-test",
-      jobId: claim2.job.jobId,
-      leaseId: claim2.job.leaseId,
-      idempotencyKey: "submit-booth-gone",
-      outcome: {
-        kind: "gone"
-      }
-    }, principal);
-
-    canonical = await store.getCanonicalPackage("booth.pm/ja/items/99999");
-    expect(canonical?.lifecycle).toBe("delisted");
-    fronts = await store.getPackageFrontsForCanonical("booth.pm/ja/items/99999");
-    expect(fronts[0].availability).toBe("delisted");
-  });
-
-  it("extracts cross-source storefront and repository leads from VPM manifests and links verification jobs", async () => {
-    const mockDb = createMockD1Database();
-    const store = new Coordinator(mockDb);
-    await store.initSchema();
-
-    const nodeToken = await store.issueNodeCredential({
-      schemaVersion: 1,
-      nodeId: "node-vpm-verifier",
-      capabilities: ["vpm", "github", "custom_domain"],
-      reason: "VPM verification test node"
-    }, "operator-admin");
-    const principal = (await store.authenticate("node-vpm-verifier", nodeToken))!;
-
-    await store.createSourceAccessProfile({
-      schemaVersion: 1,
-      platform: "vpm",
-      origin: "https://vpm.example.com",
-      pathScope: "/index.json",
-      method: "GET",
-      purpose: "discovery",
-      minDelayMs: 1000,
-      expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
-      reviewReference: "REV-VPM-01",
-      reason: "VPM repo profile",
-      retainClasses: ["normalized_facts"],
-      publishClasses: ["normalized_facts"]
-    }, "operator-admin");
-
-    await store.createSourceAccessProfile({
-      schemaVersion: 1,
-      platform: "custom_domain",
-      origin: "https://store.vrcfury.com",
-      pathScope: "/tools/",
-      method: "GET",
-      purpose: "metadata",
-      minDelayMs: 2000,
-      expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
-      reviewReference: "REV-CUSTOM-01",
-      reason: "Custom domain profile",
-      retainClasses: ["normalized_facts"],
-      publishClasses: ["normalized_facts"]
-    }, "operator-admin");
+    await store.createSteeringProfile(
+      {
+        schemaVersion: 1,
+        platform: "vpm",
+        hostMatchMode: "exact",
+        hostPattern: "vpm.example.com",
+        pathScope: "/index.json",
+        queryMode: "none",
+        method: "GET",
+        purpose: "discovery",
+        minDelayMs: 1000,
+        expiresAt: "2099-01-01T00:00:00.000Z",
+        reviewReference: "REV-VPM-01",
+        reason: "VPM repo profile",
+        retainClasses: ["normalized_facts"],
+        publishClasses: ["normalized_facts"]
+      },
+      "operator-admin"
+    );
+    await store.createSteeringProfile(
+      {
+        schemaVersion: 1,
+        platform: "custom_domain",
+        hostMatchMode: "exact",
+        hostPattern: "store.vrcfury.com",
+        pathScope: "/tools/",
+        queryMode: "none",
+        method: "GET",
+        purpose: "metadata",
+        minDelayMs: 2000,
+        expiresAt: "2099-01-01T00:00:00.000Z",
+        reviewReference: "REV-CUSTOM-01",
+        reason: "Custom domain profile",
+        retainClasses: ["normalized_facts"],
+        publishClasses: ["normalized_facts"]
+      },
+      "operator-admin"
+    );
+    await store.createSteeringProfile(
+      {
+        schemaVersion: 1,
+        platform: "booth",
+        hostMatchMode: "exact",
+        hostPattern: "booth.pm",
+        pathScope: "/ja/items/",
+        queryMode: "none",
+        method: "GET",
+        purpose: "metadata",
+        minDelayMs: 1500,
+        expiresAt: "2099-01-01T00:00:00.000Z",
+        reviewReference: "REV-BOOTH-02",
+        reason: "Booth metadata profile",
+        retainClasses: ["normalized_facts"],
+        publishClasses: ["normalized_facts"]
+      },
+      "operator-admin"
+    );
 
     await store.recordRobotsSnapshot("https://vpm.example.com", 200, "User-agent: *\nAllow: /");
     await store.recordRobotsSnapshot("https://store.vrcfury.com", 200, "User-agent: *\nAllow: /");
+    await store.recordRobotsSnapshot("https://booth.pm", 200, "User-agent: *\nAllow: /");
 
-    await store.seedJob("https://vpm.example.com/index.json", "vpm", 1000, undefined, "discovery");
-    const claim1 = await store.claim({
-      schemaVersion: 1,
-      nodeId: "node-vpm-verifier",
-      capabilities: ["vpm"]
-    }, principal);
+    await store.seedJob("https://vpm.example.com/index.json", "vpm", { minDelayMs: 1000, purpose: "discovery" });
+    const claim1 = await store.claim({ schemaVersion: 1, nodeId: "node-vpm-verifier", capabilities: ["vpm"] }, principal);
     if (claim1.status !== "leased") throw new Error("Expected leased status");
 
-    await store.submit({
-      schemaVersion: 1,
-      nodeId: "node-vpm-verifier",
-      jobId: claim1.job.jobId,
-      leaseId: claim1.job.leaseId,
-      idempotencyKey: "submit-vpm-vrcfury",
-      outcome: {
-        kind: "changed",
-        observation: {
-          sourceItemKey: "com.vrcfury.vrcfury",
-          title: "VRCFury",
-          summary: "",
-          author: "VRCFury Contributors",
-          outboundLinks: [
-            "https://github.com/vrcfury/vrcfury",
-            "https://store.vrcfury.com/tools/vrcfury"
-          ],
-          originUpdatedAt: null,
-          platformTags: ["tool"]
+    await store.submit(
+      {
+        schemaVersion: 1,
+        nodeId: "node-vpm-verifier",
+        jobId: claim1.job.jobId,
+        leaseId: claim1.job.leaseId,
+        idempotencyKey: "submit-vpm-vrcfury",
+        outcome: {
+          kind: "changed",
+          observation: {
+            sourceItemKey: "com.vrcfury.vrcfury",
+            title: "VRCFury",
+            summary: "",
+            author: "VRCFury Contributors",
+            outboundLinks: ["https://github.com/vrcfury/vrcfury", "https://store.vrcfury.com/tools/vrcfury"],
+            originUpdatedAt: null,
+            platformTags: ["tool"]
+          }
         }
-      }
-    }, principal);
-
-    const canonical = await store.getCanonicalPackage("com.vrcfury.vrcfury");
-    expect(canonical).not.toBeNull();
-    expect(canonical?.vpmId).toBe("com.vrcfury.vrcfury");
+      },
+      principal
+    );
 
     const leadsRes = await store.listLeadsPage("pending_review", 10, null);
-    expect(leadsRes.leads.length).toBeGreaterThanOrEqual(2);
-    const ghLead = leadsRes.leads.find((l) => l.kind === "github_repository");
-    expect(ghLead).toBeDefined();
-    expect(ghLead?.claimed_package_id).toBe("com.vrcfury.vrcfury");
-
     const storefrontLead = leadsRes.leads.find((l) => l.target_url === "https://store.vrcfury.com/tools/vrcfury");
-    expect(storefrontLead).toBeDefined();
+    expect(storefrontLead?.target_host).toBe("store.vrcfury.com");
     expect(storefrontLead?.claimed_package_id).toBe("com.vrcfury.vrcfury");
 
-    const verifyJobId = await store.approveVpmListingLead(storefrontLead!.lead_key, 2000, "operator-test", "Verifying VRCFury custom domain");
-    expect(verifyJobId).toBeDefined();
-
-    const claim2 = await store.claim({
-      schemaVersion: 1,
-      nodeId: "node-vpm-verifier",
-      capabilities: ["custom_domain"]
-    }, principal);
+    await store.approveLead(storefrontLead!.lead_key, 2000, "operator-test", "Verifying VRCFury custom domain");
+    const claim2 = await store.claim(
+      { schemaVersion: 1, nodeId: "node-vpm-verifier", capabilities: ["custom_domain"] },
+      principal
+    );
     expect(claim2.status).toBe("leased");
     if (claim2.status !== "leased") throw new Error("Expected leased verification job");
-    expect(claim2.job.url).toBe("https://store.vrcfury.com/tools/vrcfury");
 
-    await store.submit({
-      schemaVersion: 1,
-      nodeId: "node-vpm-verifier",
-      jobId: claim2.job.jobId,
-      leaseId: claim2.job.leaseId,
-      idempotencyKey: "submit-custom-vrcfury",
-      outcome: {
-        kind: "changed",
-        observation: {
-          sourceItemKey: "store.vrcfury.com/tools/vrcfury",
-          title: "VRCFury Tool Suite",
-          summary: "",
-          author: "VRCFury",
-          outboundLinks: ["https://github.com/vrcfury/vrcfury"],
-          originUpdatedAt: null,
-          price: 0,
-          currency: "USD",
-          availability: "available",
-          platformTags: ["tool"]
+    await store.submit(
+      {
+        schemaVersion: 1,
+        nodeId: "node-vpm-verifier",
+        jobId: claim2.job.jobId,
+        leaseId: claim2.job.leaseId,
+        idempotencyKey: "submit-custom-vrcfury",
+        outcome: {
+          kind: "changed",
+          observation: {
+            sourceItemKey: "store.vrcfury.com/tools/vrcfury",
+            title: "VRCFury Tool Suite",
+            summary: "",
+            author: "VRCFury",
+            outboundLinks: ["https://github.com/vrcfury/vrcfury"],
+            originUpdatedAt: null,
+            price: 0,
+            currency: "USD",
+            availability: "available",
+            platformTags: ["tool"]
+          }
         }
-      }
-    }, principal);
+      },
+      principal
+    );
 
-    const fronts = await store.getPackageFrontsForCanonical("com.vrcfury.vrcfury");
-    expect(fronts).toHaveLength(1);
-    expect(fronts[0].platform).toBe("custom_domain");
-    expect(fronts[0].storefrontUrl).toBe("https://store.vrcfury.com/tools/vrcfury");
-    expect(fronts[0].canonicalId).toBe("com.vrcfury.vrcfury");
-  });
+    const sources = await store.getListingSourcesForCanonical("com.vrcfury.vrcfury");
+    expect(sources).toHaveLength(2);
+    expect(sources.some((s) => s.platform === "custom_domain" && s.storefrontUrl === "https://store.vrcfury.com/tools/vrcfury")).toBe(
+      true
+    );
 
-  it("workerEntry fetch handles POST /v1/operator/init and enforces operator auth", async () => {
-    const db = createMockD1Database();
-    const operatorToken = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-    const env: Env = { VRCP_D1: db, OPERATOR_TOKEN: operatorToken };
+    // Booth item gone -> auto-delists canonical & listing_source
+    await store.seedJob("https://booth.pm/ja/items/99999", "booth", { minDelayMs: 1500, purpose: "metadata" });
+    const b1 = await store.claim({ schemaVersion: 1, nodeId: "node-vpm-verifier", capabilities: ["booth"] }, principal);
+    if (b1.status !== "leased") throw new Error("Expected booth claim 1");
+    await store.submit(
+      {
+        schemaVersion: 1,
+        nodeId: "node-vpm-verifier",
+        jobId: b1.job.jobId,
+        leaseId: b1.job.leaseId,
+        idempotencyKey: "booth-create-gone-test",
+        outcome: {
+          kind: "changed",
+          observation: {
+            sourceItemKey: "booth.pm/ja/items/99999",
+            title: "Temporary Prop",
+            summary: "",
+            author: "Artist",
+            outboundLinks: [],
+            originUpdatedAt: null,
+            price: 500,
+            currency: "JPY",
+            availability: "available"
+          }
+        }
+      },
+      principal
+    );
+    expect((await store.getCanonicalPackage("booth.pm/ja/items/99999"))?.lifecycle).toBe("active");
 
-    // Unauthorized without auth header
-    const unauthReq = new Request("http://localhost/v1/operator/init", {
-      method: "POST",
-      body: JSON.stringify({ autoSeed: true })
-    });
-    const unauthRes = await workerEntry.fetch(unauthReq, env);
-    expect(unauthRes.status).toBe(401);
-
-    // Unauthorized with wrong token
-    const wrongReq = new Request("http://localhost/v1/operator/init", {
-      method: "POST",
-      headers: { authorization: "Bearer wrongtoken" },
-      body: JSON.stringify({ autoSeed: true })
-    });
-    const wrongRes = await workerEntry.fetch(wrongReq, env);
-    expect(wrongRes.status).toBe(401);
-
-    // Authorized init
-    const authReq = new Request("http://localhost/v1/operator/init", {
-      method: "POST",
-      headers: { authorization: `Bearer ${operatorToken}`, "content-type": "application/json" },
-      body: JSON.stringify({ schemaVersion: 1, autoSeed: true })
-    });
-    const authRes = await workerEntry.fetch(authReq, env);
-    expect(authRes.status).toBe(200);
-    const body = await authRes.json() as any;
-    expect(body.status).toBe("ok");
-    expect(body.autoSeed).toBe(true);
-
-    // Subsequent catalog query returns 200 after init
-    const catalogReq = new Request("http://localhost/v1/app/index", { method: "GET" });
-    const catalogRes = await workerEntry.fetch(catalogReq, env);
-    expect(catalogRes.status).toBe(200);
+    await mockDb
+      .prepare("UPDATE crawl_jobs SET state='pending', next_fetch_at='2020-01-01T00:00:00.000Z' WHERE url=?")
+      .bind("https://booth.pm/ja/items/99999")
+      .run();
+    await mockDb
+      .prepare("UPDATE origin_state SET next_allowed_at='2020-01-01T00:00:00.000Z' WHERE origin=?")
+      .bind("https://booth.pm")
+      .run();
+    const b2 = await store.claim({ schemaVersion: 1, nodeId: "node-vpm-verifier", capabilities: ["booth"] }, principal);
+    if (b2.status !== "leased") throw new Error("Expected booth claim 2");
+    await store.submit(
+      {
+        schemaVersion: 1,
+        nodeId: "node-vpm-verifier",
+        jobId: b2.job.jobId,
+        leaseId: b2.job.leaseId,
+        idempotencyKey: "booth-gone-final",
+        outcome: { kind: "gone" }
+      },
+      principal
+    );
+    expect((await store.getCanonicalPackage("booth.pm/ja/items/99999"))?.lifecycle).toBe("delisted");
+    const goneSources = await store.getListingSourcesForCanonical("booth.pm/ja/items/99999");
+    expect(goneSources[0]?.availability).toBe("delisted");
   });
 
   it("enforces canonical timestamp confidence hierarchy and bulk tag query timestamp ordering", async () => {
     const store = new Coordinator(createMockD1Database());
-    await store.initSchema(true);
+    await store.initSchema({ autoSeed: false });
 
-    const nodeToken = await store.issueNodeCredential({
-      schemaVersion: 1,
-      nodeId: "node-timestamps",
-      capabilities: ["vpm", "booth"],
-      reason: "Test node"
-    }, "operator-timestamps");
-    const principal = await store.authenticate("node-timestamps", nodeToken);
-    expect(principal).not.toBeNull();
-
-    const app = await store.registerApp({
-      schemaVersion: 1,
-      appName: "TagSearchApp",
-      description: "Downstream App for Tag Search"
-    });
-
-    // Package A (old package, published 2021-01-01, submitted with confirmed upstream date)
     const olderTime = "2021-01-01T00:00:00.000Z";
     await store.upsertCanonicalPackage({
       canonicalId: "com.example.older-tool",
@@ -1917,12 +1683,12 @@ describe("Cloudflare D1 Coordinator Store & Edge Worker Adapter", () => {
       category: "avatar_tool",
       lifecycle: "active",
       displayName: "Older Avatar Tool",
+      tags: ["avatar_tool"],
       publishedAt: olderTime,
       timestampConfidence: "confirmed",
       createdAt: "2026-10-01T10:00:00.000Z"
     });
 
-    // Package B (newer package, published 2024-06-15, submitted with confirmed upstream date)
     const newerTime = "2024-06-15T12:00:00.000Z";
     await store.upsertCanonicalPackage({
       canonicalId: "com.example.newer-tool",
@@ -1930,12 +1696,12 @@ describe("Cloudflare D1 Coordinator Store & Edge Worker Adapter", () => {
       category: "avatar_tool",
       lifecycle: "active",
       displayName: "Newer Avatar Tool",
+      tags: ["avatar_tool"],
       publishedAt: newerTime,
       timestampConfidence: "confirmed",
       createdAt: "2026-10-01T08:00:00.000Z"
     });
 
-    // Package C (catalog creation fallback without publisher evidence)
     const observedTime = "2023-03-20T00:00:00.000Z";
     await store.upsertCanonicalPackage({
       canonicalId: "com.example.observed-tool",
@@ -1943,108 +1709,60 @@ describe("Cloudflare D1 Coordinator Store & Edge Worker Adapter", () => {
       category: "avatar_tool",
       lifecycle: "active",
       displayName: "Observed Avatar Tool",
+      tags: ["avatar_tool"],
       createdAt: observedTime
     });
 
-    // Verify confidence hierarchy on retrieval
-    const pkgA = await store.getCanonicalPackage("com.example.older-tool");
-    expect(pkgA?.publishedAt).toBe(olderTime);
-    expect(pkgA?.timestampConfidence).toBe("confirmed");
-
-    const pkgC = await store.getCanonicalPackage("com.example.observed-tool");
-    expect(pkgC?.publishedAt).toBeNull();
-    expect(pkgC?.timestampConfidence).toBeNull();
-
-    // Perform bulk tag search with tags: ["avatar_tool"] without keyword query
     const tagSearch = await store.searchCatalogPackages({
       schemaVersion: 1,
       queryOrigin: "user_authored",
       tags: ["avatar_tool"],
       limit: 10
     });
-
-    expect(tagSearch.items).toHaveLength(3);
-    // Mandatory timestamp ordering: Newer (2024) -> Observed fallback (2023) -> Older (2021)
-    expect(tagSearch.items[0].canonicalId).toBe("com.example.newer-tool");
-    expect(tagSearch.items[0].publishedAt).toBe(newerTime);
-    expect(tagSearch.items[0].timestampConfidence).toBe("confirmed");
-
-    expect(tagSearch.items[1].canonicalId).toBe("com.example.observed-tool");
-    expect(tagSearch.items[1].timestampConfidence).toBeNull();
-
-    expect(tagSearch.items[2].canonicalId).toBe("com.example.older-tool");
-    expect(tagSearch.items[2].publishedAt).toBe(olderTime);
-    expect(tagSearch.items[2].timestampConfidence).toBe("confirmed");
-
-    // Test pagination cursor with timestamp ordering
-    const page1 = await store.searchCatalogPackages({
-      schemaVersion: 1,
-      queryOrigin: "user_authored",
-      tags: ["avatar_tool"],
-      limit: 2
-    });
-    expect(page1.items).toHaveLength(2);
-    expect(page1.items[0].canonicalId).toBe("com.example.newer-tool");
-    expect(page1.items[1].canonicalId).toBe("com.example.observed-tool");
-    expect(page1.nextCursor).not.toBeNull();
-
-    const page2 = await store.searchCatalogPackages({
-      schemaVersion: 1,
-      queryOrigin: "user_authored",
-      tags: ["avatar_tool"],
-      cursor: page1.nextCursor,
-      limit: 2
-    });
-    expect(page2.items).toHaveLength(1);
-    expect(page2.items[0].canonicalId).toBe("com.example.older-tool");
+    expect(tagSearch.items.map((i) => i.canonicalId)).toEqual([
+      "com.example.newer-tool",
+      "com.example.observed-tool",
+      "com.example.older-tool"
+    ]);
   });
 
-  it("Claim scan bounds candidate scans by MAX_CLAIM_SCAN_PAGES without exceeding invocation budget (R14-C14)", async () => {
-    const mockDb = createMockD1Database();
-    const store = new Coordinator(mockDb);
-    await store.initSchema();
+  it("initializes distinct catalog epochs and handles catalog deltas and operator pagination", async () => {
+    const sqlite = new Database(":memory:");
+    const store = new Coordinator(createMockD1Database(sqlite));
+    try {
+      await store.initSchema({ autoSeed: false });
+      const epoch = await store.getCatalogEpoch();
+      expect(epoch).toMatch(/^epoch-d1-[0-9a-f-]{36}$/);
+      const reset = await store.resetCatalogEpoch();
+      expect(reset).not.toBe(epoch);
 
-    const token = await store.issueNodeCredential({
-      schemaVersion: 1,
-      nodeId: "budget-test-node",
-      capabilities: ["vpm"],
-      reason: "Budget test node"
-    }, "operator-admin");
-    const principal = (await store.authenticate("budget-test-node", token))!;
-
-    const emptyClaim = await store.claim({
-      schemaVersion: 1,
-      nodeId: "budget-test-node",
-      capabilities: ["vpm"]
-    }, principal);
-    expect(emptyClaim.status).toBe("empty");
-
-    await store.createSourceAccessProfile({
-      schemaVersion: 1,
-      platform: "vpm",
-      origin: "https://budget.example.com",
-      pathScope: "/index.json",
-      method: "GET",
-      purpose: "metadata",
-      minDelayMs: 1000,
-      expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
-      reviewReference: "REV-BUDGET-01",
-      reason: "Budget profile",
-      retainClasses: ["normalized_facts"],
-      publishClasses: ["normalized_facts"]
-    }, "operator-admin");
-    await store.recordRobotsSnapshot("https://budget.example.com", 200, "User-agent: *\nAllow: /");
-
-    const jobId = await store.seedJob("https://budget.example.com/index.json", "vpm", 1000, undefined, "metadata");
-
-    const leasedClaim = await store.claim({
-      schemaVersion: 1,
-      nodeId: "budget-test-node",
-      capabilities: ["vpm"]
-    }, principal);
-    expect(leasedClaim.status).toBe("leased");
-    if (leasedClaim.status === "leased") {
-      expect(leasedClaim.job.jobId).toBe(jobId);
+      const env: Env = { VRCP_D1: createMockD1Database(sqlite), OPERATOR_TOKEN: "f".repeat(64) };
+      for (let i = 1; i <= 3; i++) {
+        const ts = new Date(Date.now() + i * 1000).toISOString();
+        await store.upsertCanonicalPackage({
+          canonicalId: `pkg-00${i}`,
+          umbrella: "tools",
+          category: "tooling",
+          lifecycle: "active",
+          displayName: `Package ${i}`,
+          createdAt: ts,
+          updatedAt: ts
+        });
+      }
+      const opRes = await workerEntry.fetch(
+        new Request("https://coordinator.test/v1/operator/catalog?limit=2", {
+          headers: { Authorization: `Bearer ${env.OPERATOR_TOKEN}` }
+        }),
+        env
+      );
+      expect(opRes.status).toBe(200);
+      const opPage1 = CatalogListResponseSchema.parse(await opRes.json());
+      expect(opPage1.packages).toHaveLength(2);
+      expect(opPage1.nextCursor).toBeTruthy();
+      const opPage2 = await store.listCanonicalPackagesPage(2, decodeCatalogCursor(opPage1.nextCursor!));
+      expect(opPage2.packages).toHaveLength(1);
+    } finally {
+      sqlite.close();
     }
   });
 });

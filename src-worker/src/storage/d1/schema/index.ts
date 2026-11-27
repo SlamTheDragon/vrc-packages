@@ -19,3 +19,23 @@ export const D1_SCHEMA_SQL = [
   CATALOG_GRAPH_SCHEMA_SQL.trim(),
   DOWNSTREAM_AND_TICKETS_SCHEMA_SQL.trim()
 ].join("\n");
+
+export const EXPECTED_V0_TABLE_NAMES = [
+  "nodes",
+  "crawl_jobs",
+  "origin_state",
+  "job_results",
+  "operator_audit_log",
+  "suppressed_targets",
+  "steering_profiles",
+  "source_items",
+  "source_leads",
+  "canonical_packages",
+  "listing_sources",
+  "listing_relations",
+  "coordinator_meta",
+  "registered_users",
+  "registered_apps",
+  "downstream_signals",
+  "catalog_tickets"
+] as const;

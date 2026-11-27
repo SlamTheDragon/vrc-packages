@@ -82,3 +82,11 @@ This record preserves accepted owner decisions previously captured inside `docs/
 | `R&D-OPEN-EXPANSION` | Treat initial debugging packets, attrition buckets, and chaos scenarios as starting suggestions, not exhaustive limits. Unpack the true R&D lifecycle dynamically when live debugging starts. Prevent tunnel vision per Rule 02 Section 5. | All sectors |
 | `UNTANGLE-PRE-PREVIEW-01` | Run `/untangle-codebase` across all touched code and docs before final remote preview pushes. | All sectors |
 | `LIVE-PREVIEW-ASSESS-01` | After `/untangle-codebase`, push Worker and Crawler previews and validate remote live ingestion quality across survivors and non-survivor attrition buckets. | Sector 1 / Sector 4 |
+
+## Dispositions: 2026-11-25 (`[P20]` / `PN-011`)
+
+| ID | Accepted Owner Direction | Owning Sector |
+| :--- | :--- | :--- |
+| `DEFER-KOFI-PATREON` | Defer Ko-fi and Patreon post-v1 while ToS, anti-bot, and API blockers stay active. Keep 9 runtime platforms (`0x01ff`), and park Payhip on `custom_domain`. | Sector 5 / Sector 1 |
+| `REAL-STARTER-SEEDS-16` | Replace placeholder seeds in `default_seeds.ts` with 16 real opt-in starter profiles (`seedPreviewStarter: true`). Support UTF-8 and `%20` segments in `steeringPathMatches`. | Sector 1 (`crawler-network`) |
+| `ZERO-PLACEHOLDER-RD` | Enforce the Zero-Placeholder R&D Rule once `LIVE-LOCAL-ASSESS-01` starts. Measure real public targets directly without placeholder URLs, synthetic fallbacks, or estimated counts. | Sector 1 / Sector 4 |

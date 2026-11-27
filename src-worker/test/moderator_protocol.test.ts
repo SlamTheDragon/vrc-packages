@@ -51,6 +51,10 @@ function seedTestPackage(
     .run(canonicalId, umbrella, category, displayName, now, now, contentRating);
 }
 
+interface ErrorResponsePayload {
+  error: string;
+}
+
 describe("Moderator Protocol (/v1/moderator/*)", () => {
   test("authenticates and authorizes age-verified moderator users strictly", async () => {
     const store = await createInitializedD1Coordinator(":memory:");
@@ -59,7 +63,7 @@ describe("Moderator Protocol (/v1/moderator/*)", () => {
 
       const noAuthRes = await handleModeratorRequest(jsonRequest("/v1/moderator/ratings", "GET"), store);
       expect(noAuthRes.status).toBe(401);
-      const noAuthBody = (await noAuthRes.json()) as any;
+      const noAuthBody = (await noAuthRes.json()) as ErrorResponsePayload;
       expect(noAuthBody.error).toContain("User bearer credential required");
 
       const badHeaderRes = await handleModeratorRequest(
@@ -82,7 +86,7 @@ describe("Moderator Protocol (/v1/moderator/*)", () => {
         store
       );
       expect(regRes.status).toBe(403);
-      const regBody = (await regRes.json()) as any;
+      const regBody = (await regRes.json()) as ErrorResponsePayload;
       expect(regBody.error).toBe("Moderator authority with verified age required");
 
       const ageOnlyUser = await store.issueUserToken("age_only", "age@test.com", true, false);
@@ -106,16 +110,16 @@ describe("Moderator Protocol (/v1/moderator/*)", () => {
       );
       expect(fullModRes.status).toBe(200);
       expect(fullModRes.headers.get("X-RateLimit-Limit")).toBeDefined();
-      const listData = (await fullModRes.json()) as any;
+      const listData = ModeratorRatingListResponseSchema.parse(await fullModRes.json());
       expect(listData.schemaVersion).toBe(MODERATOR_PROTOCOL_VERSION);
       expect(listData.ratings.length).toBe(1);
-      expect(listData.ratings[0].canonicalId).toBe("com.author.pack1");
+      expect(listData.ratings[0]?.canonicalId).toBe("com.author.pack1");
     } finally {
       store.close();
     }
   });
 
-  test("lists packages with rating filter, pagination and report counts", async () => {
+  test("lists packages with rating filter, pagination and consolidated catalog_tickets report counts", async () => {
     const store = await createInitializedD1Coordinator(":memory:");
     try {
       const mod = await store.issueUserToken("mod_alice", "alice@test.com", true, true);
@@ -125,7 +129,7 @@ describe("Moderator Protocol (/v1/moderator/*)", () => {
       seedTestPackage(store, "com.pkg.adult", "Adult Package", "adult_restricted", "avatars", "models");
 
       const app = await store.registerApp({ schemaVersion: 1, appName: "Testing Reporter" });
-      await store.recordRemovalReport(app.appId, {
+      await store.recordReportSubmission(app.appId, {
         schemaVersion: 1,
         reportType: "removal_request",
         canonicalId: "com.pkg.adult",
@@ -196,12 +200,12 @@ describe("Moderator Protocol (/v1/moderator/*)", () => {
     }
   });
 
-  test("adjusts canonical package content rating with audit trail", async () => {
+  test("adjusts canonical package content rating and sets/clears inline tombstone_reason", async () => {
     const store = await createInitializedD1Coordinator(":memory:");
     try {
       const mod = await store.issueUserToken("mod_bob", "bob@test.com", true, true);
 
-      seedTestPackage(store, "com.creator.avatar", "Sample Avatar", "adult_restricted", "avatars", "models");
+      seedTestPackage(store, "com.creator.avatar", "Sample Avatar", "general", "avatars", "models");
 
       const notFoundRes = await handleModeratorRequest(
         jsonRequest(
@@ -252,7 +256,7 @@ describe("Moderator Protocol (/v1/moderator/*)", () => {
           {
             schemaVersion: 1,
             newRating: "mature",
-            reason: "Resolved false positive rating claim after inspection"
+            reason: "Downgraded from general for mature themes"
           },
           mod.token
         ),
@@ -262,35 +266,38 @@ describe("Moderator Protocol (/v1/moderator/*)", () => {
       const adjustData = SetRatingAdjustmentResponseSchema.parse(await adjustRes.json());
       expect(adjustData.schemaVersion).toBe(MODERATOR_PROTOCOL_VERSION);
       expect(adjustData.canonicalId).toBe("com.creator.avatar");
-      expect(adjustData.previousRating).toBe("adult_restricted");
+      expect(adjustData.previousRating).toBe("general");
       expect(adjustData.newRating).toBe("mature");
       expect(adjustData.adjustedBy).toBe(mod.userId);
 
-      const checkRow = store.sqlite
-        .prepare("SELECT content_rating FROM canonical_packages WHERE canonical_id=?")
-        .get("com.creator.avatar") as any;
-      expect(checkRow.content_rating).toBe("mature");
+      const downgradedRow = store.sqlite
+        .prepare("SELECT content_rating, tombstone_reason FROM canonical_packages WHERE canonical_id=?")
+        .get("com.creator.avatar") as { content_rating: string; tombstone_reason: string | null };
+      expect(downgradedRow.content_rating).toBe("mature");
+      expect(downgradedRow.tombstone_reason).toBe("rating_withdrawn");
 
-      const prohibitRes = await handleModeratorRequest(
+      const publicCatalog = await store.listCanonicalPackagesPage(10, null);
+      expect(publicCatalog.packages.some((p) => p.canonicalId === "com.creator.avatar")).toBe(false);
+
+      const restoreRes = await handleModeratorRequest(
         jsonRequest(
           "/v1/moderator/ratings/com.creator.avatar",
           "POST",
           {
             schemaVersion: 1,
-            newRating: "prohibited",
-            reason: "Malicious prohibited content detected"
+            newRating: "general",
+            reason: "Restored to general after content edit"
           },
           mod.token
         ),
         store
       );
-      expect(prohibitRes.status).toBe(200);
-      const prohibitData = SetRatingAdjustmentResponseSchema.parse(await prohibitRes.json());
-      expect(prohibitData.previousRating).toBe("mature");
-      expect(prohibitData.newRating).toBe("prohibited");
-
-      const publicCatalog = await store.listCanonicalPackagesPage(10, null);
-      expect(publicCatalog.packages.some((p) => p.canonicalId === "com.creator.avatar")).toBe(false);
+      expect(restoreRes.status).toBe(200);
+      const restoredRow = store.sqlite
+        .prepare("SELECT content_rating, tombstone_reason FROM canonical_packages WHERE canonical_id=?")
+        .get("com.creator.avatar") as { content_rating: string; tombstone_reason: string | null };
+      expect(restoredRow.content_rating).toBe("general");
+      expect(restoredRow.tombstone_reason).toBeNull();
     } finally {
       store.close();
     }
@@ -312,7 +319,7 @@ describe("Moderator Protocol (/v1/moderator/*)", () => {
     }
   });
 
-  test("allows age-verified moderator to list and review intensive-use app candidates (R54-C38A2)", async () => {
+  test("allows age-verified moderator to list and review intensive-use app candidates", async () => {
     const store = await createInitializedD1Coordinator(":memory:");
     try {
       const devUser = await store.issueUserToken("app-developer");
@@ -345,9 +352,9 @@ describe("Moderator Protocol (/v1/moderator/*)", () => {
       expect(listRes.status).toBe(200);
       const listData = ModeratorAppListResponseSchema.parse(await listRes.json());
       expect(listData.apps).toHaveLength(1);
-      expect(listData.apps[0].appId).toBe(app.appId);
-      expect(listData.apps[0].candidateStatus).toBe("review_pending");
-      expect(listData.apps[0].candidateFlags).toContain("intensive_usage");
+      expect(listData.apps[0]?.appId).toBe(app.appId);
+      expect(listData.apps[0]?.candidateStatus).toBe("review_pending");
+      expect(listData.apps[0]?.candidateFlags).toContain("intensive_usage");
 
       const reviewRes = await handleModeratorRequest(
         jsonRequest(
@@ -371,9 +378,9 @@ describe("Moderator Protocol (/v1/moderator/*)", () => {
 
       const row = store.sqlite
         .prepare("SELECT candidate_status, permissions_json FROM registered_apps WHERE app_id = ?")
-        .get(app.appId) as any;
+        .get(app.appId) as { candidate_status: string; permissions_json: string };
       expect(row.candidate_status).toBe("trusted");
-      expect(JSON.parse(row.permissions_json)).toContain("claims:delegate");
+      expect(JSON.parse(row.permissions_json) as string[]).toContain("claims:delegate");
 
       const regReviewRes = await handleModeratorRequest(
         jsonRequest(
@@ -407,7 +414,7 @@ describe("Moderator Protocol (/v1/moderator/*)", () => {
     }
   });
 
-  test("moderator ratings list counts rating disputes but excludes safety quarantine tickets (R56-C56C)", async () => {
+  test("moderator ratings list counts rating disputes but excludes safety quarantine tickets", async () => {
     const store = await createInitializedD1Coordinator(":memory:");
     try {
       const mod = await store.issueUserToken("vol-mod", "mod@example.com", true, true);
@@ -416,7 +423,7 @@ describe("Moderator Protocol (/v1/moderator/*)", () => {
 
       const app = await store.registerApp({ schemaVersion: 1, appName: "Dispute Tester" });
 
-      await store.recordIssueReport(app.appId, {
+      await store.recordReportSubmission(app.appId, {
         schemaVersion: 1,
         reportType: "issue_report",
         reportKind: "explicit_false_positive",
@@ -424,7 +431,7 @@ describe("Moderator Protocol (/v1/moderator/*)", () => {
         reason: "False positive mature classification"
       });
 
-      await store.recordIssueReport(app.appId, {
+      await store.recordReportSubmission(app.appId, {
         schemaVersion: 1,
         reportType: "issue_report",
         reportKind: "inappropriate",

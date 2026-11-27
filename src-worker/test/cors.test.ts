@@ -7,7 +7,7 @@ import { parseAllowedOrigins } from "../src/api/cors.ts";
 const operatorToken = "a".repeat(64);
 const allowedOrigins = "http://localhost:4321,http://127.0.0.1:4321,https://admin.vrcpackages.example";
 
-describe("Origin-Validated Browser CORS and OPTIONS Preflight (R47-C27-CORS)", () => {
+describe("Origin-Validated Browser CORS and OPTIONS Preflight (V0 PATCH Support)", () => {
   test("parseAllowedOrigins normalizes exact http/https origins and rejects paths or malformed entries", () => {
     const parsed = parseAllowedOrigins(
       " http://localhost:4321 , https://admin.vrcpackages.example/path , ftp://bad.example , not-a-url , http://127.0.0.1:4173 "
@@ -15,10 +15,10 @@ describe("Origin-Validated Browser CORS and OPTIONS Preflight (R47-C27-CORS)", (
     expect([...parsed]).toEqual(["http://localhost:4321", "http://127.0.0.1:4173"]);
   });
 
-  test("allowlisted OPTIONS preflight on authenticated routes returns 204 before auth with ACAO and Vary: Origin", async () => {
+  test("allowlisted OPTIONS preflight on authenticated routes returns 204 including PATCH with ACAO and Vary: Origin", async () => {
     const store = await createInitializedD1Coordinator();
     const env: Env = {
-      VRCP_D1: store.db as unknown as D1Database,
+      VRCP_D1: store.d1,
       OPERATOR_TOKEN: operatorToken,
       CORS_ALLOWED_ORIGINS: allowedOrigins
     };
@@ -26,6 +26,9 @@ describe("Origin-Validated Browser CORS and OPTIONS Preflight (R47-C27-CORS)", (
       for (const path of [
         "/v1/operator/catalog",
         "/v1/operator/init",
+        "/v1/operator/status",
+        "/v1/operator/jobs",
+        "/v1/operator/steering-profiles",
         "/v1/moderator/ratings",
         "/v1/user/apps",
         "/v1/app/register",
@@ -38,7 +41,7 @@ describe("Origin-Validated Browser CORS and OPTIONS Preflight (R47-C27-CORS)", (
             method: "OPTIONS",
             headers: {
               Origin: "http://localhost:4321",
-              "Access-Control-Request-Method": "POST",
+              "Access-Control-Request-Method": "PATCH",
               "Access-Control-Request-Headers": "Authorization, Content-Type"
             }
           }),
@@ -47,7 +50,7 @@ describe("Origin-Validated Browser CORS and OPTIONS Preflight (R47-C27-CORS)", (
         expect(res.status).toBe(204);
         expect(res.headers.get("Access-Control-Allow-Origin")).toBe("http://localhost:4321");
         expect(res.headers.get("Vary")).toBe("Origin");
-        expect(res.headers.get("Access-Control-Allow-Methods")).toBe("GET, POST, DELETE, OPTIONS");
+        expect(res.headers.get("Access-Control-Allow-Methods")).toBe("GET, POST, PATCH, DELETE, OPTIONS");
         expect(res.headers.get("Access-Control-Allow-Headers")).toBe("Authorization, Content-Type");
         expect(res.headers.get("Access-Control-Max-Age")).toBe("600");
         expect(res.headers.get("Cache-Control")).toBe("no-store");
@@ -60,12 +63,12 @@ describe("Origin-Validated Browser CORS and OPTIONS Preflight (R47-C27-CORS)", (
   test("unlisted, missing, or unconfigured Origin OPTIONS preflight on authenticated routes returns 403 cors_origin_forbidden without ACAO", async () => {
     const store = await createInitializedD1Coordinator();
     const envWithAllowlist: Env = {
-      VRCP_D1: store.db as unknown as D1Database,
+      VRCP_D1: store.d1,
       OPERATOR_TOKEN: operatorToken,
       CORS_ALLOWED_ORIGINS: allowedOrigins
     };
     const envUnset: Env = {
-      VRCP_D1: store.db as unknown as D1Database,
+      VRCP_D1: store.d1,
       OPERATOR_TOKEN: operatorToken
     };
     try {
@@ -98,10 +101,10 @@ describe("Origin-Validated Browser CORS and OPTIONS Preflight (R47-C27-CORS)", (
     }
   });
 
-  test("allowlisted GET/POST and 401/429 responses on authenticated routes include exact ACAO, Expose-Headers, and Vary: Origin", async () => {
+  test("allowlisted GET/POST/PATCH and 401/429 responses on authenticated routes include exact ACAO, Expose-Headers, and Vary: Origin", async () => {
     const store = await createInitializedD1Coordinator();
     const env: Env = {
-      VRCP_D1: store.db as unknown as D1Database,
+      VRCP_D1: store.d1,
       OPERATOR_TOKEN: operatorToken,
       CORS_ALLOWED_ORIGINS: allowedOrigins
     };
@@ -123,6 +126,23 @@ describe("Origin-Validated Browser CORS and OPTIONS Preflight (R47-C27-CORS)", (
         "X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Reset, Retry-After"
       );
       expect(okRes.headers.get("Vary")).toBe("Origin");
+
+      const jobId = await store.seedJob("https://cors-patch.example/index.json", "vpm");
+      const patchRes = await worker.fetch(
+        new Request(`https://worker.example/v1/operator/jobs/${jobId}`, {
+          method: "PATCH",
+          headers: {
+            Origin: "http://localhost:4321",
+            Authorization: `Bearer ${operatorToken}`,
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({ schemaVersion: 1, priorityLane: 1, reason: "CORS PATCH verification" })
+        }),
+        env
+      );
+      expect(patchRes.status).toBe(200);
+      expect(patchRes.headers.get("Access-Control-Allow-Origin")).toBe("http://localhost:4321");
+      expect(patchRes.headers.get("Vary")).toBe("Origin");
 
       const unauthRes = await worker.fetch(
         new Request("https://worker.example/v1/operator/catalog", {
@@ -186,10 +206,10 @@ describe("Origin-Validated Browser CORS and OPTIONS Preflight (R47-C27-CORS)", (
     }
   });
 
-  test("unlisted or absent Origin on GET /v1/operator/catalog and POST /v1/app/report emits zero ACAO header", async () => {
+  test("unlisted or absent Origin on GET /v1/operator/catalog emits zero ACAO header", async () => {
     const store = await createInitializedD1Coordinator();
     const env: Env = {
-      VRCP_D1: store.db as unknown as D1Database,
+      VRCP_D1: store.d1,
       OPERATOR_TOKEN: operatorToken,
       CORS_ALLOWED_ORIGINS: allowedOrigins
     };
@@ -215,7 +235,7 @@ describe("Origin-Validated Browser CORS and OPTIONS Preflight (R47-C27-CORS)", (
   test("node lease routes (/v1/node/*) remain strictly non-CORS on POST and OPTIONS", async () => {
     const store = await createInitializedD1Coordinator();
     const env: Env = {
-      VRCP_D1: store.db as unknown as D1Database,
+      VRCP_D1: store.d1,
       OPERATOR_TOKEN: operatorToken,
       CORS_ALLOWED_ORIGINS: allowedOrigins
     };
@@ -251,7 +271,7 @@ describe("Origin-Validated Browser CORS and OPTIONS Preflight (R47-C27-CORS)", (
   test("public catalog routes (/v1/app/index and /v1/app/index/delta) preserve wildcard ACAO on GET and OPTIONS", async () => {
     const store = await createInitializedD1Coordinator();
     const env: Env = {
-      VRCP_D1: store.db as unknown as D1Database,
+      VRCP_D1: store.d1,
       OPERATOR_TOKEN: operatorToken
     };
     try {

@@ -10,6 +10,7 @@ const wireLead = {
   lead_key: "a".repeat(64),
   kind: "vpm_listing" as const,
   target_url: "https://publisher.example/index.json",
+  target_host: "publisher.example",
   claimed_package_id: null,
   discovered_from_url: "https://directory.example/catalog",
   discovered_from_item_key: null,
@@ -23,12 +24,14 @@ describe("strict operator lead contract parity", () => {
     expect(LeadRowSchema.parse(wireLead)).toEqual(wireLead);
   });
 
-  test("rejects aliases, extra fields and missing provenance", () => {
+  test("rejects aliases, extra fields, missing provenance, and missing target_host", () => {
     const { discovered_from_url: _origin, ...withoutOrigin } = wireLead;
+    const { target_host: _host, ...withoutHost } = wireLead;
     const camel = {
       leadKey: wireLead.lead_key,
       leadKind: wireLead.kind,
       targetUrl: wireLead.target_url,
+      targetHost: wireLead.target_host,
       status: wireLead.status,
       firstSeenAt: wireLead.first_seen_at,
       lastSeenAt: wireLead.last_seen_at
@@ -36,6 +39,7 @@ describe("strict operator lead contract parity", () => {
     for (const input of [
       camel,
       withoutOrigin,
+      withoutHost,
       { ...wireLead, discovered_from_url: null },
       { ...wireLead, unexpected: true },
       { ...wireLead, leadKey: wireLead.lead_key }

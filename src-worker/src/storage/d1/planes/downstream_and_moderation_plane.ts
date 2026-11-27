@@ -1,65 +1,143 @@
 import {
+  CreatorClaimIntakeRequestSchema,
   RegisterAppRequestSchema,
+  ReportSubmissionRequestSchema,
   UserAppListQuerySchema,
   UserAppSchema,
-  ReportSubmissionRequestSchema,
-  CreatorClaimIntakeRequestSchema,
   encodeModeratorRatingCursor,
-  type UserAppListResponse,
-  type ReportSubmissionRequest,
-  type ReportSubmissionResponse,
-  type RegisterAppRequest,
-  type RegisterAppResponse,
+  type ContentRating,
   type CreatorClaimIntakeRequest,
   type CreatorClaimIntakeResponse,
-  type ContentRating,
-  type ModeratorRatingRecord
+  type ModeratorRatingRecord,
+  type RegisterAppRequest,
+  type RegisterAppResponse,
+  type ReportSubmissionRequest,
+  type ReportSubmissionResponse,
+  type UserAppListResponse
 } from "vrc-packages-api";
-import { formatAppToken, isAppToken, formatUserToken, isUserToken } from "vrc-packages-api/auth";
-import {
-  CoordinatorConflict,
-  type DemandFeedbackInput,
-  type DemandFeedbackReceipt
-} from "../../../domain/ports/stores.ts";
-import { sha256Hex, generateToken } from "../../../domain/security/crypto_primitives.ts";
+import { formatAppToken, formatUserToken, isAppToken, isUserToken } from "vrc-packages-api/auth";
+import { CoordinatorConflict, type DownstreamAppPrincipal, type UserPrincipal } from "../../../domain/ports/stores.ts";
+import { generateToken, sha256Hex } from "../../../domain/security/crypto_primitives.ts";
+import type { D1PreparedStatement } from "../definitions.ts";
 import { D1PlaneContext } from "./shared_context.ts";
 
 export class DownstreamAndModerationPlane {
   constructor(private readonly ctx: D1PlaneContext) {}
 
-  async recordRemovalReport(appId: string, input: ReportSubmissionRequest): Promise<ReportSubmissionResponse> {
+  async recordReportSubmission(appId: string, input: ReportSubmissionRequest): Promise<ReportSubmissionResponse> {
     const parsed = ReportSubmissionRequestSchema.parse(input);
-    if (parsed.reportType !== "removal_request") throw new CoordinatorConflict("Removal report required", 403);
     const reportId = crypto.randomUUID();
     const recordedAt = new Date(this.ctx.now()).toISOString();
-    const targetUrl = parsed.targetUrl ?? null;
-    const canonicalId = parsed.canonicalId ?? null;
-    const reason = parsed.reason ?? "Creator takedown requested by trusted app";
-    const result = await this.ctx.db
-      .prepare(
-        `INSERT INTO catalog_tickets(ticket_id,ticket_type,app_id,target_url,canonical_id,requester_type,reason,payload_json,review_status,recorded_at)
-      SELECT ?,'removal_report',app_id,?,?,'app',?,?, 'pending',? FROM registered_apps WHERE app_id=? AND revoked_at IS NULL`
-      )
-      .bind(reportId, targetUrl, canonicalId, reason, JSON.stringify(parsed), recordedAt, appId)
-      .run();
-    if ((result.meta as { changes?: number } | undefined)?.changes !== 1) {
+
+    const activeApp = await this.ctx.db
+      .prepare("SELECT app_id FROM registered_apps WHERE app_id = ? AND revoked_at IS NULL")
+      .bind(appId)
+      .first<{ app_id: string }>();
+    if (!activeApp) {
       throw new CoordinatorConflict("Invalid application credential", 403);
     }
-    return { schemaVersion: 1, status: "accepted", reportId, recordedAt };
-  }
 
-  async recordIssueReport(
-    appId: string,
-    input: unknown
-  ): Promise<{ schemaVersion: 1; status: "accepted"; reportId: string; recordedAt: string }> {
-    const parsed = ReportSubmissionRequestSchema.parse(input);
-    if (parsed.reportType !== "issue_report") throw new CoordinatorConflict("Issue report required", 400);
-    const reportId = crypto.randomUUID();
-    const recordedAt = new Date(this.ctx.now()).toISOString();
+    if (parsed.reportType === "demand_signal") {
+      const signalType = parsed.signalKind ?? (parsed.canonicalId ? "refresh_demand" : "search_miss");
+      const targetUrl = parsed.targetUrl ? new URL(parsed.targetUrl).href : null;
+      await this.ctx.db
+        .prepare(
+          `INSERT INTO downstream_signals(
+             signal_id, app_id, signal_type, query, zero_hits, requested_platform,
+             target_url, target_canonical_id, related_canonical_id, category, metadata_json, recorded_at, resolved_at
+           ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, NULL, NULL, ?, ?, NULL)`
+        )
+        .bind(
+          reportId,
+          appId,
+          signalType,
+          parsed.query ?? null,
+          parsed.zeroHits ? 1 : 0,
+          targetUrl,
+          parsed.canonicalId ?? null,
+          parsed.metadata ? JSON.stringify(parsed.metadata) : null,
+          recordedAt
+        )
+        .run();
+      return { schemaVersion: 1, status: "accepted", reportId, recordedAt };
+    }
+
+    if (parsed.reportType === "relationship_feedback") {
+      const stmts: D1PreparedStatement[] = [
+        this.ctx.db
+          .prepare(
+            `INSERT INTO downstream_signals(
+               signal_id, app_id, signal_type, query, zero_hits, requested_platform,
+               target_url, target_canonical_id, related_canonical_id, category, metadata_json, recorded_at, resolved_at
+             ) VALUES (?, ?, 'relationship_feedback', NULL, 0, NULL, NULL, ?, ?, NULL, ?, ?, ?)`
+          )
+          .bind(
+            reportId,
+            appId,
+            parsed.canonicalId,
+            parsed.relatedCanonicalId ?? null,
+            JSON.stringify({
+              targetAvatarBase: parsed.targetAvatarBase ?? null,
+              relationType: parsed.relationType,
+              vote: parsed.vote,
+              reason: parsed.reason ?? null,
+              metadata: parsed.metadata ?? null
+            }),
+            recordedAt,
+            recordedAt
+          )
+      ];
+
+      const counterColumn = parsed.vote === "up" ? "feedback_up_count" : "feedback_down_count";
+      const matchClauses = ["source_canonical_id = ?", "relation_type = ?"];
+      const matchParams: unknown[] = [parsed.canonicalId, parsed.relationType];
+      if (parsed.relatedCanonicalId !== undefined) {
+        matchClauses.push("target_canonical_id = ?");
+        matchParams.push(parsed.relatedCanonicalId);
+      }
+      if (parsed.targetAvatarBase !== undefined) {
+        matchClauses.push("target_avatar_base = ?");
+        matchParams.push(parsed.targetAvatarBase);
+      }
+
+      stmts.push(
+        this.ctx.db
+          .prepare(
+            `UPDATE listing_relations
+             SET ${counterColumn} = ${counterColumn} + 1, updated_at = ?
+             WHERE ${matchClauses.join(" AND ")}`
+          )
+          .bind(recordedAt, ...matchParams)
+      );
+
+      await this.ctx.executeBatchChunked(stmts);
+      return { schemaVersion: 1, status: "accepted", reportId, recordedAt };
+    }
+
+    if (parsed.reportType === "removal_request") {
+      const targetUrl = parsed.targetUrl ? new URL(parsed.targetUrl).href : null;
+      await this.ctx.db
+        .prepare(
+          `INSERT INTO catalog_tickets(
+             ticket_id, ticket_type, app_id, target_url, canonical_id, requester_type,
+             reason, payload_json, review_status, recorded_at
+           ) VALUES (?, 'removal_report', ?, ?, ?, 'app', ?, ?, 'pending', ?)`
+        )
+        .bind(
+          reportId,
+          appId,
+          targetUrl,
+          parsed.canonicalId ?? null,
+          parsed.reason,
+          JSON.stringify(parsed),
+          recordedAt
+        )
+        .run();
+      return { schemaVersion: 1, status: "accepted", reportId, recordedAt };
+    }
+
     const targetUrl = parsed.targetUrl ? new URL(parsed.targetUrl).href : null;
-    const canonicalId = parsed.canonicalId ?? null;
-
-    let ticketType = "metadata_issue";
+    let ticketType: "metadata_issue" | "rating_dispute" | "safety_quarantine" = "metadata_issue";
     if (
       parsed.reportKind === "explicit_false_positive" ||
       parsed.reportKind === "explicit_false_negative" ||
@@ -70,25 +148,25 @@ export class DownstreamAndModerationPlane {
       ticketType = "safety_quarantine";
     }
 
-    const result = await this.ctx.db
+    await this.ctx.db
       .prepare(
-        `INSERT INTO catalog_tickets(ticket_id,ticket_type,app_id,target_url,canonical_id,reason,payload_json,review_status,recorded_at)
-      SELECT ?,?,app_id,?,?,?,?, 'pending',? FROM registered_apps WHERE app_id=? AND revoked_at IS NULL`
+        `INSERT INTO catalog_tickets(
+           ticket_id, ticket_type, app_id, target_url, canonical_id,
+           reason, payload_json, review_status, recorded_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)`
       )
       .bind(
         reportId,
         ticketType,
+        appId,
         targetUrl,
-        canonicalId,
-        parsed.reason ?? parsed.reportKind ?? null,
+        parsed.canonicalId ?? null,
+        parsed.reason ?? parsed.reportKind,
         JSON.stringify(parsed),
-        recordedAt,
-        appId
+        recordedAt
       )
       .run();
-    if ((result.meta as { changes?: number } | undefined)?.changes !== 1) {
-      throw new CoordinatorConflict("Invalid application credential", 403);
-    }
+
     return { schemaVersion: 1, status: "accepted", reportId, recordedAt };
   }
 
@@ -101,11 +179,15 @@ export class DownstreamAndModerationPlane {
     const query = UserAppListQuerySchema.parse({ limit, cursor: cursor ?? undefined });
     const rows = await this.ctx.db
       .prepare(
-        `SELECT a.app_id,a.app_name,a.permissions_json,a.created_at,a.revoked_at
-      FROM registered_apps a
-      JOIN registered_users u ON u.user_id=a.owner_user_id
-      WHERE a.owner_user_id=? AND u.revoked_at IS NULL AND (? IS NULL OR a.app_id>?) AND (? IS NULL OR a.app_id=?)
-      ORDER BY a.app_id LIMIT ?`
+        `SELECT a.app_id, a.app_name, a.permissions_json, a.created_at, a.revoked_at
+         FROM registered_apps a
+         JOIN registered_users u ON u.user_id = a.owner_user_id
+         WHERE a.owner_user_id = ?
+           AND u.revoked_at IS NULL
+           AND (? IS NULL OR a.app_id > ?)
+           AND (? IS NULL OR a.app_id = ?)
+         ORDER BY a.app_id
+         LIMIT ?`
       )
       .bind(userId, query.cursor ?? null, query.cursor ?? null, appId ?? null, appId ?? null, query.limit + 1)
       .all<{
@@ -120,7 +202,7 @@ export class DownstreamAndModerationPlane {
       UserAppSchema.parse({
         appId: row.app_id,
         appName: row.app_name,
-        permissions: JSON.parse(row.permissions_json),
+        permissions: JSON.parse(row.permissions_json) as string[],
         createdAt: row.created_at,
         revokedAt: row.revoked_at
       })
@@ -131,16 +213,16 @@ export class DownstreamAndModerationPlane {
   async registerApp(input: RegisterAppRequest, ownerUserId?: string): Promise<RegisterAppResponse> {
     const parsed = RegisterAppRequestSchema.parse(input);
     const appId = crypto.randomUUID();
-    const appToken = formatAppToken((await sha256Hex(crypto.randomUUID() + Date.now().toString())).slice(0, 64));
+    const appToken = formatAppToken(generateToken());
     const tokenHash = await sha256Hex(appToken);
     const now = new Date(this.ctx.now()).toISOString();
     const permissions = ["catalog:read", "catalog:search", "demand:feedback"];
 
-    const insert = this.ctx.db
+    const result = await this.ctx.db
       .prepare(
-        `INSERT INTO registered_apps (app_id, app_name, token_hash, contact_email, permissions_json, created_at, revoked_at, owner_user_id)
-      SELECT ?, ?, ?, ?, ?, ?, NULL, ? WHERE ? IS NULL OR EXISTS (
-        SELECT 1 FROM registered_users WHERE user_id=? AND revoked_at IS NULL)`
+        `INSERT INTO registered_apps(app_id, app_name, token_hash, contact_email, permissions_json, created_at, revoked_at, owner_user_id)
+         SELECT ?, ?, ?, ?, ?, ?, NULL, ?
+         WHERE ? IS NULL OR EXISTS (SELECT 1 FROM registered_users WHERE user_id = ? AND revoked_at IS NULL)`
       )
       .bind(
         appId,
@@ -152,8 +234,8 @@ export class DownstreamAndModerationPlane {
         ownerUserId ?? null,
         ownerUserId ?? null,
         ownerUserId ?? null
-      );
-    const result = await insert.run();
+      )
+      .run();
     if ((result.meta as { changes?: number } | undefined)?.changes !== 1) {
       throw new CoordinatorConflict("Invalid user owner", 403);
     }
@@ -167,24 +249,17 @@ export class DownstreamAndModerationPlane {
     };
   }
 
-  async authenticateApp(appToken: string): Promise<{
-    appId: string;
-    appName: string;
-    permissions: string[];
-    candidateStatus?: "none" | "review_pending" | "reviewed" | "trusted";
-    isTrusted?: boolean;
-    isAgeVerified?: boolean;
-  } | null> {
+  async authenticateApp(appToken: string): Promise<DownstreamAppPrincipal | null> {
     if (!isAppToken(appToken)) return null;
     const tokenHash = await sha256Hex(appToken);
     const row = await this.ctx.db
       .prepare(
         `SELECT a.app_id, a.app_name, a.permissions_json, a.revoked_at, a.candidate_status,
-             COALESCE(MAX(u.age_verified), 0) AS age_verified
-      FROM registered_apps a
-      LEFT JOIN registered_users u ON u.user_id = a.owner_user_id AND u.revoked_at IS NULL
-      WHERE a.token_hash = ?
-      GROUP BY a.app_id`
+                COALESCE(MAX(u.age_verified), 0) AS age_verified
+         FROM registered_apps a
+         LEFT JOIN registered_users u ON u.user_id = a.owner_user_id AND u.revoked_at IS NULL
+         WHERE a.token_hash = ?
+         GROUP BY a.app_id`
       )
       .bind(tokenHash)
       .first<{
@@ -197,66 +272,27 @@ export class DownstreamAndModerationPlane {
       }>();
     if (!row || row.revoked_at) return null;
     const permissions = JSON.parse(row.permissions_json) as string[];
-    const candidateStatus = (row.candidate_status || "none") as
-      | "none"
-      | "review_pending"
-      | "reviewed"
-      | "trusted";
+    const candidateStatus: DownstreamAppPrincipal["candidateStatus"] =
+      row.candidate_status === "review_pending" ||
+      row.candidate_status === "reviewed" ||
+      row.candidate_status === "trusted"
+        ? row.candidate_status
+        : "none";
     return {
       appId: row.app_id,
       appName: row.app_name,
       permissions,
       candidateStatus,
-      isTrusted:
-        candidateStatus === "trusted" ||
-        permissions.includes("takedowns:submit") ||
-        permissions.includes("claims:delegate"),
+      isTrusted: candidateStatus === "trusted" && permissions.includes("claims:delegate"),
       isAgeVerified: Boolean(row.age_verified)
-    };
-  }
-
-  async recordDownstreamFeedback(appId: string, input: DemandFeedbackInput): Promise<DemandFeedbackReceipt> {
-    const validSignalTypes = new Set(["search_miss", "refresh_demand", "popularity_signal"]);
-    if (!input || !validSignalTypes.has(input.signalType)) {
-      throw new Error("Invalid demand feedback signalType");
-    }
-    const signalId = crypto.randomUUID();
-    const recordedAt = new Date(this.ctx.now()).toISOString();
-
-    await this.ctx.db
-      .prepare(
-        `INSERT INTO downstream_demand_signals (
-        signal_id, app_id, signal_type, query, zero_hits, requested_platform,
-        target_url, category, metadata_json, recorded_at, resolved_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`
-      )
-      .bind(
-        signalId,
-        appId,
-        input.signalType,
-        input.query || null,
-        input.zeroHits ? 1 : 0,
-        input.requestedPlatform || null,
-        input.targetUrl || null,
-        input.category || null,
-        input.metadata ? JSON.stringify(input.metadata) : null,
-        recordedAt
-      )
-      .run();
-
-    return {
-      schemaVersion: 1,
-      status: "accepted",
-      signalId,
-      recordedAt
     };
   }
 
   async issueUserToken(
     userName: string,
     contactEmail?: string,
-    ageVerified: boolean = false,
-    isModerator: boolean = false
+    ageVerified = false,
+    isModerator = false
   ): Promise<{
     userId: string;
     userName: string;
@@ -272,23 +308,19 @@ export class DownstreamAndModerationPlane {
     const now = new Date(this.ctx.now()).toISOString();
     await this.ctx.db
       .prepare(
-        `INSERT INTO registered_users (user_id, user_name, token_hash, contact_email, created_at, revoked_at, age_verified, is_moderator)
-      VALUES (?, ?, ?, ?, ?, NULL, ?, ?)`
+        `INSERT INTO registered_users(user_id, user_name, token_hash, contact_email, created_at, revoked_at, age_verified, is_moderator)
+         VALUES (?, ?, ?, ?, ?, NULL, ?, ?)`
       )
       .bind(userId, userName.trim(), tokenHash, contactEmail || null, now, ageVerified ? 1 : 0, isModerator ? 1 : 0)
       .run();
     return { userId, userName: userName.trim(), token, ageVerified, isModerator };
   }
 
-  async authenticateUser(
-    token: string
-  ): Promise<{ userId: string; userName: string; ageVerified?: boolean; isModerator?: boolean } | null> {
+  async authenticateUser(token: string): Promise<UserPrincipal | null> {
     if (!isUserToken(token)) return null;
     const tokenHash = await sha256Hex(token);
     const row = await this.ctx.db
-      .prepare(
-        `SELECT user_id, user_name, revoked_at, age_verified, is_moderator FROM registered_users WHERE token_hash = ?`
-      )
+      .prepare("SELECT user_id, user_name, revoked_at, age_verified, is_moderator FROM registered_users WHERE token_hash = ?")
       .bind(tokenHash)
       .first<{
         user_id: string;
@@ -325,16 +357,15 @@ export class DownstreamAndModerationPlane {
 
     const existing = await this.ctx.db
       .prepare(
-        `SELECT ticket_id AS claim_id, payload_json, signature, review_status, recorded_at
-      FROM catalog_tickets
-      WHERE ticket_type = 'delegated_claim' AND app_id = ? AND nonce = ?`
+        `SELECT ticket_id AS claim_id, payload_json, signature, recorded_at
+         FROM catalog_tickets
+         WHERE ticket_type = 'delegated_claim' AND app_id = ? AND nonce = ?`
       )
       .bind(appId, parsed.attestation.nonce)
       .first<{
         claim_id: string;
         payload_json: string;
         signature: string;
-        review_status: "pending" | "accepted" | "rejected";
         recorded_at: string;
       }>();
 
@@ -354,14 +385,14 @@ export class DownstreamAndModerationPlane {
     const claimId = crypto.randomUUID();
     const result = await this.ctx.db
       .prepare(
-        `INSERT INTO catalog_tickets (
-        ticket_id, ticket_type, app_id, target_url, creator_id, challenge_token,
-        expires_at, nonce, signature, payload_json, reason, contact_email,
-        review_status, review_notes, recorded_at
-      )
-      SELECT ?, 'delegated_claim', app_id, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, ?
-      FROM registered_apps
-      WHERE app_id = ? AND revoked_at IS NULL`
+        `INSERT INTO catalog_tickets(
+           ticket_id, ticket_type, app_id, target_url, requester_type, creator_id, challenge_token,
+           expires_at, nonce, signature, proof_kind, payload_json, reason, contact_email,
+           review_status, review_notes, recorded_at
+         )
+         SELECT ?, 'delegated_claim', app_id, ?, 'app', ?, ?, ?, ?, ?, 'delegated_signature', ?, ?, ?, 'pending', NULL, ?
+         FROM registered_apps
+         WHERE app_id = ? AND revoked_at IS NULL AND candidate_status = 'trusted'`
       )
       .bind(
         claimId,
@@ -380,7 +411,7 @@ export class DownstreamAndModerationPlane {
       .run();
 
     if ((result.meta as { changes?: number } | undefined)?.changes !== 1) {
-      throw new CoordinatorConflict("Invalid application credential", 403);
+      throw new CoordinatorConflict("Trusted application credential with active status required", 403);
     }
 
     return {
@@ -396,8 +427,8 @@ export class DownstreamAndModerationPlane {
     const row = await this.ctx.db
       .prepare(
         `SELECT app_id, request_count, candidate_status, candidate_flags_json
-      FROM registered_apps
-      WHERE app_id = ?`
+         FROM registered_apps
+         WHERE app_id = ?`
       )
       .bind(appId)
       .first<{
@@ -413,8 +444,10 @@ export class DownstreamAndModerationPlane {
     let status = row.candidate_status || "none";
     let flags: string[] = [];
     try {
-      flags = JSON.parse(row.candidate_flags_json || "[]");
-    } catch {}
+      flags = JSON.parse(row.candidate_flags_json || "[]") as string[];
+    } catch {
+      flags = [];
+    }
 
     if (newCount >= 50) {
       if (status === "none") {
@@ -431,8 +464,8 @@ export class DownstreamAndModerationPlane {
     await this.ctx.db
       .prepare(
         `UPDATE registered_apps
-      SET request_count = ?, last_active_at = ?, candidate_status = ?, candidate_flags_json = ?
-      WHERE app_id = ?`
+         SET request_count = ?, last_active_at = ?, candidate_status = ?, candidate_flags_json = ?
+         WHERE app_id = ?`
       )
       .bind(newCount, now, status, JSON.stringify(flags), appId)
       .run();
@@ -461,17 +494,21 @@ export class DownstreamAndModerationPlane {
     const res = await this.ctx.db
       .prepare(
         `SELECT c.canonical_id, c.display_name, c.content_rating, c.umbrella, c.category, c.updated_at,
-             (SELECT COUNT(*) FROM catalog_tickets r WHERE r.ticket_type IN ('removal_report', 'rating_dispute') AND (r.canonical_id = c.canonical_id OR json_extract(r.payload_json, '$.canonicalId') = c.canonical_id)) AS report_count
-      FROM canonical_packages c
-      ${where}
-      ORDER BY c.updated_at DESC, c.canonical_id DESC
-      LIMIT ?`
+                (
+                  SELECT COUNT(*) FROM catalog_tickets r
+                  WHERE r.ticket_type IN ('removal_report', 'rating_dispute')
+                    AND (r.canonical_id = c.canonical_id OR json_extract(r.payload_json, '$.canonicalId') = c.canonical_id)
+                ) AS report_count
+         FROM canonical_packages c
+         ${where}
+         ORDER BY c.updated_at DESC, c.canonical_id DESC
+         LIMIT ?`
       )
       .bind(...params)
       .all<{
         canonical_id: string;
         display_name: string;
-        content_rating: string;
+        content_rating: ContentRating;
         umbrella: "assets" | "tools" | "avatars";
         category: string;
         updated_at: string;
@@ -485,7 +522,7 @@ export class DownstreamAndModerationPlane {
     const ratings: ModeratorRatingRecord[] = visible.map((row) => ({
       canonicalId: row.canonical_id,
       displayName: row.display_name,
-      currentRating: row.content_rating as ContentRating,
+      currentRating: row.content_rating,
       umbrella: row.umbrella,
       category: row.category,
       reportCount: row.report_count ?? 0,
@@ -514,42 +551,35 @@ export class DownstreamAndModerationPlane {
     updatedAt: string;
   } | null> {
     const row = await this.ctx.db
-      .prepare(
-        `SELECT canonical_id, content_rating
-      FROM canonical_packages
-      WHERE canonical_id = ?`
-      )
+      .prepare("SELECT canonical_id, content_rating, tombstone_reason FROM canonical_packages WHERE canonical_id = ?")
       .bind(canonicalId)
       .first<{
         canonical_id: string;
-        content_rating: string;
+        content_rating: ContentRating;
+        tombstone_reason: string | null;
       }>();
 
     if (!row) {
       return null;
     }
 
-    const previousRating = row.content_rating as ContentRating;
+    const previousRating = row.content_rating;
     const updatedAt = new Date(this.ctx.now()).toISOString();
+    const nextTombstoneReason =
+      previousRating === "general" && newRating !== "general"
+        ? "rating_withdrawn"
+        : newRating === "general" && row.tombstone_reason === "rating_withdrawn"
+          ? null
+          : row.tombstone_reason;
 
     await this.ctx.db
       .prepare(
         `UPDATE canonical_packages
-      SET content_rating = ?, updated_at = ?
-      WHERE canonical_id = ?`
+         SET content_rating = ?, tombstone_reason = ?, updated_at = ?
+         WHERE canonical_id = ?`
       )
-      .bind(newRating, updatedAt, canonicalId)
+      .bind(newRating, nextTombstoneReason, updatedAt, canonicalId)
       .run();
-
-    if (previousRating === "general" && newRating !== "general") {
-      await this.ctx.db
-        .prepare(
-          `INSERT OR IGNORE INTO catalog_tombstones (canonical_id, reason, recorded_at)
-        VALUES (?, 'rating_withdrawn', ?)`
-        )
-        .bind(canonicalId, updatedAt)
-        .run();
-    }
 
     return {
       canonicalId,
