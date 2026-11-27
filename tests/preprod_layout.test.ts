@@ -150,9 +150,11 @@ describe("Pre-production directory layout and configuration conformance", () => 
     expect(readFileSync(join(rootDir, "src-crawler/src/index.ts"), "utf8")).not.toContain("worker/");
   });
 
-  test("src-worker config serves only the API with local D1 and a consistent preview binding", () => {
-    const config = Bun.TOML.parse(readFileSync(join(rootDir, "src-worker", "wrangler.toml"), "utf8"));
+  test("src-worker config serves only the API with local dev, preview, and production D1 targets", () => {
+    const config = Bun.TOML.parse(readFileSync(join(rootDir, "src-worker", "wrangler.toml"), "utf8")) as any;
     expect(config.main).toBe("src/worker_entry.ts");
+    expect(config.name).toBe("vrc-package-crawler-dev");
+    expect(config.vars.VRCP_ENV).toBe("development");
     expect(config.assets).toBeUndefined();
     expect(config.compatibility_flags).toContain("nodejs_compat");
     const databases = config.d1_databases as { binding: string; database_id: string; remote?: boolean }[];
@@ -160,11 +162,25 @@ describe("Pre-production directory layout and configuration conformance", () => 
     expect(databases[0].binding).toBe("VRCP_D1");
     expect(databases[0].database_id).toMatch(/^[0-9a-f-]{36}$/);
     expect(databases[0].remote).toBe(false);
-    const previews = (config.env as { preview: { d1_databases: typeof databases } }).preview.d1_databases;
+    const previewEnv = config.env.preview;
+    expect(previewEnv.name).toBe("vrc-package-crawler-preview");
+    expect(previewEnv.vars.VRCP_ENV).toBe("development");
+    const previews = previewEnv.d1_databases as typeof databases;
     expect(previews).toHaveLength(1);
     expect(previews[0].binding).toBe(databases[0].binding);
+    expect(previews[0].database_id).toMatch(/^[0-9a-f-]{36}$/);
     expect(previews[0].database_id).not.toBe(databases[0].database_id);
     expect(previews[0].remote).toBe(false);
+    const productionEnv = config.env.production;
+    expect(productionEnv.name).toBe("vrc-package-crawler");
+    expect(productionEnv.vars.VRCP_ENV).toBe("production");
+    const productions = productionEnv.d1_databases as typeof databases;
+    expect(productions).toHaveLength(1);
+    expect(productions[0].binding).toBe(databases[0].binding);
+    expect(productions[0].database_id).toMatch(/^[0-9a-f-]{36}$/);
+    expect(productions[0].database_id).not.toBe(databases[0].database_id);
+    expect(productions[0].database_id).not.toBe(previews[0].database_id);
+    expect(productions[0].remote).toBe(false);
     expect(config.previews).toBeUndefined();
     expect(config.preview_urls).toBe(false);
     expect(existsSync(join(rootDir, "src-crawler", "wrangler.toml"))).toBe(false);

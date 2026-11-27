@@ -9,11 +9,16 @@ import { previewOrigin, requirePreviewInitialization } from "./worker-preview-in
 export const APPROVED_PREVIEW_VPM_PROFILES = [
   {
     platform: "vpm",
-    origin: "https://vrchat-community.github.io",
+    hostMatchMode: "exact",
+    hostPattern: "vrchat-community.github.io",
     pathScope: "/template-package/",
+    queryMode: "none",
     method: "GET",
     purpose: "discovery",
+    autoPromote: false,
+    recrawlIntervalMs: 21_600_000,
     minDelayMs: 1000,
+    maxPaginationDepth: 5,
     expiresInDays: 7,
     reviewReference: "COMMUNITY-VPM-TEMPLATE",
     reason: "Approved open VPM community template package listing",
@@ -22,11 +27,16 @@ export const APPROVED_PREVIEW_VPM_PROFILES = [
   },
   {
     platform: "vpm",
-    origin: "https://raw.githubusercontent.com",
+    hostMatchMode: "exact",
+    hostPattern: "raw.githubusercontent.com",
     pathScope: "/vrchat-community/template-package-listing/",
+    queryMode: "none",
     method: "GET",
     purpose: "discovery",
+    autoPromote: false,
+    recrawlIntervalMs: 21_600_000,
     minDelayMs: 1000,
+    maxPaginationDepth: 5,
     expiresInDays: 7,
     reviewReference: "COMMUNITY-VPM-LISTING",
     reason: "Approved open VPM community template package listing source",
@@ -151,7 +161,7 @@ export async function runPreviewLiveCrawl(Client, options = {}) {
   const existingList = [];
   let profileCursor;
   for (let page = 0; page < 5; page++) {
-    const existingProfiles = await client.operator.sourceProfiles.list({
+    const existingProfiles = await client.operator.steeringProfiles.list({
       limit: 100,
       ...(profileCursor ? { cursor: profileCursor } : {})
     });
@@ -167,10 +177,12 @@ export async function runPreviewLiveCrawl(Client, options = {}) {
     const activeMatches = existingList.filter(
       p => p.disabledAt === null &&
         Date.parse(p.expiresAt) > nowMs &&
-        !p.exactQuery &&
         p.platform === profile.platform &&
-        p.origin === profile.origin &&
+        p.hostMatchMode === profile.hostMatchMode &&
+        p.hostPattern === profile.hostPattern &&
         p.pathScope === profile.pathScope &&
+        p.queryMode === profile.queryMode &&
+        !p.queryScope &&
         p.purpose === profile.purpose
     );
     const reusable = activeMatches.find(
@@ -180,20 +192,26 @@ export async function runPreviewLiveCrawl(Client, options = {}) {
     );
     if (!reusable) {
       for (const stale of activeMatches) {
-        await client.operator.sourceProfiles.disable(
+        await client.operator.steeringProfiles.disable(
           stale.profileId,
           "Replacing preview live crawl profile with required retention and publication classes"
         );
       }
       const { expiresInDays, ...profilePayload } = profile;
       const expiresAt = new Date(Date.now() + expiresInDays * 24 * 60 * 60 * 1000).toISOString();
-      await client.operator.sourceProfiles.create({ schemaVersion: 1, ...profilePayload, expiresAt });
+      await client.operator.steeringProfiles.create({ schemaVersion: 1, ...profilePayload, expiresAt });
     }
   }
 
   const enqueuedJobs = [];
   for (const job of APPROVED_PREVIEW_VPM_JOBS) {
     const enqueued = await client.operator.jobs.enqueue({ schemaVersion: 1, ...job });
+    if (typeof client.operator.jobs.requeue === "function") {
+      await client.operator.jobs.requeue(enqueued.jobId, {
+        priorityLane: 1,
+        reason: "Force fresh preview live crawl verification"
+      });
+    }
     enqueuedJobs.push(enqueued.jobId);
   }
 
@@ -201,7 +219,6 @@ export async function runPreviewLiveCrawl(Client, options = {}) {
   const issued = await client.operator.nodes.issue({
     schemaVersion: 1,
     nodeId,
-    capabilities: ["vpm"],
     reason: "Ephemeral CI preview live crawl proof"
   });
 
@@ -212,6 +229,7 @@ export async function runPreviewLiveCrawl(Client, options = {}) {
   let deltaResult = { deltas: [] };
   let leadsResult = { leads: [] };
   let nodeRevoked = false;
+  let nodePruned = false;
 
   try {
     const childEnv = minimalNodeEnvironment(env, {
@@ -243,8 +261,13 @@ export async function runPreviewLiveCrawl(Client, options = {}) {
     try {
       const revoked = await client.operator.nodes.revoke(nodeId, "CI preview live crawl verification completed");
       nodeRevoked = revoked?.status === "revoked" || revoked?.nodeId === nodeId;
+      if (nodeRevoked && typeof client.operator.nodes.prune === "function") {
+        const pruned = await client.operator.nodes.prune(nodeId, "Prune ephemeral CI preview live crawl probe node");
+        nodePruned = pruned?.status === "pruned" || pruned?.nodeId === nodeId;
+      }
     } catch {
       nodeRevoked = false;
+      nodePruned = false;
     }
     rmSync(scratchDir, { recursive: true, force: true });
   }
@@ -259,6 +282,7 @@ export async function runPreviewLiveCrawl(Client, options = {}) {
     cyclesRun,
     nodeId,
     nodeRevoked,
+    nodePruned,
     enqueuedJobs,
     canonicalPackages: indexResult.packages.map(item => ({ canonicalId: item.canonicalId, displayName: item.displayName })),
     deltaCount: deltaResult.deltas.length,

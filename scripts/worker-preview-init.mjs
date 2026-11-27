@@ -27,7 +27,7 @@ export function requirePreviewInitialization(env) {
   }
 }
 
-export function previewFetch(request = fetch, allowedAutoSeed = false) {
+export function previewFetch(request = fetch) {
   return async (input, init) => {
     const url = new URL(String(input));
     if (url.origin !== previewOrigin || url.username || url.password || url.hash ||
@@ -37,10 +37,8 @@ export function previewFetch(request = fetch, allowedAutoSeed = false) {
     }
     if (init.method === "POST") {
       const body = JSON.parse(init.body);
-      if (body?.schemaVersion !== 1 || body.autoSeed !== allowedAutoSeed || Object.keys(body).length !== 2) {
-        throw new Error(allowedAutoSeed
-          ? "Preview initialization must specify schemaVersion and enabled seeding"
-          : "Preview initialization must explicitly disable seeding");
+      if (body?.schemaVersion !== 1 || body.autoSeed !== false || Object.keys(body).length !== 2) {
+        throw new Error("Preview initialization must explicitly disable seeding");
       }
     }
     const response = await request(url.href, { ...init, redirect: "error", signal: AbortSignal.timeout(30_000) });
@@ -66,28 +64,26 @@ export function previewFetch(request = fetch, allowedAutoSeed = false) {
   };
 }
 
-export async function initializePreview(Client, env = process.env, request = fetch, { autoSeed = false } = {}) {
+export async function initializePreview(Client, env = process.env, request = fetch) {
   requirePreviewInitialization(env);
-  const client = new Client({ baseUrl: previewOrigin, operatorToken: env.OPERATOR_TOKEN, fetch: previewFetch(request, autoSeed) });
-  const initialized = await client.operator.init({ autoSeed });
-  if (initialized.autoSeed !== autoSeed) throw new Error("Preview initialization did not confirm expected seeding");
+  const client = new Client({ baseUrl: previewOrigin, operatorToken: env.OPERATOR_TOKEN, fetch: previewFetch(request) });
+  const initialized = await client.operator.init({ autoSeed: false });
+  if (initialized.autoSeed !== false) throw new Error("Preview initialization did not confirm expected seeding");
   const catalog = await client.index.query({ limit: 1 });
-  return { target: previewOrigin, autoSeed, schemaVersion: catalog.schemaVersion, catalogRead: "passed" };
+  return { target: previewOrigin, autoSeed: false, schemaVersion: catalog.schemaVersion, catalogRead: "passed" };
 }
 
 if (import.meta.main) {
   try {
     const args = process.argv.slice(2);
-    const hasExecute = args.includes("--execute");
-    const autoSeed = args.includes("--seed") || args.includes("--auto-seed");
     if (args.length === 0) {
       console.log(JSON.stringify({ purpose: "plan-only", target: previewOrigin, autoSeed: false,
         next: "Run worker-preview-init.yml on main to initialize preview without a version bump" }));
-    } else if (hasExecute && args.every(a => a === "--execute" || a === "--seed" || a === "--auto-seed")) {
+    } else if (args.length === 1 && args[0] === "--execute") {
       requirePreviewInitialization(process.env);
       const workerDirectory = fileURLToPath(new URL("../src-worker/", import.meta.url));
       const { VRCPackageClient } = await import(pathToFileURL(Bun.resolveSync("vrc-packages-api", workerDirectory)).href);
-      console.log(JSON.stringify(await initializePreview(VRCPackageClient, process.env, fetch, { autoSeed })));
+      console.log(JSON.stringify(await initializePreview(VRCPackageClient, process.env, fetch)));
     } else throw new Error("Invalid initialization arguments");
   } catch {
     // SDK, transport and schema errors can contain remote data. Do not print them.

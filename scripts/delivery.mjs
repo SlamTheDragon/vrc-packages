@@ -399,7 +399,7 @@ export async function deliver(action, channel, product, ci = false, skipTests = 
       try {
         writeFileSync(secretPath, JSON.stringify(bindings), { flag: "wx", mode: 0o600 });
         execFileSync(process.execPath, [cli, "deploy", bundle, "--no-bundle", "--autoconfig=false",
-          "--env", channel === "preview" ? "preview" : "", "--config", "wrangler.toml",
+          "--env", channel === "preview" ? "preview" : "production", "--config", "wrangler.toml",
           "--secrets-file", secretPath], { cwd: project, stdio: "inherit" });
       } finally {
         if (existsSync(secretPath)) unlinkSync(secretPath);

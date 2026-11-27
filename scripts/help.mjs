@@ -92,6 +92,7 @@ export const categories = {
     description: "Worker preview initialization and release announcement webhooks.",
     commands: [
       { cmd: "bun run worker:preview:init", desc: "Initializes Cloudflare Worker preview D1 database" },
+      { cmd: "bun run worker:dev:purge", desc: "Purges and rebuilds development or preview D1 schema (guarded)" },
       { cmd: "bun run release:announce", desc: "Emits Discord release announcement for published tag" }
     ]
   }

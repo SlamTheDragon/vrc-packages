@@ -51,7 +51,6 @@ jobs:
         env:
           VRCP_WORKER_BUILD_CHANNEL: ${{ steps.route.outputs.channel }}
       - name: Test Worker
-        continue-on-error: ${{ steps.route.outputs.channel == 'preview' }}
         env:
           VRCP_WORKER_BUILD_CHANNEL: ${{ steps.route.outputs.channel }}
         run: |
@@ -125,8 +124,8 @@ jobs:
         run: bun run prepare:dev preview worker
         env:
           GH_TOKEN: ${{ github.token }}
-      - name: Initialize preview D1 schema and seeds
-        run: bun run worker:preview:init --execute --seed
+      - name: Initialize preview D1 schema
+        run: bun run worker:preview:init --execute
         env:
           OPERATOR_TOKEN: ${{ secrets.OPERATOR_TOKEN }}
           VRCP_WORKER_OPERATION_ENV: cloudflare-preview

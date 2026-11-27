@@ -101,7 +101,32 @@ test("manual initializer uses only main and preview secrets with root forwarding
   expect(worker.scripts["preview:init"]).toBe("bun run --cwd .. worker:preview:init");
 });
 
-test("preview initialization authorizes automated delivery context in cloudflare-worker workflow", async () => {
+test("transport accepts only explicit disabled seeding and rejects enabled or mismatched payloads", async () => {
+  const requestDisabled = previewFetch(async () => Response.json({ status: "ok" }));
+  const resp = await requestDisabled(`${previewOrigin}/v1/operator/init`, {
+    method: "POST",
+    body: JSON.stringify({ schemaVersion: 1, autoSeed: false })
+  });
+  expect(resp.status).toBe(200);
+
+  await expect(requestDisabled(`${previewOrigin}/v1/operator/init`, {
+    method: "POST",
+    body: JSON.stringify({ schemaVersion: 1, autoSeed: true })
+  })).rejects.toThrow("Preview initialization must explicitly disable seeding");
+});
+
+test("preview initialization rejects legacy --seed and --auto-seed CLI arguments", () => {
+  for (const flag of ["--seed", "--auto-seed"]) {
+    const res = spawnSync("bun", ["scripts/worker-preview-init.mjs", "--execute", flag], {
+      encoding: "utf8",
+      env: { ...process.env, OPERATOR_TOKEN: "PRIVATE_FIXTURE_VALUE" }
+    });
+    expect(res.status).toBe(1);
+    expect(res.stdout + res.stderr).not.toContain("PRIVATE_FIXTURE_VALUE");
+  }
+});
+
+test("preview initialization authorizes automated delivery context with explicit disabled seeding", async () => {
   const deliveryEnv = {
     GITHUB_ACTIONS: "true",
     GITHUB_EVENT_NAME: "push",
@@ -116,26 +141,11 @@ test("preview initialization authorizes automated delivery context in cloudflare
   const calls: unknown[] = [];
   class Client {
     constructor(options: any) { calls.push({ origin: options.baseUrl, tokenPresent: !!options.operatorToken }); }
-    operator = { init: async (params: unknown) => { calls.push(params); return { autoSeed: true }; } };
+    operator = { init: async (params: unknown) => { calls.push(params); return { autoSeed: false }; } };
     index = { query: async (params: unknown) => { calls.push(params); return { schemaVersion: 1 }; } };
   }
-  const result = await initializePreview(Client, deliveryEnv, fetch, { autoSeed: true });
-  expect(result).toEqual({ target: previewOrigin, autoSeed: true, schemaVersion: 1, catalogRead: "passed" });
-  expect(calls).toEqual([{ origin: previewOrigin, tokenPresent: true }, { autoSeed: true }, { limit: 1 }]);
-});
-
-test("previewFetch allows autoSeed: true when explicitly enabled and rejects mismatch", async () => {
-  const requestEnabled = previewFetch(async () => Response.json({ status: "ok" }), true);
-  const resp = await requestEnabled(`${previewOrigin}/v1/operator/init`, {
-    method: "POST",
-    body: JSON.stringify({ schemaVersion: 1, autoSeed: true })
-  });
-  expect(resp.status).toBe(200);
-
-  // Rejects disabled seeding when enabled is expected
-  await expect(requestEnabled(`${previewOrigin}/v1/operator/init`, {
-    method: "POST",
-    body: JSON.stringify({ schemaVersion: 1, autoSeed: false })
-  })).rejects.toThrow();
+  const result = await initializePreview(Client, deliveryEnv, fetch);
+  expect(result).toEqual({ target: previewOrigin, autoSeed: false, schemaVersion: 1, catalogRead: "passed" });
+  expect(calls).toEqual([{ origin: previewOrigin, tokenPresent: true }, { autoSeed: false }, { limit: 1 }]);
 });
 

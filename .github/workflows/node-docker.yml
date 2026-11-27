@@ -125,7 +125,7 @@ jobs:
           for attempt in 1 2; do
             set +e
             timeout 20s docker run --rm --network none --volume "$volume:/app/data" \
-              --env NODE_ID=ci-runtime-check --env NODE_TOKEN=ci-offline-fixture \
+              --env NODE_ID=ci-runtime-check --env NODE_TOKEN=vrcp_000000000000000000000000000000000000000000000000000000000000000001ff \
               --env COORDINATOR_URL=http://127.0.0.1:1 "$image" --once
             status=$?
             set -e

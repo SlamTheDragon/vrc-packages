@@ -1148,7 +1148,7 @@ test("crawler Linux and container checks use the headless entry point, not retir
   expect(standalone.run + runtime).not.toContain("--help");
   expect(runtime).not.toContain("init ci-runtime-check");
   expect(runtime).not.toContain("node.config.json");
-  expect(runtime).toContain("--env NODE_ID=ci-runtime-check --env NODE_TOKEN=ci-offline-fixture");
+  expect(runtime).toContain("--env NODE_ID=ci-runtime-check --env NODE_TOKEN=vrcp_000000000000000000000000000000000000000000000000000000000000000001ff");
   expect(runtime).toContain('--env COORDINATOR_URL=http://127.0.0.1:1 "$image" --once');
   expect(runtime).toContain("for attempt in 1 2");
   expect(runtime).toContain('test "$status" -eq 1');
@@ -1169,7 +1169,10 @@ test("Worker runtime checks follow the built target and use its channel", () => 
   expect(steps[buildIndex].env.VRCP_WORKER_BUILD_CHANNEL).toBe('${{ steps.route.outputs.channel }}');
   expect(steps[testIndex].env.VRCP_WORKER_BUILD_CHANNEL).toBe(steps[buildIndex].env.VRCP_WORKER_BUILD_CHANNEL);
   expect(steps[testIndex].run).toContain("bun run --cwd src-worker test:runtime");
-  expect(steps[testIndex]["continue-on-error"]).toBe("${{ steps.route.outputs.channel == 'preview' }}");
+  expect(steps[testIndex]["continue-on-error"]).toBeUndefined();
+  const deployInit = workflow.jobs.deploy.steps.find((step: any) => step.name === "Initialize preview D1 schema");
+  expect(deployInit?.run).toBe("bun run worker:preview:init --execute");
+  expect(deployInit?.run).not.toContain("--seed");
 });
 
 test("Worker deploy tooling has its own manifest before Bun install and cannot resolve a parent project", async () => {
@@ -1258,11 +1261,15 @@ test("product workflows scope tests to product domains and enforce test policy o
     }
     // Workflows must not contain redundant VRCP_SKIP_TESTS context access in CI
     expect(content).not.toContain("VRCP_SKIP_TESTS");
-    // Workflows that have separate test steps configure continue-on-error for preview tests
-    if (["node-docker", "cloudflare-worker"].includes(name)) {
+    // Workflows that allow non-blocking preview tests configure continue-on-error for preview
+    if (name === "node-docker") {
       expect(content).toContain("continue-on-error: ${{");
     }
   }
+
+  const deliverySource = readFileSync(new URL("../scripts/delivery.mjs", import.meta.url), "utf8");
+  expect(deliverySource).toContain('channel === "preview" ? "preview" : "production"');
+  expect(deliverySource).not.toContain('channel === "preview" ? "preview" : ""');
 
   // Repository governance tests workflow exists and runs root tests
   const repoTests = Bun.YAML.parse(readFileSync(new URL("../.github/workflows/repository-tests.yml", import.meta.url), "utf8")) as any;
