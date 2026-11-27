@@ -219,9 +219,7 @@ See full history at [docs/changelogs/vrcp-worker/preview](https://github.com/Sla
 ## VRC Packages Networking `vrcp-packages-network`
 
 <!-- vrcp-packages-network-DESCRIPTION_SUMMARY -->
-Require balanced delimiter pairs in `MARKETING_BRACKETS` so `cleanTitle` preserves valid CJK bracketed titles.
 <!-- vrcp-packages-network-DESCRIPTION_SUMMARY -->
 ### Added
 ### Changes
-- **Balanced marketing-bracket title hygiene:** Require balanced delimiter pairs in `MARKETING_BRACKETS` so `cleanTitle` keeps valid CJK bracketed titles intact.
 See full history at [docs/changelogs/vrcp-packages-network/](https://github.com/SlamTheDragon/vrc-packages/tree/main/docs/changelogs/vrcp-packages-network/)
