@@ -392,9 +392,11 @@ export class CrawlerNodeDaemon {
           sourceItemKey: outcome.observation.sourceItemKey,
           title: outcome.observation.title,
           author: outcome.observation.author,
-          version: outcome.observation.release?.version,
+          version: outcome.observation.release?.version ?? outcome.observation.releases?.[0]?.version,
           price: outcome.observation.price,
           currency: outcome.observation.currency,
+          qualityFlags: outcome.observation.qualityFlags,
+          vrchatRelevance: outcome.observation.vrchatRelevance,
           outboundLinksCount: outcome.observation.outboundLinks?.length ?? 0
         });
         if (outcome.observation.outboundLinks && outcome.observation.outboundLinks.length > 0) {
@@ -411,7 +413,8 @@ export class CrawlerNodeDaemon {
           items: outcome.observations.map((obs) => ({
             key: obs.sourceItemKey,
             title: obs.title,
-            version: obs.release?.version
+            version: obs.release?.version ?? obs.releases?.[0]?.version,
+            qualityFlags: obs.qualityFlags
           }))
         });
         if (outcome.kind === "partial_batch" && outcome.issues && outcome.issues.length > 0) {
@@ -425,6 +428,7 @@ export class CrawlerNodeDaemon {
           jobId: job.jobId,
           platform: job.platform,
           count: outcome.leads.length,
+          nextPageLead: outcome.nextPageLead ?? null,
           leads: outcome.leads.map((l) => ({ kind: l.kind, url: l.url }))
         });
       } else if (outcome.kind === "unchanged") {

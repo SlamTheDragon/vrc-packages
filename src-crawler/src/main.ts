@@ -2,9 +2,8 @@ import { existsSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { CoordinatorClient } from "./client/node_client.ts";
 import { CrawlerNodeDaemon } from "./runner/daemon.ts";
-import { loadNodeRuntimeConfig } from "./config/runtime_config.ts";
+import { loadNodeRuntimeConfig, loadScopedGitHubTokenFromEnvFile } from "./config/runtime_config.ts";
 import { LocalNodeStore } from "./storage/local_sqlite.ts";
-import { loadScopedGitHubTokenFromEnvFile } from "./adapters/observation_adapter.ts";
 import { logger } from "./utils/logging/logger.ts";
 import { version } from "../package.json";
 

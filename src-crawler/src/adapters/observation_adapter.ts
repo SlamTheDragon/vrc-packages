@@ -1,43 +1,29 @@
-import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
-import * as cheerio from "cheerio";
-import type { CrawlJob, DiscoveryLead, Observation, ResultRequest, VpmListingIssue } from "vrc-packages-network/node";
-import { isVpmVersion } from "vrc-packages-network/vpm-version";
-import { classifyAccessFailure, retryAfterSeconds } from "../shared/protocol/access_outcome.ts";
-import { githubApiRepositoryIdentity, parseGitHubOwnerRepo, normalizeGitHubRepositoryUrl, isBoothBrowseTarget, boothItemIdentity,
-  isShopifyProductSitemapTarget, shopifyProductLead,
-  isSellfyProductTarget, isCustomDomainProductTarget, isStorefrontProductTarget } from "vrc-packages-network/source-targets";
-import { CRAWLER_USER_AGENT } from "../shared/robots/crawler_identity.ts";
+import type { CrawlJob, DiscoveryLead, Observation, ResultRequest } from "vrc-packages-network/node";
 import { UnsafeMetadataTarget } from "../client/public_metadata_fetch.ts";
-import { cleanTitle, cleanTrackingParams } from "vrc-packages-network/catalog-hygiene";
-import { cleanAuthorName, cleanDescription } from "../utils/text/sanitizer.ts";
+import {
+  boothDriver,
+  defaultDriverRegistry,
+  githubDriver,
+  shopifyDriver,
+  vpmDriver
+} from "../drivers/driver_registry.ts";
+import type { DriverContext } from "../drivers/source_driver.ts";
+import { StorefrontHtmlDriver } from "../drivers/storefront_base_driver.ts";
+import { htmlSanitizer } from "../pipeline/html_sanitizer.ts";
+import { paginationController } from "../pipeline/pagination_controller.ts";
+import { semanticEngine } from "../pipeline/semantic_engine.ts";
+import { vpmQualityAnalyzer } from "../pipeline/vpm_quality_analyzer.ts";
+import { classifyAccessFailure, retryAfterSeconds } from "../shared/protocol/access_outcome.ts";
+import { CRAWLER_USER_AGENT } from "../shared/robots/crawler_identity.ts";
 
 type Outcome = ResultRequest["outcome"];
 
-/**
- * Safely resolves an existing scoped GitHub token from .env or bin/.env in the working directory without exposing it.
- * Used exclusively for scoped rate scaling on api.github.com.
- */
-export function loadScopedGitHubTokenFromEnvFile(dir: string = process.cwd()): string | undefined {
-  const candidatePaths = [
-    join(dir, ".env"),
-    join(dir, "bin", ".env")
-  ];
-  for (const envPath of candidatePaths) {
-    try {
-      if (existsSync(envPath)) {
-        const content = readFileSync(envPath, "utf8");
-        const match = content.match(/^ *(?:export +)?(?:GITHUB_TOKEN|GH_TOKEN) *= *["']?([^"'#\r\n]+)["']?/m);
-        if (match && match[1]?.trim()) {
-          return match[1].trim();
-        }
-      }
-    } catch {
-      // Fall through safely on permission or missing file error
-    }
-  }
-  return undefined;
-}
+export const defaultDriverContext: DriverContext = {
+  sanitizer: htmlSanitizer,
+  semantic: semanticEngine,
+  vpmAnalyzer: vpmQualityAnalyzer,
+  pagination: paginationController
+};
 
 async function boundedText(response: Response, maxBytes = 2_000_000): Promise<string> {
   const reader = response.body?.getReader();
@@ -49,533 +35,142 @@ async function boundedText(response: Response, maxBytes = 2_000_000): Promise<st
     const { done, value } = await reader.read();
     if (done) break;
     bytes += value.byteLength;
-    if (bytes > maxBytes) { await reader.cancel(); throw new Error("Response over 2 MB"); }
+    if (bytes > maxBytes) {
+      await reader.cancel();
+      throw new Error("Response over 2 MB");
+    }
     text += decoder.decode(value, { stream: true });
   }
   return text + decoder.decode();
 }
 
-function normalizedDate(value: unknown): string | null {
-  if (typeof value !== "string" || !value.trim()) return null;
-  const time = Date.parse(value);
-  return Number.isNaN(time) ? null : new Date(time).toISOString();
-}
-
-function httpsLinks(values: unknown[]): string[] {
-  return [...new Set(values.filter((value): value is string => typeof value === "string")
-    .map((value) => cleanTrackingParams(value))
-    .filter((value) => { try { return new URL(value).protocol === "https:"; } catch { return false; } }))].slice(0, 100);
-}
-
-function object(value: unknown): Record<string, unknown> | null {
-  return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
-}
-
-function string(value: unknown): string | null {
-  return typeof value === "string" && value.trim() ? value.trim() : null;
-}
-
-function authorName(value: unknown): string | null {
-  return string(value) || string(object(value)?.name);
-}
-
-/**
- * Normalises a VPM manifest `keywords` field into a deduplicated, trimmed list capped at 50.
- * Returns undefined when no valid tags survive so the wire field stays omitted.
- */
-function vpmKeywords(value: unknown): string[] | undefined {
-  if (!Array.isArray(value)) return undefined;
-  const tags = [...new Set(
-    value
-      .filter((item): item is string => typeof item === "string")
-      .map((item) => item.trim())
-      .filter((item) => item.length > 0 && item.length <= 100)
-  )].slice(0, 50);
-  return tags.length > 0 ? tags : undefined;
-}
-
-function httpsLink(value: unknown): string | undefined {
-  if (typeof value !== "string") return undefined;
-  try { return new URL(value).protocol === "https:" ? value : undefined; } catch { return undefined; }
-}
-
 /** Only the public REST repository metadata endpoint is supported; no HTML or README archival. */
 export function parseGitHubRepository(job: CrawlJob, body: string): Observation | null {
-  if (job.platform !== "github") return null;
-  const requestedName = githubApiRepositoryIdentity(job.url);
-  if (!requestedName) return null;
-  let raw: unknown;
-  try { raw = JSON.parse(body); } catch { return null; }
-  const repo = object(raw);
-  const fullName = string(repo?.full_name);
-  const owner = string(object(repo?.owner)?.login);
-  const name = string(repo?.name);
-  const id = repo?.id;
-  const htmlUrl = httpsLink(repo?.html_url);
-  if (!repo || repo.private !== false || !fullName || !owner || !name || !htmlUrl ||
-      !Number.isSafeInteger(id) || (id as number) <= 0 ||
-      fullName.toLowerCase() !== requestedName.toLowerCase() ||
-      `${owner}/${name}`.toLowerCase() !== requestedName.toLowerCase() ||
-      htmlUrl.toLowerCase() !== `https://github.com/${requestedName}`.toLowerCase()) return null;
-  return {
-    sourceItemKey: `github:${id}`,
-    title: cleanTitle(name).slice(0, 500),
-    author: cleanAuthorName(owner).slice(0, 300),
-    summary: cleanDescription(string(repo.description) || "").slice(0, 1024),
-    outboundLinks: httpsLinks([htmlUrl, repo.homepage]),
-    originUpdatedAt: normalizedDate(repo.updated_at)
-  };
-}
-
-function releaseEvidence(version: string, manifest: Record<string, unknown>): NonNullable<Observation["release"]> | null {
-  if (!isVpmVersion(version)) return null;
-  const dependencyObject = manifest.vpmDependencies === undefined ? {} : object(manifest.vpmDependencies);
-  if (!dependencyObject || Object.keys(dependencyObject).length > 100) return null;
-  const dependencyRanges: Record<string, string> = Object.create(null);
-  for (const [name, range] of Object.entries(dependencyObject)) {
-    if (!name || name.length > 200 || !string(range) || string(range)!.length > 200) return null;
-    dependencyRanges[name] = string(range)!;
-  }
-  const hash = string(manifest.zipSHA256);
-  if (hash && !/^[a-fA-F0-9]{64}$/.test(hash)) return null;
-  return {
-    version,
-    dependencyRanges,
-    ...(httpsLink(manifest.url) ? { downloadUrl: httpsLink(manifest.url) } : {}),
-    ...(hash ? { zipSha256: hash.toLowerCase() } : {})
-  };
+  return githubDriver.parseRepository(job, body, defaultDriverContext);
 }
 
 /** A template source is a build recipe. Its URLs are leads, not package or version evidence. */
 export function parseVpmListingRecipe(job: CrawlJob, body: string): DiscoveryLead[] | null {
-  if (job.platform !== "vpm" && job.platform !== "curated") return null;
-  let raw: unknown;
-  try { raw = JSON.parse(body); } catch { return null; }
-  const recipe = object(raw);
-  if (!recipe || !string(recipe.name) || !httpsLink(recipe.url)) return null;
-  if (recipe.packages !== undefined && !Array.isArray(recipe.packages)) return null;
-  if (recipe.githubRepos !== undefined && !Array.isArray(recipe.githubRepos)) return null;
-  if (!Array.isArray(recipe.packages) && !Array.isArray(recipe.githubRepos)) return null;
-  const packages = recipe.packages || [];
-  const githubRepos = recipe.githubRepos || [];
-  if (packages.length > 100 || githubRepos.length > 100) return null;
-  const leads: DiscoveryLead[] = [{ kind: "vpm_listing", url: new URL(recipe.url as string).href }];
-  for (const repo of githubRepos) {
-    if (typeof repo !== "string") return null;
-    const parts = repo.split("/");
-    if (parts.length !== 2) return null;
-    const identity = parseGitHubOwnerRepo(parts[0], parts[1], { rejectReservedRoutes: true });
-    if (!identity) return null;
-    leads.push({ kind: "github_repository", url: `https://github.com/${identity}` });
-  }
-  for (const entry of packages) {
-    const packageInfo = object(entry);
-    if (!packageInfo || !Array.isArray(packageInfo.releases) || packageInfo.releases.length > 100) return null;
-    const claimedPackageId = string(packageInfo.id) || string(packageInfo.name);
-    if (claimedPackageId && claimedPackageId.length > 200) return null;
-    for (const release of packageInfo.releases) {
-      const url = httpsLink(release);
-      if (!url || !new URL(url).pathname.toLowerCase().endsWith(".zip")) return null;
-      leads.push({ kind: "release_zip", url: new URL(url).href,
-        ...(claimedPackageId ? { claimedPackageId } : {}) });
-    }
-  }
-  if (leads.length > 100) return null;
-  return [...new Map(leads.map((lead) => [`${lead.kind}:${lead.url}:${lead.claimedPackageId || ""}`, lead])).values()];
+  return vpmDriver.parseListingRecipe(job, body);
 }
 
-/** Keep valid upstream evidence while making malformed entries explicit. Never infer deletion from this result. */
-function parseVpmRepositoryEvidence(job: CrawlJob, body: string): {
-  observations: Observation[]; issues: VpmListingIssue[]
-} | null {
-  if (job.platform !== "vpm") return null;
-  let raw: unknown;
-  try { raw = JSON.parse(body); } catch { return null; }
-  const repo = object(raw);
-  const packages = object(repo?.packages);
-  if (!repo || !packages) return null;
-  const entries = Object.entries(packages);
-  if (entries.length === 0 || entries.length > 100) return null;
-  const observations: Observation[] = [];
-  const issues: VpmListingIssue[] = [];
-  for (const [packageId, packageValue] of entries) {
-    if (!packageId || packageId.length > 200) return null;
-    const versions = object(object(packageValue)?.versions);
-    if (!versions) {
-      issues.push({ sourceItemKey: packageId, code: "invalid_package" });
-      continue;
-    }
-    const releases = Object.entries(versions);
-    if (releases.length === 0 || releases.length > 100) {
-      issues.push({ sourceItemKey: packageId, code: "invalid_package" });
-      continue;
-    }
-    const manifests: { version: string; manifest: Record<string, unknown>; release: NonNullable<Observation["release"]> }[] = [];
-    for (const [version, value] of releases) {
-      const manifest = object(value);
-      const issueVersion = version && version.length <= 100 ? { version } : {};
-      if (!version || version.length > 100 || !manifest) {
-        issues.push({ sourceItemKey: packageId, ...issueVersion, code: "invalid_manifest" });
-        continue;
-      }
-      if (typeof manifest.name !== "string" || !manifest.name ||
-          typeof manifest.version !== "string" || !manifest.version) {
-        issues.push({ sourceItemKey: packageId, version, code: "invalid_manifest" });
-        continue;
-      }
-      if (manifest.name !== packageId || manifest.version !== version) {
-        issues.push({ sourceItemKey: packageId, version, code: "identity_mismatch" });
-        continue;
-      }
-      if (!isVpmVersion(version)) {
-        issues.push({ sourceItemKey: packageId, version, code: "invalid_version" });
-        continue;
-      }
-      const release = releaseEvidence(version, manifest);
-      if (!release) {
-        issues.push({ sourceItemKey: packageId, version, code: "invalid_release_evidence" });
-        continue;
-      }
-      manifests.push({ version, manifest, release });
-    }
-    if (issues.length > 100) return null;
-    if (manifests.length === 0) continue;
-    const manifestLinks: unknown[] = [];
-    for (const { manifest } of manifests) {
-      if (manifest.url) manifestLinks.push(manifest.url);
-      if (manifest.repo) manifestLinks.push(manifest.repo);
-      if (manifest.repository) {
-        manifestLinks.push(typeof manifest.repository === "string" ? manifest.repository : object(manifest.repository)?.url);
-      }
-      if (manifest.homepage) manifestLinks.push(manifest.homepage);
-      if (manifest.documentation) manifestLinks.push(manifest.documentation);
-      if (manifest.documentationLink) manifestLinks.push(manifest.documentationLink);
-      if (object(manifest.author)?.url) manifestLinks.push(object(manifest.author)?.url);
-    }
-    const author = manifests.map(({ manifest }) => authorName(manifest?.author)).find(Boolean) || authorName(repo.author) || "Unknown";
-    const platformTags = vpmKeywords(manifests.map(({ manifest }) => manifest?.keywords).find((kw) => Array.isArray(kw)));
-    observations.push({
-      sourceItemKey: packageId,
-      title: cleanTitle(manifests.map(({ manifest }) => string(manifest?.displayName)).find(Boolean) || packageId).slice(0, 500),
-      author: cleanAuthorName(author).slice(0, 300),
-      summary: cleanDescription(manifests.map(({ manifest }) => string(manifest?.description)).find(Boolean) || "").slice(0, 1024),
-      outboundLinks: httpsLinks([repo.url, object(repo.infoLink)?.url, ...manifestLinks]),
-      originUpdatedAt: manifests.map(({ manifest }) => normalizedDate(manifest?.updated_at))
-        .filter((date): date is string => date !== null).sort().at(-1) || null,
-      releases: manifests.map(({ release }) => release),
-      ...(platformTags !== undefined ? { platformTags } : {})
-    });
-  }
-  return { observations, issues };
+/** Parses VPM text, HTML, Markdown, and `vcc://` feeds into bounded discovery leads. */
+export function parseVpmDiscoveryLeads(
+  job: CrawlJob,
+  body: string,
+  contentType = ""
+): DiscoveryLead[] | null {
+  return vpmDriver.parseDiscoveryLeads(job, body, contentType, defaultDriverContext);
 }
 
 /** Strict convenience parser; partial evidence is available only through the typed outcome. */
 export function parseVpmRepository(job: CrawlJob, body: string): Observation[] | null {
-  const parsed = parseVpmRepositoryEvidence(job, body);
+  const parsed = vpmDriver.parseRepositoryEvidence(job, body, defaultDriverContext);
   return parsed && parsed.issues.length === 0 ? parsed.observations : null;
 }
 
-/** A narrow parser for one item; listing and multi-package manifests require dedicated adapters. */
-export function parseObservation(job: CrawlJob, body: string, contentType: string): Observation | null {
-  if (job.platform === "github") return parseGitHubRepository(job, body);
-  if (job.platform === "vpm" || contentType.includes("json")) {
-    try {
-      const data: unknown = JSON.parse(body);
-      if (!data || typeof data !== "object" || Array.isArray(data)) return null;
-      const item = data as Record<string, any>;
-      if (job.platform === "vpm" && typeof item.name === "string" && typeof item.version === "string") {
-        // Identity fields are evidence, not display text. Truncating either can merge
-        // distinct upstream packages or turn one release into a different version.
-        const name = string(item.name);
-        const version = string(item.version);
-        if (!name || name !== item.name || name.length > 200 ||
-            !version || version !== item.version || version.length > 100) return null;
-        const author = typeof item.author === "string" ? item.author : item.author?.name;
-        const release = releaseEvidence(version, item);
-        if (!release) return null;
-        const platformTags = vpmKeywords(item.keywords);
-        const singleItemLinks = [
-          item.url,
-          item.repo,
-          typeof item.repository === "string" ? item.repository : object(item.repository)?.url,
-          item.homepage,
-          item.documentation,
-          item.documentationLink,
-          typeof item.author === "object" ? item.author?.url : null
-        ];
-        return {
-          sourceItemKey: name, title: cleanTitle(String(item.displayName || name)).slice(0, 500),
-          author: cleanAuthorName(String(author || "Unknown")).slice(0, 300), summary: cleanDescription(String(item.description || "")).slice(0, 1024),
-          outboundLinks: httpsLinks(singleItemLinks),
-          originUpdatedAt: normalizedDate(item.updated_at),
-          release,
-          ...(platformTags !== undefined ? { platformTags } : {})
-        };
-      }
-      return null;
-    } catch { return null; }
-  }
+/** Parses one direct VPM manifest, GitHub repository response, or storefront HTML item. */
+export function parseObservation(
+  job: CrawlJob,
+  body: string,
+  contentType: string
+): Observation | null {
+  if (job.platform === "github") return githubDriver.parseRepository(job, body, defaultDriverContext);
+  if (job.platform === "vpm") return vpmDriver.parseSinglePackage(job, body, defaultDriverContext);
+  if (contentType.includes("json")) return null;
 
-  const productUrl = new URL(job.url);
-  if (!isStorefrontProductTarget(job.platform, job.url)) return null;
-  const $ = cheerio.load(body);
-  const metadata = (key: string) => $(`meta[property="${key}"],meta[name="${key}"]`).first().attr("content")?.trim() || "";
-  const requested = productUrl;
-  const jsonLd = $("script[type='application/ld+json']").toArray().flatMap((node) => {
-    try {
-      const parsed = JSON.parse($(node).html() || "null");
-      return Array.isArray(parsed) ? parsed : [parsed];
-    } catch { return []; }
-  }).find((value) => {
-    if (!value || typeof value !== "object" ||
-        !/Product|SoftwareApplication/i.test(String(value["@type"] || ""))) return false;
-    if (!value.url) return true;
-    try {
-      const claimed = new URL(String(value.url), job.url);
-      return claimed.origin === requested.origin && claimed.pathname === requested.pathname;
-    } catch { return false; }
-  });
-  const rawTitle = String(jsonLd?.name || metadata("og:title") || $(".item-name").first().text() || $("h1").first().text() || "").trim();
-  if (!rawTitle) return null;
-  const title = cleanTitle(rawTitle);
-  if (!title) return null;
-  const author = cleanAuthorName(String(jsonLd?.brand?.name || jsonLd?.author?.name || $(".shop-name").first().text() || $(".user-name").first().text() || metadata("author") || "Unknown").trim());
-  const summary = cleanDescription(String(jsonLd?.description || metadata("og:description") || $(".item-description, .js-item-description, .description-text").first().text() || metadata("description") || "").trim());
-  const descLinks = $(".item-description a[href], .js-item-description a[href], .description-text a[href]").toArray().map((el) => $(el).attr("href"));
-  const rawKeywords = jsonLd?.keywords || metadata("keywords");
-  const extractedTags: string[] = [];
-  if (Array.isArray(rawKeywords)) {
-    for (const k of rawKeywords) {
-      if (typeof k === "string" && k.trim()) extractedTags.push(k.trim());
-    }
-  } else if (typeof rawKeywords === "string" && rawKeywords.trim()) {
-    extractedTags.push(...rawKeywords.split(/[,;]+/).map(k => k.trim()).filter(Boolean));
+  const driver = defaultDriverRegistry.get(job.platform);
+  if (driver instanceof StorefrontHtmlDriver) {
+    return driver.parseProductHtml(job, body, contentType, defaultDriverContext);
   }
-  const tagElements = $(".item-tags a, .tag-list a, .tags a, .tag a").toArray().map((el) => $(el).text().trim()).filter(Boolean);
-  extractedTags.push(...tagElements);
-  const platformTags = extractedTags.length > 0 ? [...new Set(extractedTags)].slice(0, 50) : undefined;
-
-  // A page's canonical hint can point at a different product, locale or storefront.
-  // Identity stays tied to the fetched URL until a platform-specific equivalence rule is reviewed.
-  const identity = requested;
-  const sourceItemKey = `${identity.host}${identity.pathname}`;
-  if (sourceItemKey.length > 200) return null;
-  return {
-    sourceItemKey, title: title.slice(0, 500),
-    author: author.slice(0, 300), summary: summary.slice(0, 1024),
-    outboundLinks: httpsLinks([jsonLd?.url, job.url, ...descLinks]),
-    originUpdatedAt: normalizedDate(jsonLd?.dateModified) || normalizedDate(metadata("article:modified_time")),
-    ...(platformTags !== undefined ? { platformTags } : {})
-  };
+  return null;
 }
 
 /** A BOOTH browse page supplies candidate links, never product facts or fetch authority. */
 export function parseBoothBrowseLeads(job: CrawlJob, body: string): DiscoveryLead[] | null {
-  if (job.platform !== "booth" || job.purpose !== "discovery" || !isBoothBrowseTarget(job.url)) return null;
-  const $ = cheerio.load(body);
-  const ids = new Set<string>();
-  for (const link of $("a[href]").toArray()) {
-    const href = $(link).attr("href");
-    if (!href) continue;
-    try {
-      const target = new URL(href, job.url);
-      if (target.username || target.password || target.port) continue;
-      target.search = "";
-      target.hash = "";
-      const id = boothItemIdentity(target.href);
-      if (!id) continue;
-      ids.add(id);
-      if (ids.size > 100) return null;
-    } catch { /* A malformed link is not a candidate. */ }
-  }
-  return [...ids].map(id => ({ kind: "storefront_product", url: `https://booth.pm/ja/items/${id}` }));
+  const parsed = boothDriver.parseBrowsePage(job, body);
+  if (!parsed) return null;
+  return paginationController.buildDiscoveryOutcome(job, parsed.leads, null, () => false).leads;
 }
 
 /** A Shopify product sitemap is discovery evidence only; merchant/product facts need separate review. */
 export function parseShopifyProductSitemapLeads(job: CrawlJob, body: string): DiscoveryLead[] | null {
-  if (job.platform !== "shopify" || job.purpose !== "discovery" ||
-      !isShopifyProductSitemapTarget(job.url) || /<!DOCTYPE|<!ENTITY/i.test(body) ||
-      !/<\/urlset>\s*$/.test(body)) return null;
-  const $ = cheerio.load(body, { xmlMode: true });
-  if ($("urlset").length !== 1 || $("urlset").parent().length !== 0 || $("sitemapindex").length) return null;
-  const urls = new Set<string>();
-  for (const entry of $("urlset > url").toArray()) {
-    const loc = $(entry).children("loc").first().text().trim();
-    const product = shopifyProductLead(loc, job.origin);
-    if (!product) continue;
-    urls.add(product);
-    if (urls.size > 100) return null;
-  }
-  return [...urls].map(url => ({ kind: "storefront_product", url }));
+  return shopifyDriver.parseSitemapLeads(job, body);
 }
 
-/** Curated community collections and repositories.txt feed parser. */
-export function parseCuratedDiscoveryLeads(job: CrawlJob, body: string, contentType: string = ""): DiscoveryLead[] | null {
-  if (job.platform !== "curated" || job.purpose !== "discovery") return null;
-
-  // 1. Try JSON recipe / manifest list first
-  const recipeLeads = parseVpmListingRecipe(job, body);
-  if (recipeLeads && recipeLeads.length > 0) return recipeLeads;
-
-  // 2. Text-based repositories.txt (newline delimited HTTPS URLs)
-  const leads: DiscoveryLead[] = [];
-  const lines = body.split(/[\r\n]+/);
-  for (const rawLine of lines) {
-    const line = rawLine.trim();
-    if (!line || line.startsWith("#")) continue;
-    try {
-      const parsed = new URL(line);
-      if (parsed.protocol === "https:") {
-        const ghRepoUrl = parsed.hostname === "github.com" ? normalizeGitHubRepositoryUrl(parsed.href) : null;
-        if (ghRepoUrl) {
-          leads.push({ kind: "github_repository", url: ghRepoUrl });
-        } else if (parsed.pathname.endsWith(".json")) {
-          leads.push({ kind: "vpm_listing", url: parsed.href });
-        }
-      }
-    } catch {}
-    if (leads.length >= 100) break;
-  }
-
-  // 3. If HTML / Markdown, extract github and vpm links
-  if (leads.length === 0 && (contentType.includes("html") || body.includes("<html") || body.includes("http"))) {
-    const urlMatches = body.match(/https:\/\/[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.~!$&'()*+,;=:@%-]+)+/g) || [];
-    for (const match of urlMatches) {
-      try {
-        const parsed = new URL(match);
-        if (parsed.hostname === "github.com") {
-          const ghRepoUrl = normalizeGitHubRepositoryUrl(parsed.href);
-          if (ghRepoUrl) {
-            leads.push({ kind: "github_repository", url: ghRepoUrl });
-          }
-        } else if (parsed.pathname.endsWith("/index.json") || parsed.pathname.endsWith("/vpm.json") || parsed.pathname.endsWith("/packages.json")) {
-          leads.push({ kind: "vpm_listing", url: parsed.href });
-        }
-      } catch {}
-      if (leads.length >= 100) break;
-    }
-  }
-
-  if (leads.length === 0) return null;
-  const unique = [...new Map(leads.map(l => [`${l.kind}:${l.url}`, l])).values()];
-  return unique.slice(0, 100);
-}
-
-export async function fetchJobOutcome(job: CrawlJob,
+/**
+ * Executes a leased fetch deterministically via the platform's registered SourceDriver strategy.
+ */
+export async function fetchJobOutcome(
+  job: CrawlJob,
   fetcher: (input: string | URL | Request, init?: RequestInit) => Promise<Response> = fetch,
   authoritySignal?: AbortSignal,
-  options?: { githubToken?: string }): Promise<Outcome> {
+  options?: { githubToken?: string }
+): Promise<Outcome> {
   const targetUrl = new URL(job.url);
-  if ((job.platform === "github" || targetUrl.hostname === "api.github.com") &&
-      (job.platform !== "github" || !githubApiRepositoryIdentity(job.url))) {
+  if (targetUrl.hostname === "api.github.com" && job.platform !== "github") {
     return { kind: "blocked", reason: "GitHub jobs require a public REST repository metadata endpoint" };
   }
-  if (job.platform === "booth") {
-    if (job.purpose === "discovery" && !isBoothBrowseTarget(job.url)) {
-      return { kind: "blocked", reason: "BOOTH discovery requires a browse URL" };
-    }
-    if (job.purpose === "metadata" && !boothItemIdentity(job.url)) {
-      return { kind: "blocked", reason: "BOOTH metadata requires an item URL" };
-    }
+
+  const driver = defaultDriverRegistry.get(job.platform);
+  if (!driver) {
+    return { kind: "blocked", reason: `Unsupported crawler platform: ${job.platform}` };
   }
-  if (job.platform === "shopify") {
-    if (job.purpose === "discovery" && !isShopifyProductSitemapTarget(job.url)) {
-      return { kind: "blocked", reason: "Shopify discovery requires a product sitemap URL" };
-    }
-    if (job.purpose === "metadata" && !shopifyProductLead(job.url, job.origin)) {
-      return { kind: "blocked", reason: "Shopify metadata requires a valid merchant product URL" };
-    }
+
+  const targetError = driver.validateTarget(job);
+  if (targetError) {
+    return { kind: "blocked", reason: targetError };
   }
-  if (job.platform === "sellfy" && job.purpose === "metadata" && !isSellfyProductTarget(job.url)) {
-    return { kind: "blocked", reason: "Sellfy metadata requires a valid product URL" };
-  }
-  if (job.platform === "custom_domain" && job.purpose === "metadata" && !isCustomDomainProductTarget(job.url)) {
-    return { kind: "blocked", reason: "Custom domain metadata requires a valid path" };
-  }
-  const isGitHubApi = job.platform === "github" && targetUrl.origin === "https://api.github.com";
-  const githubToken = isGitHubApi
-    ? (options?.githubToken !== undefined
-        ? (options.githubToken.trim() || undefined)
-        : (process.env.GITHUB_TOKEN || process.env.GH_TOKEN)?.trim())
-    : undefined;
+
+  const headers = driver.buildRequestHeaders(job, CRAWLER_USER_AGENT, options);
+  const signal = authoritySignal
+    ? AbortSignal.any([authoritySignal, AbortSignal.timeout(25_000)])
+    : AbortSignal.timeout(25_000);
+
   try {
-    const response = await fetcher(job.url, {
-      headers: {
-        "user-agent": CRAWLER_USER_AGENT,
-        "accept": job.platform === "github" ? "application/vnd.github+json" :
-          job.platform === "shopify" ? "application/xml,text/xml;q=0.9,*/*;q=0.5" :
-          "application/json,text/html;q=0.9,*/*;q=0.5",
-        ...(job.platform === "github" ? { "x-github-api-version": "2026-03-10" } : {}),
-        ...(githubToken ? { "authorization": `Bearer ${githubToken}` } : {}),
-        ...(job.etag ? { "if-none-match": job.etag } : {}),
-        ...(job.lastModified ? { "if-modified-since": job.lastModified } : {})
-      },
-      signal: authoritySignal ? AbortSignal.any([authoritySignal, AbortSignal.timeout(25_000)]) :
-        AbortSignal.timeout(25_000), redirect: "error"
-    });
+    const response = await fetcher(job.url, { headers, signal, redirect: "error" });
     const headerFailure = classifyAccessFailure(response);
     if (headerFailure === "challenge") return { kind: "blocked", reason: "Challenge response" };
-    if (headerFailure === "rate_limited") return { kind: "rate_limited", retryAfterSeconds: retryAfterSeconds(response.headers) };
+    if (headerFailure === "rate_limited") {
+      return { kind: "rate_limited", retryAfterSeconds: retryAfterSeconds(response.headers) };
+    }
     if (job.platform === "github" && response.status === 403 && headerFailure === "forbidden") {
       const errorBody = await boundedText(response, 10_000);
       if (/secondary rate limit|abuse detection/i.test(errorBody)) {
-        return { kind: "rate_limited", retryAfterSeconds: Math.max(60, retryAfterSeconds(response.headers, 60)) };
+        return {
+          kind: "rate_limited",
+          retryAfterSeconds: Math.max(60, retryAfterSeconds(response.headers, 60))
+        };
       }
       return { kind: "blocked", reason: "HTTP 403" };
     }
-    if (headerFailure === "forbidden" || response.status === 401) return { kind: "blocked", reason: `HTTP ${response.status}` };
+    if (headerFailure === "forbidden" || response.status === 401) {
+      return { kind: "blocked", reason: `HTTP ${response.status}` };
+    }
     if (response.status === 304) return { kind: "unchanged" };
-    if (response.status >= 300 && response.status < 400) return { kind: "blocked", reason: "Redirect requires source review" };
+    if (response.status >= 300 && response.status < 400) {
+      return { kind: "blocked", reason: "Redirect requires source review" };
+    }
     if (response.status === 404 || response.status === 410) return { kind: "gone" };
     if (!response.ok) return { kind: "temporary_failure", reason: `HTTP ${response.status}` };
+
     const length = Number(response.headers.get("content-length") || 0);
     if (length > 2_000_000) return { kind: "temporary_failure", reason: "Response over 2 MB" };
+
     const body = await boundedText(response);
     if (classifyAccessFailure(response, body.slice(0, 5000)) === "challenge") {
       return { kind: "blocked", reason: "Challenge response" };
     }
-    if (job.platform === "booth" && job.purpose === "discovery") {
-      if (!response.headers.get("content-type")?.toLowerCase().includes("text/html")) {
-        return { kind: "temporary_failure", reason: "BOOTH browse response was not HTML" };
-      }
-      const leads = parseBoothBrowseLeads(job, body);
-      return leads ? { kind: "discovery", leads } :
-        { kind: "temporary_failure", reason: "BOOTH browse exceeds one bounded lead batch" };
-    }
-    if (job.platform === "shopify" && job.purpose === "discovery") {
-      if (!/^(?:application|text)\/xml\b/i.test(response.headers.get("content-type") || "")) {
-        return { kind: "temporary_failure", reason: "Shopify sitemap response was not XML" };
-      }
-      const leads = parseShopifyProductSitemapLeads(job, body);
-      return leads ? { kind: "discovery", leads } :
-        { kind: "temporary_failure", reason: "Shopify product sitemap was malformed or exceeds one bounded lead batch" };
-    }
-    if (job.platform === "curated" && job.purpose === "discovery") {
-      const leads = parseCuratedDiscoveryLeads(job, body, response.headers.get("content-type") || "");
-      return leads ? { kind: "discovery", leads } :
-        { kind: "temporary_failure", reason: "Curated discovery exceeds one bounded lead batch" };
-    }
-    if (job.platform === "vpm") {
-      const parsed = parseVpmRepositoryEvidence(job, body);
-      if (parsed) {
-        const outcome: Outcome = parsed.issues.length > 0
-          ? { kind: "partial_batch", observations: parsed.observations, issues: parsed.issues }
-          : { kind: "batch", observations: parsed.observations };
-        return JSON.stringify(outcome).length <= 240_000 ? outcome :
-          { kind: "temporary_failure", reason: "Repository exceeds one bounded result batch" };
-      }
-      const leads = parseVpmListingRecipe(job, body);
-      if (leads) {
-        const outcome: Outcome = { kind: "discovery", leads };
-        return JSON.stringify(outcome).length <= 240_000 ? outcome :
-          { kind: "temporary_failure", reason: "Recipe exceeds one bounded discovery batch" };
-      }
-    }
-    const observation = parseObservation(job, body, response.headers.get("content-type") || "");
-    return observation ? { kind: "changed", observation } : { kind: "temporary_failure", reason: "No item observation in response" };
+
+    const contentType = response.headers.get("content-type") || "";
+    return driver.parseResponse(job, body, contentType, defaultDriverContext);
   } catch (error) {
-    if (authoritySignal?.aborted) throw new Error("Fetch cancelled because coordinator authority was lost");
-    if (error instanceof UnsafeMetadataTarget) return { kind: "blocked", reason: error.message.slice(0, 300) };
+    if (authoritySignal?.aborted) {
+      throw new Error("Fetch cancelled because coordinator authority was lost");
+    }
+    if (error instanceof UnsafeMetadataTarget) {
+      return { kind: "blocked", reason: error.message.slice(0, 300) };
+    }
     return { kind: "temporary_failure", reason: String(error).slice(0, 300) };
   }
 }

@@ -2,12 +2,22 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import { LocalNodeStore } from "../src/storage/local_sqlite.ts";
-import { ClaimRequestSchema, ClaimResponseSchema, CrawlJobSchema, HeartbeatRequestSchema,
-  HeartbeatResponseSchema, ResultRequestSchema, BatchResultRequestSchema, BatchResultResponseSchema,
-  type ResultRequest } from "vrc-packages-network/node";
+import {
+  BatchResultRequestSchema,
+  BatchResultResponseSchema,
+  ClaimRequestSchema,
+  ClaimResponseSchema,
+  CrawlJobSchema,
+  HeartbeatRequestSchema,
+  HeartbeatResponseSchema,
+  PROTOCOL_VERSION,
+  ResultRequestSchema,
+  type ResultRequest
+} from "vrc-packages-network/node";
+import { formatCapabilityToken } from "vrc-packages-network/token";
 
 const nodeId = "outbox-process-fixture";
-const token = "fixture-only-not-a-live-credential";
+const token = formatCapabilityToken(["vpm"]);
 const fixtureScript = resolve(import.meta.dir, "fixtures/outbox_process.ts");
 
 async function deadline<T>(promise: Promise<T>, message: string): Promise<T> {

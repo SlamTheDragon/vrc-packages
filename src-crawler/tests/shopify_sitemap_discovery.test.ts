@@ -34,8 +34,13 @@ describe("node-owned Shopify product sitemap parsing", () => {
     }
     const many = `<urlset>${Array.from({ length: 101 }, (_, index) =>
       `<url><loc>https://merchant.example/products/item-${index}</loc></url>`).join("")}</urlset>`;
-    expect((await fetchJobOutcome(job, async () => new Response(many,
-      { headers: { "content-type": "application/xml" } }))).kind).toBe("temporary_failure");
+    const capped = await fetchJobOutcome(job, async () => new Response(many,
+      { headers: { "content-type": "application/xml" } }));
+    expect(capped.kind).toBe("discovery");
+    if (capped.kind === "discovery") {
+      expect(capped.leads).toHaveLength(100);
+      expect(capped.nextPageLead).toBeUndefined();
+    }
     for (const bad of ["<sitemapindex><sitemap><loc>https://merchant.example/sitemap_products_2.xml</loc></sitemap></sitemapindex>",
       `<!DOCTYPE urlset [<!ENTITY xxe SYSTEM "file:///etc/passwd">]><urlset><url><loc>${productUrl}</loc></url></urlset>`,
       `<urlset><url><loc>${productUrl}</loc></url>`]) {
@@ -44,6 +49,18 @@ describe("node-owned Shopify product sitemap parsing", () => {
     }
     expect((await fetchJobOutcome(job, async () => new Response(xml,
       { headers: { "content-type": "text/html" } }))).kind).toBe("temporary_failure");
+
+    let metadataAccept = "";
+    const metaJob = { ...job, purpose: "metadata" as const, url: productUrl };
+    const metaOutcome = await fetchJobOutcome(metaJob, async (_input, init) => {
+      metadataAccept = new Headers(init?.headers).get("accept") || "";
+      return new Response(
+        `<html><head><script type="application/ld+json">{"@type":"Product","name":"VRChat Tool"}</script></head></html>`,
+        { headers: { "content-type": "text/html" } }
+      );
+    });
+    expect(metadataAccept).toContain("text/html");
+    expect(metaOutcome.kind).toBe("changed");
   });
 
 });

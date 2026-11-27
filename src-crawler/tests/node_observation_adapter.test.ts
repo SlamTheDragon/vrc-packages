@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { parseGitHubRepository, parseObservation, parseVpmListingRecipe, parseVpmRepository, parseCuratedDiscoveryLeads, fetchJobOutcome } from "../src/adapters/observation_adapter.ts";
+import { parseGitHubRepository, parseObservation, parseVpmDiscoveryLeads, parseVpmListingRecipe, parseVpmRepository, fetchJobOutcome } from "../src/adapters/observation_adapter.ts";
 import { CrawlJobSchema, ResultRequestSchema } from "vrc-packages-network/node";
 import { CRAWLER_USER_AGENT } from "../src/shared/robots/crawler_identity.ts";
 import { CRAWLER_ROBOTS_TOKEN } from "vrc-packages-network/identity";
@@ -39,9 +39,12 @@ describe("standalone node observation adapter", () => {
       outcome: { kind: "discovery", leads: [] } }).success).toBe(true);
     const overflowing = Array.from({ length: 101 }, (_, index) =>
       `<a href="/ja/items/${index + 1}">item</a>`).join("");
-    expect(await fetchJobOutcome(browse, async () => new Response(overflowing,
-      { headers: { "content-type": "text/html" } })))
-      .toEqual({ kind: "temporary_failure", reason: "BOOTH browse exceeds one bounded lead batch" });
+    const capped = await fetchJobOutcome(browse, async () => new Response(overflowing,
+      { headers: { "content-type": "text/html" } }));
+    expect(capped.kind).toBe("discovery");
+    if (capped.kind === "discovery") {
+      expect(capped.leads).toHaveLength(100);
+    }
   });
 
   test("uses the declared VRCP bot identity and robots product token", async () => {
@@ -57,10 +60,12 @@ describe("standalone node observation adapter", () => {
   test("extracts one direct VPM package and its actual release version", () => {
     expect(parseObservation(job, JSON.stringify({ name: "com.example.tool", version: "1.2.3",
       displayName: "Useful Tool", author: { name: "Creator" }, description: "A tool",
-      url: "https://example.org/tool" }), "application/json")).toEqual({
+      url: "https://example.org/tool" }), "application/json")).toMatchObject({
       sourceItemKey: "com.example.tool", title: "Useful Tool", author: "Creator",
       summary: "A tool", outboundLinks: ["https://example.org/tool"], originUpdatedAt: null,
-      release: { version: "1.2.3", dependencyRanges: {}, downloadUrl: "https://example.org/tool" }
+      ownerKey: "vpm:creator", ownerName: "Creator",
+      release: { version: "1.2.3", dependencyRanges: {}, downloadUrl: "https://example.org/tool" },
+      vrchatRelevance: { isRelevant: true, confidence: 1 }
     });
   });
 
@@ -187,10 +192,11 @@ describe("standalone node observation adapter", () => {
       updated_at: "2026-09-26T01:02:03Z" });
     const observation = parseGitHubRepository(githubJob, body);
     if (!observation) throw new Error("Expected GitHub metadata observation");
-    expect(observation).toEqual({ sourceItemKey: "github:12345", title: "vrc-get", author: "vrc-get",
+    expect(observation).toMatchObject({ sourceItemKey: "github:12345", title: "vrc-get", author: "vrc-get",
       summary: "Open-source VRChat package management",
       outboundLinks: ["https://github.com/vrc-get/vrc-get", "https://vrc-get.anatawa12.com"],
-      originUpdatedAt: "2026-09-26T01:02:03.000Z" });
+      originUpdatedAt: "2026-09-26T01:02:03.000Z",
+      ownerKey: "github:vrc-get", ownerName: "vrc-get" });
     const outcome = await fetchJobOutcome(githubJob, async (_url, init) => {
       const headers = new Headers(init?.headers);
       expect(headers.get("accept")).toBe("application/vnd.github+json");
@@ -224,7 +230,7 @@ describe("standalone node observation adapter", () => {
     const htmlJob = { ...githubJob, url: "https://github.com/vrc-get/vrc-get", origin: "https://github.com" };
     expect(await fetchJobOutcome(htmlJob, async () => { throw new Error("Should not fetch HTML"); }))
       .toEqual({ kind: "blocked", reason: "GitHub jobs require a public REST repository metadata endpoint" });
-    expect(await fetchJobOutcome({ ...githubJob, platform: "curated" }, async () => { throw new Error("Wrong-scope API fetch"); }))
+    expect(await fetchJobOutcome({ ...githubJob, platform: "booth" }, async () => { throw new Error("Wrong-scope API fetch"); }))
       .toEqual({ kind: "blocked", reason: "GitHub jobs require a public REST repository metadata endpoint" });
     expect(await fetchJobOutcome(githubJob, async () => new Response(
       JSON.stringify({ message: "You have exceeded a secondary rate limit. Please wait." }),
@@ -467,27 +473,29 @@ describe("standalone node observation adapter", () => {
     expect(payhipObs?.sourceItemKey).toBe("payhip.com/b/sample-vrc-item");
   });
 
-  test("extracts curated discovery leads from repositories.txt and community collections", async () => {
-    const curatedJob = { ...job, platform: "curated" as const, purpose: "discovery" as const,
+  test("extracts VPM discovery leads from repositories.txt, vcc:// addRepo links, and community lists", async () => {
+    const vpmFeedJob = { ...job, platform: "vpm" as const, purpose: "discovery" as const,
       url: "https://raw.githubusercontent.com/vrchat-community/vpm-listing-curated/main/repositories.txt",
       origin: "https://raw.githubusercontent.com" };
     const txtBody = `# Decentralized Community Repositories
 https://vpm.anatawa12.com/vpm.json
 https://kurotu.github.io/vpm-repos/index.json
 https://github.com/vrc-get/vrc-get
+vcc://vpm/addRepo?url=https%3A%2F%2Fvpm.vrcfury.com%2Findex.json
 # invalid line
 http://insecure.example.com/repo.json
 `;
-    const leads = parseCuratedDiscoveryLeads(curatedJob, txtBody, "text/plain");
+    const leads = parseVpmDiscoveryLeads(vpmFeedJob, txtBody, "text/plain");
     expect(leads).not.toBeNull();
     expect(leads).toContainEqual({ kind: "vpm_listing", url: "https://vpm.anatawa12.com/vpm.json" });
     expect(leads).toContainEqual({ kind: "vpm_listing", url: "https://kurotu.github.io/vpm-repos/index.json" });
+    expect(leads).toContainEqual({ kind: "vpm_listing", url: "https://vpm.vrcfury.com/index.json" });
     expect(leads).toContainEqual({ kind: "github_repository", url: "https://github.com/vrc-get/vrc-get" });
 
-    const outcome = await fetchJobOutcome(curatedJob, async () => new Response(txtBody, { headers: { "content-type": "text/plain" } }));
+    const outcome = await fetchJobOutcome(vpmFeedJob, async () => new Response(txtBody, { headers: { "content-type": "text/plain" } }));
     expect(outcome.kind).toBe("discovery");
     if (outcome.kind === "discovery") {
-      expect(outcome.leads.length).toBeGreaterThanOrEqual(3);
+      expect(outcome.leads.length).toBeGreaterThanOrEqual(4);
     }
   });
   test("populates platformTags from VPM manifest keywords (trimmed, deduped, capped at 50)", () => {

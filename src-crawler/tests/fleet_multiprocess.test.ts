@@ -23,8 +23,8 @@ import {
 const mainScript = resolve(import.meta.dir, "../src/main.ts");
 const NODE_ALPHA_ID = "node-alpha";
 const NODE_BETA_ID = "node-beta";
-const NODE_ALPHA_TOKEN = "vrcp_" + "a".repeat(64) + "0001";
-const NODE_BETA_TOKEN = "vrcp_" + "b".repeat(64) + "0001";
+const NODE_ALPHA_TOKEN = "vrcp_" + "a".repeat(64) + "0004";
+const NODE_BETA_TOKEN = "vrcp_" + "b".repeat(64) + "0004";
 
 async function deadline<T>(promise: Promise<T>, message: string, timeoutMs = 15_000): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;

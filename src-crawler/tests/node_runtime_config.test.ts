@@ -1,12 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
-import { loadNodeRuntimeConfig, NodeRuntimeConfigSchema } from "../src/config/runtime_config.ts";
+import { loadNodeRuntimeConfig, NodeRuntimeConfigSchema, loadScopedGitHubTokenFromEnvFile } from "../src/config/runtime_config.ts";
 import { ClaimRequestSchema, HeartbeatRequestSchema } from "vrc-packages-network/node";
+import { formatCapabilityToken } from "vrc-packages-network/token";
 import { coordinatorEndpointAllowed, resolveCoordinatorUrl, isTransientEdgeStatus, CoordinatorClient } from "../src/client/node_client.ts";
-import { loadScopedGitHubTokenFromEnvFile } from "../src/adapters/observation_adapter.ts";
 
-const secret = "c".repeat(64);
+const entropy = "c".repeat(64);
+const secret = formatCapabilityToken(["vpm", "shopify", "github"], entropy);
+const vpmOnlySecret = formatCapabilityToken(["vpm"], entropy);
 const outputPath = resolve(import.meta.dir, "../dist/tests");
 mkdirSync(outputPath, { recursive: true });
 const tempRoot = realpathSync(outputPath);
@@ -94,7 +96,29 @@ describe("standalone node runtime configuration", () => {
     } finally { removeFixtureDirectory(directory); }
   });
 
-  test("supports explicit databaseFile in config and NODE_DB_PATH override", () => {
+  test("rejects malformed or missing NODE_TOKEN and decodes token-bound capabilities when omitted", () => {
+    const directory = fixtureDirectory();
+    try {
+      expect(() => loadNodeRuntimeConfig(directory, { NODE_ID: "node-1", NODE_TOKEN: "not-a-valid-token" }))
+        .toThrow("valid capability token");
+      expect(() => loadNodeRuntimeConfig(directory, { NODE_ID: "node-1", NODE_TOKEN: `vrcp_${entropy}0000` }))
+        .toThrow("valid capability token");
+      expect(loadNodeRuntimeConfig(directory, { NODE_ID: "node-1", NODE_TOKEN: vpmOnlySecret })).toEqual({
+        nodeId: "node-1",
+        baseUrl: "http://127.0.0.1:8787",
+        capabilities: ["vpm"],
+        token: vpmOnlySecret,
+        databasePath: join(directory, "node.db")
+      });
+      expect(() => loadNodeRuntimeConfig(directory, {
+        NODE_ID: "node-1",
+        NODE_TOKEN: vpmOnlySecret,
+        NODE_CAPABILITIES: "vpm,shopify"
+      })).toThrow("exceed NODE_TOKEN grant");
+    } finally { removeFixtureDirectory(directory); }
+  });
+
+  test("supports explicit databaseFile in config and CWD-contained NODE_DB_PATH override", () => {
     const directory = fixtureDirectory();
     try {
       writeFileSync(join(directory, "node.config.json"), JSON.stringify({ schemaVersion: 1,
@@ -103,7 +127,7 @@ describe("standalone node runtime configuration", () => {
       expect(loadNodeRuntimeConfig(directory, { NODE_TOKEN: secret }).databasePath)
         .toBe(join(directory, "custom_node.db"));
       expect(loadNodeRuntimeConfig(directory, { NODE_TOKEN: secret, NODE_DB_PATH: "override.db" }).databasePath)
-        .toBe("override.db");
+        .toBe(resolve(directory, "override.db"));
     } finally { removeFixtureDirectory(directory); }
   });
 
@@ -116,18 +140,12 @@ describe("standalone node runtime configuration", () => {
       const emptyDir = fixtureDirectory();
       try {
         expect(loadScopedGitHubTokenFromEnvFile(emptyDir)).toBeUndefined();
+        mkdirSync(join(emptyDir, "bin"), { recursive: true });
+        writeFileSync(join(emptyDir, "bin", ".env"), "GH_TOKEN=ghp_legacy_ignored\n");
+        expect(loadScopedGitHubTokenFromEnvFile(emptyDir)).toBeUndefined();
       } finally {
         removeFixtureDirectory(emptyDir);
       }
-    } finally { removeFixtureDirectory(directory); }
-  });
-
-  test("resolves scoped GitHub token from bin/.env as fallback in working directory", () => {
-    const directory = fixtureDirectory();
-    try {
-      mkdirSync(join(directory, "bin"), { recursive: true });
-      writeFileSync(join(directory, "bin", ".env"), "GH_TOKEN=ghp_bin_token_67890\n");
-      expect(loadScopedGitHubTokenFromEnvFile(directory)).toBe("ghp_bin_token_67890");
     } finally { removeFixtureDirectory(directory); }
   });
 });
