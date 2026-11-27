@@ -219,9 +219,7 @@ See full history at [docs/changelogs/vrcp-worker/preview](https://github.com/Sla
 ## VRC Packages Networking `vrcp-packages-network`
 
 <!-- vrcp-packages-network-DESCRIPTION_SUMMARY -->
-Preserve unbracketed `VRChat` and `Unity` title prefixes in `cleanTitle`.
 <!-- vrcp-packages-network-DESCRIPTION_SUMMARY -->
 ### Added
 ### Changes
-- **Title category prefix preservation:** Remove unbracketed `CATEGORY_PROMO_TOKENS` matching from `MARKETING_BRACKETS` so `cleanTitle` keeps unbracketed `VRChat` and `Unity` title prefixes intact.
 See full history at [docs/changelogs/vrcp-packages-network/](https://github.com/SlamTheDragon/vrc-packages/tree/main/docs/changelogs/vrcp-packages-network/)
