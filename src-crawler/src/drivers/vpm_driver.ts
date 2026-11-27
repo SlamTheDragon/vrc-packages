@@ -174,7 +174,7 @@ export class VpmDriver implements SourceDriver {
     const recipeLeads = this.parseListingRecipe(job, body);
     if (recipeLeads) {
       const outcome = context.pagination.buildDiscoveryOutcome(job, recipeLeads, null, () => false);
-      return JSON.stringify(outcome).length <= 240_000
+      return JSON.stringify(outcome).length <= MAX_OUTCOME_JSON_BYTES
         ? outcome
         : { kind: "temporary_failure", reason: "Recipe exceeds one bounded discovery batch" };
     }
@@ -183,7 +183,7 @@ export class VpmDriver implements SourceDriver {
       const feedLeads = this.parseDiscoveryLeads(job, body, contentType, context);
       if (feedLeads) {
         const outcome = context.pagination.buildDiscoveryOutcome(job, feedLeads, null, () => false);
-        return JSON.stringify(outcome).length <= 240_000
+        return JSON.stringify(outcome).length <= MAX_OUTCOME_JSON_BYTES
           ? outcome
           : { kind: "temporary_failure", reason: "VPM discovery exceeds one bounded batch" };
       }

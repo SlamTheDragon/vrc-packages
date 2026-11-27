@@ -1,6 +1,6 @@
 import { describe, it, expect } from "bun:test";
 import { cleanTitle, unescapeHtml, cleanTrackingParams } from "vrc-packages-network/catalog-hygiene";
-import { cleanAuthorName, cleanDescription } from "../src/utils/text/sanitizer.ts";
+import { htmlSanitizer } from "../src/pipeline/html_sanitizer.ts";
 
 describe("Front-stage sanitization and normalization", () => {
   it("unescapes HTML entities correctly", () => {
@@ -23,16 +23,16 @@ describe("Front-stage sanitization and normalization", () => {
   });
 
   it("cleans author names by stripping HTML tags, parentheticals, and twitter handles", () => {
-    expect(cleanAuthorName("<b>CreatorName</b> (@TwitterHandle)")).toBe("CreatorName");
-    expect(cleanAuthorName("Author &amp; Co.")).toBe("Author & Co.");
-    expect(cleanAuthorName("@SoloDev")).toBe("SoloDev");
-    expect(cleanAuthorName("Creator @handle")).toBe("Creator");
-    expect(cleanAuthorName("")).toBe("Unknown");
+    expect(htmlSanitizer.sanitizeAuthor("<b>CreatorName</b> (@TwitterHandle)")).toBe("CreatorName");
+    expect(htmlSanitizer.sanitizeAuthor("Author &amp; Co.")).toBe("Author & Co.");
+    expect(htmlSanitizer.sanitizeAuthor("@SoloDev")).toBe("SoloDev");
+    expect(htmlSanitizer.sanitizeAuthor("Creator @handle")).toBe("Creator");
+    expect(htmlSanitizer.sanitizeAuthor("")).toBe("Unknown");
   });
 
-  it("cleanDescription strips discord invites, image markdown, and normalizes spacing while preserving paragraphs", () => {
+  it("sanitizeText strips discord invites, image markdown, and normalizes spacing while preserving paragraphs", () => {
     const rawDesc = "A great VRChat utility!<br>Join our server: https://discord.gg/abc1234 &amp; enjoy!\nOr https://discord.com/invite/xyz\n\n![Screenshot](https://example.com/pic.png)\n\nFeature list here.";
-    const cleaned = cleanDescription(rawDesc);
+    const cleaned = htmlSanitizer.sanitizeText(rawDesc);
     expect(cleaned).not.toContain("https://discord.gg/");
     expect(cleaned).not.toContain("https://discord.com/invite/");
     expect(cleaned).not.toContain("![Screenshot]");

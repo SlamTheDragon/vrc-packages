@@ -1,6 +1,6 @@
 # Coordinator Worker Specification (`src-worker/`)
 
-> **Target Blueprint Status (`[P18]` / `PN-009` / `[P20]`):** Owner-approved Version 0 target contract (2026-11-25). Wave 3A runtime code verified locally under `REORIENT-CN-02..04` (remote preview push held under `REORIENT-LIVE-DEBUG`).  
+> **Live Contract Status (`[P18]` / `[P19]` / `[P20]`):** Version 0 live specification verified locally against unit suites, `workerd` runtime tests, and live `wrangler dev` multi-node ingestion (`NODE_HEARTBEAT` = `60` req/60s, remote preview push held under `REORIENT-LIVE-DEBUG`).  
 > **Executable Entry Point:** `src-worker/src/worker_entry.ts` (Cloudflare Worker, D1 binding `VRCP_D1`, storage planes in `src-worker/src/storage/d1/`)  
 > **Owning Sector:** Sector 1 (`crawler-network`)  
 > **Related Schemas:** [`coordinator_d1.md`](../schemas/coordinator_d1.md), [`wire_and_protocol_contracts.md`](../schemas/wire_and_protocol_contracts.md)

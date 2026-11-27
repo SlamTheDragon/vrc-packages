@@ -1,6 +1,6 @@
-# Coordinator Cloudflare D1 Schema (Target Blueprint Contract)
+# Coordinator Cloudflare D1 Schema
 
-> **Target Blueprint Status (`[P18]` / `PN-009`):** Owner-approved Version 0 target contract (2026-11-24). Supersedes pre-rewrite live implementation until Stage 5-6 code slices verify 1:1 parity.  
+> **Live Contract Status (`[P18]` / `[P19]`):** Version 0 live contract verified 1:1 against `src-worker/src/storage/d1/schema/` and local `wrangler dev` D1 (`v0-17`).  
 > **Executable Authority:** `src-worker/src/storage/d1/schema/` (aggregated via `src-worker/src/storage/d1/utils.ts` `D1_SCHEMA_SQL`)  
 > **Binding:** `VRCP_D1` (`src-worker/wrangler.toml`)  
 > **Owning Sector:** Sector 1 (`crawler-network`)  
@@ -80,9 +80,9 @@ Defined in `src-worker/src/storage/d1/schema/downstream_and_tickets.ts`. Unifies
 | `downstream_signals` | `signal_id` | `app_id` (FK `registered_apps`), `signal_type` (`CHECK IN ('search_miss','refresh_demand','popularity_signal','relationship_feedback')`), `query`, `zero_hits` (`DEFAULT 0`), `requested_platform`, `target_url`, `target_canonical_id`, `related_canonical_id`, `category`, `metadata_json`, `recorded_at`, `resolved_at` |
 | `catalog_tickets` | `ticket_id` | `ticket_type` (`CHECK IN ('opt_out','delegated_claim','removal_report','rating_dispute','safety_quarantine','metadata_issue')`), `app_id` (FK `registered_apps`), `target_url`, `canonical_id`, `requester_type` (`CHECK IN ('unauthenticated_creator','user','admin_operator','app')`), `requester_id`, `creator_id`, `reason`, `proof_kind` (`CHECK IN ('storefront_bio_token','dns_txt','manual_notice','delegated_signature')`), `proof_value`, `contact_email`, `challenge_token`, `expires_at`, `nonce`, `signature`, `payload_json`, `review_status` (`DEFAULT 'pending'`, `CHECK IN ('pending','accepted','rejected')`), `review_notes`, `recorded_at` |
 
-## 3. Target Index Inventory
+## 3. Exact Index Inventory
 
-Stage 5 implementation binds only indexes required by priority claim selection, grouped lead review, owner lookups, delta streaming, and Free Tier scan avoidance:
+`D1_SCHEMA_SQL` binds only indexes required by priority claim selection, grouped lead review, owner lookups, delta streaming, and Free Tier scan avoidance:
 
 | Table | Required Indexes |
 | :--- | :--- |

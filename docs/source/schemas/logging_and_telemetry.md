@@ -1,6 +1,6 @@
 # Logging and Telemetry Schema Contract
 
-> **Target Blueprint Status (`[P19]` / `PN-010`):** Owner-approved Version 0 target contract (2026-11-24). Supersedes pre-rewrite `logger.ts` directory fallbacks until Stage 5-6 slice `NODE-CWD-CONTAINMENT` verifies 1:1 parity.  
+> **Live Contract Status (`[P19]`):** Version 0 live contract verified 1:1 against `worker_logger.ts` and `src-crawler/src/utils/logging/logger.ts` (`NODE-CWD-CONTAINMENT` resolves logs strictly inside `<cwd>/logs`).  
 > **Executable Authorities:** `src-worker/src/worker_logger.ts` and `src-crawler/src/utils/logging/logger.ts`  
 > **Owning Sector:** Sector 1 (`crawler-network`)
 
