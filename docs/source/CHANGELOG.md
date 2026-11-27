@@ -147,19 +147,10 @@ See full history at [docs/changelogs/vrcp-crawler-client/preview](https://github
 ## VRC Packages Crawler - `vrcp-crawler-node-preview`
 
 <!-- vrcp-crawler-node-preview-DESCRIPTION_SUMMARY -->
-Adopt 7-lane OOP source drivers, semantic extraction, bounded VPM retention, yanked-package filtering, storefront extractors, and strict working-directory containment.
 <!-- vrcp-crawler-node-preview-DESCRIPTION_SUMMARY -->
 ### Added
-- **Multi-process fleet and outbox replay verification:** Verify concurrent multi-process origin-lease mutual exclusion and crash-restart SQLite outbox batch replay across isolated node processes.
-- **Per-task node telemetry:** Record HTTP status codes and fetched byte counts on every executed task row in `node_tasks`.
 ### Bugs Fixed
-- **Live storefront and VPM resilience:** Retain newest 20 SemVer VPM releases per package, filter yanked stubs, extract Gumroad `<noscript>` and script links, filter Jinxxy static assets, fix itch pagination selectors, keep BOOTH product tags only, and skip trailing `--once` idle heartbeats.
 ### Changes
-- **Robots refresh wire validation:** Validate `/v1/node/robots/claim` and `/v1/node/robots/result` payloads in `CoordinatorClient` with `vrc-packages-network/node` schemas and typed daemon calls.
-- **Shared target and binary guards:** Enforce `ARCHIVE_BINARY_EXTENSIONS`, `isArchiveOrBinaryUrl`, `isStorefrontProductTarget`, `parseGitHubOwnerRepo`, and `normalizeGitHubRepositoryUrl` from `vrc-packages-network/source-targets`.
-- **Surplus module removal:** Remove obsolete pre-lease circuit breaker, adaptive limiter, local robots parser, SimHash, IANA registry, token identity, and wrapper sanitizer modules from `src-crawler/`.
-- **Seven-lane OOP drivers and semantic pipeline:** Replace platform conditionals with `SourceDriver` subclasses, `SemanticPatternEngine`, `VpmQualityAnalyzer`, and `PaginationController`.
-- **Working-directory containment:** Keep `node.db`, logs, config files, and `.env` strictly inside `process.cwd()`.
 See full history at [docs/changelogs/vrcp-crawler-node/preview](https://github.com/SlamTheDragon/vrc-packages/tree/main/docs/changelogs/vrcp-crawler-node/preview)
 
 ## VRC Packages API - `vrcp-packages-api-preview`
