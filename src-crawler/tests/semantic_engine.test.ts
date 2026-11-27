@@ -52,4 +52,38 @@ describe("SemanticPatternEngine layered signal extraction", () => {
     });
     expect(outfit.desktopToolEvidence).toBeNull();
   });
+
+  test("recognizes avatar tooling and Unity avatar rigs while keeping off-topic chat apps excluded", () => {
+    const shader = semanticEngine.analyze({
+      platform: "github",
+      url: "https://api.github.com/repos/lilxyzw/lilToon",
+      rawTitle: "lilToon",
+      cleanSummary: "Feature-rich shaders for avatars"
+    });
+    expect(shader.vrchatRelevance.isRelevant).toBe(true);
+
+    const optimizer = semanticEngine.analyze({
+      platform: "github",
+      url: "https://api.github.com/repos/anatawa12/AvatarOptimizer",
+      rawTitle: "AvatarOptimizer",
+      cleanSummary: "AAO: Avatar Optimizer: Non Destructive Avatar Optimization Utilities"
+    });
+    expect(optimizer.vrchatRelevance.isRelevant).toBe(true);
+
+    const unityTool = semanticEngine.analyze({
+      platform: "itch",
+      url: "https://arzolath.itch.io/fetus-pose-fix",
+      rawTitle: "Fetus Pose Fix",
+      cleanSummary: "1 Click Solution to Unity's Fetus Pose Syndrome"
+    });
+    expect(unityTool.vrchatRelevance.isRelevant).toBe(true);
+
+    const unrelated = semanticEngine.analyze({
+      platform: "itch",
+      url: "https://stefanhypexlab.itch.io/chatme-2",
+      rawTitle: "Chatme 2",
+      cleanSummary: "Chatme 2 is an app used for chatting, social media and a lot of features to enjoy"
+    });
+    expect(unrelated.vrchatRelevance.isRelevant).toBe(false);
+  });
 });

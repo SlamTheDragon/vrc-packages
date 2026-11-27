@@ -44,6 +44,77 @@ function findNextPageHref($: CheerioAPI, baseUrl: string, selectors: string): st
   }
 }
 
+const EXCLUDED_SSR_ASSET_SEGMENTS = new Set([
+  "_next",
+  "api",
+  "assets",
+  "static",
+  "images",
+  "icons",
+  "fonts",
+  "media",
+  "favicon"
+]);
+const EXCLUDED_SSR_ASSET_EXT = /\.(?:js|css|png|jpe?g|gif|svg|webp|ico|woff2?|json|map)$/i;
+
+function isExcludedStaticAssetUrl(candidateUrl: string): boolean {
+  try {
+    const parsed = new URL(candidateUrl);
+    const segments = parsed.pathname.split("/").filter(Boolean);
+    if (segments.length > 0 && EXCLUDED_SSR_ASSET_SEGMENTS.has(segments[0]!.toLowerCase())) {
+      return true;
+    }
+    return EXCLUDED_SSR_ASSET_EXT.test(parsed.pathname);
+  } catch {
+    return true;
+  }
+}
+
+function collectHydratedProductUrls(
+  $: CheerioAPI,
+  baseUrl: string,
+  targetUrls: Set<string>,
+  validateTarget: (cleanedUrl: string) => boolean,
+  options?: { excludeStaticAssets?: boolean }
+): void {
+  for (const noscriptEl of $("noscript").toArray()) {
+    const noscriptHtml = $(noscriptEl).text() || $(noscriptEl).html() || "";
+    if (!noscriptHtml.trim()) continue;
+    const $noscript = cheerio.load(noscriptHtml);
+    for (const el of $noscript("a[href]").toArray()) {
+      const href = $noscript(el).attr("href");
+      if (!href) continue;
+      const cleaned = canonicalCleanHref(href, baseUrl);
+      if (!cleaned) continue;
+      if (options?.excludeStaticAssets && isExcludedStaticAssetUrl(cleaned)) continue;
+      if (validateTarget(cleaned)) {
+        targetUrls.add(cleaned);
+      }
+    }
+  }
+
+  const scriptPayloads = $("script")
+    .toArray()
+    .map((el) => $(el).html() || "")
+    .filter(Boolean)
+    .join("\n");
+  if (!scriptPayloads) return;
+
+  const unescaped = scriptPayloads
+    .replace(/\\u002[fF]/g, "/")
+    .replace(/\\\//g, "/");
+
+  const urlRegex = /https:\/\/[^\s"'<>\\`]+/gi;
+  for (const match of unescaped.matchAll(urlRegex)) {
+    const cleaned = canonicalCleanHref(match[0], baseUrl);
+    if (!cleaned) continue;
+    if (options?.excludeStaticAssets && isExcludedStaticAssetUrl(cleaned)) continue;
+    if (validateTarget(cleaned)) {
+      targetUrls.add(cleaned);
+    }
+  }
+}
+
 /**
  * BOOTH discovery (`/ja/browse/...`) and item metadata (`booth.pm` & `*.booth.pm`).
  */
@@ -142,6 +213,29 @@ export class BoothDriver extends StorefrontHtmlDriver {
     };
   }
 
+  protected override extractRawTags(
+    $: CheerioAPI,
+    jsonLd: Record<string, unknown> | null,
+    _meta: (key: string) => string
+  ): string[] {
+    const extracted: string[] = [];
+    const rawKeywords = jsonLd?.keywords;
+    if (Array.isArray(rawKeywords)) {
+      for (const item of rawKeywords) {
+        if (typeof item === "string" && item.trim()) extracted.push(item.trim());
+      }
+    } else if (typeof rawKeywords === "string" && rawKeywords.trim()) {
+      extracted.push(...rawKeywords.split(/[,;]+/).map((s) => s.trim()).filter(Boolean));
+    }
+
+    // BOOTH pages emit generic sitewide `<meta name="keywords">` ("booth", "pixiv", "ec"); read product DOM tags instead.
+    for (const el of $('.item-tags a, .tag-list a, .tags a, .tag a, a[href*="/items?tags"], a[href*="/browse/"]').toArray()) {
+      const tag = $(el).text().trim();
+      if (tag) extracted.push(tag);
+    }
+    return extracted;
+  }
+
   protected override defaultCurrency(): string | null {
     return "JPY";
   }
@@ -180,6 +274,7 @@ export class GumroadDriver extends StorefrontHtmlDriver {
           urls.add(cleaned);
         }
       }
+      collectHydratedProductUrls($, job.url, urls, isGumroadProductTarget);
       const nextPageCandidate = findNextPageHref($, job.url, "a[rel='next'][href]");
       return context.pagination.buildDiscoveryOutcome(
         job,
@@ -280,10 +375,11 @@ export class JinxxyDriver extends StorefrontHtmlDriver {
         const href = $(el).attr("href");
         if (!href) continue;
         const cleaned = canonicalCleanHref(href, job.url);
-        if (cleaned && isJinxxyProductTarget(cleaned)) {
+        if (cleaned && !isExcludedStaticAssetUrl(cleaned) && isJinxxyProductTarget(cleaned)) {
           urls.add(cleaned);
         }
       }
+      collectHydratedProductUrls($, job.url, urls, isJinxxyProductTarget, { excludeStaticAssets: true });
       const nextPageCandidate = findNextPageHref($, job.url, "a[rel='next'][href]");
       return context.pagination.buildDiscoveryOutcome(
         job,
@@ -342,7 +438,7 @@ export class ItchDriver extends StorefrontHtmlDriver {
           urls.add(cleaned);
         }
       }
-      const nextPageCandidate = findNextPageHref($, job.url, "a.next_page[href], a[rel='next'][href]");
+      const nextPageCandidate = findNextPageHref($, job.url, ".next_page a[href], a.next_page[href], a[rel='next'][href]");
       return context.pagination.buildDiscoveryOutcome(
         job,
         [...urls].map((url) => ({ kind: "storefront_product", url })),

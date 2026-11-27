@@ -1,5 +1,5 @@
 import type { CrawlJob, ResultRequest, ResultResponse } from "vrc-packages-network/node";
-import { fetchJobOutcome } from "../adapters/observation_adapter.ts";
+import { fetchJobOutcomeWithMetrics, type FetchOutcomeMetrics } from "../adapters/observation_adapter.ts";
 import { logger } from "../utils/logging/logger.ts";
 
 export type Outcome = ResultRequest["outcome"];
@@ -11,7 +11,7 @@ export type LeaseClient = {
 export type MetadataFetcher = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
 export interface RunLeasedJobOptions {
-  onOutcome?: (outcome: Outcome, idempotencyKey: string) => Promise<void> | void;
+  onOutcome?: (outcome: Outcome, idempotencyKey: string, metrics: FetchOutcomeMetrics) => Promise<void> | void;
   idempotencyKey?: string;
 }
 
@@ -32,7 +32,7 @@ export async function runLeasedJob(
   heartbeatIntervalMs = 5_000,
   stopSignal?: AbortSignal,
   options?: RunLeasedJobOptions
-): Promise<{ outcome: Outcome; result: ResultResponse }> {
+): Promise<{ outcome: Outcome; result: ResultResponse; metrics: FetchOutcomeMetrics }> {
   if (!Number.isInteger(heartbeatIntervalMs) || heartbeatIntervalMs < 1) throw new Error("Invalid heartbeat interval");
   stopSignal?.throwIfAborted();
   let clockOffsetMs = client.getClockOffset?.() ?? 0;
@@ -107,7 +107,8 @@ export async function runLeasedJob(
   if (!Number.isFinite(remainingMs) || remainingMs <= 0) { clearHeartbeatTimer(); authority.abort(); throw leaseExpired(); }
   const deadline = setTimeout(() => { authorityError ??= leaseExpired(); authority.abort(); }, Math.min(remainingMs, 2_147_483_647)); // setTimeout overflows above 2^31-1 ms and would fire at once
   try {
-    const outcome = minimizeOutcome(job, await fetchJobOutcome(job, fetcher, signal));
+    const { outcome: rawOutcome, metrics } = await fetchJobOutcomeWithMetrics(job, fetcher, signal);
+    const outcome = minimizeOutcome(job, rawOutcome);
     clearHeartbeatTimer();
     clearTimeout(deadline);
     if (pulsePromise) await pulsePromise;
@@ -127,7 +128,7 @@ export async function runLeasedJob(
 
     const idempotencyKey = options?.idempotencyKey ?? crypto.randomUUID();
     if (options?.onOutcome) {
-      await options.onOutcome(outcome, idempotencyKey);
+      await options.onOutcome(outcome, idempotencyKey, metrics);
     }
 
     const result = await client.submit({
@@ -136,7 +137,7 @@ export async function runLeasedJob(
       idempotencyKey,
       outcome
     });
-    return { outcome, result };
+    return { outcome, result, metrics };
   } catch (error) {
     throw authorityError || (stopSignal?.aborted ? stopSignal.reason : error);
   } finally {

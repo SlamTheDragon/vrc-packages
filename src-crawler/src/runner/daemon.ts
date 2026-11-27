@@ -299,7 +299,8 @@ export class CrawlerNodeDaemon {
               );
               logger.activity(`Completed robots preflight refresh for ${snapshot.origin} (status ${snapshot.statusCode})`, {
                 origin: snapshot.origin,
-                statusCode: snapshot.statusCode
+                statusCode: snapshot.statusCode,
+                ...(snapshot.error ? { error: snapshot.error } : {})
               });
               this.consecutiveEmptyClaims = 0;
               return "claimed";
@@ -360,7 +361,7 @@ export class CrawlerNodeDaemon {
 
     try {
       const effectiveHeartbeatMs = this.options.heartbeatIntervalMs ?? this.computeDynamicHeartbeatInterval(job.origin);
-      const { outcome, result } = await runLeasedJob(
+      const { outcome, result, metrics } = await runLeasedJob(
         job,
         this.client,
         fetchFn,
@@ -380,10 +381,11 @@ export class CrawlerNodeDaemon {
       );
       const durationMs = Math.round(performance.now() - startTime);
       this.recordOriginDuration(job.origin, durationMs);
+      const taskMetrics = { durationMs, ...metrics };
       if (stagedOutboxId) {
-        this.nodeStore.markOutboxDelivered(stagedOutboxId, result, { durationMs });
+        this.nodeStore.markOutboxDelivered(stagedOutboxId, result, taskMetrics);
       } else {
-        this.nodeStore.recordTaskSuccess(taskId, outcome.kind, result, { durationMs });
+        this.nodeStore.recordTaskSuccess(taskId, outcome.kind, result, taskMetrics);
       }
       if (outcome.kind === "changed") {
         logger.finding(`Observed package '${outcome.observation.title}' by '${outcome.observation.author}'`, {
@@ -477,7 +479,9 @@ export class CrawlerNodeDaemon {
       throw error;
     }
 
-    await this.heartbeat();
+    if (!this.options.runOnce) {
+      await this.heartbeat();
+    }
     return "claimed";
   }
 

@@ -98,6 +98,110 @@ export function parseShopifyProductSitemapLeads(job: CrawlJob, body: string): Di
   return shopifyDriver.parseSitemapLeads(job, body);
 }
 
+export interface FetchOutcomeMetrics {
+  httpStatus?: number;
+  bytesFetched?: number;
+}
+
+/**
+ * Executes a leased fetch deterministically via the platform's registered SourceDriver strategy
+ * while recording HTTP status and fetched byte telemetry.
+ */
+export async function fetchJobOutcomeWithMetrics(
+  job: CrawlJob,
+  fetcher: (input: string | URL | Request, init?: RequestInit) => Promise<Response> = fetch,
+  authoritySignal?: AbortSignal,
+  options?: { githubToken?: string }
+): Promise<{ outcome: Outcome; metrics: FetchOutcomeMetrics }> {
+  const targetUrl = new URL(job.url);
+  if (targetUrl.hostname === "api.github.com" && job.platform !== "github") {
+    return {
+      outcome: { kind: "blocked", reason: "GitHub jobs require a public REST repository metadata endpoint" },
+      metrics: {}
+    };
+  }
+
+  const driver = defaultDriverRegistry.get(job.platform);
+  if (!driver) {
+    return {
+      outcome: { kind: "blocked", reason: `Unsupported crawler platform: ${job.platform}` },
+      metrics: {}
+    };
+  }
+
+  const targetError = driver.validateTarget(job);
+  if (targetError) {
+    return { outcome: { kind: "blocked", reason: targetError }, metrics: {} };
+  }
+
+  const headers = driver.buildRequestHeaders(job, CRAWLER_USER_AGENT, options);
+  const signal = authoritySignal
+    ? AbortSignal.any([authoritySignal, AbortSignal.timeout(25_000)])
+    : AbortSignal.timeout(25_000);
+
+  let httpStatus: number | undefined;
+  let bytesFetched: number | undefined;
+
+  try {
+    const response = await fetcher(job.url, { headers, signal, redirect: "error" });
+    httpStatus = response.status;
+    const headerFailure = classifyAccessFailure(response);
+    if (headerFailure === "challenge") return { outcome: { kind: "blocked", reason: "Challenge response" }, metrics: { httpStatus } };
+    if (headerFailure === "rate_limited") {
+      return {
+        outcome: { kind: "rate_limited", retryAfterSeconds: retryAfterSeconds(response.headers) },
+        metrics: { httpStatus }
+      };
+    }
+    if (job.platform === "github" && response.status === 403 && headerFailure === "forbidden") {
+      const errorBody = await boundedText(response, 10_000);
+      bytesFetched = Buffer.byteLength(errorBody, "utf8");
+      if (/secondary rate limit|abuse detection/i.test(errorBody)) {
+        return {
+          outcome: {
+            kind: "rate_limited",
+            retryAfterSeconds: Math.max(60, retryAfterSeconds(response.headers, 60))
+          },
+          metrics: { httpStatus, bytesFetched }
+        };
+      }
+      return { outcome: { kind: "blocked", reason: "HTTP 403" }, metrics: { httpStatus, bytesFetched } };
+    }
+    if (headerFailure === "forbidden" || response.status === 401) {
+      return { outcome: { kind: "blocked", reason: `HTTP ${response.status}` }, metrics: { httpStatus } };
+    }
+    if (response.status === 304) return { outcome: { kind: "unchanged" }, metrics: { httpStatus, bytesFetched: 0 } };
+    if (response.status >= 300 && response.status < 400) {
+      return { outcome: { kind: "blocked", reason: "Redirect requires source review" }, metrics: { httpStatus } };
+    }
+    if (response.status === 404 || response.status === 410) return { outcome: { kind: "gone" }, metrics: { httpStatus } };
+    if (!response.ok) return { outcome: { kind: "temporary_failure", reason: `HTTP ${response.status}` }, metrics: { httpStatus } };
+
+    const length = Number(response.headers.get("content-length") || 0);
+    if (length > 2_000_000) return { outcome: { kind: "temporary_failure", reason: "Response over 2 MB" }, metrics: { httpStatus } };
+
+    const body = await boundedText(response);
+    bytesFetched = Buffer.byteLength(body, "utf8");
+    if (classifyAccessFailure(response, body.slice(0, 5000)) === "challenge") {
+      return { outcome: { kind: "blocked", reason: "Challenge response" }, metrics: { httpStatus, bytesFetched } };
+    }
+
+    const contentType = response.headers.get("content-type") || "";
+    return {
+      outcome: driver.parseResponse(job, body, contentType, defaultDriverContext),
+      metrics: { httpStatus, bytesFetched }
+    };
+  } catch (error) {
+    if (authoritySignal?.aborted) {
+      throw new Error("Fetch cancelled because coordinator authority was lost");
+    }
+    if (error instanceof UnsafeMetadataTarget) {
+      return { outcome: { kind: "blocked", reason: error.message.slice(0, 300) }, metrics: {} };
+    }
+    return { outcome: { kind: "temporary_failure", reason: String(error).slice(0, 300) }, metrics: {} };
+  }
+}
+
 /**
  * Executes a leased fetch deterministically via the platform's registered SourceDriver strategy.
  */
@@ -107,70 +211,6 @@ export async function fetchJobOutcome(
   authoritySignal?: AbortSignal,
   options?: { githubToken?: string }
 ): Promise<Outcome> {
-  const targetUrl = new URL(job.url);
-  if (targetUrl.hostname === "api.github.com" && job.platform !== "github") {
-    return { kind: "blocked", reason: "GitHub jobs require a public REST repository metadata endpoint" };
-  }
-
-  const driver = defaultDriverRegistry.get(job.platform);
-  if (!driver) {
-    return { kind: "blocked", reason: `Unsupported crawler platform: ${job.platform}` };
-  }
-
-  const targetError = driver.validateTarget(job);
-  if (targetError) {
-    return { kind: "blocked", reason: targetError };
-  }
-
-  const headers = driver.buildRequestHeaders(job, CRAWLER_USER_AGENT, options);
-  const signal = authoritySignal
-    ? AbortSignal.any([authoritySignal, AbortSignal.timeout(25_000)])
-    : AbortSignal.timeout(25_000);
-
-  try {
-    const response = await fetcher(job.url, { headers, signal, redirect: "error" });
-    const headerFailure = classifyAccessFailure(response);
-    if (headerFailure === "challenge") return { kind: "blocked", reason: "Challenge response" };
-    if (headerFailure === "rate_limited") {
-      return { kind: "rate_limited", retryAfterSeconds: retryAfterSeconds(response.headers) };
-    }
-    if (job.platform === "github" && response.status === 403 && headerFailure === "forbidden") {
-      const errorBody = await boundedText(response, 10_000);
-      if (/secondary rate limit|abuse detection/i.test(errorBody)) {
-        return {
-          kind: "rate_limited",
-          retryAfterSeconds: Math.max(60, retryAfterSeconds(response.headers, 60))
-        };
-      }
-      return { kind: "blocked", reason: "HTTP 403" };
-    }
-    if (headerFailure === "forbidden" || response.status === 401) {
-      return { kind: "blocked", reason: `HTTP ${response.status}` };
-    }
-    if (response.status === 304) return { kind: "unchanged" };
-    if (response.status >= 300 && response.status < 400) {
-      return { kind: "blocked", reason: "Redirect requires source review" };
-    }
-    if (response.status === 404 || response.status === 410) return { kind: "gone" };
-    if (!response.ok) return { kind: "temporary_failure", reason: `HTTP ${response.status}` };
-
-    const length = Number(response.headers.get("content-length") || 0);
-    if (length > 2_000_000) return { kind: "temporary_failure", reason: "Response over 2 MB" };
-
-    const body = await boundedText(response);
-    if (classifyAccessFailure(response, body.slice(0, 5000)) === "challenge") {
-      return { kind: "blocked", reason: "Challenge response" };
-    }
-
-    const contentType = response.headers.get("content-type") || "";
-    return driver.parseResponse(job, body, contentType, defaultDriverContext);
-  } catch (error) {
-    if (authoritySignal?.aborted) {
-      throw new Error("Fetch cancelled because coordinator authority was lost");
-    }
-    if (error instanceof UnsafeMetadataTarget) {
-      return { kind: "blocked", reason: error.message.slice(0, 300) };
-    }
-    return { kind: "temporary_failure", reason: String(error).slice(0, 300) };
-  }
+  const { outcome } = await fetchJobOutcomeWithMetrics(job, fetcher, authoritySignal, options);
+  return outcome;
 }

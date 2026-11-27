@@ -6,7 +6,7 @@ export interface RateLimitPolicy {
 export const RATE_LIMIT_POLICIES = {
   PUBLIC_CATALOG: { limit: 60, windowSeconds: 60 },
   NODE_CLAIM: { limit: 30, windowSeconds: 60 },
-  NODE_HEARTBEAT: { limit: 20, windowSeconds: 60 },
+  NODE_HEARTBEAT: { limit: 60, windowSeconds: 60 },
   NODE_RESULT: { limit: 60, windowSeconds: 60 },
   APP_SEARCH: { limit: 120, windowSeconds: 60 },
   APP_REPORT: { limit: 30, windowSeconds: 60 },

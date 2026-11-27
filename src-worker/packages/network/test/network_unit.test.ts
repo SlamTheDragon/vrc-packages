@@ -607,5 +607,8 @@ describe("vrc-packages-network unit contracts", () => {
       .toBe("【Kikyo】[無料] Dress & Ribbons v1.0");
     expect(cleanTitle("[FREE] [VRChat] Advanced Locomotion System v2.1.0 beta"))
       .toBe("Advanced Locomotion System");
+    expect(cleanTitle("凪 -Nagi-【オリジナル3Dモデル】")).toBe("凪 -Nagi-");
+    expect(cleanTitle("オリジナル3Dモデル「イチゴ」")).toBe("オリジナル3Dモデル「イチゴ」");
+    expect(cleanTitle("FREE Sample [VRC想定] Tool (VRChat)")).toBe("Sample Tool");
   });
 });

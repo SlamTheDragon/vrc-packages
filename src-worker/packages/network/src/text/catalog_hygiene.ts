@@ -75,12 +75,24 @@ export function extractBracketTokens(rawTitle: string): string[] {
 /**
  * Common promotional / marketing brackets and prefixes found in Japanese and Western listings
  */
+const CATEGORY_PROMO_TOKENS = "VRC(?:hat)?|Unity|3Dモデル|3D衣装|VRC想定|3Dシステム|3Dアバター|VRC向け";
+const STATUS_PROMO_TOKENS = "無料|FREE|Free|Sale|セール|VerUP|早急用|簡単導入|全アバター対応|汎用|MA対応|Modular Avatar対応|VRCFury対応|非公式";
+const INLINE_PROMO_TOKENS = "VRC(?:hat)?|Unity|3Dモデル|3D衣装|無料|FREE|Free|Sale|セール|VerUP|早急用";
+
+function balancedPromoRegex(tokens: string, anchor: "start" | "end" | "any"): RegExp {
+  const pair = `(?:【(?:${tokens})】|\\[(?:${tokens})\\]|\\((?:${tokens})\\)|（(?:${tokens})）)`;
+  if (anchor === "start") return new RegExp(`^${pair}\\s*`, "gi");
+  if (anchor === "end") return new RegExp(`\\s*${pair}$`, "gi");
+  return new RegExp(`\\s*${pair}`, "gi");
+}
+
 export const MARKETING_BRACKETS = [
-  /^[【\[(]?(?:VRC(?:hat)?|Unity|3Dモデル|3D衣装|VRC想定|3Dシステム|3Dアバター|VRC向け)[】\])]\s*/gi,
-  /[【\[(]?(?:VRC(?:hat)?|Unity|3Dモデル|3D衣装|VRC想定|3Dシステム|3Dアバター|VRC向け)[】\])]$/gi,
-  /^[【\[(]?(?:無料|FREE|Free|Sale|セール|VerUP|早急用|簡単導入|全アバター対応|汎用|MA対応|Modular Avatar対応|VRCFury対応|非公式)[】\])]\s*/gi,
-  /[【\[(]?(?:無料|FREE|Free|Sale|セール|VerUP|早急用|簡単導入|全アバター対応|汎用|MA対応|Modular Avatar対応|VRCFury対応|非公式)[】\])]$/gi,
-  /\s*[【\[(](?:VRC(?:hat)?|Unity|3Dモデル|3D衣装|無料|FREE|Free|Sale|セール|VerUP|早急用)[】\])]/gi
+  balancedPromoRegex(CATEGORY_PROMO_TOKENS, "start"),
+  balancedPromoRegex(CATEGORY_PROMO_TOKENS, "end"),
+  new RegExp(`^(?:${CATEGORY_PROMO_TOKENS}|${STATUS_PROMO_TOKENS})\\s+`, "gi"),
+  balancedPromoRegex(STATUS_PROMO_TOKENS, "start"),
+  balancedPromoRegex(STATUS_PROMO_TOKENS, "end"),
+  balancedPromoRegex(INLINE_PROMO_TOKENS, "any")
 ];
 
 /**

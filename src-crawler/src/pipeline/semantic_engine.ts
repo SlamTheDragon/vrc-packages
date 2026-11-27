@@ -167,7 +167,19 @@ const POSITIVE_VRCHAT_SIGNALS: ReadonlyArray<{ id: string; pattern: RegExp; weig
   { id: "avatar_tech", pattern: /\bphysbone(?:s)?\b|\bmodular\s*avatar\b|\bvrcfury\b|\bavatars?\s*3\.0\b|\bav3\b|\bsdk3\b|ma対応|vrcfury対応/i, weight: 0.45 },
   { id: "avatar_terms", pattern: /3d(?:衣装|アバター|モデル)|アバター(?:改変|向け|対応|専用)|改変/i, weight: 0.35 },
   { id: "quest_compat", pattern: /quest対応|\bquest\s+compatible\b/i, weight: 0.25 },
-  { id: "osc_ft", pattern: /\bvrcft\b|face\s*tracking.*vrchat|vrchat.*osc|\bosc\b.*vrchat/i, weight: 0.4 }
+  { id: "osc_ft", pattern: /\bvrcft\b|face\s*tracking.*vrchat|vrchat.*osc|\bosc\b.*vrchat/i, weight: 0.4 },
+  {
+    id: "avatar_tooling",
+    pattern:
+      /\b(?:avatar\s+(?:optimi[sz]\w*|shaders?|rigs?|tools?|utilit\w*|prefabs?|animators?|gimmicks?|controllers?)|shaders?\s+for\s+avatars?|non[- ]destructive\s+(?:avatar|modular)|ndmf|poiyomi|liltoon)\b/i,
+    weight: 0.35
+  },
+  {
+    id: "unity_avatar",
+    pattern:
+      /\bunity\b.{0,40}\b(?:avatar|pose|rig|blendshape|humanoid)\b|\b(?:avatar|pose|rig|blendshape|humanoid)\b.{0,40}\bunity\b/i,
+    weight: 0.35
+  }
 ];
 
 const NEGATIVE_NON_VRCHAT_SIGNALS: ReadonlyArray<{ id: string; pattern: RegExp; weight: number }> = [

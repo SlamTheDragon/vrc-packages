@@ -280,7 +280,7 @@ export abstract class StorefrontHtmlDriver implements SourceDriver {
     );
   }
 
-  private extractRawTags(
+  protected extractRawTags(
     $: CheerioAPI,
     jsonLd: Record<string, unknown> | null,
     meta: (key: string) => string

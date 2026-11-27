@@ -5,6 +5,10 @@ import { isVpmVersion, compareVpmVersions } from "vrc-packages-network/vpm-versi
 import type { VpmManifestCandidate } from "../pipeline/vpm_quality_analyzer.ts";
 import type { DriverContext, DriverFetchOptions, DriverOutcome, SourceDriver } from "./source_driver.ts";
 
+const MAX_VPM_RELEASES_PER_PACKAGE = 20;
+const MAX_VPM_LISTING_ISSUES = 100;
+const MAX_OUTCOME_JSON_BYTES = 240_000;
+
 function asObject(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -76,6 +80,20 @@ function extractManifestLinks(manifest: Record<string, unknown>): unknown[] {
   ];
 }
 
+function isYankedRelease(manifest: Record<string, unknown>): boolean {
+  const vrcGet = asObject(manifest["vrc-get"]);
+  if (vrcGet?.yanked === true || asNonEmptyString(vrcGet?.yanked)) return true;
+  if (manifest.yanked === true || asNonEmptyString(manifest.yanked)) return true;
+  const displayName = asNonEmptyString(manifest.displayName);
+  return Boolean(displayName && /^\s*DO\s+NOT\s+INSTALL\b/i.test(displayName));
+}
+
+function pushBoundedIssue(issues: VpmListingIssue[], issue: VpmListingIssue): void {
+  if (issues.length < MAX_VPM_LISTING_ISSUES) {
+    issues.push(issue);
+  }
+}
+
 function extractRawKeywords(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value.filter((item): item is string => typeof item === "string");
@@ -134,13 +152,23 @@ export class VpmDriver implements SourceDriver {
   ): DriverOutcome {
     const repoEvidence = this.parseRepositoryEvidence(job, body, context);
     if (repoEvidence) {
-      const outcome: DriverOutcome =
+      const makeOutcome = (observations: Observation[]): DriverOutcome =>
         repoEvidence.issues.length > 0
-          ? { kind: "partial_batch", observations: repoEvidence.observations, issues: repoEvidence.issues }
-          : { kind: "batch", observations: repoEvidence.observations };
-      return JSON.stringify(outcome).length <= 240_000
-        ? outcome
-        : { kind: "temporary_failure", reason: "Repository exceeds one bounded result batch" };
+          ? { kind: "partial_batch", observations, issues: repoEvidence.issues }
+          : { kind: "batch", observations };
+      const initial = makeOutcome(repoEvidence.observations);
+      if (JSON.stringify(initial).length <= MAX_OUTCOME_JSON_BYTES) return initial;
+
+      for (const maxReleases of [5, 1]) {
+        const trimmed = repoEvidence.observations.map((obs) =>
+          obs.releases && obs.releases.length > maxReleases
+            ? { ...obs, releases: obs.releases.slice(0, maxReleases) }
+            : obs
+        );
+        const bounded = makeOutcome(trimmed);
+        if (JSON.stringify(bounded).length <= MAX_OUTCOME_JSON_BYTES) return bounded;
+      }
+      return { kind: "temporary_failure", reason: "Repository exceeds one bounded result batch" };
     }
 
     const recipeLeads = this.parseListingRecipe(job, body);
@@ -204,43 +232,71 @@ export class VpmDriver implements SourceDriver {
       }
 
       const releaseEntries = Object.entries(versions);
-      if (releaseEntries.length === 0 || releaseEntries.length > 100) {
-        issues.push({ sourceItemKey: packageId, code: "invalid_package" });
+      if (releaseEntries.length === 0) {
+        pushBoundedIssue(issues, { sourceItemKey: packageId, code: "invalid_package" });
         continue;
       }
 
-      const candidates: VpmManifestCandidate[] = [];
+      const validVersionEntries: Array<[string, Record<string, unknown>]> = [];
       for (const [version, value] of releaseEntries) {
         const manifest = asObject(value);
         const issueVersion = version && version.length <= 100 ? { version } : {};
         if (!version || version.length > 100 || !manifest) {
-          issues.push({ sourceItemKey: packageId, ...issueVersion, code: "invalid_manifest" });
+          pushBoundedIssue(issues, { sourceItemKey: packageId, ...issueVersion, code: "invalid_manifest" });
           continue;
         }
         if (typeof manifest.name !== "string" || !manifest.name || typeof manifest.version !== "string" || !manifest.version) {
-          issues.push({ sourceItemKey: packageId, version, code: "invalid_manifest" });
+          pushBoundedIssue(issues, { sourceItemKey: packageId, version, code: "invalid_manifest" });
           continue;
         }
         if (manifest.name !== packageId || manifest.version !== version) {
-          issues.push({ sourceItemKey: packageId, version, code: "identity_mismatch" });
+          pushBoundedIssue(issues, { sourceItemKey: packageId, version, code: "identity_mismatch" });
           continue;
         }
         if (!isVpmVersion(version)) {
-          issues.push({ sourceItemKey: packageId, version, code: "invalid_version" });
+          pushBoundedIssue(issues, { sourceItemKey: packageId, version, code: "invalid_version" });
           continue;
         }
-        const release = extractReleaseEvidence(version, manifest);
-        if (!release) {
-          issues.push({ sourceItemKey: packageId, version, code: "invalid_release_evidence" });
-          continue;
-        }
-        candidates.push({ version, manifest, release });
+        validVersionEntries.push([version, manifest]);
       }
 
-      if (issues.length > 100) return null;
-      if (candidates.length === 0) continue;
+      validVersionEntries.sort((a, b) => compareVpmVersions(b[0], a[0]));
+      const boundedEntries = validVersionEntries.slice(0, MAX_VPM_RELEASES_PER_PACKAGE);
 
-      const latestOrder = [...candidates].sort((a, b) => compareVpmVersions(b.version, a.version));
+      const candidates: Array<VpmManifestCandidate & { yanked: boolean }> = [];
+      for (const [version, manifest] of boundedEntries) {
+        const release = extractReleaseEvidence(version, manifest);
+        if (!release) {
+          pushBoundedIssue(issues, { sourceItemKey: packageId, version, code: "invalid_release_evidence" });
+          continue;
+        }
+        candidates.push({ version, manifest, release, yanked: isYankedRelease(manifest) });
+      }
+
+      if (candidates.length === 0) {
+        if (validVersionEntries.length === 0 && !issues.some((i) => i.sourceItemKey === packageId)) {
+          pushBoundedIssue(issues, { sourceItemKey: packageId, code: "invalid_package" });
+        }
+        continue;
+      }
+
+      const activeCandidates = candidates.filter((c) => !c.yanked);
+      const latestCandidate = candidates[0]!;
+      const latestDisplayName = asNonEmptyString(latestCandidate.manifest.displayName) ?? "";
+      const isYankNoticeStub =
+        latestCandidate.yanked &&
+        (activeCandidates.length === 0 || /^\s*DO\s+NOT\s+INSTALL\b/i.test(latestDisplayName));
+      if (isYankNoticeStub) {
+        pushBoundedIssue(issues, {
+          sourceItemKey: packageId,
+          version: latestCandidate.version,
+          code: "invalid_package"
+        });
+        continue;
+      }
+
+      const keptCandidates: VpmManifestCandidate[] = activeCandidates.length > 0 ? activeCandidates : candidates;
+      const latestOrder = keptCandidates;
       const rawDisplayName = latestOrder.map((c) => asNonEmptyString(c.manifest.displayName)).find(Boolean) ?? null;
       const rawDescription = latestOrder.map((c) => asNonEmptyString(c.manifest.description)).find(Boolean) ?? "";
       const cleanSummary = context.sanitizer.sanitizeText(rawDescription).slice(0, 1024);

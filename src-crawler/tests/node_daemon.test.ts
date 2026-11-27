@@ -960,5 +960,37 @@ describe("node-owned daemon lifecycle through serialized contracts", () => {
         store.close();
       }
     });
+
+    test("records HTTP status and bytesFetched in SQLite and skips trailing idle heartbeat in runOnce mode", async () => {
+      const store = new LocalNodeStore(":memory:");
+      const testClient = client();
+      const heartbeatStates: string[] = [];
+      const origHb = testClient.heartbeat.bind(testClient);
+      testClient.heartbeat = async (state, activeJobId, activeLeaseId) => {
+        heartbeatStates.push(state);
+        return origHb(state, activeJobId, activeLeaseId);
+      };
+
+      const sourcePayload = JSON.stringify({ name: "com.example.daemon", version: "1.0.0" });
+      const daemon = new CrawlerNodeDaemon(config, store, testClient, {
+        runOnce: true,
+        fetchFn: async () => new Response(sourcePayload, { status: 200, headers: { "content-type": "application/json" } })
+      });
+
+      try {
+        await withWire(leased, async () => {
+          await daemon.start();
+        });
+        const tasks = store.listTasksForRun(daemon.currentRunId);
+        expect(tasks).toHaveLength(1);
+        expect(tasks[0]?.httpStatus).toBe(200);
+        expect(tasks[0]?.bytesFetched).toBe(Buffer.byteLength(sourcePayload, "utf8"));
+        // Startup idle heartbeat + fetching initial/final pulses; trailing idle heartbeat is skipped in --once
+        expect(heartbeatStates.filter((s) => s === "idle")).toHaveLength(1);
+      } finally {
+        daemon.stop();
+        store.close();
+      }
+    });
   });
 });

@@ -86,7 +86,7 @@ Generate Worker binding types strictly via `wrangler types` and declare `worker_
 | :--- | :---: | :--- |
 | `PUBLIC_CATALOG` | 60 | `GET /v1/app/index`, `GET /v1/app/index/delta` |
 | `NODE_CLAIM` | 30 | `POST /v1/node/jobs/claim`, `POST /v1/node/robots/claim` |
-| `NODE_HEARTBEAT` | 20 | `POST /v1/node/heartbeat` |
+| `NODE_HEARTBEAT` | 60 | `POST /v1/node/heartbeat` |
 | `NODE_RESULT` | 60 | `POST /v1/node/jobs/result`, `/jobs/results`, `/robots/result` |
 | `APP_SEARCH` | 120 | `POST /v1/app/index/search` |
 | `APP_REPORT` | 30 | `POST /v1/app/report` |
