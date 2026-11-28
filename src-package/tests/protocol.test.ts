@@ -2,6 +2,7 @@ import { describe, it, expect } from "bun:test";
 import { PlatformSchema } from "../src/types/platform.ts";
 import {
   CatalogPackageSchema,
+  CatalogPackageClientReadSchema,
   CatalogListingSourceSchema,
   CatalogRelationSchema,
   VerificationStatusSchema,
@@ -112,7 +113,15 @@ import {
   ReviewAppCandidateRequestSchema,
   ReviewAppCandidateResponseSchema,
   encodeOperatorAppCursor,
-  decodeOperatorAppCursor
+  decodeOperatorAppCursor,
+  OperatorLeadListQuerySchema,
+  OperatorCatalogListQuerySchema,
+  encodeOperatorStagingCursor,
+  decodeOperatorStagingCursor,
+  OperatorStagingListQuerySchema,
+  OperatorStagingListResponseSchema,
+  OperatorStagingDecisionRequestSchema,
+  OperatorVocabularyUpsertRequestSchema
 } from "../src/protocol/operator.ts";
 import {
   ModeratorRatingRecordSchema,
@@ -1081,7 +1090,17 @@ describe("src-package wire protocols", () => {
       reviewedAt: "2026-10-01T16:00:00.000Z"
     };
     expect(() => ReviewAppCandidateResponseSchema.parse(operatorReviewResp)).not.toThrow();
-    expect(() => ModeratorReviewAppCandidateRequestSchema.parse(operatorReviewReq)).not.toThrow();
+    expect(ModeratorReviewAppCandidateRequestSchema.safeParse(operatorReviewReq).success).toBe(false);
+    expect(ModeratorReviewAppCandidateRequestSchema.safeParse({
+      schemaVersion: 1,
+      candidateStatus: "reviewed",
+      grantDelegation: true
+    }).success).toBe(false);
+    expect(() => ModeratorReviewAppCandidateRequestSchema.parse({
+      schemaVersion: 1,
+      candidateStatus: "reviewed",
+      notes: "Recommend for operator check"
+    })).not.toThrow();
     expect(() => ModeratorReviewAppCandidateResponseSchema.parse(operatorReviewResp)).not.toThrow();
   });
 
@@ -1377,5 +1396,103 @@ describe("src-package wire protocols", () => {
     expect(RequeueJobResponseSchema.parse({ schemaVersion: 1, job: legacyJob }).job.jobId).toBe("job-b1");
     expect(DeleteJobRequestSchema.parse({ schemaVersion: 1, reason: "Obsolete job" }).reason).toBe("Obsolete job");
     expect(DeleteJobResponseSchema.parse({ schemaVersion: 1, jobId: "job-b1", status: "deleted" }).status).toBe("deleted");
+  });
+
+  it("validates P21 staging, vocabulary, query filters, URI schemes, and client forward-read tolerance", () => {
+    expect(PackageFrontSchema.safeParse({
+      frontId: "123e4567-e89b-12d3-a456-426614174010",
+      canonicalId: "pkg-1",
+      sourceKey: "booth:1",
+      platform: "booth",
+      storefrontUrl: "javascript:alert(1)",
+      observedAt: "2026-11-28T00:00:00.000Z"
+    }).success).toBe(false);
+
+    expect(OperatorLeadListQuerySchema.parse({
+      status: "pending_review",
+      query: "avatar",
+      targetHost: "shop.booth.pm",
+      limit: 25
+    })).toMatchObject({ query: "avatar", targetHost: "shop.booth.pm" });
+    expect(OperatorCatalogListQuerySchema.parse({ query: "shader", limit: 25 }).query).toBe("shader");
+
+    const stagingCursor = encodeOperatorStagingCursor({
+      observedAt: "2026-11-28T00:00:00.000Z",
+      sourceKey: "booth:12345"
+    });
+    expect(decodeOperatorStagingCursor(stagingCursor)).toEqual({
+      observedAt: "2026-11-28T00:00:00.000Z",
+      sourceKey: "booth:12345"
+    });
+    expect(OperatorStagingListQuerySchema.parse({
+      auditState: "pending_audit",
+      platform: "booth",
+      query: "Chise",
+      cursor: stagingCursor
+    }).platform).toBe("booth");
+    expect(OperatorStagingListQuerySchema.safeParse({ platform: "curated" }).success).toBe(false);
+
+    expect(() => OperatorStagingListResponseSchema.parse({
+      schemaVersion: 1,
+      items: [{
+        sourceKey: "booth:12345",
+        platform: "booth",
+        sourceUrl: "https://booth.pm/ja/items/12345",
+        title: "Chise Dress",
+        author: "Creator",
+        auditState: "pending_audit",
+        relevanceConfidence: 0.42,
+        extractedTags: ["Chise"],
+        bracketTokens: ["チセ対応"],
+        observedAt: "2026-11-28T00:00:00.000Z"
+      }],
+      unknownTokens: [{ token: "チセ対応", count: 14, sampleSourceKey: "booth:12345" }],
+      nextCursor: stagingCursor
+    })).not.toThrow();
+
+    expect(OperatorStagingDecisionRequestSchema.safeParse({
+      schemaVersion: 1,
+      decision: "approve",
+      reason: "Confirmed outfit"
+    }).success).toBe(true);
+    expect(OperatorStagingDecisionRequestSchema.safeParse({
+      schemaVersion: 1,
+      decision: "approve"
+    }).success).toBe(false);
+
+    expect(OperatorVocabularyUpsertRequestSchema.safeParse({
+      schemaVersion: 1,
+      ruleId: "avatar-chise",
+      kind: "avatar_base",
+      canonicalValue: "Chise",
+      aliases: ["Chise", "チセ"],
+      reason: "Promote new base"
+    }).success).toBe(true);
+    expect(OperatorVocabularyUpsertRequestSchema.safeParse({
+      schemaVersion: 1,
+      ruleId: "avatar-chise",
+      kind: "avatar_base",
+      canonicalValue: "Chise",
+      aliases: ["Chise"]
+    }).success).toBe(false);
+
+    const parsedRead = CatalogPackageClientReadSchema.parse({
+      canonicalId: "com.example.evolved",
+      umbrella: "avatars",
+      category: "avatar_clothing",
+      lifecycle: "active",
+      displayName: "Chise Outfit",
+      vpmId: null,
+      qualityFlags: ["future_flag"],
+      additiveExtra: { note: "forward-compatible" },
+      createdAt: "2026-11-28T00:00:00.000Z",
+      updatedAt: "2026-11-28T00:00:00.000Z",
+      contentRating: "general"
+    });
+    expect(parsedRead.qualityFlags).toEqual(["future_flag"]);
+    expect(CatalogPackageClientReadSchema.safeParse({
+      ...parsedRead,
+      contentRating: "unknown_rating"
+    }).success).toBe(false);
   });
 });

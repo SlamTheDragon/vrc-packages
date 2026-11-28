@@ -1,20 +1,27 @@
+import { z } from "zod";
 import {
   type Platform
 } from "./types/index.ts";
 import {
+  CatalogPackageClientReadSchema
+} from "./types/package.ts";
+import {
+  CATALOG_PROTOCOL_VERSION,
+  CatalogDeltaActionSchema,
   type CatalogDeltaResponse,
-  CatalogDeltaResponseSchema,
   CatalogDeltaQuerySchema,
   type PublicCatalogListQuery,
   PublicCatalogListQuerySchema,
   type PublicCatalogListResponse,
-  PublicCatalogListResponseSchema
+  decodeCatalogCursor,
+  decodeCatalogDeltaCursor
 } from "./protocol/catalog.ts";
 import {
+  DOWNSTREAM_PROTOCOL_VERSION,
+  QueryOriginSchema,
   type CatalogSearchRequest,
   CatalogSearchRequestSchema,
   type CatalogSearchResponse,
-  CatalogSearchResponseSchema,
   type RegisterAppRequest,
   RegisterAppRequestSchema,
   type RegisterAppResponse,
@@ -158,7 +165,6 @@ import {
   type LeadActionResponse,
   LeadActionResponseSchema,
   type CatalogListResponse,
-  CatalogListResponseSchema,
   type TakedownListResponse,
   TakedownListResponseSchema,
   VerifyTakedownRequestSchema,
@@ -168,13 +174,87 @@ import {
   VerifyDelegatedClaimResponseSchema,
   type VerifyDelegatedClaimResponse,
   DelegatedClaimListResponseSchema,
-  type DelegatedClaimListResponse
+  type DelegatedClaimListResponse,
+  OperatorStagingListQuerySchema,
+  OperatorStagingListResponseSchema,
+  type OperatorStagingListResponse,
+  type OperatorStagingAuditState,
+  OperatorStagingDecisionRequestSchema,
+  OperatorStagingDecisionResponseSchema,
+  type OperatorStagingDecisionResponse,
+  OperatorVocabularyResponseSchema,
+  type OperatorVocabularyResponse,
+  OperatorVocabularyUpsertRequestSchema,
+  OperatorVocabularyUpsertResponseSchema,
+  type OperatorVocabularyUpsertResponse,
+  type VocabularyRuleKind
 } from "./protocol/operator.ts";
+import { CursorTimestampSchema, CursorTokenSchema } from "./encoding/cursor.ts";
 
 export const MAX_SDK_ERROR_BYTES = 64 * 1024;
 export const MAX_SDK_SUCCESS_BYTES = 4 * 1024 * 1024;
+export const DEFAULT_SDK_TIMEOUT_MS = 15_000;
+
+const ClientPublicCatalogListResponseSchema = z.strictObject({
+  schemaVersion: z.literal(CATALOG_PROTOCOL_VERSION),
+  packages: z.array(CatalogPackageClientReadSchema),
+  nextCursor: CursorTokenSchema.refine((value) => decodeCatalogCursor(value) !== null, "Invalid catalog cursor").nullable()
+});
+
+const ClientCatalogSearchResponseSchema = z.strictObject({
+  schemaVersion: z.literal(DOWNSTREAM_PROTOCOL_VERSION),
+  items: z.array(CatalogPackageClientReadSchema),
+  nextCursor: CursorTokenSchema.refine((value) => decodeCatalogCursor(value) !== null, "Invalid search cursor").nullable().optional(),
+  totalEstimated: z.number().int().min(0).optional(),
+  count: z.number().int().min(0).optional(),
+  queryOrigin: QueryOriginSchema.optional()
+});
+
+const ClientCatalogDeltaSchema = z.strictObject({
+  action: CatalogDeltaActionSchema,
+  canonicalId: z.string().min(1).max(500),
+  updatedAt: CursorTimestampSchema,
+  package: CatalogPackageClientReadSchema.optional()
+});
+
+const ClientCatalogDeltaResponseSchema = z.strictObject({
+  schemaVersion: z.literal(CATALOG_PROTOCOL_VERSION),
+  epoch: z.string().min(1).max(100),
+  deltas: z.array(ClientCatalogDeltaSchema),
+  nextCursor: CursorTokenSchema.refine((value) => decodeCatalogDeltaCursor(value) !== null, "Invalid delta cursor").nullable()
+});
+
+const ClientOperatorCatalogListResponseSchema = z.strictObject({
+  schemaVersion: z.literal(1),
+  packages: z.array(CatalogPackageClientReadSchema),
+  nextCursor: CursorTokenSchema.refine((value) => decodeCatalogCursor(value) !== null, "Invalid Catalog cursor").nullable()
+});
+
+export interface VRCPClientTelemetryEvent {
+  method: "GET" | "POST" | "PATCH" | "DELETE";
+  path: string;
+  status: number;
+  durationMs: number;
+  requestId: string | null;
+  rateLimitLimit: number | null;
+  rateLimitRemaining: number | null;
+  retryAfterSec: number | null;
+  errorCode?: string;
+}
+
+function parseNumericHeader(headers: Headers, name: string): number | null {
+  const raw = headers.get(name);
+  if (!raw) return null;
+  const parsed = Number.parseInt(raw.trim(), 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+}
 
 async function readBoundedText(response: Response, maxBytes: number): Promise<string> {
+  const declared = parseNumericHeader(response.headers, "content-length");
+  if (declared !== null && declared > maxBytes) {
+    await response.body?.cancel();
+    throw new VRCPApiError(response.status, `Response exceeds maximum byte limit of ${maxBytes} bytes`);
+  }
   const reader = response.body?.getReader();
   if (!reader) {
     const text = await response.text();
@@ -231,6 +311,10 @@ export interface VRCPackageClientOptions {
   userToken?: string;
   /** Operator token for administrative endpoints */
   operatorToken?: string;
+  /** Request timeout in milliseconds (defaults to 15000). */
+  timeoutMs?: number;
+  /** Optional non-secret telemetry observer invoked on each HTTP response or transport error. */
+  onTelemetry?: (event: VRCPClientTelemetryEvent) => void;
   /** Custom fetch implementation (defaults to global fetch) */
   fetch?: typeof fetch;
 }
@@ -262,6 +346,8 @@ export class VRCPackageClient {
   private readonly appToken?: string;
   private readonly userToken?: string;
   private readonly operatorToken?: string;
+  private readonly timeoutMs: number;
+  private readonly onTelemetry?: (event: VRCPClientTelemetryEvent) => void;
   private readonly fetchFn: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
   constructor(options: VRCPackageClientOptions) {
@@ -269,8 +355,21 @@ export class VRCPackageClient {
     this.appToken = options.appToken;
     this.userToken = options.userToken;
     this.operatorToken = options.operatorToken;
+    this.timeoutMs = typeof options.timeoutMs === "number" && options.timeoutMs > 0
+      ? options.timeoutMs
+      : DEFAULT_SDK_TIMEOUT_MS;
+    this.onTelemetry = options.onTelemetry;
     const resolvedFetch = options.fetch ?? globalThis.fetch;
     this.fetchFn = (input, init) => resolvedFetch(input, init);
+  }
+
+  private emitTelemetry(event: VRCPClientTelemetryEvent): void {
+    if (!this.onTelemetry) return;
+    try {
+      this.onTelemetry(event);
+    } catch {
+      // Telemetry callbacks must never break API calls.
+    }
   }
 
   private async request<T>(
@@ -318,15 +417,58 @@ export class VRCPackageClient {
       requestBody = JSON.stringify(options.body);
     }
 
-    const response = await this.fetchFn(url.toString(), {
-      method,
-      headers,
-      body: requestBody,
-      redirect: "manual"
-    });
+    const startedAt = Date.now();
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(new Error(`Request timed out after ${this.timeoutMs}ms`)), this.timeoutMs);
+
+    let response: Response;
+    try {
+      response = await this.fetchFn(url.toString(), {
+        method,
+        headers,
+        body: requestBody,
+        redirect: "manual",
+        signal: controller.signal
+      });
+    } catch (cause) {
+      clearTimeout(timeoutId);
+      const isTimeout = controller.signal.aborted;
+      this.emitTelemetry({
+        method,
+        path,
+        status: isTimeout ? 408 : 0,
+        durationMs: Math.max(0, Date.now() - startedAt),
+        requestId: null,
+        rateLimitLimit: null,
+        rateLimitRemaining: null,
+        retryAfterSec: null,
+        errorCode: isTimeout ? "request_timeout" : "network_error"
+      });
+      if (isTimeout) {
+        throw new VRCPApiError(408, `Request timed out after ${this.timeoutMs}ms`, "request_timeout");
+      }
+      throw cause;
+    }
+    clearTimeout(timeoutId);
+
+    const requestId = response.headers.get("X-Request-Id");
+    const rateLimitLimit = parseNumericHeader(response.headers, "X-RateLimit-Limit");
+    const rateLimitRemaining = parseNumericHeader(response.headers, "X-RateLimit-Remaining");
+    const retryAfterSec = parseNumericHeader(response.headers, "Retry-After");
 
     if (response.type === "opaqueredirect" || (response.status >= 300 && response.status < 400)) {
       await response.body?.cancel();
+      this.emitTelemetry({
+        method,
+        path,
+        status: response.status,
+        durationMs: Math.max(0, Date.now() - startedAt),
+        requestId,
+        rateLimitLimit,
+        rateLimitRemaining,
+        retryAfterSec,
+        errorCode: "redirect_not_permitted"
+      });
       throw new VRCPApiError(response.status, "API redirects are not permitted");
     }
 
@@ -340,13 +482,46 @@ export class VRCPackageClient {
         ? (errorBody.message || errorBody.error)
         : `Request failed with status ${response.status}`;
       const code = typeof errorBody === "object" ? (errorBody?.code ?? errorBody?.error) : undefined;
+      this.emitTelemetry({
+        method,
+        path,
+        status: response.status,
+        durationMs: Math.max(0, Date.now() - startedAt),
+        requestId,
+        rateLimitLimit,
+        rateLimitRemaining,
+        retryAfterSec,
+        errorCode: typeof code === "string" ? code : undefined
+      });
       throw new VRCPApiError(response.status, message, code, errorBody);
     }
 
     const responseText = await readBoundedText(response, MAX_SDK_SUCCESS_BYTES);
     try {
-      return JSON.parse(responseText) as T;
+      const parsed = JSON.parse(responseText) as T;
+      this.emitTelemetry({
+        method,
+        path,
+        status: response.status,
+        durationMs: Math.max(0, Date.now() - startedAt),
+        requestId,
+        rateLimitLimit,
+        rateLimitRemaining,
+        retryAfterSec
+      });
+      return parsed;
     } catch {
+      this.emitTelemetry({
+        method,
+        path,
+        status: response.status,
+        durationMs: Math.max(0, Date.now() - startedAt),
+        requestId,
+        rateLimitLimit,
+        rateLimitRemaining,
+        retryAfterSec,
+        errorCode: "invalid_json"
+      });
       throw new VRCPApiError(
         response.status,
         `Invalid JSON response received with status ${response.status}`,
@@ -373,7 +548,7 @@ export class VRCPackageClient {
           cursor: query.cursor
         }
       });
-      return PublicCatalogListResponseSchema.parse(res);
+      return ClientPublicCatalogListResponseSchema.parse(res) as unknown as PublicCatalogListResponse;
     },
 
     /**
@@ -397,7 +572,7 @@ export class VRCPackageClient {
         auth: "app",
         body: CatalogSearchRequestSchema.parse(payload)
       });
-      return CatalogSearchResponseSchema.parse(res);
+      return ClientCatalogSearchResponseSchema.parse(res) as unknown as CatalogSearchResponse;
     },
 
     /**
@@ -412,7 +587,7 @@ export class VRCPackageClient {
           limit: query.limit
         }
       });
-      return CatalogDeltaResponseSchema.parse(res);
+      return ClientCatalogDeltaResponseSchema.parse(res) as unknown as CatalogDeltaResponse;
     }
   };
 
@@ -533,12 +708,14 @@ export class VRCPackageClient {
 
     jobs: {
       /**
-       * Lists operator crawl jobs with optional state, platform, and priority lane filters (GET /v1/operator/jobs).
+       * Lists operator crawl jobs with optional state, platform, priority lane, query, and targetHost filters (GET /v1/operator/jobs).
        */
       list: async (params: {
         state?: OperatorJobState;
         platform?: Platform;
         priorityLane?: PriorityLane;
+        query?: string;
+        targetHost?: string;
         limit?: number;
         cursor?: string;
       } = {}): Promise<OperatorJobListResponse> => {
@@ -549,6 +726,8 @@ export class VRCPackageClient {
             state: query.state,
             platform: query.platform,
             priorityLane: query.priorityLane,
+            query: query.query,
+            targetHost: query.targetHost,
             limit: query.limit,
             cursor: query.cursor
           }
@@ -615,6 +794,8 @@ export class VRCPackageClient {
        */
       list: async (params: {
         status?: LeadStatus;
+        query?: string;
+        targetHost?: string;
         limit?: number;
         cursor?: string;
       } = {}): Promise<LeadListResponse> => {
@@ -623,6 +804,8 @@ export class VRCPackageClient {
           auth: "operator",
           queryParams: {
             status: query.status,
+            query: query.query,
+            targetHost: query.targetHost,
             limit: query.limit,
             cursor: query.cursor
           }
@@ -638,7 +821,7 @@ export class VRCPackageClient {
         params: { minDelayMs?: number; reason: string }
       ): Promise<LeadActionResponse> => {
         const id = LeadCursorSchema.shape.leadKey.parse(leadKey);
-        const res = await this.request<unknown>(`/v1/operator/leads/${id}/approve`, "POST", {
+        const res = await this.request<unknown>(`/v1/operator/leads/${encodeURIComponent(id)}/approve`, "POST", {
           auth: "operator",
           body: ApproveLeadSchema.parse({ schemaVersion: 1, ...params })
         });
@@ -653,7 +836,7 @@ export class VRCPackageClient {
         params: { reason: string }
       ): Promise<LeadActionResponse> => {
         const id = LeadCursorSchema.shape.leadKey.parse(leadKey);
-        const res = await this.request<unknown>(`/v1/operator/leads/${id}/reject`, "POST", {
+        const res = await this.request<unknown>(`/v1/operator/leads/${encodeURIComponent(id)}/reject`, "POST", {
           auth: "operator",
           body: RejectLeadSchema.parse({ schemaVersion: 1, ...params })
         });
@@ -720,7 +903,7 @@ export class VRCPackageClient {
         request: Omit<UpdateSteeringProfile, "schemaVersion">
       ): Promise<SteeringProfileResponse> => {
         const id = SteeringProfileCursorSchema.shape.profileId.parse(profileId).toLowerCase();
-        const res = await this.request<unknown>(`/v1/operator/steering-profiles/${id}`, "PATCH", {
+        const res = await this.request<unknown>(`/v1/operator/steering-profiles/${encodeURIComponent(id)}`, "PATCH", {
           auth: "operator",
           body: UpdateSteeringProfileSchema.parse({ schemaVersion: 1, ...request })
         });
@@ -732,7 +915,7 @@ export class VRCPackageClient {
        */
       enable: async (profileId: string, reason: string): Promise<SteeringProfileResponse> => {
         const id = SteeringProfileCursorSchema.shape.profileId.parse(profileId).toLowerCase();
-        const res = await this.request<unknown>(`/v1/operator/steering-profiles/${id}/enable`, "POST", {
+        const res = await this.request<unknown>(`/v1/operator/steering-profiles/${encodeURIComponent(id)}/enable`, "POST", {
           auth: "operator",
           body: SteeringProfileActionSchema.parse({ schemaVersion: 1, reason })
         });
@@ -744,7 +927,7 @@ export class VRCPackageClient {
        */
       disable: async (profileId: string, reason: string): Promise<SteeringProfileResponse> => {
         const id = SteeringProfileCursorSchema.shape.profileId.parse(profileId).toLowerCase();
-        const res = await this.request<unknown>(`/v1/operator/steering-profiles/${id}/disable`, "POST", {
+        const res = await this.request<unknown>(`/v1/operator/steering-profiles/${encodeURIComponent(id)}/disable`, "POST", {
           auth: "operator",
           body: SteeringProfileActionSchema.parse({ schemaVersion: 1, reason })
         });
@@ -756,7 +939,7 @@ export class VRCPackageClient {
        */
       delete: async (profileId: string, reason: string): Promise<SteeringProfileDeleteResponse> => {
         const id = SteeringProfileCursorSchema.shape.profileId.parse(profileId).toLowerCase();
-        const res = await this.request<unknown>(`/v1/operator/steering-profiles/${id}`, "DELETE", {
+        const res = await this.request<unknown>(`/v1/operator/steering-profiles/${encodeURIComponent(id)}`, "DELETE", {
           auth: "operator",
           body: SteeringProfileActionSchema.parse({ schemaVersion: 1, reason })
         });
@@ -863,16 +1046,17 @@ export class VRCPackageClient {
       /**
        * Lists canonical packages with operator oversight (GET /v1/operator/catalog).
        */
-      list: async (params: { limit?: number; cursor?: string } = {}): Promise<CatalogListResponse> => {
+      list: async (params: { query?: string; limit?: number; cursor?: string } = {}): Promise<CatalogListResponse> => {
         const query = OperatorCatalogListQuerySchema.parse(params);
         const res = await this.request<unknown>("/v1/operator/catalog", "GET", {
           auth: "operator",
           queryParams: {
+            query: query.query,
             limit: query.limit,
             cursor: query.cursor
           }
         });
-        return CatalogListResponseSchema.parse(res);
+        return ClientOperatorCatalogListResponseSchema.parse(res) as unknown as CatalogListResponse;
       }
     },
 
@@ -905,7 +1089,7 @@ export class VRCPackageClient {
         request: { verdict: "accepted" | "rejected"; notes?: string }
       ): Promise<VerifyTakedownResponse> => {
         const id = TakedownCursorSchema.shape.takedownId.parse(takedownId).toLowerCase();
-        const res = await this.request<unknown>(`/v1/operator/takedowns/${id}/verify`, "POST", {
+        const res = await this.request<unknown>(`/v1/operator/takedowns/${encodeURIComponent(id)}/verify`, "POST", {
           auth: "operator",
           body: VerifyTakedownRequestSchema.parse({
             schemaVersion: 1,
@@ -946,7 +1130,7 @@ export class VRCPackageClient {
         request: { verdict: "accepted" | "rejected"; notes?: string }
       ): Promise<VerifyDelegatedClaimResponse> => {
         const id = DelegatedClaimCursorSchema.shape.claimId.parse(claimId).toLowerCase();
-        const res = await this.request<unknown>(`/v1/operator/claims/${id}/verify`, "POST", {
+        const res = await this.request<unknown>(`/v1/operator/claims/${encodeURIComponent(id)}/verify`, "POST", {
           auth: "operator",
           body: VerifyDelegatedClaimRequestSchema.parse({
             schemaVersion: 1,
@@ -983,7 +1167,7 @@ export class VRCPackageClient {
         request: { delegationAllowed: boolean; reason?: string }
       ): Promise<SetAppDelegationResponse> => {
         const id = OperatorAppCursorSchema.shape.appId.parse(appId).toLowerCase();
-        const res = await this.request<unknown>(`/v1/operator/apps/${id}/delegation`, "POST", {
+        const res = await this.request<unknown>(`/v1/operator/apps/${encodeURIComponent(id)}/delegation`, "POST", {
           auth: "operator",
           body: SetAppDelegationRequestSchema.parse({
             schemaVersion: 1,
@@ -1002,7 +1186,7 @@ export class VRCPackageClient {
         request: { candidateStatus: "none" | "reviewed" | "trusted"; grantDelegation?: boolean; notes?: string }
       ): Promise<ReviewAppCandidateResponse> => {
         const id = OperatorAppCursorSchema.shape.appId.parse(appId).toLowerCase();
-        const res = await this.request<unknown>(`/v1/operator/apps/${id}/candidate-review`, "POST", {
+        const res = await this.request<unknown>(`/v1/operator/apps/${encodeURIComponent(id)}/candidate-review`, "POST", {
           auth: "operator",
           body: ReviewAppCandidateRequestSchema.parse({
             schemaVersion: 1,
@@ -1012,6 +1196,90 @@ export class VRCPackageClient {
           })
         });
         return ReviewAppCandidateResponseSchema.parse(res);
+      }
+    },
+
+    staging: {
+      /**
+       * Lists pre-ingestion staged items and aggregated unknown tokens (GET /v1/operator/staging).
+       */
+      list: async (params: {
+        auditState?: OperatorStagingAuditState;
+        platform?: Platform;
+        query?: string;
+        limit?: number;
+        cursor?: string;
+      } = {}): Promise<OperatorStagingListResponse> => {
+        const query = OperatorStagingListQuerySchema.parse(params);
+        const res = await this.request<unknown>("/v1/operator/staging", "GET", {
+          auth: "operator",
+          queryParams: {
+            auditState: query.auditState,
+            platform: query.platform,
+            query: query.query,
+            limit: query.limit,
+            cursor: query.cursor
+          }
+        });
+        return OperatorStagingListResponseSchema.parse(res);
+      },
+
+      /**
+       * Records an operator approve or reject decision on a staged source item (POST /v1/operator/staging/{sourceKey}/decision).
+       */
+      decide: async (
+        sourceKey: string,
+        request: { decision: "approve" | "reject"; suppressDomain?: boolean; reason: string }
+      ): Promise<OperatorStagingDecisionResponse> => {
+        const key = sourceKey.trim();
+        if (!key || key === "." || key === "..") {
+          throw new VRCPApiError(400, "Staging sourceKey cannot be blank, '.', or '..'", "invalid_identifier");
+        }
+        const res = await this.request<unknown>(`/v1/operator/staging/${encodeURIComponent(key)}/decision`, "POST", {
+          auth: "operator",
+          body: OperatorStagingDecisionRequestSchema.parse({
+            schemaVersion: 1,
+            decision: request.decision,
+            suppressDomain: request.suppressDomain ?? false,
+            reason: request.reason
+          })
+        });
+        return OperatorStagingDecisionResponseSchema.parse(res);
+      }
+    },
+
+    vocabulary: {
+      /**
+       * Lists dynamic avatar-base and tag-mapping vocabulary rules (GET /v1/operator/vocabulary).
+       */
+      get: async (): Promise<OperatorVocabularyResponse> => {
+        const res = await this.request<unknown>("/v1/operator/vocabulary", "GET", {
+          auth: "operator"
+        });
+        return OperatorVocabularyResponseSchema.parse(res);
+      },
+
+      /**
+       * Creates or updates one dynamic literal-alias vocabulary rule (POST /v1/operator/vocabulary).
+       */
+      upsert: async (request: {
+        ruleId: string;
+        kind: VocabularyRuleKind;
+        canonicalValue: string;
+        aliases: string[];
+        umbrella?: Umbrella;
+        category?: string;
+        enabled?: boolean;
+        reason: string;
+      }): Promise<OperatorVocabularyUpsertResponse> => {
+        const res = await this.request<unknown>("/v1/operator/vocabulary", "POST", {
+          auth: "operator",
+          body: OperatorVocabularyUpsertRequestSchema.parse({
+            schemaVersion: 1,
+            ...request
+          })
+        });
+        return OperatorVocabularyUpsertResponseSchema.parse(res);
       }
     }
   };
@@ -1079,20 +1347,19 @@ export class VRCPackageClient {
       },
 
       /**
-       * Reviews a registered application candidate (POST /v1/moderator/apps/{appId}/candidate-review).
+       * Reviews a registered application candidate without trusted/delegation escalation (POST /v1/moderator/apps/{appId}/candidate-review).
        * Requires age-verified moderator user token.
        */
       reviewCandidate: async (
         appId: string,
-        request: { candidateStatus: "none" | "reviewed" | "trusted"; grantDelegation?: boolean; notes?: string }
+        request: { candidateStatus: "none" | "reviewed"; notes?: string }
       ): Promise<ModeratorReviewAppCandidateResponse> => {
         const id = ModeratorAppCursorSchema.shape.appId.parse(appId).toLowerCase();
-        const res = await this.request<unknown>(`/v1/moderator/apps/${id}/candidate-review`, "POST", {
+        const res = await this.request<unknown>(`/v1/moderator/apps/${encodeURIComponent(id)}/candidate-review`, "POST", {
           auth: "user",
           body: ModeratorReviewAppCandidateRequestSchema.parse({
             schemaVersion: MODERATOR_PROTOCOL_VERSION,
             candidateStatus: request.candidateStatus,
-            grantDelegation: request.grantDelegation,
             notes: request.notes
           })
         });

@@ -8,7 +8,7 @@ import {
   decodeAppCandidateCursor,
   AppCandidateListQuerySchema,
   createAppCandidateListResponseSchema,
-  createReviewAppCandidateRequestSchema,
+  createModeratorReviewAppCandidateRequestSchema,
   createReviewAppCandidateResponseSchema,
   type AppCandidateRecord,
   type AppCandidateCursor,
@@ -91,7 +91,7 @@ export type ModeratorAppListQuery = AppCandidateListQuery;
 export const ModeratorAppListResponseSchema = createAppCandidateListResponseSchema(MODERATOR_PROTOCOL_VERSION);
 export type ModeratorAppListResponse = z.infer<typeof ModeratorAppListResponseSchema>;
 
-export const ModeratorReviewAppCandidateRequestSchema = createReviewAppCandidateRequestSchema(MODERATOR_PROTOCOL_VERSION);
+export const ModeratorReviewAppCandidateRequestSchema = createModeratorReviewAppCandidateRequestSchema(MODERATOR_PROTOCOL_VERSION);
 export type ModeratorReviewAppCandidateRequest = z.infer<typeof ModeratorReviewAppCandidateRequestSchema>;
 
 export const ModeratorReviewAppCandidateResponseSchema = createReviewAppCandidateResponseSchema(MODERATOR_PROTOCOL_VERSION);

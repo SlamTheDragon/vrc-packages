@@ -1561,16 +1561,21 @@ describe("VRCPackageClient SDK", () => {
     expect(capturedAuth).toBe(`Bearer ${dummyUserToken}`);
 
     const reviewRes = await client.moderator.apps.reviewCandidate(appId, {
-      candidateStatus: "trusted",
-      grantDelegation: true,
-      notes: "Staff verified client activity"
+      candidateStatus: "reviewed",
+      notes: "Staff reviewed client activity"
     });
     expect(capturedMethod).toBe("POST");
     expect(reviewRes.appId).toBe(appId);
     expect(reviewRes.candidateStatus).toBe("trusted");
     expect(reviewRes.delegationAllowed).toBe(true);
-    expect(capturedBody.candidateStatus).toBe("trusted");
-    expect(capturedBody.grantDelegation).toBe(true);
+    expect(capturedBody.candidateStatus).toBe("reviewed");
+    expect(capturedBody.grantDelegation).toBeUndefined();
+
+    await expect(
+      client.moderator.apps.reviewCandidate(appId, {
+        candidateStatus: "trusted" as never
+      })
+    ).rejects.toThrow();
   });
 
   it("throws VRCPApiError if moderator methods called without userToken", async () => {
@@ -1581,7 +1586,166 @@ describe("VRCPackageClient SDK", () => {
     await expect(client.moderator.ratings.list()).rejects.toThrow(VRCPApiError);
     await expect(client.moderator.ratings.adjust("com.pkg", { newRating: "general", reason: "Valid reason" })).rejects.toThrow(VRCPApiError);
     await expect(client.moderator.apps.list()).rejects.toThrow(VRCPApiError);
-    await expect(client.moderator.apps.reviewCandidate("123e4567-e89b-12d3-a456-426614174000", { candidateStatus: "trusted" })).rejects.toThrow(VRCPApiError);
+    await expect(client.moderator.apps.reviewCandidate("123e4567-e89b-12d3-a456-426614174000", { candidateStatus: "reviewed" })).rejects.toThrow(VRCPApiError);
+  });
+
+  it("emits non-secret telemetry events and enforces timeoutMs", async () => {
+    const telemetryEvents: Array<{
+      method: string;
+      path: string;
+      status: number;
+      requestId: string | null;
+      rateLimitLimit: number | null;
+      rateLimitRemaining: number | null;
+      retryAfterSec: number | null;
+      errorCode?: string;
+    }> = [];
+    const client = new VRCPackageClient({
+      baseUrl: "https://api.vrc-packages.example",
+      operatorToken: dummyOperatorToken,
+      timeoutMs: 25,
+      onTelemetry: (event) => telemetryEvents.push(event),
+      fetch: createMockFetch(async (input) => {
+        const url = new URL(String(input));
+        if (url.pathname === "/v1/operator/staging") {
+          return new Response(
+            JSON.stringify({
+              schemaVersion: 1,
+              items: [],
+              unknownTokens: [],
+              nextCursor: null
+            }),
+            {
+              status: 200,
+              headers: {
+                "Content-Type": "application/json",
+                "X-Request-Id": "req-staging-1",
+                "X-RateLimit-Limit": "1200",
+                "X-RateLimit-Remaining": "1199"
+              }
+            }
+          );
+        }
+        return new Promise<Response>((_, reject) => {
+          setTimeout(() => reject(new DOMException("Aborted", "AbortError")), 60);
+        });
+      })
+    });
+
+    const stagingRes = await client.operator.staging.list({ auditState: "pending_audit" });
+    expect(stagingRes.items).toEqual([]);
+    expect(telemetryEvents[0]).toMatchObject({
+      method: "GET",
+      path: "/v1/operator/staging",
+      status: 200,
+      requestId: "req-staging-1",
+      rateLimitLimit: 1200,
+      rateLimitRemaining: 1199,
+      retryAfterSec: null
+    });
+
+    await expect(client.operator.vocabulary.get()).rejects.toMatchObject({
+      status: 408,
+      code: "request_timeout"
+    });
+    expect(telemetryEvents[1]?.status).toBe(408);
+    expect(telemetryEvents[1]?.errorCode).toBe("request_timeout");
+  });
+
+  it("tolerates evolved non-security catalog fields in client reads while rejecting unsafe contentRating", async () => {
+    const basePkg = {
+      canonicalId: "com.example.evolved",
+      umbrella: "avatars",
+      category: "avatar_clothing",
+      lifecycle: "active",
+      displayName: "Evolved Outfit",
+      ownerKey: "booth:creator",
+      ownerName: "Creator",
+      verificationStatus: "unverified",
+      vpmId: null,
+      tags: ["Chise"],
+      qualityFlags: ["custom_future_flag"],
+      futureMetadataField: "safe-additive-value",
+      createdAt: "2026-11-28T00:00:00.000Z",
+      updatedAt: "2026-11-28T00:00:00.000Z",
+      contentRating: "general",
+      sources: [],
+      relations: []
+    };
+
+    const okClient = new VRCPackageClient({
+      baseUrl: "https://api.vrc-packages.example",
+      fetch: createMockFetch(async () =>
+        Response.json({ schemaVersion: 1, packages: [basePkg], nextCursor: null })
+      )
+    });
+    const okRes = await okClient.index.query();
+    expect(okRes.packages).toHaveLength(1);
+    expect(okRes.packages[0]?.qualityFlags as string[]).toContain("custom_future_flag");
+
+    const badClient = new VRCPackageClient({
+      baseUrl: "https://api.vrc-packages.example",
+      fetch: createMockFetch(async () =>
+        Response.json({
+          schemaVersion: 1,
+          packages: [{ ...basePkg, contentRating: "unrecognized_rating" }],
+          nextCursor: null
+        })
+      )
+    });
+    await expect(badClient.index.query()).rejects.toThrow();
+  });
+
+  it("exercises operator staging and dynamic vocabulary endpoints", async () => {
+    let lastBody: any = null;
+    const client = new VRCPackageClient({
+      baseUrl: "https://api.vrc-packages.example",
+      operatorToken: dummyOperatorToken,
+      fetch: createMockFetch(async (input, init) => {
+        const req = new Request(input, init);
+        const url = new URL(req.url);
+        if (req.body) lastBody = await req.json();
+        if (url.pathname.endsWith("/decision")) {
+          return Response.json({
+            schemaVersion: 1,
+            sourceKey: "booth:12345",
+            auditState: "approved",
+            canonicalId: "booth:12345",
+            suppressedDomain: null,
+            updatedAt: "2026-11-28T01:00:00.000Z"
+          });
+        }
+        return Response.json({
+          schemaVersion: 1,
+          version: "v-1",
+          rule: {
+            ruleId: "avatar-chise",
+            kind: "avatar_base",
+            canonicalValue: "Chise",
+            aliases: ["Chise", "チセ"],
+            enabled: true,
+            updatedAt: "2026-11-28T01:00:00.000Z"
+          }
+        });
+      })
+    });
+
+    const decideRes = await client.operator.staging.decide("booth:12345", {
+      decision: "approve",
+      reason: "Confirmed VRChat avatar asset"
+    });
+    expect(decideRes.auditState).toBe("approved");
+    expect(lastBody.decision).toBe("approve");
+
+    const vocabRes = await client.operator.vocabulary.upsert({
+      ruleId: "avatar-chise",
+      kind: "avatar_base",
+      canonicalValue: "Chise",
+      aliases: ["Chise", "チセ"],
+      reason: "Promote popular new base"
+    });
+    expect(vocabRes.version).toBe("v-1");
+    expect(lastBody.canonicalValue).toBe("Chise");
   });
 
   it("rejects responses exceeding SDK byte limits", async () => {

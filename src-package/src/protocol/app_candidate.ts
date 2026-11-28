@@ -64,12 +64,21 @@ export function createAppCandidateListResponseSchema<V extends number>(schemaVer
   });
 }
 
-/** Creates an application candidate review request schema bound to the owning protocol version. */
+/** Creates an operator application candidate review request schema bound to the owning protocol version. */
 export function createReviewAppCandidateRequestSchema<V extends number>(schemaVersion: V) {
   return z.strictObject({
     schemaVersion: z.literal(schemaVersion),
     candidateStatus: z.enum(["none", "reviewed", "trusted"]),
     grantDelegation: z.boolean().optional(),
+    notes: z.string().trim().min(1).max(500).optional()
+  });
+}
+
+/** Creates a moderator-scoped candidate review request schema without trust/delegation escalation. */
+export function createModeratorReviewAppCandidateRequestSchema<V extends number>(schemaVersion: V) {
+  return z.strictObject({
+    schemaVersion: z.literal(schemaVersion),
+    candidateStatus: z.enum(["none", "reviewed"]),
     notes: z.string().trim().min(1).max(500).optional()
   });
 }

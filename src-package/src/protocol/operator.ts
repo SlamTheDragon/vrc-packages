@@ -4,6 +4,7 @@ import { CursorTokenSchema, CursorTimestampSchema, encodeCursor, decodeCursor } 
 import { PlatformSchema } from "../types/platform.ts";
 import { CatalogPackageSchema, decodeCatalogCursor } from "../types/package.ts";
 import { createHttpsUrlSchema, HttpsUrlSchema } from "../types/url.ts";
+import { UmbrellaSchema } from "../taxonomy/taxonomy.ts";
 import {
   CandidateStatusSchema,
   AppCandidateRecordSchema,
@@ -848,7 +849,9 @@ export function decodeOperatorJobCursor(value: string): OperatorJobCursor | null
 export const OperatorJobListQuerySchema = OperatorPageQuerySchema.extend({
   state: OperatorJobStateSchema.optional(),
   platform: PlatformSchema.optional(),
-  priorityLane: PriorityLaneSchema.optional()
+  priorityLane: PriorityLaneSchema.optional(),
+  query: z.string().trim().min(1).max(200).optional(),
+  targetHost: z.string().trim().min(1).max(255).optional()
 }).refine(
   (query) => query.cursor === undefined || decodeOperatorJobCursor(query.cursor) !== null,
   "Invalid job cursor"
@@ -977,9 +980,13 @@ export const VerifyTakedownResponseSchema = z.strictObject({
 export type VerifyTakedownResponse = z.infer<typeof VerifyTakedownResponseSchema>;
 
 export const OperatorLeadListQuerySchema = OperatorPageQuerySchema.extend({
-  status: LeadStatusSchema.default("pending_review")
+  status: LeadStatusSchema.default("pending_review"),
+  query: z.string().trim().min(1).max(200).optional(),
+  targetHost: z.string().trim().min(1).max(255).optional()
 }).refine(query => query.cursor === undefined || decodeLeadCursor(query.cursor, query.status) !== null, "Invalid lead cursor");
-export const OperatorCatalogListQuerySchema = OperatorPageQuerySchema.refine(
+export const OperatorCatalogListQuerySchema = OperatorPageQuerySchema.extend({
+  query: z.string().trim().min(1).max(200).optional()
+}).refine(
   query => query.cursor === undefined || decodeCatalogCursor(query.cursor) !== null, "Invalid catalog cursor");
 export const OperatorTakedownListQuerySchema = OperatorPageQuerySchema.extend({
   requesterType: TakedownRecordSchema.shape.requesterType.optional()
@@ -1088,3 +1095,132 @@ export type ReviewAppCandidateRequest = z.infer<typeof ReviewAppCandidateRequest
 
 export const ReviewAppCandidateResponseSchema = createReviewAppCandidateResponseSchema(OPERATOR_PROTOCOL_VERSION);
 export type ReviewAppCandidateResponse = z.infer<typeof ReviewAppCandidateResponseSchema>;
+
+/* -------------------------------------------------------------------------- */
+/* Pre-Ingestion Staging Audit and Dynamic Vocabulary Sync                    */
+/* -------------------------------------------------------------------------- */
+
+export const OperatorStagingAuditStateSchema = z.enum([
+  "pending_audit",
+  "auto_ingested",
+  "approved",
+  "rejected"
+]);
+export type OperatorStagingAuditState = z.infer<typeof OperatorStagingAuditStateSchema>;
+
+export const OperatorStagingCursorSchema = z.strictObject({
+  observedAt: CursorTimestampSchema,
+  sourceKey: z.string().min(1).max(500)
+});
+export type OperatorStagingCursor = z.infer<typeof OperatorStagingCursorSchema>;
+
+export function encodeOperatorStagingCursor(cursor: OperatorStagingCursor): string {
+  return encodeCursor(OperatorStagingCursorSchema.parse(cursor));
+}
+
+export function decodeOperatorStagingCursor(value: string): OperatorStagingCursor | null {
+  return decodeCursor(value, OperatorStagingCursorSchema);
+}
+
+export const OperatorStagingListQuerySchema = OperatorPageQuerySchema.extend({
+  auditState: OperatorStagingAuditStateSchema.default("pending_audit"),
+  platform: PlatformSchema.optional(),
+  query: z.string().trim().min(1).max(200).optional()
+}).refine(
+  (query) => query.cursor === undefined || decodeOperatorStagingCursor(query.cursor) !== null,
+  "Invalid staging cursor"
+);
+export type OperatorStagingListQuery = z.infer<typeof OperatorStagingListQuerySchema>;
+
+export const OperatorStagingUnknownTokenSchema = z.strictObject({
+  token: z.string().min(1).max(200),
+  count: z.number().int().min(1),
+  sampleSourceKey: z.string().min(1).max(500)
+});
+export type OperatorStagingUnknownToken = z.infer<typeof OperatorStagingUnknownTokenSchema>;
+
+export const OperatorStagingItemSchema = z.strictObject({
+  sourceKey: z.string().min(1).max(500),
+  platform: PlatformSchema,
+  sourceUrl: HttpsUrlSchema,
+  title: z.string().min(1).max(500),
+  author: z.string().min(1).max(300),
+  auditState: OperatorStagingAuditStateSchema,
+  auditReason: z.string().nullable().optional(),
+  relevanceConfidence: z.number().min(0).max(1).nullable().optional(),
+  extractedTags: z.array(z.string().min(1).max(100)).max(50).default([]),
+  bracketTokens: z.array(z.string().min(1).max(200)).max(50).default([]),
+  observedAt: CursorTimestampSchema
+});
+export type OperatorStagingItem = z.infer<typeof OperatorStagingItemSchema>;
+
+export const OperatorStagingListResponseSchema = z.strictObject({
+  schemaVersion: z.literal(OPERATOR_PROTOCOL_VERSION),
+  items: z.array(OperatorStagingItemSchema),
+  unknownTokens: z.array(OperatorStagingUnknownTokenSchema).default([]),
+  nextCursor: CursorTokenSchema.refine(
+    (value) => decodeOperatorStagingCursor(value) !== null,
+    "Invalid staging cursor"
+  ).nullable()
+});
+export type OperatorStagingListResponse = z.infer<typeof OperatorStagingListResponseSchema>;
+
+export const OperatorStagingDecisionRequestSchema = z.strictObject({
+  schemaVersion: z.literal(OPERATOR_PROTOCOL_VERSION),
+  decision: z.enum(["approve", "reject"]),
+  suppressDomain: z.boolean().default(false),
+  reason: z.string().trim().min(3).max(300)
+});
+export type OperatorStagingDecisionRequest = z.infer<typeof OperatorStagingDecisionRequestSchema>;
+
+export const OperatorStagingDecisionResponseSchema = z.strictObject({
+  schemaVersion: z.literal(OPERATOR_PROTOCOL_VERSION),
+  sourceKey: z.string().min(1).max(500),
+  auditState: z.enum(["approved", "rejected"]),
+  canonicalId: z.string().min(1).max(500).nullable().optional(),
+  suppressedDomain: z.string().nullable().optional(),
+  updatedAt: CursorTimestampSchema
+});
+export type OperatorStagingDecisionResponse = z.infer<typeof OperatorStagingDecisionResponseSchema>;
+
+export const VocabularyRuleKindSchema = z.enum(["avatar_base", "tag_mapping"]);
+export type VocabularyRuleKind = z.infer<typeof VocabularyRuleKindSchema>;
+
+export const VocabularyAliasRuleSchema = z.strictObject({
+  ruleId: z.string().trim().min(1).max(120),
+  kind: VocabularyRuleKindSchema,
+  canonicalValue: z.string().trim().min(1).max(200),
+  aliases: z.array(z.string().trim().min(1).max(200)).min(1).max(50),
+  umbrella: UmbrellaSchema.optional(),
+  category: z.string().trim().min(1).max(100).optional(),
+  enabled: z.boolean().default(true),
+  updatedAt: CursorTimestampSchema
+});
+export type VocabularyAliasRule = z.infer<typeof VocabularyAliasRuleSchema>;
+
+export const OperatorVocabularyResponseSchema = z.strictObject({
+  schemaVersion: z.literal(OPERATOR_PROTOCOL_VERSION),
+  version: z.string().min(1).max(128),
+  rules: z.array(VocabularyAliasRuleSchema)
+});
+export type OperatorVocabularyResponse = z.infer<typeof OperatorVocabularyResponseSchema>;
+
+export const OperatorVocabularyUpsertRequestSchema = z.strictObject({
+  schemaVersion: z.literal(OPERATOR_PROTOCOL_VERSION),
+  ruleId: z.string().trim().min(1).max(120),
+  kind: VocabularyRuleKindSchema,
+  canonicalValue: z.string().trim().min(1).max(200),
+  aliases: z.array(z.string().trim().min(1).max(200)).min(1).max(50),
+  umbrella: UmbrellaSchema.optional(),
+  category: z.string().trim().min(1).max(100).optional(),
+  enabled: z.boolean().default(true),
+  reason: z.string().trim().min(3).max(300)
+});
+export type OperatorVocabularyUpsertRequest = z.infer<typeof OperatorVocabularyUpsertRequestSchema>;
+
+export const OperatorVocabularyUpsertResponseSchema = z.strictObject({
+  schemaVersion: z.literal(OPERATOR_PROTOCOL_VERSION),
+  version: z.string().min(1).max(128),
+  rule: VocabularyAliasRuleSchema
+});
+export type OperatorVocabularyUpsertResponse = z.infer<typeof OperatorVocabularyUpsertResponseSchema>;
