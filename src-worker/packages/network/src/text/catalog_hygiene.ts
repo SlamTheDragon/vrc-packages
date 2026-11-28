@@ -75,9 +75,10 @@ export function extractBracketTokens(rawTitle: string): string[] {
 /**
  * Common promotional / marketing brackets and prefixes found in Japanese and Western listings
  */
-const CATEGORY_PROMO_TOKENS = "VRC(?:hat)?|Unity|オリジナル(?:3Dモデル|3Dアバター|アバター)|3Dモデル|3D衣装|VRC想定|3Dシステム|3Dアバター|VRC向け";
-const STATUS_PROMO_TOKENS = "無料|FREE|Free|Sale|セール|VerUP|早急用|簡単導入|全アバター対応|汎用|MA対応|Modular Avatar対応|VRCFury対応|非公式";
-const INLINE_PROMO_TOKENS = "VRC(?:hat)?|Unity|オリジナル(?:3Dモデル|3Dアバター|アバター)|3Dモデル|3D衣装|VRC想定|3Dシステム|3Dアバター|VRC向け|無料|FREE|Free|Sale|セール|VerUP|早急用";
+const CATEGORY_PROMO_TOKENS = "VRC(?:hat)?|Unity|オリジナル(?:3Dモデル|3Dアバター|アバター)|3Dモデル|3D衣装|VRC(?:hat)?想定|3Dシステム|3Dアバター|VRC(?:hat)?向け";
+const UNBRACKETED_START_TOKENS = "無料|FREE|Free|Sale|セール|VerUP|早急用";
+const STATUS_PROMO_TOKENS = `${UNBRACKETED_START_TOKENS}|簡単導入|全アバター対応|汎用|MA対応|Modular Avatar対応|VRCFury対応|非公式`;
+const INLINE_PROMO_TOKENS = "VRC(?:hat)?|Unity|オリジナル(?:3Dモデル|3Dアバター|アバター)|3Dモデル|3D衣装|VRC(?:hat)?想定|3Dシステム|3Dアバター|VRC(?:hat)?向け|無料|FREE|Free|Sale|セール|VerUP|早急用";
 
 function balancedPromoRegex(tokens: string, anchor: "start" | "end" | "any"): RegExp {
   const pair = `(?:【(?:${tokens})】|\\[(?:${tokens})\\]|\\((?:${tokens})\\)|（(?:${tokens})）)`;
@@ -89,7 +90,7 @@ function balancedPromoRegex(tokens: string, anchor: "start" | "end" | "any"): Re
 export const MARKETING_BRACKETS = [
   balancedPromoRegex(CATEGORY_PROMO_TOKENS, "start"),
   balancedPromoRegex(CATEGORY_PROMO_TOKENS, "end"),
-  new RegExp(`^(?:${STATUS_PROMO_TOKENS})\\s+`, "gi"),
+  new RegExp(`^(?:${UNBRACKETED_START_TOKENS})\\s+`, "gi"),
   balancedPromoRegex(STATUS_PROMO_TOKENS, "start"),
   balancedPromoRegex(STATUS_PROMO_TOKENS, "end"),
   balancedPromoRegex(INLINE_PROMO_TOKENS, "any")
@@ -111,7 +112,7 @@ export function cleanTitle(rawTitle: string, options?: { preserveBrackets?: bool
   let title = normalized;
   for (let i = 0; i < 3; i++) {
     for (const pat of MARKETING_BRACKETS) {
-      title = title.replace(pat, " ");
+      title = title.replace(pat, " ").trim();
     }
   }
   // Remove only empty or whitespace-only residual bracket pairs; keep qualifiers like (Quest), (AAO), [PC/Quest].

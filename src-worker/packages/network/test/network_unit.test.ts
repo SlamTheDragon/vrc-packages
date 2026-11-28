@@ -616,6 +616,8 @@ describe("vrc-packages-network unit contracts", () => {
     expect(cleanTitle("VRChat Shader Pack")).toBe("VRChat Shader Pack");
     expect(cleanTitle("VRChat Particle Shader Asset")).toBe("VRChat Particle Shader Asset");
     expect(cleanTitle("【無料】 Avatar Outfit (Quest) [AAO] v1.2")).toBe("Avatar Outfit (Quest) [AAO]");
+    expect(cleanTitle("【VRChat想定】［無料］Modular Avatar対応 ツール【MA対応】")).toBe("Modular Avatar対応 ツール");
+    expect(cleanTitle("【VRChat想定】【Shinano・Manuka対応】Cyber Jacket v1.2.0")).toBe("【Shinano・Manuka対応】Cyber Jacket");
   });
 
   test("blocks private IPs, .local, .internal, and bare single-label hosts in robots redirects", async () => {

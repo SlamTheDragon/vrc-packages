@@ -204,7 +204,9 @@ See full history at [docs/changelogs/vrcp-worker/preview](https://github.com/Sla
 ## VRC Packages Networking `vrcp-packages-network`
 
 <!-- vrcp-packages-network-DESCRIPTION_SUMMARY -->
+Support Japanese `VRChat想定` and `VRChat向け` variants and trim adjacent promo brackets in `cleanTitle`.
 <!-- vrcp-packages-network-DESCRIPTION_SUMMARY -->
 ### Added
 ### Changes
+- **Title promo cleaning:** Match `VRChat想定` and `VRChat向け` tokens and trim whitespace between bracket passes in `cleanTitle` so stacked promo brackets strip cleanly.
 See full history at [docs/changelogs/vrcp-packages-network/](https://github.com/SlamTheDragon/vrc-packages/tree/main/docs/changelogs/vrcp-packages-network/)
