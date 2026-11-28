@@ -65,3 +65,4 @@ Write a request here only after the owning product gate passes all Sector 3 veri
 
 | req_id | product | channel | producer_prereqs | source_slice_ids | proposed_changelog_notes | verification_proof | status |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| `PR-AW-SDK-006` | `package` | `preview` | none (Tier 3B producer) | `P21-WAVE2A-SDK` | Restrict moderator app review from trusted delegation escalation. Tighten `PackageFrontSchema.storefrontUrl` to HTTPS and add `CatalogPackageClientReadSchema` for forward-compatible client reads. Add `query` and `targetHost` operator filters, Staging Audit and Dynamic Vocabulary schemas, and client timeout plus `onTelemetry` hooks. | `src-package`: `tsc --noEmit` exit 0, `bun test` 97 pass 0 fail (`2017` assertions), `bun run build` exit 0 at commit `5e72749`. | requested |

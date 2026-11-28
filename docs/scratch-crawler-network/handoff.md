@@ -82,3 +82,4 @@ Write a request here only after the owning product gate passes all Sector 1 veri
 
 | req_id | product | channel | producer_prereqs | source_slice_ids | proposed_changelog_notes | verification_proof | status |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| `PR-CN-NET-006` | `network` | `single` | `package` (`PR-AW-SDK-006`) | `P21-WAVE2A-NET` | Block private IP, `.local`, `.internal`, and single-label hosts in `robots_retrieval` redirects. Recognize `*.sellfy.store` and `*.myshopify.com` storefront targets. Keep title product qualifiers intact in `cleanTitle`. Add `vocabularyVersion`, observation `bracketTokens`, and `NodeVocabularyResponseSchema`. | `src-worker/packages/network`: `tsc --noEmit` exit 0, `build` exit 0, `bun test` 12 pass 0 fail (`363` assertions) at commit `3833338`. | requested |

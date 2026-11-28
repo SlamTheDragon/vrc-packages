@@ -47,6 +47,8 @@ Sweep all sector `handoff.md` files and stage accepted intake rows here in stric
 | `INT-020` | `crawler-network` | `PR-CN-WORK-002` | `worker` | `preview` | `yes (vrc-packages-api-preview@2026.11.5-pre and vrc-packages-network@2026.11.7 verified; cloudflare-worker/v2026.11.5-pre deployed live in run #46079941847 with v0-17 D1 reset and live-crawl verified)` | `yes` | `yes` | `cleared` |
 | `INT-021` | `api-web` | `PR-AW-WEB-005` | `web` | `preview` | `yes (src-package 93 pass, src-web check 0 errors and 5 pages built, remote web hosting deferred)` | `yes` | `yes` | `cleared` |
 | `INT-022` | `legal-research` | `CLR-LR-002` | `non_product_audit_only` | `n/a` | `yes (Sector 5 local provenance, RFC 9309, and pre-preview partition checks verified at 9ca97df; zero product changes)` | `n/a (non-product)` | `yes` | `cleared` |
+| `INT-023` | `api-web` | `PR-AW-SDK-006` | `package` | `preview` | `yes (Tier 3B producer verified at 5e72749; 97 pass 0 fail)` | `yes` | `no (pending publish)` | `accepted` |
+| `INT-024` | `crawler-network` | `PR-CN-NET-006` | `network` | `single` | `pending package publish (3833338; 12 pass 0 fail)` | `yes` | `no (pending publish)` | `accepted` |
 
 ---
 
