@@ -1,4 +1,5 @@
 import { MAX_ROBOTS_BYTES, OriginRobotsSnapshotSchema, type OriginRobotsSnapshot } from "./robots_snapshot.ts";
+import { isIp, isPrivateOrReservedIp } from "../policy/ip_policy.ts";
 
 export type RobotsFetcher = (url: string, init: RequestInit) => Promise<Response>;
 export type RobotsRetrieval = OriginRobotsSnapshot & { redirects: string[]; error?: string };
@@ -10,11 +11,31 @@ function failure(origin: string, redirects: string[], error: string): RobotsRetr
 function safeRedirectTarget(location: string, currentUrl: string): string | null {
   try {
     const target = new URL(location, currentUrl);
-    if (target.protocol !== "https:" || target.username || target.password || target.hash ||
-        (target.port && target.port !== "443") || target.hostname.endsWith(".") ||
-        target.hostname.toLowerCase() === "localhost") return null;
+    const host = target.hostname.toLowerCase();
+    if (
+      target.protocol !== "https:" ||
+      target.username ||
+      target.password ||
+      target.hash ||
+      (target.port && target.port !== "443") ||
+      !host ||
+      host.endsWith(".") ||
+      host === "localhost" ||
+      host.endsWith(".localhost") ||
+      host.endsWith(".local") ||
+      host.endsWith(".internal")
+    ) {
+      return null;
+    }
+    if (isIp(host)) {
+      if (isPrivateOrReservedIp(host)) return null;
+    } else if (!host.includes(".")) {
+      return null;
+    }
     return target.href;
-  } catch { return null; }
+  } catch {
+    return null;
+  }
 }
 
 async function boundedRobotsBody(response: Response): Promise<string> {

@@ -382,12 +382,21 @@ function isItchSubdomainHost(hostname: string): boolean {
   return hostname.endsWith(".itch.io") && hostname.length > ".itch.io".length;
 }
 
+function isSellfyHost(hostname: string): boolean {
+  return hostname === "sellfy.com" || (hostname.endsWith(".sellfy.store") && hostname.length > ".sellfy.store".length);
+}
+
+function isShopifyStoreHost(hostname: string): boolean {
+  return hostname.endsWith(".myshopify.com") && hostname.length > ".myshopify.com".length;
+}
+
 function storefrontJobMapping(hostname: string, baseMinDelayMs: number): { platform: Platform; minDelayMs: number } {
   if (isBoothHost(hostname)) return { platform: "booth", minDelayMs: Math.max(baseMinDelayMs, 1500) };
   if (isGumroadHost(hostname)) return { platform: "gumroad", minDelayMs: Math.max(baseMinDelayMs, 1500) };
   if (hostname === "jinxxy.com") return { platform: "jinxxy", minDelayMs: Math.max(baseMinDelayMs, 1500) };
   if (isItchSubdomainHost(hostname)) return { platform: "itch", minDelayMs: Math.max(baseMinDelayMs, 1500) };
-  if (hostname === "sellfy.com") return { platform: "sellfy", minDelayMs: Math.max(baseMinDelayMs, 1500) };
+  if (isShopifyStoreHost(hostname)) return { platform: "shopify", minDelayMs: Math.max(baseMinDelayMs, 1500) };
+  if (isSellfyHost(hostname)) return { platform: "sellfy", minDelayMs: Math.max(baseMinDelayMs, 1500) };
   if (hostname === "payhip.com" || hostname === "ko-fi.com") {
     return { platform: "custom_domain", minDelayMs: Math.max(baseMinDelayMs, 2000) };
   }
@@ -407,7 +416,7 @@ export function classifyOutboundLeadKind(targetUrl: string): DiscoveryLead["kind
     return null;
   }
   if (isBoothHost(url.hostname) || isGumroadHost(url.hostname) || url.hostname === "jinxxy.com" ||
-      isItchSubdomainHost(url.hostname) || url.hostname === "sellfy.com" ||
+      isItchSubdomainHost(url.hostname) || isShopifyStoreHost(url.hostname) || isSellfyHost(url.hostname) ||
       url.hostname === "payhip.com" || url.hostname === "ko-fi.com") {
     return "storefront_product";
   }

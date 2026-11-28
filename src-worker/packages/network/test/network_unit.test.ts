@@ -9,7 +9,9 @@ import {
   RobotsStatusCodeSchema,
   robotsResultAllowsMissingFile
 } from "../src/robots/robots_snapshot.ts";
+import { retrieveRobotsSnapshot } from "../src/robots/robots_retrieval.ts";
 import {
+  ClaimResponseSchema,
   CrawlJobSchema,
   NODE_API_JSON_SCHEMAS,
   NodeAvatarCompatibilitySchema,
@@ -20,6 +22,7 @@ import {
   NodeRobotsClaimResponseSchema,
   NodeRobotsResultRequestSchema,
   NodeRobotsResultResponseSchema,
+  NodeVocabularyResponseSchema,
   NodeVrchatRelevanceSchema,
   ObservationSchema,
   PlatformSchema,
@@ -612,5 +615,72 @@ describe("vrc-packages-network unit contracts", () => {
     expect(cleanTitle("FREE Sample [VRC想定] Tool (VRChat)")).toBe("Sample Tool");
     expect(cleanTitle("VRChat Shader Pack")).toBe("VRChat Shader Pack");
     expect(cleanTitle("VRChat Particle Shader Asset")).toBe("VRChat Particle Shader Asset");
+    expect(cleanTitle("【無料】 Avatar Outfit (Quest) [AAO] v1.2")).toBe("Avatar Outfit (Quest) [AAO]");
+  });
+
+  test("blocks private IPs, .local, .internal, and bare single-label hosts in robots redirects", async () => {
+    for (const badTarget of [
+      "https://127.0.0.1/robots.txt",
+      "https://169.254.169.254/latest/meta-data/",
+      "https://[::1]/robots.txt",
+      "https://service.local/robots.txt",
+      "https://metadata.internal/robots.txt",
+      "https://intranet/robots.txt"
+    ]) {
+      const result = await retrieveRobotsSnapshot(
+        { origin: "https://example.org", userAgent: "VRCPDiscoveryBot/0.1" },
+        async () => new Response(null, { status: 302, headers: { location: badTarget } })
+      );
+      expect(result.statusCode).toBe(599);
+      expect(result.error).toContain("Robots redirect has no safe HTTPS target");
+    }
+  });
+
+  test("maps sellfy.store and myshopify.com leads and validates vocabulary contracts", () => {
+    expect(classifyOutboundLeadKind("https://shop.sellfy.store/p/item/")).toBe("storefront_product");
+    expect(resolveDiscoveryLeadTarget(
+      "storefront_product",
+      "https://shop.sellfy.store/p/item/",
+      1000
+    )?.platform).toBe("sellfy");
+
+    expect(classifyOutboundLeadKind("https://store.myshopify.com/products/item")).toBe("storefront_product");
+    expect(resolveDiscoveryLeadTarget(
+      "storefront_product",
+      "https://store.myshopify.com/products/item",
+      1000
+    )?.platform).toBe("shopify");
+
+    expect(ClaimResponseSchema.parse({
+      schemaVersion: 1,
+      status: "empty",
+      retryAfterMs: 5000,
+      vocabularyVersion: "vocab-v2"
+    }).vocabularyVersion).toBe("vocab-v2");
+
+    expect(ObservationSchema.parse({
+      sourceItemKey: "booth:999",
+      title: "Avatar Dress (Quest)",
+      author: "Creator",
+      summary: "Compatible outfit",
+      outboundLinks: [],
+      originUpdatedAt: null,
+      platformTags: ["Quest"],
+      bracketTokens: ["Quest", "チセ対応"]
+    }).bracketTokens).toEqual(["Quest", "チセ対応"]);
+
+    expect(NodeVocabularyResponseSchema.parse({
+      schemaVersion: 1,
+      version: "vocab-v2",
+      rules: [{
+        ruleId: "avatar-chise",
+        kind: "avatar_base",
+        canonicalValue: "Chise",
+        aliases: ["Chise", "チセ"],
+        umbrella: "avatars",
+        enabled: true
+      }]
+    }).rules).toHaveLength(1);
+    expect("nodeVocabularyResponse" in NODE_API_JSON_SCHEMAS).toBe(true);
   });
 });

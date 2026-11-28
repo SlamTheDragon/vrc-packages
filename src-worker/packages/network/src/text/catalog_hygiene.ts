@@ -75,9 +75,9 @@ export function extractBracketTokens(rawTitle: string): string[] {
 /**
  * Common promotional / marketing brackets and prefixes found in Japanese and Western listings
  */
-const CATEGORY_PROMO_TOKENS = "VRC(?:hat)?|Unity|3Dモデル|3D衣装|VRC想定|3Dシステム|3Dアバター|VRC向け";
+const CATEGORY_PROMO_TOKENS = "VRC(?:hat)?|Unity|オリジナル(?:3Dモデル|3Dアバター|アバター)|3Dモデル|3D衣装|VRC想定|3Dシステム|3Dアバター|VRC向け";
 const STATUS_PROMO_TOKENS = "無料|FREE|Free|Sale|セール|VerUP|早急用|簡単導入|全アバター対応|汎用|MA対応|Modular Avatar対応|VRCFury対応|非公式";
-const INLINE_PROMO_TOKENS = "VRC(?:hat)?|Unity|3Dモデル|3D衣装|無料|FREE|Free|Sale|セール|VerUP|早急用";
+const INLINE_PROMO_TOKENS = "VRC(?:hat)?|Unity|オリジナル(?:3Dモデル|3Dアバター|アバター)|3Dモデル|3D衣装|VRC想定|3Dシステム|3Dアバター|VRC向け|無料|FREE|Free|Sale|セール|VerUP|早急用";
 
 function balancedPromoRegex(tokens: string, anchor: "start" | "end" | "any"): RegExp {
   const pair = `(?:【(?:${tokens})】|\\[(?:${tokens})\\]|\\((?:${tokens})\\)|（(?:${tokens})）)`;
@@ -99,7 +99,7 @@ export const MARKETING_BRACKETS = [
  * Normalizes storefront listing title:
  * 1. Unescape HTML entities and apply NFKC normalization
  * 2. When `options.preserveBrackets` is true, return whitespace-collapsed text preserving brackets
- * 3. Otherwise strip decorative / marketing bracket boilerplate and trailing version numbers
+ * 3. Otherwise strip promotional / marketing bracket boilerplate and empty bracket pairs while preserving product qualifiers
  * 4. Collapse whitespace
  */
 export function cleanTitle(rawTitle: string, options?: { preserveBrackets?: boolean }): string {
@@ -114,11 +114,11 @@ export function cleanTitle(rawTitle: string, options?: { preserveBrackets?: bool
       title = title.replace(pat, " ");
     }
   }
-  // Remove decorative CJK brackets content if boilerplate
+  // Remove only empty or whitespace-only residual bracket pairs; keep qualifiers like (Quest), (AAO), [PC/Quest].
   title = title
-    .replace(/【[^】]*】/g, " ")
-    .replace(/\[[^\]]*\]/g, " ")
-    .replace(/[（(][^）)]*[）)]/g, " ");
+    .replace(/【\s*】/g, " ")
+    .replace(/\[\s*\]/g, " ")
+    .replace(/[（(]\s*[）)]/g, " ");
   title = title.replace(/\s+v?[0-9]+\.[0-9]+(?:\.[0-9]+)?(?:\s*beta|\s*alpha)?$/i, "");
   title = title.replace(/\s+/g, " ").trim();
   return title.length > 0 ? title : unescapeHtml(rawTitle).trim();

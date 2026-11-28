@@ -105,9 +105,15 @@ export const ClaimResponseSchema = z.discriminatedUnion("status", [
     schemaVersion: z.literal(PROTOCOL_VERSION),
     status: z.literal("leased"),
     job: CrawlJobSchema,
-    jobs: z.array(CrawlJobSchema).min(1).max(MAX_CLAIM_JOBS).optional()
+    jobs: z.array(CrawlJobSchema).min(1).max(MAX_CLAIM_JOBS).optional(),
+    vocabularyVersion: z.string().min(1).max(128).optional()
   }),
-  z.strictObject({ schemaVersion: z.literal(PROTOCOL_VERSION), status: z.literal("empty"), retryAfterMs: z.number().int().min(0).max(300000) })
+  z.strictObject({
+    schemaVersion: z.literal(PROTOCOL_VERSION),
+    status: z.literal("empty"),
+    retryAfterMs: z.number().int().min(0).max(300000),
+    vocabularyVersion: z.string().min(1).max(128).optional()
+  })
 ]);
 export type ClaimResponse = z.infer<typeof ClaimResponseSchema>;
 
@@ -156,6 +162,7 @@ export const ObservationSchema = z.strictObject({
   availability: z.enum(["available", "delisted", "unknown"]).optional(),
   storefrontUrl: HttpsUrlSchema.optional(),
   platformTags: z.array(z.string().max(100)).max(50).optional(),
+  bracketTokens: z.array(z.string().min(1).max(200)).max(50).optional(),
   ownerKey: z.string().min(1).max(200).nullable().optional(),
   ownerName: z.string().min(1).max(300).nullable().optional(),
   qualityFlags: z.array(VpmQualityFlagSchema).max(10).optional(),
@@ -304,6 +311,27 @@ export const ProtocolErrorSchema = z.strictObject({
   code: z.enum(["bad_json", "invalid_payload", "unauthorized", "forbidden", "conflict", "not_found", "internal_error", "lease_expired"])
 });
 
+export const NodeVocabularyRuleKindSchema = z.enum(["avatar_base", "tag_mapping"]);
+export type NodeVocabularyRuleKind = z.infer<typeof NodeVocabularyRuleKindSchema>;
+
+export const NodeVocabularyRuleSchema = z.strictObject({
+  ruleId: z.string().trim().min(1).max(120),
+  kind: NodeVocabularyRuleKindSchema,
+  canonicalValue: z.string().trim().min(1).max(200),
+  aliases: z.array(z.string().trim().min(1).max(200)).min(1).max(50),
+  umbrella: z.enum(["tools", "avatars", "assets"]).optional(),
+  category: z.string().trim().min(1).max(100).optional(),
+  enabled: z.boolean().default(true)
+});
+export type NodeVocabularyRule = z.infer<typeof NodeVocabularyRuleSchema>;
+
+export const NodeVocabularyResponseSchema = z.strictObject({
+  schemaVersion: z.literal(PROTOCOL_VERSION),
+  version: z.string().min(1).max(128),
+  rules: z.array(NodeVocabularyRuleSchema)
+});
+export type NodeVocabularyResponse = z.infer<typeof NodeVocabularyResponseSchema>;
+
 /** These schemas are exported for documentation and non-TypeScript consumers. */
 export const NODE_API_JSON_SCHEMAS = {
   claimRequest: z.toJSONSchema(ClaimRequestSchema),
@@ -318,5 +346,6 @@ export const NODE_API_JSON_SCHEMAS = {
   robotsClaimResponse: z.toJSONSchema(NodeRobotsClaimResponseSchema),
   robotsResultRequest: z.toJSONSchema(NodeRobotsResultRequestSchema),
   robotsResultResponse: z.toJSONSchema(NodeRobotsResultResponseSchema),
+  nodeVocabularyResponse: z.toJSONSchema(NodeVocabularyResponseSchema),
   error: z.toJSONSchema(ProtocolErrorSchema)
 } as const;
