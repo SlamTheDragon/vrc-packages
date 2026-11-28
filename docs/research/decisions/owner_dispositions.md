@@ -90,3 +90,13 @@ This record preserves accepted owner decisions previously captured inside `docs/
 | `DEFER-KOFI-PATREON` | Defer Ko-fi and Patreon post-v1 while ToS, anti-bot, and API blockers stay active. Keep 9 runtime platforms (`0x01ff`), and park Payhip on `custom_domain`. | Sector 5 / Sector 1 |
 | `REAL-STARTER-SEEDS-16` | Replace placeholder seeds in `default_seeds.ts` with 16 real opt-in starter profiles (`seedPreviewStarter: true`). Support UTF-8 and `%20` segments in `steeringPathMatches`. | Sector 1 (`crawler-network`) |
 | `ZERO-PLACEHOLDER-RD` | Enforce the Zero-Placeholder R&D Rule once `LIVE-LOCAL-ASSESS-01` starts. Measure real public targets directly without placeholder URLs, synthetic fallbacks, or estimated counts. | Sector 1 / Sector 4 |
+
+## Dispositions: 2026-11-28 (`[P21]` High-Volume R&D, Cross-Sector OOP, Skeptical Companion, and Security Hunting)
+
+| ID | Accepted Owner Direction | Owning Sector |
+| :--- | :--- | :--- |
+| `P21-HIGH-VOLUME-RD` | Run sustained full-stack integration R&D across Coordinator, multi-node Crawler, SDK, and Web Panel to collect thousands of real entries, and challenge existing ledgers against observed behavior. | All sectors |
+| `P21-CROSS-SECTOR-OOP-EVOLUTION` | Apply first-principles OOP across every sector (`src-worker/`, `src-package/`, `src-web/`, `src-crawler/`), and eliminate hardcoded tags, avatar bases, search parameters, and static classifiers that break on ecosystem changes. | Sector 1 / Sector 2 / Sector 3 |
+| `P21-SKEPTICAL-COMPANION` | Run an adversarial `skeptical-companion` subagent that questions assumptions and produces branching "what-if" question chains until reaching a physical or `VISION.md` boundary. | All sectors |
+| `P21-SECURITY-EXPLOIT-HUNT` | Actively search for exploitation routes, abuse vectors, privilege bypasses, and scaling failures across Worker, Crawler, SDK, Web Panel, and D1/KV boundaries. | Sector 1 / Sector 3 / Sector 4 |
+| `P21-HUMAN-OBSERVATION-LOOP` | Run periodic `ask_question` checkpoints and live UI or log observation sessions with the owner for UI/UX and vision-boundary calibration. | Sector 2 / Sector 3 / Sector 4 |

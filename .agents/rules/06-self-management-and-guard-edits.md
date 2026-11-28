@@ -29,6 +29,7 @@ description: "Self-management, resilience, thresholded edit-guard policy, zero d
    - Compiling cleanly or passing isolated mock tests is screening evidence, not operational qualification.
    - Claim verification only after executing the owning sector's required test, typecheck, and runtime/build checks.
    - Obey Rule 02 Section 5 during live debugging. Treat initial test packets as starting suggestions, unpack the real R&D lifecycle dynamically, and never certify from surviving outputs alone.
+   - Production-readiness optimization gates require real-scale multi-thousand-entry integration R&D, adversarial `skeptical-companion` question-chain audits, and proactive security and exploitation-route checks across all touched sectors.
 6. **Strict ledger status parameters, handoff containment, and Pipeline-only row clearing**:
    - Review active ledgers (`IMPLEMENTATION_PLAN.md`, `task_tracker.md`, `handoff.md`) and permitted upstream `handoff.md` ledgers before advancing to the next task.
    - Limit the `status` column strictly to five values: `open`, `in_progress`, `unverified`, `verified`, `blocked`.

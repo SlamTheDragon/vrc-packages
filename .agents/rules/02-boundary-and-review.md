@@ -24,5 +24,12 @@ description: "Protect sector and crawler/coordinator boundaries, enforce whole-e
    - Treat initial debugging packets, chaos scenarios, attrition buckets, and defect hypotheses as **starting suggestions, not exhaustive boundaries**.
    - Unpack the true R&D lifecycle dynamically when live data, upstream responses, and real failure modes appear during the debugging phase.
    - Never assume a pre-listed checklist captures every defect ("this must be the only problem"). Never limit learning expansions when real behavior exposes unexpected noise, bloat, edge limits, or design flaws.
+   - Challenge existing sector ledgers and earlier success reports against live behavior instead of accepting them blindly.
    - Uphold **anti-survivorship-bias** auditing: verify end-to-end funnel conservation (`survivors + accounted_attrition === total_attempted`). Sample dropped, blocked, rejected, silent-drop, and non-published records instead of judging readiness from surviving rows alone.
    - Distill newly discovered failure classes into base first-principles abstractions and permanent regression fixtures instead of crooked patch-per-patch workarounds.
+6. **Adversarial skeptical companion, cross-sector OOP, data evolution, security hunting, and live human calibration**:
+   - Run true full-stack integration R&D at real scale (thousands of real entries across Coordinator, multi-node Crawler, SDK, and Web Panel) before claiming production readiness. Isolated small runs and unit tests do not substitute for full-system load.
+   - Apply first-principles OOP and clean modular boundaries across every sector (`src-worker/`, `src-crawler/`, `src-package/`, `src-web/`), not only in the crawler node.
+   - Design for ecosystem evolution: eliminate hardcoded tags, avatar bases, search parameters, and static classifiers that fail when VRChat content changes.
+   - Use the read-only adversarial `skeptical-companion` subagent to challenge assumptions, question ledgers, hunt for security or exploitation routes, and produce branching "what-if" question chains until reaching a physical limit or `VISION.md` boundary.
+   - Run periodic `ask_question` (`/grill-me`-style) human-in-the-loop checkpoints and live UI or log observations whenever user feedback is necessary to diagnose UX or vision-boundary trade-offs.

@@ -1,6 +1,6 @@
 # Live Ingestion, First-Principles Abstraction, and Data Assessment Strategy
 
-> **Status:** Investigative Engineering Strategy (`[P19]` to `[P20]` / `PN-010`, `PN-011`)  
+> **Status:** Investigative Engineering Strategy (`[P19]` to `[P21]` / `PN-010`, `PN-011`, `PN-012`)  
 > **Owning Sector:** Sector 4 (`pipeline`) / Sector 1 (`crawler-network`)  
 > **Related Current Source:** [`coordinator_worker.md`](../../source/specifications/coordinator_worker.md), [`crawler_node.md`](../../source/specifications/crawler_node.md), [`coordinator_d1.md`](../../source/schemas/coordinator_d1.md), [`logging_and_telemetry.md`](../../source/schemas/logging_and_telemetry.md)
 
@@ -15,7 +15,7 @@ This strategy governs Version 0 live debugging before remote preview pushes (`RE
 | **OOP & Semantic Framework** | `Candidate` | Proposed `SourceDriver`, `HtmlSanitizerPipeline`, `SemanticPatternEngine`, `VpmQualityAnalyzer`, and `PaginationController`. | `2026-11-24` | Refactor `src-crawler/` and verify in `LIVE-LOCAL-ASSESS-01`. |
 | **Funnel, Bulk & Chaos Audit** | `Candidate` | Local `wrangler dev` + multi-node funnel conservation, initial 9 buckets, and initial 9 break tests. | `2026-11-24` | `Measured` totals stay pending until `LIVE-LOCAL-ASSESS-01`. |
 
-## Consolidated Owner Prompt Lineage (`P1` to `P7`)
+## Consolidated Owner Prompt Lineage (`P1` to `P8`)
 
 Per [Rule 02 Section 5](../../../.agents/rules/02-boundary-and-review.md), initial debugging packets, attrition buckets, and chaos scenarios are starting suggestions. Unpack the true R&D lifecycle dynamically when live debugging starts.
 
@@ -28,6 +28,7 @@ Per [Rule 02 Section 5](../../../.agents/rules/02-boundary-and-review.md), initi
 | **`P5`** | `2026-11-25` | Addendum | Standardize all Version 0 SDK consumers on `vrc-packages-api-preview` (`PN-008`) and remove legacy `0.0.8` dual-channel checks. |
 | **`P6`** | `2026-11-25` | `[P20]` / `PN-011` | Defer Ko-fi and Patreon post-v1 behind ToS, anti-bot, and API blockers (`0x01ff` unchanged). |
 | **`P7`** | `2026-11-25` | `[P20]` / `PN-011` | Seed 16 real starter profiles in `default_seeds.ts`. Enforce Zero-Placeholder R&D in `LIVE-LOCAL-ASSESS-01`. |
+| **`P8`** | `2026-11-28` | `[P21]` / `PN-012` | Run SpaceX-style high-volume integration R&D across thousands of entries, apply OOP across every sector, eliminate hardcoded evolution traps, run adversarial `skeptical-companion` question chains, hunt security/exploitation routes, and hold periodic `ask_question` human checkpoints. |
 
 ```mermaid
 flowchart TD
@@ -212,3 +213,14 @@ Real live ingestion runs take time across `4h`, `6h`, and `24h` recrawl windows.
 2. **Deferred storefronts**: Exclude **Ko-fi** and **Patreon** until ToS, anti-bot, and API blockers clear post-v1 ([`platform_clearance_matrix.md`](../markets/platform_clearance_matrix.md)). Park Payhip and unknown hosts in `custom_domain` (`pending_review`).
 
 3. **Empirical measurements only**: Record exact counts from live `LIVE-LOCAL-ASSESS-01` logs and D1 tables. Never estimate `Measured` counts ahead of execution or add synthetic fallback data.
+
+## 8. High-Volume Full-Stack Integration, Cross-Sector OOP, and Skeptical Companion Protocol (`[P21]`)
+
+Small mock runs and 16-item checks cannot prove system readiness. Treat `[P21]` as a self-iterating improvement loop across all five sectors until real-scale ingestion, OOP modularity, security boundaries, and human UI workflows hold together cleanly.
+
+1. **Multi-thousand-entry full-stack local burn-in**: Boot local `src-worker` (`wrangler dev`, `v0-17` D1), multiple isolated-CWD `src-crawler` nodes, `src-package`, and live `src-web` (`localhost:4321`) together. Gather thousands of real leads and catalog entries while measuring D1 `rows_read`, `rows_written`, latency, memory, duplicate rates, and funnel conservation (`survivors + accounted_attrition === total_attempted`).
+2. **Dynamic data-evolution readiness**: Hunt and eliminate hardcoded avatar bases, static tag lists, rigid `LIKE` search parameters, and brittle storefront assumptions across Coordinator, Network package, Crawler, SDK, and Web Panel so emerging VRChat bases and metadata ingest without code rewrites.
+3. **Cross-sector OOP architecture**: Enforce first-principles OOP (Strategy, Pipeline, Repository, typed domain services, single ownership) across `src-worker/`, `src-package/`, and `src-web/`, not only `src-crawler/`.
+4. **Proactive security and exploitation hunting**: Audit every boundary for auth bypass, SSRF/DNS-rebinding, D1 query amplification or `LIKE` DoS, rate-limit evasion, payload bloat, CORS/CSRF/XSS, and lease hijacking.
+5. **Adversarial `skeptical-companion` stopping rule**: Invoke the read-only `skeptical-companion` subagent to challenge existing ledgers and generate branching "what-if" question chains until each chain hits a real physical limit or an explicit [`VISION.md`](../decisions/VISION.md) boundary.
+6. **Periodic human-in-the-loop calibration**: Run `ask_question` (`/grill-me`-style) checkpoints and live UI plus telemetry observation sessions with the repository owner whenever UI/UX ergonomics or vision-boundary trade-offs exceed autonomous subagent judgment.
