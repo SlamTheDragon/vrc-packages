@@ -204,11 +204,7 @@ See full history at [docs/changelogs/vrcp-worker/preview](https://github.com/Sla
 ## VRC Packages Networking `vrcp-packages-network`
 
 <!-- vrcp-packages-network-DESCRIPTION_SUMMARY -->
-Block private IPs and internal hostnames in `robots_retrieval` redirects, recognize `*.sellfy.store` and `*.myshopify.com` storefronts, keep title qualifiers in `cleanTitle`, and add dynamic node vocabulary protocol schemas.
 <!-- vrcp-packages-network-DESCRIPTION_SUMMARY -->
 ### Added
-- **Node dynamic vocabulary and bracket token protocol:** Add `ClaimResponseSchema.vocabularyVersion`, `ObservationSchema.bracketTokens`, `NodeVocabularyRuleSchema`, and `NodeVocabularyResponseSchema`.
 ### Changes
-- **Redirect SSRF hardening:** Reject private/reserved IP literals, `.local`, `.internal`, `.localhost`, and single-label hostnames inside `safeRedirectTarget`.
-- **Storefront platform and title hygiene fixes:** Map `*.sellfy.store` and `*.myshopify.com` in `source_targets`, preserve title product qualifiers in `cleanTitle`, and expand Japanese promo tokens.
 See full history at [docs/changelogs/vrcp-packages-network/](https://github.com/SlamTheDragon/vrc-packages/tree/main/docs/changelogs/vrcp-packages-network/)
