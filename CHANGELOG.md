@@ -147,27 +147,25 @@ See full history at [docs/changelogs/vrcp-crawler-client/preview](https://github
 ## VRC Packages Crawler - `vrcp-crawler-node-preview`
 
 <!-- vrcp-crawler-node-preview-DESCRIPTION_SUMMARY -->
-Adopt 7-lane OOP source drivers, semantic extraction, bounded VPM retention, yanked-package filtering, storefront extractors, and strict working-directory containment.
 <!-- vrcp-crawler-node-preview-DESCRIPTION_SUMMARY -->
 ### Added
-- **Multi-process fleet and outbox replay verification:** Verify concurrent multi-process origin-lease mutual exclusion and crash-restart SQLite outbox batch replay across isolated node processes.
-- **Per-task node telemetry:** Record HTTP status codes and fetched byte counts on every executed task row in `node_tasks`.
 ### Bugs Fixed
-- **Live storefront and VPM resilience:** Retain newest 20 SemVer VPM releases per package, filter yanked stubs, extract Gumroad `<noscript>` and script links, filter Jinxxy static assets, fix itch pagination selectors, keep BOOTH product tags only, and skip trailing `--once` idle heartbeats.
 ### Changes
-- **Robots refresh wire validation:** Validate `/v1/node/robots/claim` and `/v1/node/robots/result` payloads in `CoordinatorClient` with `vrc-packages-network/node` schemas and typed daemon calls.
-- **Shared target and binary guards:** Enforce `ARCHIVE_BINARY_EXTENSIONS`, `isArchiveOrBinaryUrl`, `isStorefrontProductTarget`, `parseGitHubOwnerRepo`, and `normalizeGitHubRepositoryUrl` from `vrc-packages-network/source-targets`.
-- **Surplus module removal:** Remove obsolete pre-lease circuit breaker, adaptive limiter, local robots parser, SimHash, IANA registry, token identity, and wrapper sanitizer modules from `src-crawler/`.
-- **Seven-lane OOP drivers and semantic pipeline:** Replace platform conditionals with `SourceDriver` subclasses, `SemanticPatternEngine`, `VpmQualityAnalyzer`, and `PaginationController`.
-- **Working-directory containment:** Keep `node.db`, logs, config files, and `.env` strictly inside `process.cwd()`.
 See full history at [docs/changelogs/vrcp-crawler-node/preview](https://github.com/SlamTheDragon/vrc-packages/tree/main/docs/changelogs/vrcp-crawler-node/preview)
 
 ## VRC Packages API - `vrcp-packages-api-preview`
 
 <!-- vrcp-packages-api-preview-DESCRIPTION_SUMMARY -->
+Harden moderator candidate review permissions, tighten storefront URI validation, add forward-tolerant catalog read schemas, add Pre-Ingestion Audit and Dynamic Vocabulary contracts, and add client timeout and telemetry hooks.
 <!-- vrcp-packages-api-preview-DESCRIPTION_SUMMARY -->
 ### Added
+- **Pre-Ingestion Audit and Dynamic Vocabulary contracts:** Add staging list and decision schemas, literal-alias vocabulary schemas, and `operator.staging` plus `operator.vocabulary` client methods.
+- **Operator search query parameters:** Add optional `query` and `targetHost` filters to operator lead, job, and catalog query schemas.
+- **Client telemetry and timeouts:** Add `timeoutMs` cancellation and non-secret `onTelemetry` events exposing request IDs and rate-limit headers in `VRCPackageClient`.
+- **Forward-tolerant catalog reads:** Export `CatalogPackageClientReadSchema` to accept additive metadata and new non-security flags while keeping content-rating enums strict.
 ### Bugs Fixed
+- **Moderator delegation escalation lock:** Remove `"trusted"` status and `grantDelegation` from `ModeratorReviewAppCandidateRequestSchema`.
+- **Storefront URI and bounded read guards:** Tighten `PackageFrontSchema.storefrontUrl` to `HttpsUrlSchema`, encode path parameters uniformly, and enforce `content-length` checks before `response.text()`.
 ### Changes
 See full history at [docs/changelogs/vrcp-packages-api/preview](https://github.com/SlamTheDragon/vrc-packages/tree/main/docs/changelogs/vrcp-packages-api/preview)
 
@@ -213,7 +211,11 @@ See full history at [docs/changelogs/vrcp-worker/preview](https://github.com/Sla
 ## VRC Packages Networking `vrcp-packages-network`
 
 <!-- vrcp-packages-network-DESCRIPTION_SUMMARY -->
+Block private IPs and internal hostnames in `robots_retrieval` redirects, recognize `*.sellfy.store` and `*.myshopify.com` storefronts, keep title qualifiers in `cleanTitle`, and add dynamic node vocabulary protocol schemas.
 <!-- vrcp-packages-network-DESCRIPTION_SUMMARY -->
 ### Added
+- **Node dynamic vocabulary and bracket token protocol:** Add `ClaimResponseSchema.vocabularyVersion`, `ObservationSchema.bracketTokens`, `NodeVocabularyRuleSchema`, and `NodeVocabularyResponseSchema`.
 ### Changes
+- **Redirect SSRF hardening:** Reject private/reserved IP literals, `.local`, `.internal`, `.localhost`, and single-label hostnames inside `safeRedirectTarget`.
+- **Storefront platform and title hygiene fixes:** Map `*.sellfy.store` and `*.myshopify.com` in `source_targets`, preserve title product qualifiers in `cleanTitle`, and expand Japanese promo tokens.
 See full history at [docs/changelogs/vrcp-packages-network/](https://github.com/SlamTheDragon/vrc-packages/tree/main/docs/changelogs/vrcp-packages-network/)

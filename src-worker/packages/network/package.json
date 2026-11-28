@@ -70,7 +70,7 @@
 		"zod": "^4.6.5"
 	},
 	"peerDependencies": {
-		"vrc-packages-api": "2026.11.5-pre"
+		"vrc-packages-api": "2026.11.6-pre"
 	},
 	"devDependencies": {
 		"vrc-packages-api": "npm:vrc-packages-api-preview@latest",
