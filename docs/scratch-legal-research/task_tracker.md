@@ -18,8 +18,6 @@
 | :--- | :--- | :--- | :--- | :--- |
 | R13-C11 | open | `docs/research/markets/platform_clearance_matrix.md`, `docs/research/legal/expansion_action_matrix.md` | Complete primary terms/robots/API retrieval for BOOTH, Gumroad, Jinxxy, itch.io, Payhip, Sellfy, and Shopify merchants before live profile approval. | Pending |
 | R56-C56D | open | `LEGAL.md`, `docs/research/legal/jurisprudence_and_covenants.md` | Retrieve Japanese Copyright Act (Art. 30-4 / 47-5) and consolidated RA 8293/RA 10173 texts and reconcile the 7 `LEGAL.md` draft-vs-code gaps. | Pending |
-| LIVE-LOCAL-ASSESS-01 | verified | [`live_ingestion_assessment_strategy.md`](../research/architecture/live_ingestion_assessment_strategy.md), [`platform_clearance_matrix.md`](../research/markets/platform_clearance_matrix.md) | Audited Wave 5/5B/6B local runs read-only: confirmed `unverified` default across all `13` canonical entries, `custom_domain` quarantine, BOOTH `summary: null` (`normalized_facts` publish class), zero binary URL leaks, and RFC 9309 `origin_state` enforcement (`R13-C11` remains open before prod). Remote audit continues under `LIVE-PREVIEW-ASSESS-01`. | `live_local_assessment_report.md`, `live_sdk_comprehension_6b_output.json` |
-| UNTANGLE-PRE-PREVIEW-01 | verified | `docs/research/`, `LEGAL.md` | Confirmed clean `docs/research/` vs `docs/source/` boundaries across touched Sector 5 records with zero broken links or em-dashes before preview release lift. | `check_doc_links.ts` (`486` docs), `ste-lint.py --strict` (`0` em-dashes) |
 
 ---
 
