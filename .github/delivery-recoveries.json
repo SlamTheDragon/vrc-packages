@@ -102,6 +102,17 @@
       ],
       "expiresAtVersion": "2026.11.12-pre",
       "reason": "Legacy pre-fix CalVer publish vrc-packages-api-preview@2026.11.12-pre remains permanently immutable on npm after GitHub tag cleanup. Allow npm latest transition from 2026.11.12-pre during 2026.11.0-pre..2026.11.11-pre and skip occupied 2026.11.12-pre when November iterations meet it; expires automatically at 2026.11.12-pre or on rollover to 2026.12.0-pre."
+    },
+    {
+      "id": "calver-2026-11-network-skip-9",
+      "product": "network",
+      "channel": "preview",
+      "period": "2026.11",
+      "occupiedVersions": [
+        "2026.11.9"
+      ],
+      "expiresAtVersion": "2026.11.9",
+      "reason": "Prior tag vrcp-network/v2026.11.9 (commit fd45f30) is blocked from recreation by GitHub ruleset GH013; skip 2026.11.9 and proceed to 2026.11.10."
     }
   ]
 }
